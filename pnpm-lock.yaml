@@ -43,7 +43,14 @@ importers:
 
   packages/core: {}
 
-  packages/daemon: {}
+  packages/daemon:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jini/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/http: {}
 
