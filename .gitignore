@@ -8,6 +8,9 @@ coverage/
 .env
 .env.local
 
+# Claude Code harness-local session state (worktrees, one-time init flags)
+.claude/
+
 # project-runner local execution state (leases/sandboxes are ephemeral; ledger tasks are committed)
 automation/project-runner/leases/
 automation/project-runner/.sandbox/

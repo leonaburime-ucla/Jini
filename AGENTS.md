@@ -1,7 +1,7 @@
 # Jini — Directory Guide (agent entry point)
 
 > **MANDATORY STARTUP — do this before anything else (blocking):**
-> 1. Read **`automation/AI-Dev-Shop/AGENTS.md`** and activate the AI Dev Shop multi-agent pipeline. It defines the agents, skills, and delivery workflow used to build this repo — do not proceed without loading it.
+> 1. Read **`AI-Dev-Shop/AGENTS.md`** and activate the AI Dev Shop multi-agent pipeline. It defines the agents, skills, and delivery workflow used to build this repo — do not proceed without loading it.
 > 2. Then read **`docs/jini-port/START-HERE.md`** and **`docs/jini-port/extraction-plan.md`** for the locked architecture and the task list.
 > Skipping step 1 is a blocker: the pipeline, personas, and skills that do the work live there.
 
@@ -16,13 +16,15 @@ A general-purpose, reusable, headless, agent-drivable engine extracted from Open
 - `packages/*` — **the engine** (`@jini/*`), product-neutral. Current: `protocol, core, daemon, agent-runtime, sqlite, http, cli, platform, sidecar, node-host, chat-core, chat-react, renderers-react, components`. All are stubs pending extraction.
 - `integrations/open-design/` — the OD adapter (strangler daemon lands here; keeps OD's file tree so upstream fixes `format-patch` in). `reference/od-web-src.orig/` is the real OD web tree for later frontend extraction.
 - `apps/reference-web/` — Vite reference host (fake transport). `examples/minimal-host/` — imports ONLY `@jini/*`; the neutrality CI gate.
-- `automation/` — the AI dev control-plane (separate concern from the engine; never imported by `@jini/*`). `AI-Dev-Shop/` (declarative pipeline, vendored) + `ADS-memory/` (durable decisions) + `project-runner/` (the execution runtime to build — minimal SQLite ledger first).
+- `AI-Dev-Shop/` — the declarative pipeline toolkit (vendored, agents/skills/routing), read-only during normal feature work.
+- `ADS-memory/` — durable decisions/specs/reports (project-owned workspace, sibling to `AI-Dev-Shop/`).
+- `automation/` — the AI dev control-plane's executable half (separate concern from the engine; never imported by `@jini/*`). `project-runner/` (the execution runtime to build — minimal SQLite ledger first) lives here.
 - `docs/jini-port/` — all architecture docs, recon, and debate transcripts from the 2026-07-16 design session.
 - `scripts/` — `guard.ts`, `check-engine-boundaries.ts`, `check-protocol-purity.ts`.
 
 ## Hard boundaries (enforced by scripts/guard.ts)
 
-- `packages/@jini/**` MUST NOT import `apps/**`, `integrations/**`, `examples/**`, or `automation/**`.
+- `packages/@jini/**` MUST NOT import `apps/**`, `integrations/**`, `examples/**`, `automation/**`, or `AI-Dev-Shop/**`.
 - `@jini/protocol` MUST NOT import any OD DTO (downward-only edge).
 - No product-identity strings (`Open Design`, `OD_`, `--od-stamp`, `/tmp/open-design`) in `packages/@jini/**`.
 - `automation/**` MUST NOT share domain types with the engine (vocabulary firewall: engine {Run, Agent, Tool} vs automation {PipelineRun, WorkItem, JobAttempt, Persona}). It MAY consume `@jini/agent-runtime` only as a pinned leaf subprocess library.
