@@ -41,8 +41,6 @@ importers:
 
   packages/cli: {}
 
-  packages/components: {}
-
   packages/core: {}
 
   packages/daemon: {}
@@ -60,6 +58,8 @@ importers:
   packages/sidecar: {}
 
   packages/sqlite: {}
+
+  packages/ui: {}
 
 packages:
 

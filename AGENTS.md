@@ -13,7 +13,7 @@ A general-purpose, reusable, headless, agent-drivable engine extracted from Open
 
 ## Layout
 
-- `packages/*` — **the engine** (`@jini/*`), product-neutral. Current: `protocol, core, daemon, agent-runtime, sqlite, http, cli, platform, sidecar, node-host, chat-core, chat-react, renderers-react, components`. All are stubs pending extraction.
+- `packages/*` — **the engine** (`@jini/*`), product-neutral. Current: `protocol, core, daemon, agent-runtime, sqlite, http, cli, platform, sidecar, node-host, chat-core, chat-react, renderers-react, ui`. `protocol, core, platform, sidecar, chat-core` have real implementations; the rest are stubs pending extraction. `ui` (renamed from `components` 2026-07-16 — see `packages/ui/README.md`) holds generic, non-chat, non-OD-branded UI: primitives, feature-shaped domains, and their hooks/providers/ports — not just flat components.
 - `integrations/open-design/` — the OD adapter (strangler daemon lands here; keeps OD's file tree so upstream fixes `format-patch` in). `reference/od-web-src.orig/` is the real OD web tree for later frontend extraction.
 - `apps/reference-web/` — Vite reference host (fake transport). `examples/minimal-host/` — imports ONLY `@jini/*`; the neutrality CI gate.
 - `AI-Dev-Shop/` — the declarative pipeline toolkit (vendored, agents/skills/routing), read-only during normal feature work.

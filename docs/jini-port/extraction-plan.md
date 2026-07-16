@@ -91,7 +91,7 @@ Ports are **async-only** (Promise-returning) from day one — OD's `db.ts` is sy
 @jini/chat-core      chat pack + app-services + framework-free parsers
 @jini/chat-react     refactored ChatPane/ChatComposer → headless hooks + slots (optional)
 @jini/renderers-react  artifact/renderer registry + srcDoc sandbox (optional; renamed from artifacts-react for neutrality)
-@jini/components     generic primitives (optional)
+@jini/ui             generic primitives + feature-shaped UI domains + their hooks/providers/ports (optional; renamed from @jini/components 2026-07-16 — one "components" bucket undersold the scope, see packages/ui/README.md)
 # deferred until a 2nd host exists: @jini/desktop-host (electron/tauri + RenderService port)
 ```
 All React packages are optional. `@jini/core` (pure interfaces/tokens) is split from `@jini/daemon` (stateful lifecycle) so a short-lived CLI can use the tool/registry surface without pulling the daemon runtime.
