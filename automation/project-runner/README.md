@@ -14,3 +14,10 @@ The **execution runtime** for Jini's agent-driven extraction — the one piece t
 
 1. Prove the extraction loop **manually** on packages 1–3 (`@jini/protocol`, `@jini/platform`, `@jini/sidecar`) using the N/O CI gates as plain scripts.
 2. Only then wire this runner to drive the remaining §8 tasks.
+
+## Cloud execution
+
+`claim`/`complete` (see `src/cli/`) are the entry points an external executor —
+a Claude Code cloud routine, not an in-process `JobExecutor` — drives instead of
+`worker.ts`. `cloud-routine-prompt.md` is the prompt template for that; use it
+verbatim rather than re-deriving one, it encodes real lessons from prior runs.
