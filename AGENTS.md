@@ -1,5 +1,10 @@
 # Jini — Directory Guide (agent entry point)
 
+> **MANDATORY STARTUP — do this before anything else (blocking):**
+> 1. Read **`automation/AI-Dev-Shop/AGENTS.md`** and activate the AI Dev Shop multi-agent pipeline. It defines the agents, skills, and delivery workflow used to build this repo — do not proceed without loading it.
+> 2. Then read **`docs/jini-port/START-HERE.md`** and **`docs/jini-port/extraction-plan.md`** for the locked architecture and the task list.
+> Skipping step 1 is a blocker: the pipeline, personas, and skills that do the work live there.
+
 **Read `docs/jini-port/START-HERE.md` first**, then `docs/jini-port/extraction-plan.md`. Those hold the locked architecture, the reasoning (every debate transcript), and the dependency-ordered task list. This file is the map; those are the authority.
 
 ## What Jini is
