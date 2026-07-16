@@ -1,0 +1,28 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+TR-COV-FRESH-01	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	invariant_violation	single	Easy	required	Certification hash mismatch must stop TestRunner before execution.	TR-SEED-01
+TR-COV-FRESH-02	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	omission	single	Easy	required	Runner crashes must not be reported as completed partial success.	TR-SEED-02
+TR-COV-FRESH-03	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	hidden_dependency	camouflaged	Easy	required	Zero exit status is insufficient if coverage artifacts are missing.	TR-SEED-03
+TR-COV-FRESH-04	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	state_leak	layered	Hard	required	Fresh evidence gates must reject cached prior-run pass summaries.	TR-SEED-04
+TR-COV-FRESH-05	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	severity_misclassification	camouflaged	Medium	required	Intermittent identical-input failures should be classified as flaky and isolated, not deterministic code failures.	TR-SEED-05
+TR-COV-FRESH-06	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	omission	distributed	Medium	required	Required E2E suite skips must be surfaced even when unit tests pass.	TR-SEED-06
+TR-COV-FRESH-07	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	anti_pattern	interference	Hard	required	Multiple failure classes must be preserved instead of collapsed into one.	TR-SEED-07
+TR-COV-FRESH-08	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	state_leak	distributed	Hard	required	Force flags must not bypass certification hash mismatch.	TR-SEED-08
+TR-COV-FRESH-09	testrunner	1. Pre-Run Verification & Fresh Evidence Gates	cosmetic_fix	single	Easy	required	Whitespace-only hash formatting should not create a false blocker.	TR-SEED-09
+TR-COV-COV-10	testrunner	2. Coverage Enforcement & Artifact Discipline	omission	distributed	Hard	required	High-priority files below coverage gates without justification must block advancement.	TR-SEED-10
+TR-COV-COV-11	testrunner	2. Coverage Enforcement & Artifact Discipline	boundary_error	single	Easy	required	Unit branch coverage at 97% fails a 98% gate even when other metrics pass.	TR-SEED-11
+TR-COV-COV-12	testrunner	2. Coverage Enforcement & Artifact Discipline	semantic_mismatch	camouflaged	Medium	required	Unit, integration, and E2E coverage must not be averaged into one passing number.	TR-SEED-12
+TR-COV-COV-13	testrunner	2. Coverage Enforcement & Artifact Discipline	anti_pattern	combined	Medium	required	Coverage artifacts must be merged without overwriting per-suite evidence.	TR-SEED-13
+TR-COV-COV-14	testrunner	2. Coverage Enforcement & Artifact Discipline	semantic_mismatch	distributed	Medium	required	Touched-file regressions must be reported even when global coverage improves.	TR-SEED-14
+TR-COV-COV-15	testrunner	2. Coverage Enforcement & Artifact Discipline	boundary_error	interference	Hard	required	E2E coverage at 79.5% must not be rounded to pass an 80% gate.	TR-SEED-15
+TR-COV-COV-16	testrunner	2. Coverage Enforcement & Artifact Discipline	omission	layered	Medium	required	Uncovered changed runtime paths need explicit justification and next action.	TR-SEED-16
+TR-COV-COV-17	testrunner	2. Coverage Enforcement & Artifact Discipline	semantic_mismatch	distributed	Medium	required	Per-file baselines in tasks must be used during coverage evaluation.	TR-SEED-17
+TR-COV-COV-18	testrunner	2. Coverage Enforcement & Artifact Discipline	dead_code	single	Medium	required	Generated exempt helpers should not be listed as production coverage gaps.	TR-SEED-18
+TR-COV-FAIL-19	testrunner	3. Failure Clustering & Evidence Integrity	omission	single	Easy	required	Failure reports must include exact assertion output for clear failures.	TR-SEED-19
+TR-COV-FAIL-20	testrunner	3. Failure Clustering & Evidence Integrity	semantic_mismatch	layered	Hard	required	Changed or ambiguous spec criteria should route to Spec or TDD, not automatically Programmer.	TR-SEED-20
+TR-COV-FAIL-21	testrunner	3. Failure Clustering & Evidence Integrity	hidden_dependency	distributed	Medium	required	Missing architecture integration setup should not be mislabeled as implementation logic failure.	TR-SEED-21
+TR-COV-FAIL-22	testrunner	3. Failure Clustering & Evidence Integrity	type_contract_error	camouflaged	Hard	required	Wrong test mock contracts should route to TDD when implementation behavior is correct.	TR-SEED-22
+TR-COV-FAIL-23	testrunner	3. Failure Clustering & Evidence Integrity	omission	distributed	Medium	required	Missing environment variables should be classified as environment setup failures.	TR-SEED-23
+TR-COV-FAIL-24	testrunner	3. Failure Clustering & Evidence Integrity	state_leak	interference	Hard	required	State contamination must be detected when isolated-order runs fail.	TR-SEED-24
+TR-COV-FAIL-25	testrunner	3. Failure Clustering & Evidence Integrity	anti_pattern	combined	Medium	required	TestRunner must not modify tests or code to force pass results.	TR-SEED-25
+TR-COV-FAIL-26	testrunner	3. Failure Clustering & Evidence Integrity	severity_misclassification	distributed	Medium	required	CI node crashes are infrastructure failures, not failed tests.	TR-SEED-26
+TR-COV-FAIL-27	testrunner	3. Failure Clustering & Evidence Integrity	cosmetic_fix	single	Easy	required	Explicitly out-of-scope optional smoke tests should not block advancement.	TR-SEED-27

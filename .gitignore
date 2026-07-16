@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.tmp/
+coverage/
+*.log
+.DS_Store
+.env
+.env.local
+
+# project-runner local execution state (leases/sandboxes are ephemeral; ledger tasks are committed)
+automation/project-runner/leases/
+automation/project-runner/.sandbox/
+
+# heavy local graph indexes are never committed (see extraction-plan §H)
+**/graphify-out/
+**/.codegraph/
+**/.code-review-graph/

@@ -1,0 +1,28 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+TDD-COV-CERT-01	tdd	1. Spec Validation & Certification Integrity	invariant_violation	single	Easy	required	Unapproved spec metadata must block TDD before tests are written.	TDD-SEED-01
+TDD-COV-CERT-02	tdd	1. Spec Validation & Certification Integrity	semantic_mismatch	single	Easy	required	Approved version and hash must certify the active spec, not a stale predecessor.	TDD-SEED-02
+TDD-COV-CERT-03	tdd	1. Spec Validation & Certification Integrity	contradiction	camouflaged	Medium	required	Hash algorithm mismatch must be caught even when both values look plausible.	TDD-SEED-03
+TDD-COV-CERT-04	tdd	1. Spec Validation & Certification Integrity	contradiction	distributed	Hard	required	Conflicting task and ADR module boundaries make test scope uncertifiable.	TDD-SEED-04
+TDD-COV-CERT-05	tdd	1. Spec Validation & Certification Integrity	hidden_dependency	layered	Medium	required	Superseded ADR references must break the certification chain even when the active ADR looks approved.	TDD-SEED-05
+TDD-COV-CERT-06	tdd	1. Spec Validation & Certification Integrity	anti_pattern	interference	Hard	required	Approval metadata must not override inline NEEDS CLARIFICATION blockers.	TDD-SEED-06
+TDD-COV-CERT-07	tdd	1. Spec Validation & Certification Integrity	omission	distributed	Medium	required	Certification records must include spec ID, version, and hash.	TDD-SEED-07
+TDD-COV-CERT-08	tdd	1. Spec Validation & Certification Integrity	boundary_error	layered	Medium	required	Exact hash enforcement must reject wildcard certification values.	TDD-SEED-08
+TDD-COV-CERT-09	tdd	1. Spec Validation & Certification Integrity	cosmetic_fix	single	Easy	required	Typo-only non-behavioral changes should not trigger false refusal or needless rewrite.	TDD-SEED-09
+TDD-COV-MATRIX-10	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	semantic_mismatch	single	Easy	required	Outcome matrices must describe observable state and input outcomes rather than implementation branches.	TDD-SEED-10
+TDD-COV-MATRIX-11	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	severity_misclassification	combined	Medium	required	Coverage gaps need risk levels and security/session gaps must not be demoted beneath cosmetic work.	TDD-SEED-11
+TDD-COV-MATRIX-12	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	anti_pattern	single	Easy	required	Pure invariants should be tested with fast unit tests before slow acceptance coverage.	TDD-SEED-12
+TDD-COV-MATRIX-13	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	hidden_dependency	distributed	Hard	required	ADR capacity constraints can imply testable NFR gaps absent from explicit ACs.	TDD-SEED-13
+TDD-COV-MATRIX-14	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	contradiction	layered	Medium	required	Outcome matrix expectations must not contradict the spec's observable behavior.	TDD-SEED-14
+TDD-COV-MATRIX-15	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	boundary_error	combined	Medium	required	Boundary coverage must include empty, maximum, and max-plus-one cases, not only normal non-empty inputs.	TDD-SEED-15
+TDD-COV-MATRIX-16	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	invariant_violation	interference	Hard	required	Obvious uncovered acceptance criteria with spec references must produce tests or explicit risk-ranked gaps.	TDD-SEED-16
+TDD-COV-MATRIX-17	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	missing_test	distributed	Medium	required	React component changes require render, interaction, accessibility, and edge-case tests, not partial stale coverage.	TDD-SEED-17
+TDD-COV-MATRIX-18	tdd	2. Requirement Coverage, Outcome Matrix & Implicit NFRs	dead_code	single	Medium	required	Deprecated out-of-scope behavior should not receive tests merely to inflate coverage.	TDD-SEED-18
+TDD-COV-GAP-19	tdd	3. Test Design, Contract & Gap-Fill Discipline	anti_pattern	single	Easy	required	Tests should assert public observable behavior instead of private state.	TDD-SEED-19
+TDD-COV-GAP-20	tdd	3. Test Design, Contract & Gap-Fill Discipline	omission	layered	Hard	required	Validation ranges and invariants require property-based tests when examples are insufficient.	TDD-SEED-20
+TDD-COV-GAP-21	tdd	3. Test Design, Contract & Gap-Fill Discipline	type_contract_error	distributed	Hard	required	Conflicting ADR contract approaches require escalation or selected-approach fidelity, not guessing.	TDD-SEED-21
+TDD-COV-GAP-22	tdd	3. Test Design, Contract & Gap-Fill Discipline	anti_pattern	layered	Medium	required	Async tests must avoid fixed sleeps and production delay helpers.	TDD-SEED-22
+TDD-COV-GAP-23	tdd	3. Test Design, Contract & Gap-Fill Discipline	semantic_mismatch	camouflaged	Hard	required	No-spec uncovered routes should be routed as implementation drift instead of tested into legitimacy.	TDD-SEED-23
+TDD-COV-GAP-24	tdd	3. Test Design, Contract & Gap-Fill Discipline	missing_test	combined	Hard	required	React component coverage must include render, interaction, accessibility, and edge cases.	TDD-SEED-24
+TDD-COV-GAP-25	tdd	3. Test Design, Contract & Gap-Fill Discipline	missing_test	single	Easy	required	ADR-defined API contracts with zero tests are critical TDD omissions.	TDD-SEED-25
+TDD-COV-GAP-26	tdd	3. Test Design, Contract & Gap-Fill Discipline	semantic_mismatch	distributed	Medium	required	Gap-fill updates must preserve the original certified spec hash.	TDD-SEED-26
+TDD-COV-GAP-27	tdd	3. Test Design, Contract & Gap-Fill Discipline	anti_pattern	single	Easy	required	Snapshot-heavy contract tests are not defects when the ADR explicitly selects and justifies that approach.	TDD-SEED-27

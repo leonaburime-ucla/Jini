@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+  - integrations/open-design
+  - apps/*
+  - examples/*
+  - automation/project-runner
+# AI-Dev-Shop is a vendored toolkit (not a workspace package); ADS-memory is project data.

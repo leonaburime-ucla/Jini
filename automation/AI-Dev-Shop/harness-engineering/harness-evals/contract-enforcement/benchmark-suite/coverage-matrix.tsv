@@ -1,0 +1,9 @@
+matrix_cell_id	project_state	contract_presence	contract_surface	enforcement_mode	touched_scope	failure_kind	agent_decision	seed_ids
+CT-COV-GF-MISS-01	greenfield	missing	computational	escalation	n/a	missing_declaration	escalate	SEED-CT-01
+CT-COV-BF-MISS-01	brownfield	missing	all	advisory	n/a	missing_declaration	proceed_advisory	SEED-CT-02
+CT-COV-BF-BLOCK-01	brownfield	active	computational	blocking	modified_file	lint_failure	hard_block	SEED-CT-03
+CT-COV-BF-GRAND-01	brownfield	active	architecture	advisory	untouched_file	dependency_violation	grandfather	SEED-CT-04
+CT-COV-BF-ARCHBLK-01	brownfield	active	architecture	blocking	modified_file	forbidden_import	hard_block	SEED-CT-05
+CT-COV-BF-PRIO-01	brownfield	active	architecture	advisory	modified_file	priority_conflict	waiver_proceed	SEED-CT-06
+CT-COV-BF-STALE-01	brownfield	stale	computational	escalation	n/a	stale_command	escalate	SEED-CT-07
+CT-COV-BF-PART-01	brownfield	partial	computational	advisory	modified_file	slot_gap	no_block	SEED-CT-08

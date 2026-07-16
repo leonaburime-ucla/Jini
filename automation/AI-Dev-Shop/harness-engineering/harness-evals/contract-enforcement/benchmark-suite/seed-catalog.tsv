@@ -1,0 +1,9 @@
+seed_id	eval_name	contract_surface	project_state	enforcement_state	touched_scope	violation_type	priority_rule	control_type	expected_behavior	expected_severity	false_positive_risk	detail_ref	matrix_cell_id
+SEED-CT-01	eval-1-greenfield-missing-computational	computational	greenfield	missing	n/a	missing_contract	none	positive_control	escalate_to_user	Required	Low	SEED-CT-01	CT-COV-GF-MISS-01
+SEED-CT-02	eval-2-brownfield-all-missing	all	brownfield	missing	n/a	missing_contract	none	positive_control	advisory_mode_proceed	Required	Medium	SEED-CT-02	CT-COV-BF-MISS-01
+SEED-CT-03	eval-3-blocking-lint-fails	computational	brownfield	active	modified_file	check_failure	none	positive_control	hard_block_handoff	Required	Low	SEED-CT-03	CT-COV-BF-BLOCK-01
+SEED-CT-04	eval-4-advisory-arch-untouched	architecture	brownfield	active	untouched_file	advisory_violation	none	negative_control	grandfather_no_block	Required	Medium	SEED-CT-04	CT-COV-BF-GRAND-01
+SEED-CT-05	eval-5-blocking-arch-modified	architecture	brownfield	active	modified_file	blocking_violation	none	positive_control	hard_block_require_fix	Required	Low	SEED-CT-05	CT-COV-BF-ARCHBLK-01
+SEED-CT-06	eval-6-priority-rule-conflict	architecture	brownfield	active	modified_file	advisory_violation	product_over_advisory	positive_control	fix_proceeds_waiver_logged	Required	Medium	SEED-CT-06	CT-COV-BF-PRIO-01
+SEED-CT-07	eval-7-stale-contract-escalation	computational	brownfield	stale	n/a	stale_contract	none	positive_control	escalate_stale_warning	Advisory	Low	SEED-CT-07	CT-COV-BF-STALE-01
+SEED-CT-08	eval-8-partial-contract-brownfield	computational	brownfield	partial	modified_file	slot_gap	none	negative_control	no_hard_block_on_gap	Advisory	Medium	SEED-CT-08	CT-COV-BF-PART-01

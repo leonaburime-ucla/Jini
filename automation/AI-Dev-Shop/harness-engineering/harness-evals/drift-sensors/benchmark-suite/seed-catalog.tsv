@@ -1,0 +1,7 @@
+seed_id	eval_name	sensor	finding_severity	expected_action	timing_context	control_type	expected_routing	false_positive_risk
+SEED-DS-01	eval-1-critical-vuln-escalation	dependency-drift	critical	blocker_escalate_immediately	scheduled	positive_control	security_agent	Low
+SEED-DS-02	eval-2-routine-outdated-advisory	dependency-drift	low	advisory_batch_maintenance	scheduled	negative_control	maintenance_report	Medium
+SEED-DS-03	eval-3-dead-code-threshold-breach	dead-code	threshold_breach	escalation_route_refactor	scheduled	positive_control	refactor_agent	Low
+SEED-DS-04	eval-4-small-coverage-drop-advisory	coverage-quality	small_drop	advisory_note_handoff	pr	negative_control	handoff_summary	Medium
+SEED-DS-05	eval-5-large-coverage-drop-escalation	coverage-quality	large_drop	escalation_flag_critical_path	pr	positive_control	code_review_programmer	Low
+SEED-DS-06	eval-6-new-dead-code-pr-advisory	dead-code	pr_new_dead_code	advisory_warn_programmer	pr	negative_control	programmer_handoff	Medium

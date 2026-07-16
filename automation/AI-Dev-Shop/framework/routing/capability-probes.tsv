@@ -1,0 +1,24 @@
+# host	command	capability	scope	probe_type	probe_value	failure_status	ttl_days	notes
+codex-cli	codex	subagent_spawning	client	feature_flag_true	multi_agent	unavailable	30	Codex exposes this through `codex features list` when the local install supports it.
+codex-cli	codex	session_resume	client	help_contains_literal	resume	unavailable	30	Codex CLI help exposes session resume support.
+codex-cli	codex	mcp_surface	client	help_contains_literal	mcp	unavailable	30	Codex CLI help exposes MCP management support.
+codex-cli	codex	browser_automation	environment	mcp_list_contains_literal	playwright	unavailable	7	Current provider mapping treats a configured `playwright` MCP server as browser automation support on Codex CLI.
+codex-cli	codex	supabase_mcp	environment	mcp_list_contains_literal	supabase	unavailable	7	Current provider mapping treats a configured `supabase` MCP server as live Supabase verification support on Codex CLI. Run `mcp_surface` first; this probe proves configured provider presence, not project reachability.
+claude-code	claude	mcp_surface	client	help_contains_literal	mcp	unavailable	30	Claude Code help exposes MCP management support.
+claude-code	claude	custom_agents	client	help_contains_literal	--agents	unavailable	30	Claude Code help exposes custom-agent configuration support.
+claude-code	claude	session_resume	client	help_contains_literal	--resume	unavailable	30	Claude Code help exposes session resume support.
+claude-code	claude	subagent_spawning	client	manual_only	-	unverified	30	No reliable local probe defined yet; verify with official docs or controlled runtime testing.
+claude-code	claude	browser_automation	environment	mcp_list_contains_literal	playwright	unavailable	7	Current provider mapping treats a configured `playwright` MCP server as browser automation support on Claude Code.
+claude-code	claude	supabase_mcp	environment	mcp_list_contains_literal	supabase	unavailable	7	Current provider mapping treats a configured `supabase` MCP server as live Supabase verification support on Claude Code. Run `mcp_surface` first; this probe proves configured provider presence, not project reachability.
+claude-ai-web	manual	subagent_spawning	client	manual_only	-	unverified	30	Web-hosted sessions do not expose a local probe in this repo; verify with official product docs or controlled runtime testing.
+claude-ai-web	manual	supabase_mcp	environment	manual_only	-	unverified	30	Web-hosted sessions do not expose a local probe for Supabase MCP access in this repo.
+gemini-cli	gemini	hooks	client	help_contains_literal	hooks	unavailable	30	Gemini CLI help exposes hooks support.
+gemini-cli	gemini	mcp_surface	client	help_contains_literal	mcp	unavailable	30	Gemini CLI help exposes MCP management support.
+gemini-cli	gemini	session_resume	client	help_contains_literal	--resume	unavailable	30	Gemini CLI help exposes session resume support.
+gemini-cli	gemini	subagent_spawning	client	manual_only	-	unverified	30	No reliable local probe defined yet; verify with official docs or controlled runtime testing.
+gemini-cli	gemini	browser_automation	environment	mcp_list_contains_literal	playwright	unavailable	7	Current provider mapping treats a configured `playwright` MCP server as browser automation support on Gemini CLI.
+gemini-cli	gemini	supabase_mcp	environment	mcp_list_contains_literal	supabase	unavailable	7	Current provider mapping treats a configured `supabase` MCP server as live Supabase verification support on Gemini CLI. Run `mcp_surface` first; this probe proves configured provider presence, not project reachability.
+generic-llm	manual	subagent_spawning	client	manual_only	-	unverified	30	Prompt-only or unknown hosts must stay unverified until manually checked.
+generic-llm	manual	filesystem_access	environment	manual_only	-	unverified	30	Tool and file access depend on the host wrapper, not the base model alone.
+generic-llm	manual	browser_automation	environment	manual_only	-	unverified	30	Prompt-only or unknown hosts need explicit local verification before claiming live browser automation.
+generic-llm	manual	supabase_mcp	environment	manual_only	-	unverified	30	Prompt-only or unknown hosts need explicit local verification before claiming Supabase MCP access.

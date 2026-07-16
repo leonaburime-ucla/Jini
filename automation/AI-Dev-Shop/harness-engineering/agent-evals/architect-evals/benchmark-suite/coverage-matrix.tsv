@@ -1,0 +1,34 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+ARCH1-C01	software-architect	1. Scorecard & Evidence Judgment	omission	single	Easy	required	Compliance axis activation is non-negotiable when SOC 2 and traceability are explicitly in scope	SEED-ARCH-01
+ARCH1-C02	software-architect	1. Scorecard & Evidence Judgment	semantic_mismatch	camouflaged	Medium	required	Must distinguish multi-customer platform from multi-tenant architecture (false-positive restraint)	SEED-ARCH-02
+ARCH1-C03	software-architect	1. Scorecard & Evidence Judgment	severity_misclassification	combined	Hard	required	Operability scoring must reflect team experience reality, not theoretical pattern fit	SEED-ARCH-03
+ARCH1-C04	software-architect	2. Blocking & Selection Judgment	anti_pattern	combined	Medium	required	Blocking rule enforcement when team capacity makes a candidate operationally fatal	SEED-ARCH-04
+ARCH1-C05	software-architect	2. Blocking & Selection Judgment	anti_pattern	camouflaged	Medium	required	Anti-monolith bias restraint — genuine strengths must be acknowledged before spec-grounded rejection	SEED-ARCH-05
+ARCH1-C06	software-architect	1. Scorecard & Evidence Judgment	omission	combined	Medium	required	Confidence labels must use documented evidence instead of defaulting to assumed	SEED-ARCH-06
+ARCH1-C07	software-architect	2. Blocking & Selection Judgment	invariant_violation	combined	Hard	required	Adaptability tiebreaker applies only within the same fit band per constitution	SEED-ARCH-07
+ARCH1-C08	software-architect	2. Blocking & Selection Judgment	omission	single	Medium	required	Tradeoff tension must name a genuine sacrifice, not a fake tension	SEED-ARCH-08
+ARCH1-C09	software-architect	3. Migration Safety Judgment	omission	combined	Medium	required	Brownfield extraction requires shadow, reconciliation, rollback, split-brain prevention, cutover criteria	SEED-ARCH-09
+ARCH1-C10	software-architect	2. Blocking & Selection Judgment	omission	single	Easy	required	Conditional skill loading discipline — no irrelevant AI skills, yes data-engineering	SEED-ARCH-10
+ARCH1-C11	software-architect	2. Blocking & Selection Judgment	contradiction	interference	Hard	required	Contradicting executive constraints must be reframed and escalated, not papered over	SEED-ARCH-11
+ARCH1-C12	software-architect	1. Scorecard & Evidence Judgment	omission	combined	Medium	required	Near-term compliance roadmap must produce approve-with-conditions, not ignore or block	SEED-ARCH-12
+ARCH1-C14	software-architect	2. Blocking & Selection Judgment	omission	combined	Hard	required	Documented dependency unreliability must lower scores or mandate durable buffering	SEED-ARCH-14
+ARCH1-C15	software-architect	2. Blocking & Selection Judgment	anti_pattern	combined	Hard	required	Bounded pattern application is valid — all-or-nothing event sourcing framing is wrong	SEED-ARCH-15
+ARCH1-C16	software-architect	1. Scorecard & Evidence Judgment	severity_misclassification	layered	Hard	required	Migration-phase operational burden must lower transition-period operability scores	SEED-ARCH-16
+ARCH1-C17	software-architect	1. Scorecard & Evidence Judgment	severity_misclassification	combined	Hard	required	Measured evidence on the old schema must not inflate confidence for the new architecture	SEED-ARCH-17
+ARCH1-C18	software-architect	3. Migration Safety Judgment	omission	combined	Hard	required	Explicit shadow-mode constraint is non-negotiable — no abbreviated cutover	SEED-ARCH-18
+ARCH1-C19	software-architect	3. Migration Safety Judgment	semantic_mismatch	combined	Hard	required	Financial rollback means compensating entries, not destructive code revert	SEED-ARCH-19
+ARCH1-C20	software-architect	1. Scorecard & Evidence Judgment	omission	combined	Hard	required	Stated hot/cold retention boundary must drive tiered storage design	SEED-ARCH-20
+ARCH1-C21	software-architect	2. Blocking & Selection Judgment	severity_misclassification	camouflaged	Medium	required	GIL trap restraint — I/O-bound Python at stated load must not trigger a language change	SEED-ARCH-21
+ARCH1-C22	software-architect	3. Migration Safety Judgment	anti_pattern	combined	Hard	required	Financial strangler-fig migration should be data-consistency-led, not HTTP-proxy-only	SEED-ARCH-22
+ARCH1-C23	software-architect	2. Blocking & Selection Judgment	semantic_mismatch	camouflaged	Medium	required	Dependency-assumption restraint — Temporal must not be penalized for unrelated Kafka risk	SEED-ARCH-23
+ARCH1-C24	software-architect	1. Scorecard & Evidence Judgment	omission	layered	Hard	required	Connection exhaustion at stated throughput must surface as an architectural condition	SEED-ARCH-24
+ARCH1-C25	software-architect	2. Blocking & Selection Judgment	contradiction	interference	Hard	required	No clean single winner exists — unresolved gaps or bounded hybrid must be documented	SEED-ARCH-25
+ARCH1-C26	software-architect	2. Blocking & Selection Judgment	anti_pattern	camouflaged	Hard	required	Over-blocking restraint — bounded event sourcing must not be hard-blocked on team gap alone	SEED-ARCH-26
+ARCH1-C27	software-architect	2. Blocking & Selection Judgment	contradiction	interference	Hard	required	Impossible literal constraint must be reframed to practical durability with approval path	SEED-ARCH-27
+ARCH1-C28	software-architect	3. Migration Safety Judgment	omission	layered	Hard	required	Dual-write without automated reconciliation is fatal — under-blocking trap tightened post-canary	SEED-ARCH-28
+ARCH1-C29	software-architect	3. Migration Safety Judgment	invariant_violation	distributed	Hard	required	Single write authority must be unambiguous at every migration phase — split-brain trap tightened post-canary	SEED-ARCH-29
+ARCH1-C30	software-architect	3. Migration Safety Judgment	omission	combined	Hard	required	Customer segmentation data must drive cohort rollout, not all-at-once migration	SEED-ARCH-30
+ARCH1-C31	software-architect	3. Migration Safety Judgment	omission	layered	Hard	required	Actor identity must propagate through every migration-introduced boundary for audit integrity	SEED-ARCH-31
+ARCH1-C32	software-architect	2. Blocking & Selection Judgment	omission	layered	Hard	required	HIPAA readiness requires infrastructure-level validation, not code-level controls alone	SEED-ARCH-32
+ARCH1-C33	software-architect	2. Blocking & Selection Judgment	contradiction	camouflaged	Hard	required	Documented trigger-bypass evidence may justify a constitution Simplicity Gate exception	SEED-ARCH-33
+ARCH1-C34	software-architect	2. Blocking & Selection Judgment	omission	combined	Hard	required	Current state must be evaluated as a formal baseline to justify migration ROI	SEED-ARCH-34

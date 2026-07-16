@@ -1,0 +1,41 @@
+.DS_Store
+.env
+.env.*
+node_modules/
+**/node_modules/**
+.venv/
+__pycache__/
+.pytest_cache/
+tmp/
+.local-artifacts/
+**/agent-evals/**/runs/
+coverage/
+dist/
+build/
+/cache/
+project-knowledge-template/.local-artifacts/
+ADS-memory/
+.claude/.ads-initialized
+integrations/graphify/upstream/
+integrations/codebase-memory-mcp/upstream/
+integrations/codebase-memory-mcp/bin/
+# Generalized: no third-party upstream source or built binaries are committed
+integrations/*/upstream/
+integrations/*/bin/
+# Candidate analyzers under evaluation (clone/audit only, not vendored).
+# Heavy source lives under */upstream/ and */bin/ (ignored by the rules above);
+# tracked stubs (README, manifest) at the integration root SHIP in a clone so the
+# guided installer knows the backend exists and where to fetch it.
+integrations/serena/
+integrations/understand-anything/
+# codegraph: stub tracked; clone+build lands in integrations/codegraph/upstream/ (ignored).
+graphify-out/
+.codegraph/
+.understand-anything/
+.serena/
+.codebase-memory/
+.github/workflows/
+# Retrieval-eval: private local-only results + clone-able fixtures (fixture is an
+# embedded git repo; both are local inputs, never shared/committed)
+harness-engineering/retrieval-evals/real-code-comparison-open-design.md
+harness-engineering/retrieval-evals/benchmark-suite/fixtures/

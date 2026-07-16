@@ -1,0 +1,332 @@
+[
+  {
+    "query_id": "Q2",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 26,
+        "line_end": 26,
+        "content": "const hasStock = await this.inventoryService.validateInventory(item.productId, item.quantity);"
+      },
+      {
+        "file": "src/inventory/InventoryService.ts",
+        "line_start": 28,
+        "line_end": 28,
+        "content": "const isValid = await this.validateInventory(productId, quantity);"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 53,
+        "line_end": 55,
+        "content": "const { InventoryService } = require('../inventory/InventoryService'); const invService = new InventoryService(this.orderService); const isValid = await invService.validateInventory(productId, parseInt(quantity, 10));"
+      },
+      {
+        "file": "tests/inventory/InventoryService.test.ts",
+        "line_start": 14,
+        "line_end": 24,
+        "content": "const isValid = await inventoryService.validateInventory('prod_123', 5); const isValid = await inventoryService.validateInventory('prod_123', 500); const isValid = await inventoryService.validateInventory('prod_unknown', 1);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q2",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 26,
+        "line_end": 26,
+        "content": "const hasStock = await this.inventoryService.validateInventory(item.productId, item.quantity);"
+      },
+      {
+        "file": "src/inventory/InventoryService.ts",
+        "line_start": 28,
+        "line_end": 28,
+        "content": "const isValid = await this.validateInventory(productId, quantity);"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 53,
+        "line_end": 55,
+        "content": "const { InventoryService } = require('../inventory/InventoryService'); const invService = new InventoryService(this.orderService); const isValid = await invService.validateInventory(productId, parseInt(quantity, 10));"
+      },
+      {
+        "file": "tests/inventory/InventoryService.test.ts",
+        "line_start": 14,
+        "line_end": 24,
+        "content": "const isValid = await inventoryService.validateInventory('prod_123', 5); const isValid = await inventoryService.validateInventory('prod_123', 500); const isValid = await inventoryService.validateInventory('prod_unknown', 1);"
+      },
+      {
+        "file": "src/inventory/audit.ts",
+        "line_start": 12,
+        "line_end": 20,
+        "content": "public async auditItem(productId: string): Promise<boolean> { return await this.inventoryService.validateInventory(productId, 1); } results.set(pid, await this.inventoryService.validateInventory(pid, 1));"
+      }
+    ]
+  },
+  {
+    "query_id": "Q3",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 1,
+        "line_end": 1,
+        "content": "import { OrderService } from './OrderService';"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 35,
+        "line_end": 35,
+        "content": "await this.orderService.processOrder(orderId, paymentDetails);"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 6,
+        "line_end": 6,
+        "content": "import { NotificationService } from '../notifications/NotificationService';"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 94,
+        "line_end": 94,
+        "content": "await this.notificationService.sendOrderConfirmation('customer@example.com', orderId);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q3",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 1,
+        "line_end": 1,
+        "content": "import { OrderService } from './OrderService';"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 35,
+        "line_end": 35,
+        "content": "await this.orderService.processOrder(orderId, paymentDetails);"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 6,
+        "line_end": 6,
+        "content": "import { NotificationService } from '../notifications/NotificationService';"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 94,
+        "line_end": 94,
+        "content": "await this.notificationService.sendOrderConfirmation('customer@example.com', orderId);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q5",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/notifications/NotificationService.ts",
+        "line_start": 1,
+        "line_end": 16,
+        "content": "export interface NotificationPayload { to: string; subject: string; body: string; templateId?: string; data?: Record<string, any>; } export class NotificationService { private readonly fromEmail = 'no-reply@example.com'; constructor() { } public async sendEmail(payload: NotificationPayload): Promise<boolean> {"
+      },
+      {
+        "file": "src/inventory/InventoryData.ts",
+        "line_start": 12,
+        "line_end": 38,
+        "content": "export class InventoryData { private mockDb: Map<string, InventoryRecord> = new Map(); public async findById(productId: string): Promise<InventoryRecord | null> {"
+      }
+    ]
+  },
+  {
+    "query_id": "Q5",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/notifications/NotificationService.ts",
+        "line_start": 1,
+        "line_end": 16,
+        "content": "export interface NotificationPayload { to: string; subject: string; body: string; templateId?: string; data?: Record<string, any>; } export class NotificationService { private readonly fromEmail = 'no-reply@example.com'; constructor() { } public async sendEmail(payload: NotificationPayload): Promise<boolean> {"
+      },
+      {
+        "file": "src/inventory/InventoryData.ts",
+        "line_start": 12,
+        "line_end": 38,
+        "content": "export class InventoryData { private mockDb: Map<string, InventoryRecord> = new Map(); public async findById(productId: string): Promise<InventoryRecord | null> {"
+      }
+    ]
+  },
+  {
+    "query_id": "Q7",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { InventoryService } from '../inventory/InventoryService';"
+      },
+      {
+        "file": "src/inventory/InventoryService.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { OrderService } from '../orders/OrderService';"
+      }
+    ]
+  },
+  {
+    "query_id": "Q7",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { InventoryService } from '../inventory/InventoryService';"
+      },
+      {
+        "file": "src/inventory/InventoryService.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { OrderService } from '../orders/OrderService';"
+      }
+    ]
+  },
+  {
+    "query_id": "Q8",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { InventoryData } from '../inventory/InventoryData';"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 46,
+        "line_end": 47,
+        "content": "const invDb = new InventoryData(); const rawStock = await invDb.findById(productId);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q8",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 2,
+        "line_end": 2,
+        "content": "import { InventoryData } from '../inventory/InventoryData';"
+      },
+      {
+        "file": "src/orders/OrderController.ts",
+        "line_start": 46,
+        "line_end": 47,
+        "content": "const invDb = new InventoryData(); const rawStock = await invDb.findById(productId);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q9",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/config/redis.json",
+        "line_start": 4,
+        "line_end": 4,
+        "content": "\"timeout\": 5000,"
+      },
+      {
+        "file": "src/config/env.ts",
+        "line_start": 18,
+        "line_end": 18,
+        "content": "export const REDIS_TIMEOUT = process.env.REDIS_TIMEOUT ? parseInt(process.env.REDIS_TIMEOUT, 10) : 5000;"
+      }
+    ]
+  },
+  {
+    "query_id": "Q9",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/config/redis.json",
+        "line_start": 4,
+        "line_end": 4,
+        "content": "\"timeout\": 10000,"
+      },
+      {
+        "file": "src/config/env.ts",
+        "line_start": 18,
+        "line_end": 18,
+        "content": "export const REDIS_TIMEOUT = parseInt(process.env.REDIS_TIMEOUT || \"10000\", 10);"
+      }
+    ]
+  },
+  {
+    "query_id": "Q14",
+    "state": "clean",
+    "evidence": [
+      {
+        "file": "src/orders/shipping.ts",
+        "line_start": 8,
+        "line_end": 31,
+        "content": "export function calculateShippingCost(weight: number, distance: number, method: string): number { ... }"
+      },
+      {
+        "file": "src/orders/shipping.ts",
+        "line_start": 47,
+        "line_end": 69,
+        "content": "export function getAvailableShippingOptions(...) { cost: calculateShippingCost(...); cost: calculateShippingCost(...); cost: calculateShippingCost(...); }"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 3,
+        "line_end": 77,
+        "content": "import { calculateShippingCost } from './shipping'; const shippingCost = calculateShippingCost(totalWeight, 500, 'STANDARD'); const shippingCost = calculateShippingCost(primaryItem.weight, 100, 'STANDARD');"
+      },
+      {
+        "file": "tests/orders/OrderService.test.ts",
+        "line_start": 2,
+        "line_end": 23,
+        "content": "import { calculateShippingCost } from '../../src/orders/shipping'; const standardCost = calculateShippingCost(10, 100, 'STANDARD'); const heavyCost = calculateShippingCost(20, 100, 'STANDARD'); const farCost = calculateShippingCost(10, 1000, 'STANDARD'); const expressCost = calculateShippingCost(10, 100, 'EXPRESS');"
+      }
+    ]
+  },
+  {
+    "query_id": "Q14",
+    "state": "dirty",
+    "evidence": [
+      {
+        "file": "src/orders/logistics.ts",
+        "line_start": 47,
+        "line_end": 70,
+        "content": "export function calculateShippingCost(weight: number, distance: number, method: string): number { ... }"
+      },
+      {
+        "file": "src/orders/shipping.ts",
+        "line_start": 23,
+        "line_end": 45,
+        "content": "export function getAvailableShippingOptions(...) { cost: calculateShippingCost(...); cost: calculateShippingCost(...); cost: calculateShippingCost(...); }"
+      },
+      {
+        "file": "src/orders/OrderService.ts",
+        "line_start": 3,
+        "line_end": 77,
+        "content": "import { calculateShippingCost } from './logistics'; const shippingCost = calculateShippingCost(totalWeight, 500, 'STANDARD'); const shippingCost = calculateShippingCost(primaryItem.weight, 100, 'STANDARD');"
+      },
+      {
+        "file": "tests/orders/OrderService.test.ts",
+        "line_start": 2,
+        "line_end": 23,
+        "content": "import { calculateShippingCost } from '../../src/orders/shipping'; const standardCost = calculateShippingCost(10, 100, 'STANDARD'); const heavyCost = calculateShippingCost(20, 100, 'STANDARD'); const farCost = calculateShippingCost(10, 1000, 'STANDARD'); const expressCost = calculateShippingCost(10, 100, 'EXPRESS');"
+      }
+    ]
+  }
+]

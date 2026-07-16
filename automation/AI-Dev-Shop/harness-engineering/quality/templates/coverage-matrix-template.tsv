@@ -1,0 +1,5 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+CR-SPEC-OMISSION-EASY-01	code-review	1. Spec Alignment	omission	single	Easy	required	Baseline must-catch missing behavior seed	SEED-CR-01
+CR-TEST-STATELEAK-HARD-01	code-review	3. Test Quality	state_leak	layered	Hard	required	Layered timer leak masked by passing happy path	SEED-CR-17
+CR-CODE-SEM-MEDIUM-01	code-review	4. Code Quality	semantic_mismatch	camouflaged	Medium	optional	Camouflaged naming or comment mismatch used as a negative-control candidate	SEED-CR-NC-01
+CR-CODE-DEAD-HARD-01	code-review	4. Code Quality	dead_code	camouflaged	Hard	pruned	Dead-code camouflage not relevant for this suite because scope excludes deprecation traps	

@@ -1,0 +1,31 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+SPEC-COV-PROV-01	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	semantic_mismatch	distributed	Easy	required	Active-provider selection must override cross-provider artifact bait.	SPEC-SEED-01
+SPEC-COV-PROV-02	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	hidden_dependency	layered	Medium	required	Provider folders coexisting should not cause default-provider leakage.	SPEC-SEED-02
+SPEC-COV-PROV-03	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	anti_pattern	single	Easy	required	OpenSpec must not receive Speckit-only naming questions.	SPEC-SEED-03
+SPEC-COV-PROV-04	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	omission	combined	Medium	required	Provider identity fields are required in pipeline state.	SPEC-SEED-04
+SPEC-COV-PROV-05	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	contradiction	distributed	Hard	required	Mid-feature provider switching requires a checkpoint, not silent format drift.	SPEC-SEED-05
+SPEC-COV-PROV-06	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	semantic_mismatch	camouflaged	Medium	required	Untested provider status must not be overstated.	SPEC-SEED-06
+SPEC-COV-PROV-07	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	hidden_dependency	distributed	Medium	required	Provider-local validator selection must follow the active provider.	SPEC-SEED-07
+SPEC-COV-PROV-08	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	semantic_mismatch	distributed	Medium	required	OpenSpec entrypoint must not be hardcoded as Speckit feature spec.	SPEC-SEED-08
+SPEC-COV-PROV-09	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	dead_code	single	Medium	required	Inactive provider folders should not trigger a provider switch.	SPEC-SEED-09
+SPEC-COV-PROV-10	spec	1. Provider Resolution, Switching & Cross-Provider Discipline	cosmetic_fix	single	Easy	required	Base OpenSpec workflow does not require expanded-workflow metadata.	SPEC-SEED-10
+SPEC-COV-SPECKIT-11	spec	2. Speckit Package Readiness & Contract Completeness	omission	single	Easy	required	Speckit manifest must include the full readiness index and stage read sets, not just file names.	SPEC-SEED-11
+SPEC-COV-SPECKIT-12	spec	2. Speckit Package Readiness & Contract Completeness	semantic_mismatch	single	Easy	required	Legacy single-file specs are invalid for strict Speckit package readiness.	SPEC-SEED-12
+SPEC-COV-SPECKIT-13	spec	2. Speckit Package Readiness & Contract Completeness	type_contract_error	distributed	Medium	required	API contracts must be typed, not prose-only.	SPEC-SEED-13
+SPEC-COV-SPECKIT-14	spec	2. Speckit Package Readiness & Contract Completeness	omission	combined	Medium	required	Traceability must map requirements to test coverage, not only files.	SPEC-SEED-14
+SPEC-COV-SPECKIT-15	spec	2. Speckit Package Readiness & Contract Completeness	anti_pattern	camouflaged	Medium	required	Clarification markers must be resolved by asking the user, not guessed away.	SPEC-SEED-15
+SPEC-COV-SPECKIT-16	spec	2. Speckit Package Readiness & Contract Completeness	invariant_violation	interference	Hard	required	Spec DoD PASS must not mask unresolved blockers.	SPEC-SEED-16
+SPEC-COV-SPECKIT-17	spec	2. Speckit Package Readiness & Contract Completeness	semantic_mismatch	distributed	Hard	required	Spec hash must be recomputed after final content changes.	SPEC-SEED-17
+SPEC-COV-SPECKIT-18	spec	2. Speckit Package Readiness & Contract Completeness	omission	single	Easy	required	Provider-local validation is required before handoff.	SPEC-SEED-18
+SPEC-COV-SPECKIT-19	spec	2. Speckit Package Readiness & Contract Completeness	cosmetic_fix	single	Easy	required	Valid conditional-file omission must not be treated as a defect.	SPEC-SEED-19
+SPEC-COV-SPECKIT-20	spec	2. Speckit Package Readiness & Contract Completeness	dead_code	single	Medium	required	Valid behavior-spec omission must not be treated as missing behavior.	SPEC-SEED-20
+SPEC-COV-OPENSPEC-21	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	omission	single	Easy	required	OpenSpec proposal must have filled Why and What Changes sections, not template placeholders.	SPEC-SEED-21
+SPEC-COV-OPENSPEC-22	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	missing_test	single	Easy	required	OpenSpec requirements need scenarios with WHEN/THEN.	SPEC-SEED-22
+SPEC-COV-OPENSPEC-23	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	semantic_mismatch	distributed	Medium	required	Proposal capabilities must match delta spec folders.	SPEC-SEED-23
+SPEC-COV-OPENSPEC-24	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	omission	combined	Medium	required	OpenSpec design.md omission requires explicit justification.	SPEC-SEED-24
+SPEC-COV-OPENSPEC-25	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	anti_pattern	single	Easy	required	OpenSpec tasks must use checkbox items.	SPEC-SEED-25
+SPEC-COV-OPENSPEC-26	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	hidden_dependency	distributed	Hard	required	Modified capabilities require baseline spec awareness.	SPEC-SEED-26
+SPEC-COV-OPENSPEC-27	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	semantic_mismatch	camouflaged	Medium	required	Template placeholders must not remain in ready artifacts.	SPEC-SEED-27
+SPEC-COV-OPENSPEC-28	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	semantic_mismatch	distributed	Medium	required	OpenSpec clarification must use proposal/delta revision, not Speckit markers.	SPEC-SEED-28
+SPEC-COV-OPENSPEC-29	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	cosmetic_fix	single	Easy	required	Justified design.md omission should not be over-flagged.	SPEC-SEED-29
+SPEC-COV-OPENSPEC-30	spec	3. OpenSpec Change Folder & Delta-Spec Readiness	dead_code	single	Medium	required	OpenSpec does not require Speckit traceability files.	SPEC-SEED-30

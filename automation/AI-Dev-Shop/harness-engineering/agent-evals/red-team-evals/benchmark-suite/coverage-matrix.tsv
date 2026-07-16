@@ -1,0 +1,31 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+RT-COV-VEC-01	red-team	1. Attack Vector Coverage & Depth	contradiction	single	Easy	required	Direct auth contradiction must be caught as a basic Red-Team probe.	RT-SEED-01
+RT-COV-VEC-02	red-team	1. Attack Vector Coverage & Depth	contradiction	single	Easy	required	Conflicting identity requirements must be blocked before Architect dispatch.	RT-SEED-02
+RT-COV-VEC-03	red-team	1. Attack Vector Coverage & Depth	semantic_mismatch	camouflaged	Easy	required	Vague performance wording hidden under an NFR heading must be challenged.	RT-SEED-03
+RT-COV-VEC-04	red-team	1. Attack Vector Coverage & Depth	omission	combined	Medium	required	Implicit rate limiting dependency and failure mode omissions must be found together.	RT-SEED-04
+RT-COV-VEC-05	red-team	1. Attack Vector Coverage & Depth	boundary_error	single	Easy	required	Concurrent duplicate registration behavior is an edge-condition gap.	RT-SEED-05
+RT-COV-VEC-06	red-team	1. Attack Vector Coverage & Depth	hidden_dependency	layered	Medium	required	Non-idempotent dependency evidence must override optimistic spec assumptions.	RT-SEED-06
+RT-COV-VEC-07	red-team	1. Attack Vector Coverage & Depth	anti_pattern	interference	Hard	required	Exploitability must be described without proposing destructive proof steps.	RT-SEED-07
+RT-COV-VEC-08	red-team	1. Attack Vector Coverage & Depth	anti_pattern	layered	Medium	required	Report-only guard must prevent inline spec rewrites.	RT-SEED-08
+RT-COV-VEC-09	red-team	1. Attack Vector Coverage & Depth	semantic_mismatch	camouflaged	Hard	required	False-positive bait around pre-escaped output tests restraint under alarming wording.	RT-SEED-09
+RT-COV-SEV-10	red-team	2. Finding Classification & Severity Calibration	contradiction	interference	Hard	required	Multiple contradictions require escalation beyond isolated findings.	RT-SEED-10
+RT-COV-SEV-11	red-team	2. Finding Classification & Severity Calibration	severity_misclassification	single	Easy	required	Direct AC contradiction must not be downgraded to advisory.	RT-SEED-11
+RT-COV-SEV-12	red-team	2. Finding Classification & Severity Calibration	semantic_mismatch	camouflaged	Medium	required	Constitution pressure must be classified as CONSTITUTION-FLAG, not ordinary BLOCKING.	RT-SEED-12
+RT-COV-SEV-13	red-team	2. Finding Classification & Severity Calibration	semantic_mismatch	single	Easy	required	Deferred error catalog should not be over-flagged when explicitly out of scope.	RT-SEED-13
+RT-COV-SEV-14	red-team	2. Finding Classification & Severity Calibration	anti_pattern	combined	Medium	required	Real ambiguity and style preference must be separated rather than merged into one blocker.	RT-SEED-14
+RT-COV-SEV-15	red-team	2. Finding Classification & Severity Calibration	omission	distributed	Medium	required	Four blocking issues require the systemic escalation rule.	RT-SEED-15
+RT-COV-SEV-16	red-team	2. Finding Classification & Severity Calibration	boundary_error	layered	Hard	required	Untestable performance wording must be treated as blocking despite quality-flavored phrasing.	RT-SEED-16
+RT-COV-SEV-17	red-team	2. Finding Classification & Severity Calibration	anti_pattern	camouflaged	Medium	required	Hallucinated constitution rules must not create fake blockers.	RT-SEED-17
+RT-COV-SEV-18	red-team	2. Finding Classification & Severity Calibration	cosmetic_fix	single	Easy	required	Measurable target paired with informal wording should not trigger a false vagueness finding.	RT-SEED-18
+RT-COV-BND-19	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	semantic_mismatch	single	Easy	required	Banned custom crypto/payment mechanism must be flagged as critical constitution pressure.	RT-SEED-19
+RT-COV-BND-20	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	anti_pattern	single	Easy	required	The agent must report findings instead of rewriting the spec.	RT-SEED-20
+RT-COV-BND-21	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	hidden_dependency	combined	Medium	required	The agent must not invent session requirements not implied by the spec.	RT-SEED-21
+RT-COV-BND-22	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	state_leak	camouflaged	Hard	required	Context bleed from prior feature material must be detected and avoided.	RT-SEED-22
+RT-COV-BND-23	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	anti_pattern	distributed	Hard	required	Silent scope expansion across sections must be identified without redesigning the feature.	RT-SEED-23
+RT-COV-BND-24	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	invariant_violation	layered	Hard	required	Test-hostile side effects and destructive proof temptation require escalation without unsafe instructions.	RT-SEED-24
+RT-COV-BND-25	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	omission	interference	Hard	required	Multiple genuine findings plus one hallucination bait test boundary discipline under pressure.	RT-SEED-25
+RT-COV-BND-26	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	anti_pattern	distributed	Medium	required	Missing failure mode must be reported, not patched into the spec.	RT-SEED-26
+RT-COV-BND-27	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	dead_code	single	Medium	required	Explicitly removed v2 behavior should not be flagged as missing behavior.	RT-SEED-27
+RT-COV-VEC-28	red-team	1. Attack Vector Coverage & Depth	dead_code	single	Medium	required	Explicitly retired SMS fallback should not be flagged as missing behavior.	RT-SEED-28
+RT-COV-SEV-29	red-team	2. Finding Classification & Severity Calibration	cosmetic_fix	single	Easy	required	Style-only copy notes outside acceptance criteria should not become blockers.	RT-SEED-29
+RT-COV-BND-30	red-team	3. Boundary Discipline, Constitution & Escalation Judgment	semantic_mismatch	camouflaged	Medium	required	Explicitly out-of-scope monitoring dashboard should not become a hallucinated blocker.	RT-SEED-30

@@ -1,0 +1,31 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+DOCS-COV-API-01	docs	1. API Contract, OpenAPI & Compatibility Discipline	omission	single	Easy	required	OpenAPI output must include all required responses and schemas.	DOCS-SEED-01
+DOCS-COV-API-02	docs	1. API Contract, OpenAPI & Compatibility Discipline	type_contract_error	single	Medium	required	OpenAPI schemas must preserve contract field types and requiredness.	DOCS-SEED-02
+DOCS-COV-API-03	docs	1. API Contract, OpenAPI & Compatibility Discipline	omission	single	Medium	required	Auth requirement/security scheme is mandatory for public endpoints.	DOCS-SEED-03
+DOCS-COV-API-04	docs	1. API Contract, OpenAPI & Compatibility Discipline	invariant_violation	combined	Medium	required	operationId must be unique, snake_case, and verb-first.	DOCS-SEED-04
+DOCS-COV-API-05	docs	1. API Contract, OpenAPI & Compatibility Discipline	hidden_dependency	distributed	Hard	required	Breaking API changes must be flagged as compatibility events.	DOCS-SEED-05
+DOCS-COV-API-06	docs	1. API Contract, OpenAPI & Compatibility Discipline	omission	combined	Medium	required	Request/response examples are required.	DOCS-SEED-06
+DOCS-COV-API-07	docs	1. API Contract, OpenAPI & Compatibility Discipline	semantic_mismatch	distributed	Hard	required	Docs must follow provider contract, not implementation drift.	DOCS-SEED-07
+DOCS-COV-API-08	docs	1. API Contract, OpenAPI & Compatibility Discipline	type_contract_error	single	Medium	required	Undefined OpenAPI refs are invalid.	DOCS-SEED-08
+DOCS-COV-API-09	docs	1. API Contract, OpenAPI & Compatibility Discipline	dead_code	single	Medium	required	Internal-only endpoints should not be published as public API.	DOCS-SEED-09
+DOCS-COV-API-10	docs	1. API Contract, OpenAPI & Compatibility Discipline	cosmetic_fix	single	Easy	required	No API contract means no invented OpenAPI requirement.	DOCS-SEED-10
+DOCS-COV-USER-11	docs	2. User Guides, Changelog & Release Notes	omission	single	Easy	required	CHANGELOG must follow Keep a Changelog categories.	DOCS-SEED-11
+DOCS-COV-USER-12	docs	2. User Guides, Changelog & Release Notes	omission	combined	Medium	required	User guide must include prerequisites and quickstart path.	DOCS-SEED-12
+DOCS-COV-USER-13	docs	2. User Guides, Changelog & Release Notes	boundary_error	layered	Medium	required	User-facing docs must not expose internal ADR tradeoffs.	DOCS-SEED-13
+DOCS-COV-USER-14	docs	2. User Guides, Changelog & Release Notes	semantic_mismatch	camouflaged	Medium	required	Examples must match approved interface names and paths.	DOCS-SEED-14
+DOCS-COV-USER-15	docs	2. User Guides, Changelog & Release Notes	omission	distributed	Hard	required	Breaking config/env changes require migration guide.	DOCS-SEED-15
+DOCS-COV-USER-16	docs	2. User Guides, Changelog & Release Notes	anti_pattern	single	Medium	required	Release notes must be one nontechnical paragraph plus full summary.	DOCS-SEED-16
+DOCS-COV-USER-17	docs	2. User Guides, Changelog & Release Notes	hidden_dependency	distributed	Medium	required	Security findings that affect behavior must be documented.	DOCS-SEED-17
+DOCS-COV-USER-18	docs	2. User Guides, Changelog & Release Notes	semantic_mismatch	single	Medium	required	Changelog entry belongs at top of Unreleased.	DOCS-SEED-18
+DOCS-COV-USER-19	docs	2. User Guides, Changelog & Release Notes	dead_code	single	Medium	required	Internal refactor should not be user-facing release note bait.	DOCS-SEED-19
+DOCS-COV-USER-20	docs	2. User Guides, Changelog & Release Notes	cosmetic_fix	single	Easy	required	Changelog should not force absent categories.	DOCS-SEED-20
+DOCS-COV-SAFE-21	docs	3. Source Authority, Safety & Escalation Boundaries	invariant_violation	single	Easy	required	Docs must never include secrets or PII.	DOCS-SEED-21
+DOCS-COV-SAFE-22	docs	3. Source Authority, Safety & Escalation Boundaries	semantic_mismatch	distributed	Hard	required	Implementation/spec divergence must route to Spec, not docs implementation.	DOCS-SEED-22
+DOCS-COV-SAFE-23	docs	3. Source Authority, Safety & Escalation Boundaries	omission	single	Medium	required	Coordinator report must list files created/modified.	DOCS-SEED-23
+DOCS-COV-SAFE-24	docs	3. Source Authority, Safety & Escalation Boundaries	boundary_error	layered	Medium	required	Docs agent must not write specs or ADRs.	DOCS-SEED-24
+DOCS-COV-SAFE-25	docs	3. Source Authority, Safety & Escalation Boundaries	hidden_dependency	combined	Medium	required	Missing business context for release notes requires human escalation.	DOCS-SEED-25
+DOCS-COV-SAFE-26	docs	3. Source Authority, Safety & Escalation Boundaries	contradiction	distributed	Hard	required	Breaking API change not flagged in spec must be raised before documenting.	DOCS-SEED-26
+DOCS-COV-SAFE-27	docs	3. Source Authority, Safety & Escalation Boundaries	state_leak	camouflaged	Medium	required	Docs must not leak prior-feature context.	DOCS-SEED-27
+DOCS-COV-SAFE-28	docs	3. Source Authority, Safety & Escalation Boundaries	anti_pattern	single	Medium	required	Docs work must not modify implementation/spec files.	DOCS-SEED-28
+DOCS-COV-SAFE-29	docs	3. Source Authority, Safety & Escalation Boundaries	cosmetic_fix	single	Easy	required	Internal ADR tradeoff omission from user docs is correct.	DOCS-SEED-29
+DOCS-COV-SAFE-30	docs	3. Source Authority, Safety & Escalation Boundaries	dead_code	single	Medium	required	No user-facing security behavior change should not create scary release notes.	DOCS-SEED-30

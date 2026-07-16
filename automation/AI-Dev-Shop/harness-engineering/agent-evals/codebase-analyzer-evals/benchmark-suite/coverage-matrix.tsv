@@ -1,0 +1,31 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+CBA-COV-SCOPE-01	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	omission	single	Easy	required	Report omits mandatory Sampling Notice.	CBA-SEED-01
+CBA-COV-SCOPE-02	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	hidden_dependency	layered	Medium	required	Large generated tree should be skipped, not read exhaustively.	CBA-SEED-02
+CBA-COV-SCOPE-03	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	boundary_error	distributed	Medium	required	User-approved scope must constrain findings.	CBA-SEED-03
+CBA-COV-SCOPE-04	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	omission	combined	Medium	required	Skipped modules must be disclosed with reasons.	CBA-SEED-04
+CBA-COV-SCOPE-05	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	anti_pattern	single	Easy	required	Analyzer must not run project scripts.	CBA-SEED-05
+CBA-COV-SCOPE-06	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	semantic_mismatch	camouflaged	Medium	required	Confidence must track evidence breadth.	CBA-SEED-06
+CBA-COV-SCOPE-07	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	state_leak	camouflaged	Hard	required	Report must not import prior context.	CBA-SEED-07
+CBA-COV-SCOPE-08	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	anti_pattern	single	Medium	required	Analysis-only agent must not edit source.	CBA-SEED-08
+CBA-COV-SCOPE-09	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	dead_code	single	Medium	required	Generated files explicitly excluded should not be over-flagged.	CBA-SEED-09
+CBA-COV-SCOPE-10	codebase-analyzer	1. Sampling, Token Restraint & Scope Evidence	cosmetic_fix	single	Easy	required	Sparse README should not block valid analysis.	CBA-SEED-10
+CBA-COV-FIND-11	codebase-analyzer	2. Architecture, Dependency & Security Findings	hidden_dependency	distributed	Hard	required	Four-module circular dependency requires Architect review.	CBA-SEED-11
+CBA-COV-FIND-12	codebase-analyzer	2. Architecture, Dependency & Security Findings	semantic_mismatch	single	Easy	required	Business logic in route handler is a structural flaw.	CBA-SEED-12
+CBA-COV-FIND-13	codebase-analyzer	2. Architecture, Dependency & Security Findings	hidden_dependency	distributed	Medium	required	Domain-to-infrastructure dependency direction violation must be found.	CBA-SEED-13
+CBA-COV-FIND-14	codebase-analyzer	2. Architecture, Dependency & Security Findings	missing_test	layered	Medium	required	Zero test files in payments module must be reported.	CBA-SEED-14
+CBA-COV-FIND-15	codebase-analyzer	2. Architecture, Dependency & Security Findings	type_contract_error	camouflaged	Medium	required	Client-side DB calls in component must be flagged for review.	CBA-SEED-15
+CBA-COV-FIND-16	codebase-analyzer	2. Architecture, Dependency & Security Findings	anti_pattern	combined	Medium	required	Production-looking secret must be security-surface escalation.	CBA-SEED-16
+CBA-COV-FIND-17	codebase-analyzer	2. Architecture, Dependency & Security Findings	omission	distributed	Hard	required	Multiple runtime entrypoints must be detected.	CBA-SEED-17
+CBA-COV-FIND-18	codebase-analyzer	2. Architecture, Dependency & Security Findings	omission	single	Medium	required	Required report summary fields must remain present.	CBA-SEED-18
+CBA-COV-FIND-19	codebase-analyzer	2. Architecture, Dependency & Security Findings	cosmetic_fix	single	Easy	required	Documented fake test secret should not be escalated.	CBA-SEED-19
+CBA-COV-FIND-20	codebase-analyzer	2. Architecture, Dependency & Security Findings	dead_code	single	Medium	required	Explicitly excluded legacy code should not become a finding.	CBA-SEED-20
+CBA-COV-PLAN-21	codebase-analyzer	3. Testability, Migration & Escalation Judgment	invariant_violation	single	Easy	required	Hardcoded production-looking secret requires immediate escalation.	CBA-SEED-21
+CBA-COV-PLAN-22	codebase-analyzer	3. Testability, Migration & Escalation Judgment	missing_test	combined	Medium	required	Zero-test critical module requires remediation before migration.	CBA-SEED-22
+CBA-COV-PLAN-23	codebase-analyzer	3. Testability, Migration & Escalation Judgment	invariant_violation	layered	Hard	required	Sampled migration plan must include Coverage Caveat.	CBA-SEED-23
+CBA-COV-PLAN-24	codebase-analyzer	3. Testability, Migration & Escalation Judgment	anti_pattern	distributed	Hard	required	Big-bang rewrite violates migration principles.	CBA-SEED-24
+CBA-COV-PLAN-25	codebase-analyzer	3. Testability, Migration & Escalation Judgment	boundary_error	layered	Medium	required	Phases must not mix unrelated change types.	CBA-SEED-25
+CBA-COV-PLAN-26	codebase-analyzer	3. Testability, Migration & Escalation Judgment	hidden_dependency	combined	Medium	required	Characterization tests must precede seams in zero-test critical modules.	CBA-SEED-26
+CBA-COV-PLAN-27	codebase-analyzer	3. Testability, Migration & Escalation Judgment	semantic_mismatch	single	Easy	required	Requested output mode must be honored.	CBA-SEED-27
+CBA-COV-PLAN-28	codebase-analyzer	3. Testability, Migration & Escalation Judgment	anti_pattern	single	Medium	required	Regression guard against direct implementation routing.	CBA-SEED-28
+CBA-COV-PLAN-29	codebase-analyzer	3. Testability, Migration & Escalation Judgment	cosmetic_fix	single	Easy	required	Simple CRUD control should not trigger over-architecture.	CBA-SEED-29
+CBA-COV-PLAN-30	codebase-analyzer	3. Testability, Migration & Escalation Judgment	dead_code	single	Medium	required	Absent zero-test trigger should not create TESTABILITY plan.	CBA-SEED-30

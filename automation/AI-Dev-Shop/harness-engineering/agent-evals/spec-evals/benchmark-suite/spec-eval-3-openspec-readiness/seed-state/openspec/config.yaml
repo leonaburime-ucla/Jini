@@ -1,0 +1,3 @@
+project: openspec-readiness-eval
+spec_dir: openspec/specs
+change_dir: openspec/changes

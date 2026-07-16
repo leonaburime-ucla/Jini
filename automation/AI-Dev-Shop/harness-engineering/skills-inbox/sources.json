@@ -1,0 +1,26 @@
+[
+  {
+    "id": "postgresql-table-design",
+    "repo": "wshobson/agents",
+    "path": "plugins/database-design/skills/postgresql/SKILL.md",
+    "canonical": "skills/postgresql/SKILL.md"
+  },
+  {
+    "id": "test-driven-development",
+    "repo": "obra/superpowers",
+    "path": "skills/test-driven-development/SKILL.md",
+    "canonical": "skills/test-design/SKILL.md"
+  },
+  {
+    "id": "supabase-postgres-best-practices",
+    "repo": "supabase/agent-skills",
+    "path": "skills/supabase-postgres-best-practices/SKILL.md",
+    "canonical": "skills/supabase/SKILL.md"
+  },
+  {
+    "id": "handoff",
+    "repo": "mattpocock/skills",
+    "path": "skills/productivity/handoff/SKILL.md",
+    "canonical": "skills/handoff/SKILL.md"
+  }
+]

@@ -1,0 +1,16 @@
+cell_id	agent	agent_dimension	bug_nature	seed_structure	difficulty	requirement	rationale	seed_ids
+SD-COV-FUNC-E-01	system-design	2. Functional Discovery Completeness	omission	distributed	Easy	required	Core actors and resource lifecycles must be surfaced from scattered input.	SD1-SEED-01
+SD-COV-SCOPE-E-02	system-design	1. Scope Discipline & Escalation	scope_boundary	single	Easy	required	Explicit launch requirements must not be deferred as scope creep.	SD1-SEED-02
+SD-COV-SCOPE-M-03	system-design	1. Scope Discipline & Escalation	scope_boundary	distributed	Medium	required	Excluded/unapproved items must be explicitly deferred not pulled into MVP.	SD1-SEED-03
+SD-COV-FUNC-M-04	system-design	2. Functional Discovery Completeness	semantic_mismatch	distributed	Medium	required	Decision/approval lifecycle must be modeled as first-class not conflated with comments.	SD1-SEED-04
+SD-COV-INTEG-M-05	system-design	7. Integration Boundary Reasoning	hidden_dependency	distributed	Medium	required	Access-policy source-of-truth question must be surfaced as blocking.	SD1-SEED-05
+SD-COV-NFR-M-06	system-design	6. NFR x Topology Coherence	scope_boundary	single	Medium	required	Narrow offline requirement must not be escalated to full offline-first.	SD1-SEED-06
+SD-COV-DECOMP-M-07	system-design	3. Decomposition Judgment	anti_pattern	combined	Medium	required	Feature decomposition that duplicates cross-cutting contracts must be flagged.	SD1-SEED-07
+SD-COV-TECH-H-08	system-design	5. Technology Direction Under Constraints	anti_pattern	interference	Hard	required	Technology choices must match team capacity and operational constraints.	SD1-SEED-08
+SD-COV-NFR-H-09	system-design	6. NFR x Topology Coherence	contradiction	interference	Hard	required	EU residency vs global support/analytics topology contradiction must be surfaced.	SD1-SEED-09
+SD-COV-SEQ-H-10	system-design	4. Dependency Sequencing & P0 Design	hidden_dependency	distributed	Hard	required	Shared foundations must be sequenced before dependent downstream specs.	SD1-SEED-10
+SD-COV-SEQ-H-11	system-design	4. Dependency Sequencing & P0 Design	hidden_dependency	layered	Hard	required	Platform team bottleneck must be identified and addressed in P0 or escalated.	SD1-SEED-11
+SD-COV-TECH-H-12	system-design	5. Technology Direction Under Constraints	scope_boundary	combined	Hard	required	Justified horizontal P0 must not be rejected by vertical-slice default.	SD1-SEED-12
+SD-COV-NFR-H-13	system-design	6. NFR x Topology Coherence	contradiction	interference	Hard	required	Latency vs residency vs staffing trilemma must be surfaced as tradeoff checkpoint.	SD1-SEED-13
+SD-COV-DECOMP-D-14	system-design	3. Decomposition Judgment	scope_boundary	single	Distinguished	required	Realtime as infrastructure (not domain) is correct when team explicitly declines product ownership.	SD1-SEED-14
+SD-COV-SCOPE-D-15	system-design	1. Scope Discipline & Escalation	contradiction	distributed	Distinguished	required	Structurally unresolved access/lifecycle model with no owner must be marked BLOCKING.	SD1-SEED-15

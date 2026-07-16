@@ -1,0 +1,51 @@
+[
+  {
+    "query_id": "Q2",
+    "query_text": "List every file that invokes `validateInventory`. Return only the files that contain call sites.",
+    "query_class": "callers",
+    "target_tag": "code-target",
+    "grader_type": "set"
+  },
+  {
+    "query_id": "Q3",
+    "query_text": "Can a request handled by `OrderController` reach notification sending through service calls? Return yes/no and the route.",
+    "query_class": "dependency_path",
+    "target_tag": "code-target",
+    "grader_type": "path"
+  },
+  {
+    "query_id": "Q5",
+    "query_text": "Can `NotificationService` reach `InventoryData` through imports or service calls? Return yes/no and cite the evidence.",
+    "query_class": "dependency_path",
+    "target_tag": "code-target",
+    "grader_type": "path"
+  },
+  {
+    "query_id": "Q7",
+    "query_text": "Check whether `OrderService` and `InventoryService` reference each other in both directions. Return yes/no and the files involved.",
+    "query_class": "architecture",
+    "target_tag": "code-target",
+    "grader_type": "set"
+  },
+  {
+    "query_id": "Q8",
+    "query_text": "Check whether controller-layer order code reads inventory persistence/data code directly instead of going through a service. Return yes/no and the files involved.",
+    "query_class": "architecture",
+    "target_tag": "code-target",
+    "grader_type": "set"
+  },
+  {
+    "query_id": "Q9",
+    "query_text": "Find where the Redis connection timeout is configured. Return the timeout value and every location that sets or defaults it.",
+    "query_class": "config",
+    "target_tag": "code-target",
+    "grader_type": "set"
+  },
+  {
+    "query_id": "Q14",
+    "query_text": "If the call signature for `calculateShippingCost` changes, which files need edits or would break? Include the definition, internal callers, production callers, and tests.",
+    "query_class": "change_impact",
+    "target_tag": "code-target",
+    "grader_type": "set"
+  }
+]

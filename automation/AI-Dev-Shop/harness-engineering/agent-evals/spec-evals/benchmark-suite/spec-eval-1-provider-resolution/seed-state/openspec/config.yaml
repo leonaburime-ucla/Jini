@@ -1,0 +1,3 @@
+project: provider-resolution-eval
+spec_dir: openspec/specs
+change_dir: openspec/changes
