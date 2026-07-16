@@ -20,3 +20,13 @@ Explicitly not ported here (still OD-only / later-task material): `execution-pro
 barrel (`api/*`, `brands`, `plugins`, `figma`, `media`, `connectors`, `design-systems`,
 `prompts`, `critique`, `analytics`, `artifacts/od-card`) — all product surfaces per
 `docs/jini-port/recon/r1-daemon.md`.
+
+**Provenance correction (2026-07-16):** the origin commit above is the tip of
+the local `open-design-agentic` clone's `main` branch, which turns out to be a
+personal integration branch diverged from true upstream `nexu-io/open-design`
+`main` (see `docs/jini-port/od-reference-branches.md`), not upstream `main`
+itself. Practical effect on this file: `GENERIC_ERROR_CODES` includes
+`TOOL_NOT_AVAILABLE`, which is only present in the local branch's
+not-yet-upstream `browser-actions`/`agent-tools` work — `common.ts` and the
+rest of `errors.ts`'s kept codes are verified byte-identical to true upstream.
+Not reverted; it's a reasonable generic tool-boundary code either way.

@@ -10,22 +10,47 @@ this material pulls it itself, live, via a plain `git clone` in a Bash step —
 there is no vendoring of these into the Jini repo, and none is needed since
 they're public and cloning is cheap.
 
-## Upstream
+## Upstream vs. the local `open-design-agentic` clone (important correction, 2026-07-16)
 
-`https://github.com/nexu-io/open-design` — the real product. `main` is the
-current, **unrefactored** state for anything not called out below (i.e. this is
-the "before" picture recon docs like `recon/r1-daemon.md` and `recon/r4-webui.md`
-analyzed). Provenance commit used for the extraction work so far:
-`951fa5f1541c3b7af23ccb07e3e60b294def56b1` (2026-07-12).
+`https://github.com/nexu-io/open-design` is the real product; its true `main`
+moves fast (at `3a6221a54` as of this correction). The local clone at
+`/Users/la/Desktop/Programming/OSS-Repos/open-design-agentic` is checked out on
+a branch ALSO named `main`, but it is **not upstream `main`** — it is a
+personal integration branch, 10 commits ahead of true `origin/main`, that
+locally merges in the still-open `refactor/web-chat-pane-slice` (#5461) and
+`refactor/web-chat-composer-slice-pr` (#5465) branches plus a local-only
+`browser-actions`/`agent-tools` feature. Verified via `git merge-base
+--is-ancestor origin/main main` (diverged) and `git log origin/main..main`.
+
+**Practical impact on work already done, checked file-by-file:** minimal.
+`packages/contracts/src/common.ts` and `packages/platform|sidecar/src/index.ts`
+are byte-identical between this branch and true `origin/main`. `errors.ts`
+differs by exactly one entry — `TOOL_NOT_AVAILABLE`, kept in
+`@jini/protocol`'s `GENERIC_ERROR_CODES` — which comes from the local-only
+`browser-actions` work, not yet merged upstream. Not reverted (it's a real,
+reasonable code), just flagged here for honesty; see `packages/protocol/source-map.md`.
+
+**Practical upside:** because chat-pane-slice and chat-composer-slice are
+already merged into this local branch's history, a session working from this
+clone's `main` gets both slices without needing to separately fetch the fork's
+draft branches — they're just already there. Old provenance commit used before
+this correction: `951fa5f1541c3b7af23ccb07e3e60b294def56b1` (2026-07-12, the
+tip of this local branch before the chat-pane/chat-composer merges — most
+extraction work so far cites this hash; it is not on true upstream `main` either,
+per the same divergence).
 
 ## Fork (the user's vertical-slice refactor branches)
 
 `https://github.com/leonaburime-ucla/open-design` — draft/checkpoint PRs
 decomposing OD's frontend god-components per
 `docs/adr/0002-frontend-vertical-slice-decomposition.md` (an OD-side doc, not a
-Jini one). None of these are merged to upstream `main` — they only exist as
-branches on this fork. `git clone --branch <branch> --single-branch
-https://github.com/leonaburime-ucla/open-design <dest>` to pull one.
+Jini one). None of these are merged to **true upstream** `main` — they only
+exist as branches on this fork (`#5461`/`#5465` are additionally reachable
+through the local `open-design-agentic` clone's `main`, see the correction
+above — that's a local-only merge, not something that happened on GitHub).
+`git clone --branch <branch> --single-branch
+https://github.com/leonaburime-ucla/open-design <dest>` to pull one directly
+from the fork if not using that local clone.
 
 | PR | State | Branch | What it decomposes | Jini relevance |
 |---|---|---|---|---|
