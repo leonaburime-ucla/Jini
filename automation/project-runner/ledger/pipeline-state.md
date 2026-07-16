@@ -4,14 +4,14 @@
 
 - dag_id: extraction-plan-v1
 - plan_hash: sha256:ea0f1a170edc4917988548cb36003a879389c327806a1c44b9e35375aab4a642
-- rendered_at: 2026-07-16T20:28:11.648Z
+- rendered_at: 2026-07-16T21:11:35.180Z
 - state_machine_source: AI-Dev-Shop/framework/workflows/job-lifecycle.md
 
 ## WorkItem Status
 
 | WorkItem | Milestone | Task Type | AI-Dev-Shop Status | Retry | Notes |
 |---|---|---|---|---|---|
-| `m1-red-spec` | 1 | red-spec | QUEUED | 0/3 |  |
+| `m1-red-spec` | 1 | red-spec | DONE | 0/3 |  |
 | `m1-impl` | 1 | impl | QUEUED | 0/3 |  |
 | `m1-package-contract` | 1 | package-contract | QUEUED | 0/3 |  |
 | `m1-tarball` | 1 | tarball | QUEUED | 0/3 |  |
@@ -84,7 +84,6 @@
 
 ## In-Flight / Blocked
 
-- `m1-red-spec`: queued — 
 - `m1-impl`: queued — 
 - `m1-package-contract`: queued — 
 - `m1-tarball`: queued — 

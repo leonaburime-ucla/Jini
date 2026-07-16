@@ -7,7 +7,7 @@
 
 ## Milestone 1
 
-- [ ] `m1-red-spec` — queued (retries used: 0/3)
+- [x] `m1-red-spec` — succeeded (retries used: 0/3)
 - [ ] `m1-impl` — queued (retries used: 0/3)
 - [ ] `m1-package-contract` — queued (retries used: 0/3)
 - [ ] `m1-tarball` — queued (retries used: 0/3)
