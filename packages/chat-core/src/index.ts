@@ -1,1 +1,18 @@
-// @jini/chat-core — placeholder. See docs/jini-port/extraction-plan.md for the target.
+/**
+ * @jini/chat-core — framework-free chat vocabulary + pure parsers.
+ *
+ * Zero React, zero DOM/browser globals, zero Node built-ins, zero imports
+ * from any product package's scope. See docs/jini-port/extraction-plan.md
+ * §12 C2/C3 and docs/jini-port/recon/r4b-webui-design.md §1 for the design
+ * this package targets, and source-map.md for exact provenance.
+ */
+export * from './events.js';
+export * from './messages.js';
+export * from './partial-json.js';
+export * from './tool-events.js';
+export * from './tools.js';
+export * from './todos.js';
+export * from './question-form.js';
+export * from './artifacts/index.js';
+export * from './transcript.js';
+
