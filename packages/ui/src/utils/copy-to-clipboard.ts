@@ -25,10 +25,16 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
+    // `result` is assigned (rather than returned directly) so the try
+    // block's own completion isn't itself a branch — with a bare `return`
+    // as its last statement, v8's coverage instrumentation adds an
+    // unreachable "fell through the closing brace instead of returning"
+    // edge that no input can ever exercise.
+    let result: boolean;
     try {
-      return document.execCommand('copy');
+      result = document.execCommand('copy');
     } catch {
-      return false;
+      result = false;
     } finally {
       document.body.removeChild(ta);
       if (priorFocus?.isConnected) {
@@ -39,5 +45,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
         }
       }
     }
+    return result;
   }
 }

@@ -26,6 +26,31 @@ describe('createFileSystemReadError / isFileSystemReadError', () => {
     expect(wrapped.message).toBe('reading file: Error: oops');
   });
 
+  it('falls back to the stringified error when an Error has an empty message', () => {
+    const cause = new Error();
+    cause.name = 'CustomError';
+    const wrapped = createFileSystemReadError('reading file', cause);
+    // Error.prototype.toString() on a name-only Error returns just the name.
+    expect(wrapped.message).toBe('reading file: CustomError: CustomError');
+  });
+
+  it('falls back to the generic "Error" name when an Error has an empty name', () => {
+    const cause = new Error('boom');
+    cause.name = '';
+    const wrapped = createFileSystemReadError('reading file', cause);
+    expect(wrapped.message).toBe('reading file: Error: boom');
+  });
+
+  it('summarizes a non-string message on a plain object via String(error)', () => {
+    const wrapped = createFileSystemReadError('reading file', { message: 404 });
+    expect(wrapped.message).toBe('reading file: Error: [object Object]');
+  });
+
+  it('summarizes a nullish, non-object cause via String(error)', () => {
+    const wrapped = createFileSystemReadError('reading file', null);
+    expect(wrapped.message).toBe('reading file: null');
+  });
+
   it('isFileSystemReadError distinguishes wrapped errors from ordinary ones', () => {
     const wrapped = createFileSystemReadError('reading file', new Error('x'));
     expect(isFileSystemReadError(wrapped)).toBe(true);

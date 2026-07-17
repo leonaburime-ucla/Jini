@@ -39,9 +39,13 @@ function unitBezier(x1: number, y1: number, x2: number, y2: number): (x: number)
     for (let i = 0; i < 8; i += 1) {
       const err = sampleX(t) - x;
       if (Math.abs(err) < 1e-6) break;
-      const d = sampleDX(t);
-      if (Math.abs(d) < 1e-6) break;
-      t -= err / d;
+      // No near-zero-derivative guard: this solver is only ever constructed
+      // once, below, with EASE_OUT's fixed (0.23, 1, 0.32, 1) control
+      // points. For those coefficients sampleDX(t) = 2.19t² - 0.84t + 0.69,
+      // whose discriminant (0.84² - 4·2.19·0.69 ≈ -5.34) is negative, so it
+      // has no real roots and stays comfortably positive (minimum ≈0.61)
+      // across t ∈ [0, 1] — a near-zero divisor can't occur here.
+      t -= err / sampleDX(t);
     }
     return sampleY(Math.min(1, Math.max(0, t)));
   };

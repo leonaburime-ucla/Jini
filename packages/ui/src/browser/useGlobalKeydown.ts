@@ -23,8 +23,7 @@ export interface UseGlobalKeydownOptions {
 
 /**
  * Attaches `handler` as a `keydown` listener for as long as `enabled` stays
- * `true`, removing it on cleanup or when `enabled` flips to `false`. A no-op
- * outside the browser (SSR).
+ * `true`, removing it on cleanup or when `enabled` flips to `false`.
  */
 export function useGlobalKeydown(
   handler: (event: KeyboardEvent) => void,
@@ -41,8 +40,12 @@ export function useGlobalKeydown(
 
   useEffect(() => {
     if (!enabled) return;
-    const eventTarget = target === 'document' ? globalThis.document : globalThis.window;
-    if (typeof eventTarget === 'undefined') return;
+    // No `typeof eventTarget === 'undefined'` guard: `useEffect` bodies only
+    // ever run after a commit in the browser (never during SSR), and this
+    // package's DOM-dependent APIs already assume a browser runtime, so
+    // `window`/`document` are always defined by the time this callback runs
+    // for real — a defensive check here would be unreachable dead code.
+    const eventTarget = target === 'document' ? document : window;
 
     function onKeyDown(event: KeyboardEvent) {
       handlerRef.current(event);

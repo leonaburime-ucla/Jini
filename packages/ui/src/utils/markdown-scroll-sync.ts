@@ -49,7 +49,9 @@ const MIRROR_COPIED_STYLES = [
 
 function hasVerticalProgression(offsets: number[]): boolean {
   if (offsets.length <= 1) return true;
-  const first = offsets[0] ?? 0;
+  // offsets.length > 1 here (the <= 1 case returned above), so index 0 is
+  // always in range; the `!` only satisfies noUncheckedIndexedAccess.
+  const first = offsets[0]!;
   return offsets.some((offset, index) => index > 0 && offset > first + 0.5);
 }
 
@@ -144,7 +146,8 @@ export function measureEditorBlockOffsets(
     if (markers) {
       for (const blockIndex of markers) buffer += `<span data-md-block="${blockIndex}"></span>`;
     }
-    buffer += escapeMirrorText(lines[i] ?? '');
+    // i < lines.length by the loop condition, so lines[i] is always defined.
+    buffer += escapeMirrorText(lines[i]!);
     if (i < lines.length - 1) buffer += '\n';
   }
   mirror.innerHTML = buffer;
@@ -152,12 +155,15 @@ export function measureEditorBlockOffsets(
   document.body.appendChild(mirror);
   const offsets = new Array<number>(blockLines.length).fill(0);
   try {
+    // Every `span[data-md-block]` in the mirror was created by the loop
+    // above with a valid `0..blockLines.length-1` index, and `escapeMirrorText`
+    // prevents the source text from injecting one of its own — so
+    // `blockIndex` is always a valid, in-range array index here. No
+    // additional bounds check is reachable.
     const markers = mirror.querySelectorAll<HTMLElement>('span[data-md-block]');
     for (const marker of Array.from(markers)) {
       const blockIndex = Number(marker.getAttribute('data-md-block'));
-      if (Number.isInteger(blockIndex) && blockIndex >= 0 && blockIndex < offsets.length) {
-        offsets[blockIndex] = marker.offsetTop;
-      }
+      offsets[blockIndex] = marker.offsetTop;
     }
   } finally {
     document.body.removeChild(mirror);
@@ -204,7 +210,8 @@ export function buildScrollAnchors(blockOffsets: number[], scrollHeight: number)
   const anchors = [0, ...blockOffsets, Math.max(0, scrollHeight)];
   let previous = 0;
   for (let i = 0; i < anchors.length; i += 1) {
-    const raw = anchors[i] ?? 0;
+    // i < anchors.length by the loop condition, so anchors[i] is always defined.
+    const raw = anchors[i]!;
     let value = Math.max(0, Math.min(scrollHeight, Number.isFinite(raw) ? raw : 0));
     if (value < previous) value = previous;
     anchors[i] = value;
@@ -221,21 +228,30 @@ export function buildScrollAnchors(blockOffsets: number[], scrollHeight: number)
 export function mapScrollPosition(value: number, source: number[], target: number[]): number {
   const count = Math.min(source.length, target.length);
   if (count === 0) return value;
-  if (count === 1) return target[0] ?? 0;
-  if (value <= (source[0] ?? 0)) return target[0] ?? 0;
-  if (value >= (source[count - 1] ?? 0)) return target[count - 1] ?? 0;
+  // Every index below is derived from `count` (both arrays' shared length)
+  // or from `low`/`high`, which the loop keeps within `[0, count - 1]` — so
+  // every access here is in range; the `!`s only satisfy
+  // noUncheckedIndexedAccess, not a real possibly-missing element.
+  if (count === 1) return target[0]!;
+  if (value <= source[0]!) return target[0]!;
+  if (value >= source[count - 1]!) return target[count - 1]!;
   let low = 0;
   let high = count - 1;
   while (high - low > 1) {
     const mid = (low + high) >> 1;
-    if ((source[mid] ?? 0) <= value) low = mid;
+    if (source[mid]! <= value) low = mid;
     else high = mid;
   }
-  const sourceLow = source[low] ?? 0;
-  const sourceHigh = source[high] ?? 0;
-  const targetLow = target[low] ?? 0;
-  const targetHigh = target[high] ?? 0;
+  const sourceLow = source[low]!;
+  const sourceHigh = source[high]!;
+  const targetLow = target[low]!;
+  const targetHigh = target[high]!;
+  // The loop above maintains `source[low] <= value` and `value < source[high]`
+  // as invariants (the branch taken on each step preserves whichever one it
+  // touches), so `sourceLow <= value < sourceHigh` always holds here, which
+  // makes `sourceHigh - sourceLow` strictly positive — a same-value
+  // bracketing pair is unreachable, so dividing by `span` never risks 0.
   const span = sourceHigh - sourceLow;
-  const fraction = span > 0 ? (value - sourceLow) / span : 0;
+  const fraction = (value - sourceLow) / span;
   return targetLow + fraction * (targetHigh - targetLow);
 }

@@ -82,5 +82,63 @@ describe('copyToClipboard', () => {
       // Cleanup still runs even when execCommand throws.
       expect(removeChild).toHaveBeenCalledTimes(1);
     });
+
+    it('skips restoring focus when document.activeElement is not an HTMLElement', async () => {
+      const { execCommand } = installFakeDom({ execCommandResult: true });
+      // Override activeElement with a plain object -- fails the
+      // `instanceof HTMLElement` check regardless of the stubbed class.
+      vi.stubGlobal('document', {
+        activeElement: {},
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild: vi.fn(), removeChild: vi.fn() },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+    });
+
+    it('skips restoring focus when the prior element is no longer connected', async () => {
+      const execCommand = vi.fn(() => true);
+      class DisconnectedElement extends FakeElement {
+        get isConnected(): boolean {
+          return false;
+        }
+      }
+      const priorFocusElement = new DisconnectedElement();
+      const focusSpy = vi.spyOn(priorFocusElement, 'focus');
+      vi.stubGlobal('HTMLElement', FakeElement);
+      vi.stubGlobal('document', {
+        activeElement: priorFocusElement,
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild: vi.fn(), removeChild: vi.fn() },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+      expect(focusSpy).not.toHaveBeenCalled();
+    });
+
+    it('retries with no options when focus({ preventScroll }) throws', async () => {
+      const execCommand = vi.fn(() => true);
+      class PickyFocusElement extends FakeElement {
+        override focus(options?: { preventScroll?: boolean }): void {
+          if (options) throw new Error('preventScroll unsupported');
+        }
+      }
+      const priorFocusElement = new PickyFocusElement();
+      const focusSpy = vi.spyOn(priorFocusElement, 'focus');
+      vi.stubGlobal('HTMLElement', FakeElement);
+      vi.stubGlobal('document', {
+        activeElement: priorFocusElement,
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild: vi.fn(), removeChild: vi.fn() },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+      expect(focusSpy).toHaveBeenCalledTimes(2);
+      expect(focusSpy).toHaveBeenNthCalledWith(1, { preventScroll: true });
+      expect(focusSpy).toHaveBeenNthCalledWith(2);
+    });
   });
 });
