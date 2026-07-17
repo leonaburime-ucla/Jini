@@ -62,8 +62,11 @@ export function groupByDay<TAsset>(
     if (bucket) bucket.push({ asset, index });
     else map.set(key, [{ asset, index }]);
   });
+  // Two-way compare, not three: `Map` entries have distinct keys by
+  // construction, so `a[0] === b[0]` can never occur here — a third `: 0`
+  // "equal" arm would be dead code asserting a tie that can't happen.
   return [...map.entries()]
-    .sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([key, groupItems]) => ({ key, items: groupItems }));
 }
 
@@ -126,15 +129,24 @@ export function selectAllIds<TAsset extends AssetGridItem>(items: readonly TAsse
   return new Set(items.map((item) => item.id));
 }
 
-/** Drops selected ids that no longer exist in `items`. Returns `prev` unchanged (same reference) when nothing was dropped. */
+/**
+ * Drops selected ids that no longer exist in `items`. Returns `prev`
+ * unchanged (the exact same `Set` reference) when nothing was dropped — the
+ * original `LibrarySection.tsx` relied on this to let `setSelectedIds` bail
+ * out of the state update via `Object.is` rather than re-rendering the whole
+ * grid on every asset-list change that doesn't actually touch the selection
+ * (its own comment: "Membership is a single Set lookup so a large grid +
+ * large selection stays O(n)"). Always allocating a fresh `Set` here — even
+ * when the filtered result is equal — would silently defeat that bail-out.
+ */
 export function pruneMissingSelection<TAsset extends AssetGridItem>(
-  prev: ReadonlySet<string>,
+  prev: Set<string>,
   items: readonly TAsset[],
 ): Set<string> {
-  if (prev.size === 0) return new Set(prev);
+  if (prev.size === 0) return prev;
   const live = new Set(items.map((item) => item.id));
   const next = new Set([...prev].filter((id) => live.has(id)));
-  return next.size === prev.size ? new Set(prev) : next;
+  return next.size === prev.size ? prev : next;
 }
 
 // --- live-update (SSE) merge -------------------------------------------
@@ -143,13 +155,17 @@ export function pruneMissingSelection<TAsset extends AssetGridItem>(
  * Merge freshly-fetched assets into the current list for an incremental
  * live-update. Assets already present are refreshed in place (a re-ingest of
  * an existing id must not reorder the list); genuinely new assets are
- * prepended, matching a newest-first feed.
+ * prepended, matching a newest-first feed. Returns `prev` unchanged (the
+ * exact same array reference) when `fetched` is empty, matching the original
+ * `LibrarySection.tsx`'s `if (fetched.length === 0) return prev;` — allocating
+ * a fresh copy here would defeat a `setAssets` caller's `Object.is` bail-out
+ * for a no-op merge.
  */
 export function mergeIngestedAssets<TAsset extends AssetGridItem>(
-  prev: readonly TAsset[],
+  prev: TAsset[],
   fetched: readonly TAsset[],
 ): TAsset[] {
-  if (fetched.length === 0) return [...prev];
+  if (fetched.length === 0) return prev;
   const byId = new Map(fetched.map((a) => [a.id, a]));
   const present = new Set(prev.map((a) => a.id));
   const merged = prev.map((a) => byId.get(a.id) ?? a);

@@ -116,6 +116,18 @@ describe('snapshotCardRects', () => {
 
     expect(snapshotCardRects(container)).toEqual([{ id: 'card-1', left: 10, top: 20, right: 110, bottom: 120 }]);
   });
+
+  it('skips a tagged element whose id attribute is present but empty', () => {
+    const container = document.createElement('div');
+    const blank = document.createElement('div');
+    // The selector `[data-asset-grid-id]` matches on attribute *presence*,
+    // so an empty value is a real, reachable case distinct from "untagged".
+    blank.setAttribute(ASSET_ID_ATTR, '');
+    blank.getBoundingClientRect = () => ({ left: 0, top: 0, right: 5, bottom: 5 }) as DOMRect;
+    container.appendChild(blank);
+
+    expect(snapshotCardRects(container)).toEqual([]);
+  });
 });
 
 describe('cardIdsInBand', () => {
@@ -169,21 +181,27 @@ describe('selection helpers', () => {
     expect([...next].sort()).toEqual(['a', 'c']);
   });
 
-  it('pruneMissingSelection returns an equivalent set (not the same reference) when nothing changes', () => {
+  it('pruneMissingSelection returns the exact same Set reference when nothing changes (setState bail-out)', () => {
     const items = [asset('a')];
     const prev = new Set(['a']);
     const next = pruneMissingSelection(prev, items);
-    expect(next).not.toBe(prev);
+    expect(next).toBe(prev);
     expect([...next]).toEqual(['a']);
+  });
+
+  it('pruneMissingSelection returns the exact same Set reference when prev is already empty', () => {
+    const items = [asset('a')];
+    const prev = new Set<string>();
+    const next = pruneMissingSelection(prev, items);
+    expect(next).toBe(prev);
   });
 });
 
 describe('mergeIngestedAssets', () => {
-  it('returns the previous list unchanged when nothing was fetched', () => {
+  it('returns the previous list unchanged (same array reference) when nothing was fetched', () => {
     const prev = [asset('a')];
     const merged = mergeIngestedAssets(prev, []);
-    expect(merged).toEqual(prev);
-    expect(merged).not.toBe(prev);
+    expect(merged).toBe(prev);
   });
 
   it('prepends new assets latest-first without reordering existing ones', () => {

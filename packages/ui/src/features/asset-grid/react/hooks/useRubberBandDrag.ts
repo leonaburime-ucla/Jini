@@ -67,8 +67,14 @@ export function useRubberBandDrag({
   useEffect(() => {
     if (!dragging) return;
     let raf = 0;
-    let lastX = dragRef.current?.startX ?? 0;
-    let lastY = dragRef.current?.startY ?? 0;
+    // `dragging` only ever flips true inside `onMouseDown` above, which sets
+    // `dragRef.current` synchronously in that same callback before calling
+    // `setDragging(true)` — so by the time this effect runs for
+    // `dragging === true`, `dragRef.current` is guaranteed non-null. The `!`
+    // below satisfies the type checker for a case that cannot occur at
+    // runtime, not a defensive fallback.
+    let lastX = dragRef.current!.startX;
+    let lastY = dragRef.current!.startY;
 
     const apply = () => {
       raf = 0;

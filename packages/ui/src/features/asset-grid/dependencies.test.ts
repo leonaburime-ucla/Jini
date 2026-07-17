@@ -97,6 +97,44 @@ describe('createBrowserSseLiveUpdatesPort', () => {
     (globalThis as { EventSource?: unknown }).EventSource = original;
   });
 
+  it('subscribe is a no-op returning a callable unsubscribe when the EventSource constructor throws', () => {
+    class ThrowingEventSource {
+      constructor() {
+        throw new Error('blocked (e.g. CSP / invalid URL)');
+      }
+    }
+    const original = (globalThis as { EventSource?: unknown }).EventSource;
+    // @ts-expect-error -- test stub
+    globalThis.EventSource = ThrowingEventSource;
+
+    const port = createBrowserSseLiveUpdatesPort({ url: '/events' });
+    const unsubscribe = port.subscribe({ onIngest: vi.fn(), onDelete: vi.fn(), onFullReload: vi.fn() });
+    expect(() => unsubscribe()).not.toThrow();
+
+    (globalThis as { EventSource?: unknown }).EventSource = original;
+  });
+
+  it('falls back to onFullReload when a delete event carries no resolvable id', () => {
+    const listeners = new Map<string, (ev: MessageEvent) => void>();
+    class FakeEventSource {
+      addEventListener(name: string, cb: (ev: MessageEvent) => void) {
+        listeners.set(name, cb);
+      }
+      close() {}
+    }
+    const original = (globalThis as { EventSource?: unknown }).EventSource;
+    // @ts-expect-error -- test stub
+    globalThis.EventSource = FakeEventSource;
+
+    const port = createBrowserSseLiveUpdatesPort({ url: '/events' });
+    const onFullReload = vi.fn();
+    port.subscribe({ onIngest: vi.fn(), onDelete: vi.fn(), onFullReload });
+    listeners.get('delete')?.({ data: 'not json' } as MessageEvent);
+    expect(onFullReload).toHaveBeenCalledTimes(1);
+
+    (globalThis as { EventSource?: unknown }).EventSource = original;
+  });
+
   it('falls back to onFullReload when an event carries no resolvable id', () => {
     const listeners = new Map<string, (ev: MessageEvent) => void>();
     class FakeEventSource {

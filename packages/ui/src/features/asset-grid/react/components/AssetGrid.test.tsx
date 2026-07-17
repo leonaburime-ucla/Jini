@@ -180,6 +180,72 @@ describe('AssetGrid', () => {
     expect(screen.getByTestId('bulk')).toHaveTextContent('1');
   });
 
+  it('Refresh button re-fetches the current query', async () => {
+    const assets = makeAssets();
+    const deps = fakeDeps(assets);
+    const fetchAssetsSpy = vi.spyOn(deps.data, 'fetchAssets');
+    renderGrid({ dependencies: deps });
+    await waitFor(() => expect(screen.getByText('Sunset photo')).toBeInTheDocument());
+    const callsBeforeRefresh = fetchAssetsSpy.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(fetchAssetsSpy.mock.calls.length).toBe(callsBeforeRefresh + 1));
+  });
+
+  it('renders a host-supplied subtitle and omits the source badge when getSource yields nothing', async () => {
+    const assets = makeAssets();
+    const selectorsWithSubtitleNoSource: AssetGridSelectors<TestAsset> = {
+      getKind: (a) => a.kind,
+      // No getSource at all -> sourceValue is always undefined -> AssetGrid's
+      // `sourceValue ? resolveFacetLabel(...) : undefined` false arm.
+      getTimestamp: (a) => a.capturedAt,
+      getTitle: (a) => a.title,
+      getSubtitle: (a) => `subtitle-${a.id}`,
+    };
+    render(
+      <AssetGrid<TestAsset>
+        selectors={selectorsWithSubtitleNoSource}
+        dependencies={fakeDeps(assets)}
+        renderThumbnail={() => <div data-testid="thumb" />}
+        searchDebounceMs={0}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Sunset photo')).toBeInTheDocument());
+    expect(screen.getByText('subtitle-a')).toBeInTheDocument();
+    expect(screen.queryByText('clipper')).not.toBeInTheDocument();
+  });
+
+  it('confirmDelete no-ops if the selection is cleared while the confirm dialog is still open (race guard)', async () => {
+    const onDeleteSelected = vi.fn();
+    renderGrid({ onDeleteSelected });
+    await waitFor(() => expect(screen.getByText('Sunset photo')).toBeInTheDocument());
+    await userEvent.click(screen.getAllByRole('button', { name: 'Select asset' })[0]!);
+    await userEvent.click(screen.getByRole('button', { name: 'Delete 1' }));
+    const dialog = await screen.findByRole('alertdialog');
+    // The selection bar and the confirm dialog are independently conditioned
+    // -- clearing the selection does not auto-close an already-open dialog.
+    await userEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete 0' }));
+    expect(onDeleteSelected).not.toHaveBeenCalled();
+  });
+
+  it('Escape while the confirm dialog is open closes only the dialog, and does not also clear the grid selection (no stopPropagation misfire)', async () => {
+    renderGrid();
+    await waitFor(() => expect(screen.getByText('Sunset photo')).toBeInTheDocument());
+    await userEvent.click(screen.getAllByRole('button', { name: 'Select asset' })[0]!);
+    await userEvent.click(screen.getByRole('button', { name: 'Delete 1' }));
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    // The dialog closes (its own dismiss-on-Escape)...
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    // ...but the grid's own Cmd/Ctrl+A/Escape/Delete shortcut listener was
+    // gated off (`enabled: !confirmDeleteOpen`) the whole time the dialog was
+    // open, so the selection survives -- proving DeleteConfirmDialog's switch
+    // to `useDismissOnOutsideOrEscape` (which does not call
+    // `stopPropagation()`, unlike the raw listener it replaced) doesn't leak
+    // the same Escape keypress into the grid's own shortcut handler.
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+  });
+
   it('translates its strings under an I18nProvider dictionary', async () => {
     const assets = makeAssets();
     render(

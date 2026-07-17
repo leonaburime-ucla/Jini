@@ -241,6 +241,34 @@ describe('useAssetGridLiveUpdates', () => {
     unmount();
     expect(unsubscribe()).toBe(true);
   });
+
+  it('clears a pending coalesce timer on unmount instead of letting it fire after teardown', () => {
+    vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const { port, fire } = fakeLiveUpdatesPort();
+    const setAssets = vi.fn();
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const { unmount } = renderHook(() =>
+      useAssetGridLiveUpdates<TestAsset>({
+        active: true,
+        liveUpdates: port,
+        filtersActive: false,
+        setAssets,
+        reload,
+        coalesceMs: 50,
+      }),
+    );
+    // Fire an event so a coalesce timer is scheduled but hasn't flushed yet.
+    act(() => fire().onDelete('a'));
+    const callsBeforeUnmount = clearTimeoutSpy.mock.calls.length;
+    unmount();
+    expect(clearTimeoutSpy.mock.calls.length).toBe(callsBeforeUnmount + 1);
+    // Advancing time after unmount must not flush the (cleared) timer.
+    vi.advanceTimersByTime(1000);
+    expect(setAssets).not.toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
 });
 
 describe('useWiredAssetGridLiveUpdates', () => {

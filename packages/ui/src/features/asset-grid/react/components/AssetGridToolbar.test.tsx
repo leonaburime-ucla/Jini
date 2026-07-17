@@ -46,12 +46,28 @@ describe('AssetGridToolbar', () => {
     expect(screen.queryByRole('combobox', { name: 'Filter by source' })).not.toBeInTheDocument();
   });
 
-  it('renders the source facet select when facets are supplied', () => {
-    render(<AssetGridToolbar {...baseProps({ sourceFacets: [{ value: 'clipper', label: 'Clipper' }] })} />);
+  it('renders the source facet select when facets are supplied, and reports changes', async () => {
+    const onSourceChange = vi.fn();
+    render(
+      <AssetGridToolbar
+        {...baseProps({
+          onSourceChange,
+          // Includes an empty-value entry ("All sources") to exercise the
+          // `f.value || ALL_FACET_VALUE` option-key fallback for the source
+          // select specifically (the kind select already covers it).
+          sourceFacets: [
+            { value: '', label: 'All sources' },
+            { value: 'clipper', label: 'Clipper' },
+          ],
+        })}
+      />,
+    );
     expect(screen.getByRole('combobox', { name: 'Filter by source' })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Filter by source' }), 'clipper');
+    expect(onSourceChange).toHaveBeenCalledWith('clipper');
   });
 
-  it('the view toggle switches modes and reflects the active one', async () => {
+  it('the view toggle switches modes and reflects the active one, in both directions', async () => {
     const onViewModeChange = vi.fn();
     render(<AssetGridToolbar {...baseProps({ onViewModeChange, viewMode: 'grid' })} />);
     const gridBtn = screen.getByRole('button', { name: 'Grid' });
@@ -60,6 +76,8 @@ describe('AssetGridToolbar', () => {
     expect(timelineBtn).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(timelineBtn);
     expect(onViewModeChange).toHaveBeenCalledWith('timeline');
+    await userEvent.click(gridBtn);
+    expect(onViewModeChange).toHaveBeenCalledWith('grid');
   });
 
   it('refresh button calls onRefresh and reflects loading via aria-busy', async () => {

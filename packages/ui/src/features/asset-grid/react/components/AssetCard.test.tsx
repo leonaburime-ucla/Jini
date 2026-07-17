@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssetCard } from './AssetCard.js';
 import { I18nProvider } from '../../../i18n/index.js';
 
@@ -36,6 +36,18 @@ describe('AssetCard', () => {
     render(<AssetCard {...baseProps({ onPreview })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Preview My Asset' }));
     expect(onPreview).toHaveBeenCalledWith('a1');
+  });
+
+  it('clicking the title also calls onPreview', async () => {
+    const onPreview = vi.fn();
+    render(<AssetCard {...baseProps({ onPreview })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'My Asset' }));
+    expect(onPreview).toHaveBeenCalledWith('a1');
+  });
+
+  it('renders the subtitle when supplied', () => {
+    render(<AssetCard {...baseProps({ subtitle: '1024×768' })} />);
+    expect(screen.getByText('1024×768')).toBeInTheDocument();
   });
 
   it('meta/ctrl-click on the preview button toggles selection instead', () => {
@@ -100,5 +112,46 @@ describe('AssetCard', () => {
     );
     expect(screen.getByRole('button', { name: 'Supprimer' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sélectionner' })).toBeInTheDocument();
+  });
+
+  describe('while not yet in view', () => {
+    // A no-op IntersectionObserver (never fires) keeps `inView` false for the
+    // lifetime of the test, unlike the rest of this file which relies on
+    // jsdom's real absence of IntersectionObserver (an immediate, synchronous
+    // fallback to `inView: true` — see `useInView.ts`).
+    class NeverFiresIntersectionObserver {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal('IntersectionObserver', NeverFiresIntersectionObserver);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('renders the host-supplied placeholder instead of the real thumbnail', () => {
+      render(
+        <AssetCard
+          {...baseProps({
+            renderThumbnail: () => <div data-testid="thumb">real</div>,
+            renderThumbnailPlaceholder: () => <div data-testid="placeholder">placeholder</div>,
+          })}
+        />,
+      );
+      expect(screen.getByTestId('placeholder')).toBeInTheDocument();
+      expect(screen.queryByTestId('thumb')).not.toBeInTheDocument();
+    });
+
+    it('renders nothing when no placeholder is supplied', () => {
+      const { container } = render(
+        <AssetCard {...baseProps({ renderThumbnail: () => <div data-testid="thumb">real</div> })} />,
+      );
+      expect(screen.queryByTestId('thumb')).not.toBeInTheDocument();
+      expect(container.querySelector('.asset-grid-card-thumb-lazy')).toBeEmptyDOMElement();
+    });
   });
 });

@@ -42,4 +42,31 @@ describe('useAssetGridSelection', () => {
     act(() => result.current.toggleOne('a', 0));
     expect(result.current.selectedIds.size).toBe(0);
   });
+
+  it('rangeTo before any toggle anchors the range at the target index itself (a shift-click with no prior anchor)', () => {
+    const { result } = renderHook(() => useAssetGridSelection(items));
+    act(() => result.current.rangeTo(2));
+    // No anchor yet -> anchor defaults to the target, so exactly one id is selected.
+    expect([...result.current.selectedIds]).toEqual(['c']);
+  });
+
+  it('pruneMissingSelection bails out via the exact same Set reference when the asset list changes but the selection is unaffected (no extra re-render)', () => {
+    let renders = 0;
+    const { result, rerender } = renderHook(
+      ({ items: currentItems }) => {
+        renders += 1;
+        return useAssetGridSelection(currentItems);
+      },
+      { initialProps: { items } },
+    );
+    act(() => result.current.toggleOne('a', 0));
+    const selectedIdsAfterToggle = result.current.selectedIds;
+    const rendersAfterToggle = renders;
+    // A rerender with a DIFFERENT items array reference, but the exact same
+    // ids -- pruneMissingSelection must return the same Set so setSelectedIds
+    // bails out instead of forcing an extra render.
+    rerender({ items: [...items] });
+    expect(result.current.selectedIds).toBe(selectedIdsAfterToggle);
+    expect(renders).toBe(rendersAfterToggle + 1); // only the rerender itself, no extra state-driven render
+  });
 });

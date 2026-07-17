@@ -79,4 +79,20 @@ describe('AssetGridBody', () => {
     const root = container.firstElementChild as HTMLElement;
     expect(root).toHaveAttribute('data-selecting', 'true');
   });
+
+  it('also passes data-selecting through to the root in timeline mode', () => {
+    const { container } = render(
+      <AssetGridBody
+        viewMode="timeline"
+        assets={assets}
+        getDayKey={(a) => a.day}
+        containerRef={createRef<HTMLDivElement>()}
+        onMouseDown={vi.fn()}
+        selecting
+        renderCard={renderCard}
+      />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root).toHaveAttribute('data-selecting', 'true');
+  });
 });
