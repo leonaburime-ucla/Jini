@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,6 +38,8 @@ describe("buildRunEventLogSources", () => {
     await touchAt(join(runsDir, "run-b", "events.jsonl"), new Date("2026-01-02T00:00:00.000Z"), "b");
     // Directory without events.jsonl is skipped.
     await mkdir(join(runsDir, "run-empty"), { recursive: true });
+    // A stray file directly inside runsDir (not a directory) must be skipped.
+    await touch(join(runsDir, "notes.txt"));
 
     const sources = await buildRunEventLogSources(runsDir, { maxRuns: 5 });
     const names = sources.map((s) => s.name);
@@ -151,5 +153,26 @@ describe("buildAgentCliLogSources", () => {
 
   it("returns [] when homeDir is empty", async () => {
     expect(await buildAgentCliLogSources({ homeDir: "" })).toEqual([]);
+  });
+
+  it("skips non-.log files, unsafe-named .log files, directories named *.log, and broken .log symlinks", async () => {
+    const home = join(tempDir, "home");
+    const claudeDir = join(home, ".claude");
+    await touch(join(claudeDir, "daemon.log"), "kept");
+    // Not a .log file — skipped.
+    await touch(join(claudeDir, "notes.txt"), "skip");
+    // .log name with characters outside SAFE_DIR_ENTRY — skipped.
+    await touch(join(claudeDir, "unsafe name.log"), "skip");
+    // A directory literally named *.log — passes the name checks but fails
+    // the isFile() check inside statSafe.
+    await mkdir(join(claudeDir, "adir.log"), { recursive: true });
+    // A *.log symlink whose target doesn't exist — statSafe's stat() throws
+    // and it returns null.
+    await symlink(join(claudeDir, "does-not-exist-target"), join(claudeDir, "broken.log"));
+
+    const sources = await buildAgentCliLogSources({ homeDir: home });
+    const claudeNames = sources.filter((s) => s.name.startsWith("agent-cli-logs/claude/")).map((s) => s.name);
+
+    expect(claudeNames).toEqual(["agent-cli-logs/claude/daemon.log"]);
   });
 });

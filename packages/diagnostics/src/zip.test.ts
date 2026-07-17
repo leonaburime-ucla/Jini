@@ -46,6 +46,21 @@ describe("buildDiagnosticsZip", () => {
     expect(typeof machine.platform).toBe("string");
   });
 
+  it("appends matching macOS crash reports when crashReports lookup is provided", async () => {
+    const crashPath = join(tempDir, "MyApp-2024-01-01-crash.crash");
+    await writeFile(crashPath, "crash body", "utf8");
+
+    const result = await buildDiagnosticsZip({
+      context: { app: { name: "jini-host" }, source: "test" },
+      sources: [],
+      crashReports: { matchSubstrings: ["MyApp"], searchDirs: [tempDir] },
+    });
+
+    const zip = await JSZip.loadAsync(result.zip);
+    expect(zip.file("crash-reports/MyApp-2024-01-01-crash.crash")).not.toBeNull();
+    expect(result.manifest.files.some((file) => file.name === "crash-reports/MyApp-2024-01-01-crash.crash")).toBe(true);
+  });
+
   it("records a warning placeholder when a file cannot be read", async () => {
     const result = await buildDiagnosticsZip({
       context: {

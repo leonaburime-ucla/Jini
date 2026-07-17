@@ -21,7 +21,12 @@ export interface DiagnosticsExportResult {
 }
 
 function placeholderForMissing(file: CollectedFile): string {
-  return `${PLACEHOLDER_PREFIX}${file.error ?? "unknown error"}\n`;
+  // `collected` here always comes from this module's own collectLogSources()
+  // call, whose sole null-content producer (collectLogSource's catch clause)
+  // always sets `error` to a string — there's no runtime path in this file
+  // that reaches here with `file.error` undefined, so no "unknown error"
+  // fallback is needed.
+  return `${PLACEHOLDER_PREFIX}${file.error}\n`;
 }
 
 export async function buildDiagnosticsZip(input: DiagnosticsExportInput): Promise<DiagnosticsExportResult> {
