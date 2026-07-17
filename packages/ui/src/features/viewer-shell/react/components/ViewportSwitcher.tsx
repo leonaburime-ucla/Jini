@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { Icon } from '../../../../components/Icon.js';
 import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { useDismissOnOutsideOrEscape } from '../../../../browser/useDismissOnOutsideOrEscape.js';
 import type { ViewportPreset } from '../../types.js';
 
 export interface ViewportSwitcherProps {
@@ -34,22 +35,7 @@ export function ViewportSwitcher({ presets, viewport, onViewport, ariaLabel, tab
   const listboxId = useId();
   const activePreset = presets.find((preset) => preset.id === viewport) ?? presets[0];
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!menuRef.current) return;
-      if (!menuRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
+  useDismissOnOutsideOrEscape(() => setOpen(false), { enabled: open, containerRef: menuRef });
 
   if (!activePreset) return null;
   const activeLabel = activePreset.title ?? activePreset.label;

@@ -53,4 +53,28 @@ describe('ViewportSwitcher', () => {
     expect(screen.getByRole('option', { name: /Mobile/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('option', { name: /Desktop/ })).toHaveAttribute('aria-selected', 'false');
   });
+
+  it('falls back to the first preset when `viewport` matches none of them', () => {
+    render(<ViewportSwitcher presets={DEFAULT_VIEWPORT_PRESETS} viewport="does-not-exist" onViewport={() => {}} ariaLabel="Viewport" />);
+    expect(screen.getByRole('button', { name: 'Viewport' })).toHaveTextContent('Desktop');
+  });
+
+  it('renders nothing given an empty preset list', () => {
+    const { container } = render(<ViewportSwitcher presets={[]} viewport="desktop" onViewport={() => {}} ariaLabel="Viewport" />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders without an icon and falls back title to label when a preset omits both', async () => {
+    const presets = [
+      { id: 'plain', label: 'Plain', width: null, height: null },
+      { id: 'other', label: 'Other', width: null, height: null },
+    ];
+    render(<ViewportSwitcher presets={presets} viewport="plain" onViewport={() => {}} ariaLabel="Viewport" />);
+    const trigger = screen.getByRole('button', { name: 'Viewport' });
+    expect(trigger).toHaveAttribute('title', 'Plain');
+    expect(trigger.querySelector('svg, img, i')).toBeNull();
+    await userEvent.click(trigger);
+    const option = screen.getByRole('option', { name: 'Other' });
+    expect(option).toHaveAttribute('title', 'Other');
+  });
 });
