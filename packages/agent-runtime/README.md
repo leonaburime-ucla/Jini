@@ -14,6 +14,9 @@ full mechanism and `source-map.md` for provenance.
 
 ## `src/skills/`
 
-Portable Skill packages (see `source-map.md` for provenance once
-populated). No TypeScript registry/execution code lives here yet — that's
-separate future work.
+160 portable Skill packages ported from OD's 162-skill catalog (2 excluded
+as OD-internal — see `source-map.md`), each a `SKILL.md` + optional
+`assets/`/`scripts/`/`references/`. Frontmatter uses the same flat
+`craft.requires`/`design_system.requires`/`mode`/etc. key convention as
+`src/craft/`, not OD's original nested `od:` block. No TypeScript
+registry/execution code lives here yet — that's separate future work.
