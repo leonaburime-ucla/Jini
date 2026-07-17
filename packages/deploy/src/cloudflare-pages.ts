@@ -752,9 +752,9 @@ function aggregateCloudflarePagesStatus(
  * (optionally, when `input.metadata.customDomain` is supplied) binds a
  * custom domain via a managed CNAME + Pages domain record.
  *
- * Genericized from `apps/daemon/src/deploy.ts`'s `deployToCloudflarePages`
- * family: OD's persisted `~/.open-design/cloudflare-pages.json` config and
- * `od-${projectId}`-keyed project naming are gone — the caller supplies
+ * Genericized from the origin product's daemon deploy module's
+ * `deployToCloudflarePages` family: the origin's persisted local config file
+ * and product-specific project naming are gone — the caller supplies
  * `{ token, accountId }` directly and a stable `projectName` label.
  */
 export class CloudflarePagesDeployTarget implements DeployTarget {

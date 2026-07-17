@@ -46,11 +46,11 @@ export function isVercelProtectedResponse(resp: Response, body = ''): boolean {
  * reports a terminal `readyState`, then waits for the resulting URL to
  * become publicly reachable.
  *
- * Genericized from `apps/daemon/src/deploy.ts`'s `deployToVercel`: the
- * OD-specific `od-${projectId}` deployment-name convention is replaced by
- * `input.projectName` (sanitized the same way); token/team config is
- * supplied by the caller instead of being read from an OD-owned
- * `~/.open-design/vercel.json` file — persistence of that config is now the
+ * Genericized from the origin product's daemon deploy module's
+ * `deployToVercel`: the origin's product-specific deployment-name
+ * convention is replaced by `input.projectName` (sanitized the same way);
+ * token/team config is supplied by the caller instead of being read from a
+ * product-owned local config file — persistence of that config is now the
  * caller's concern, not this package's.
  */
 export class VercelDeployTarget implements DeployTarget {
