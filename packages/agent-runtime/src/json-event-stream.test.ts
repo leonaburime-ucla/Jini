@@ -1078,3 +1078,180 @@ describe('isFileWriteToolUse fallback path (via gemini tool_use)', () => {
     expect(textDelta.delta).toBe('<artifact>not suppressed</artifact>');
   });
 });
+
+describe('remaining narrow branch closures across handlers', () => {
+  it('safeParseJson falls through to null for a non-string, non-object, non-null parameters value', () => {
+    // gemini tool_use `parameters` as a bare number: safeParseJson(42) hits its
+    // `typeof value !== 'string'` true branch and returns null, then the `??`
+    // chain falls back to the raw numeric parameters value.
+    const events = feed('gemini', [
+      { type: 'tool_use', tool_id: 'tool_num', tool_name: 'inspect', parameters: 42 },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'tool_num', name: 'inspect', input: 42 }]);
+  });
+
+  it('stringifyContent returns empty string for a null/undefined tool_result output with no error', () => {
+    const events = feed('gemini', [{ type: 'tool_result', tool_id: 'tool_nothing' }]);
+    expect(events).toEqual([{ type: 'tool_result', toolUseId: 'tool_nothing', content: '', isError: false }]);
+  });
+
+  it('omits the "for connector X" suffix when connectorId is present but an empty string', () => {
+    const events = feed('codex', [
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd_emptyconn',
+          type: 'command_execution',
+          command: 'x',
+          aggregated_output: JSON.stringify({
+            error: { code: 'CONNECTOR_TOOL_NOT_FOUND', details: { connectorId: '', toolName: 'search' } },
+          }),
+          exit_code: 1,
+        },
+      },
+    ]);
+    const error = events.find((e) => e.type === 'error')!;
+    expect(error.message).not.toContain('for connector');
+  });
+
+  it('returns the fallback when value.error is a record but its error/error-string fields are all falsy', () => {
+    const events = feed('opencode', [{ type: 'error', error: { error: '' } }]);
+    expect(events[0]).toEqual({ type: 'error', message: 'OpenCode error', raw: JSON.stringify({ type: 'error', error: { error: '' } }) });
+  });
+
+  it('swallows step_finish when tokens is an empty (but valid) record producing no usable usage fields', () => {
+    const events = feed('opencode', [{ type: 'step_finish', part: { tokens: {} } }]);
+    expect(events).toEqual([]);
+  });
+
+  it('treats a non-record top-level JSON value as unhandled for opencode and falls back to raw', () => {
+    const events = feed('opencode', [[] as unknown]);
+    expect(events).toEqual([{ type: 'raw', line: '[]' }]);
+  });
+
+  it('falls back to the raw state.input value when safeParseJson cannot parse it (opencode tool_use, numeric input)', () => {
+    const events = feed('opencode', [
+      { type: 'tool_use', sessionID: 'ses_num', part: { tool: 'calc', callID: 'call_num', state: { input: 42 } } },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'call_num', name: 'calc', input: 42 }]);
+  });
+
+  it('omits durationMs on a gemini usage result when stats has no duration_ms', () => {
+    const events = feed('gemini', [
+      { type: 'result', status: 'ok', stats: { input_tokens: 1 } },
+    ]);
+    expect(events[0]).toEqual({ type: 'usage', usage: { input_tokens: 1 }, durationMs: undefined });
+  });
+
+  it('treats a non-record top-level JSON value as unhandled for kimi and falls back to raw', () => {
+    const events = feed('kimi', [[] as unknown]);
+    expect(events).toEqual([{ type: 'raw', line: '[]' }]);
+  });
+
+  it('skips a non-record entry in a tool_calls array', () => {
+    const events = feed('kimi', [
+      {
+        role: 'assistant',
+        tool_calls: ['not an object', { id: 'call_ok', function: { name: 'bash', arguments: 'ls' } }],
+      },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'call_ok', name: 'bash', input: 'ls' }]);
+  });
+
+  it('falls back to the raw arguments value when safeParseJson cannot parse a numeric tool_calls argument', () => {
+    const events = feed('kimi', [
+      { role: 'assistant', tool_calls: [{ id: 'call_num', function: { name: 'compute', arguments: 7 } }] },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'call_num', name: 'compute', input: 7 }]);
+  });
+
+  it('extractCursorText returns empty text for a truthy non-record message, and for a non-array message.content', () => {
+    const nonRecordMessage = feed('cursor-agent', [{ type: 'assistant', message: 'just a string, not an object' }]);
+    expect(nonRecordMessage).toEqual([{ type: 'raw', line: JSON.stringify({ type: 'assistant', message: 'just a string, not an object' }) }]);
+
+    const nonArrayContent = feed('cursor-agent', [
+      { type: 'assistant', timestamp_ms: 1, message: { content: 'plain string, not an array' } },
+    ]);
+    expect(nonArrayContent).toEqual([
+      { type: 'raw', line: JSON.stringify({ type: 'assistant', timestamp_ms: 1, message: { content: 'plain string, not an array' } }) },
+    ]);
+  });
+
+  it('skips a non-record entry in a todo_list items array', () => {
+    const events = feed('codex', [
+      {
+        type: 'item.completed',
+        item: { id: 'todo_mixed', type: 'todo_list', items: ['not an object', { content: 'valid one', status: 'pending' }] },
+      },
+    ]);
+    expect(events).toEqual([
+      { type: 'tool_use', id: 'todo_mixed', name: 'TodoWrite', input: { todos: [{ content: 'valid one', status: 'pending' }] } },
+    ]);
+  });
+
+  it('withholds artifact text across a chunk boundary that falls between the open tag and the close tag', () => {
+    const events = feed('gemini', [
+      {
+        type: 'tool_use',
+        tool_id: 'tool_split_close',
+        tool_name: 'write_file',
+        parameters: { file_path: 'index.html', content: '<html></html>' },
+      },
+      // Open AND close both absent from this first chunk after the tag opens.
+      { type: 'message', role: 'assistant', content: '<artifact>no close tag in this chunk' },
+      { type: 'message', role: 'assistant', content: ' still no close' },
+      { type: 'message', role: 'assistant', content: ' now it closes</artifact> and trails off' },
+    ]);
+    const deltas = events.filter((e) => e.type === 'text_delta').map((e) => e.delta);
+    expect(deltas).toEqual([' and trails off']);
+  });
+
+  it('treats a non-record top-level JSON value as unhandled for cursor-agent and falls back to raw', () => {
+    const events = feed('cursor-agent', [[] as unknown]);
+    expect(events).toEqual([{ type: 'raw', line: '[]' }]);
+  });
+
+  it('omits the model field on a cursor system/init event with no model', () => {
+    const events = feed('cursor-agent', [{ type: 'system', subtype: 'init' }]);
+    expect(events).toEqual([{ type: 'status', label: 'initializing', model: undefined }]);
+  });
+
+  it('omits durationMs on a cursor usage result when there is no duration_ms', () => {
+    const events = feed('cursor-agent', [{ type: 'result', usage: { inputTokens: 1 } }]);
+    expect(events[0]).toEqual({ type: 'usage', usage: { input_tokens: 1 }, durationMs: undefined });
+  });
+
+  it('treats a non-record top-level JSON value as unhandled for codex and falls back to raw', () => {
+    const events = feed('codex', [[] as unknown]);
+    expect(events).toEqual([{ type: 'raw', line: '[]' }]);
+  });
+
+  it('reads a plain "error" field (not "message") for a codex error frame', () => {
+    const events = feed('codex', [{ type: 'error', error: 'invalid token via the error field' }]);
+    expect(events[0]).toEqual({ type: 'error', message: 'invalid token via the error field' });
+  });
+
+  it('reads a plain "message" field (not "error") for the first codex turn.failed frame in a fresh stream', () => {
+    const events = feed('codex', [
+      { type: 'turn.failed', message: 'first and only turn failure without an error field' },
+    ]);
+    expect(events[0]).toEqual({ type: 'error', message: 'first and only turn failure without an error field' });
+  });
+
+  it('defaults the Bash command to an empty string when item.started/command_execution has no command field', () => {
+    const events = feed('codex', [
+      { type: 'item.started', item: { id: 'cmd_nocmd', type: 'command_execution' } },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'cmd_nocmd', name: 'Bash', input: { command: '' } }]);
+  });
+
+  it('defaults the Bash command and aggregated_output fallback when item.completed/command_execution has neither field', () => {
+    const events = feed('codex', [
+      { type: 'item.completed', item: { id: 'cmd_bare', type: 'command_execution', exit_code: 0 } },
+    ]);
+    expect(events).toEqual([
+      { type: 'tool_use', id: 'cmd_bare', name: 'Bash', input: { command: '' } },
+      { type: 'tool_result', toolUseId: 'cmd_bare', content: '', isError: false },
+    ]);
+  });
+});
