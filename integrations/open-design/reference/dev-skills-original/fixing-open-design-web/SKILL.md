@@ -29,6 +29,30 @@ Read `docs/adr/0002-frontend-vertical-slice-decomposition.md` (the WHY) and `app
 
 ---
 
+## Required reference preflight (blocking)
+
+Before editing, record these facts in the task handoff or PR draft. An agent that
+cannot supply one must stop and report the missing reference; it must not
+substitute a similar-looking local file or infer the pattern from memory.
+
+1. The exact target component, source branch, and source commit SHA.
+2. The primary canary was read in full: `apps/web/src/features/memory/`,
+   `apps/web/src/providers/memory/`, and `apps/web/tests/features/memory/`.
+3. `docs/adr/0002-frontend-vertical-slice-decomposition.md`, `apps/web/AGENTS.md`,
+   and `scripts/check-web-slice-boundaries.ts` were read from the same branch as
+   the canary.
+4. Every current caller/importer of the target was enumerated and its public
+   props, imperative handle, and event contract recorded.
+5. A green baseline (the target's existing tests, web typecheck, and boundary
+   guard) was captured before the first edit.
+
+For an extraction into another repository rather than an in-place OD refactor,
+also record the destination package and the explicit product seam that remains
+in OD. The MemorySection structure still governs the split; only OD transport,
+submission, and product-domain bindings may cross that seam through a port.
+
+---
+
 ## The architecture in one screen — the four homes
 
 1. **Wire DTOs + SSE event unions → `packages/contracts/src/api/<resource>.ts`.** Never redeclared in a slice; the daemon is a second consumer, so a slice-local copy would drift. Most resources already have a contract file — reuse it.

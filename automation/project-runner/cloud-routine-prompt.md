@@ -46,14 +46,25 @@ Read first, in order:
 Then:
 
 1. Run `pnpm install`.
-2. Run `pnpm --filter @jini-automation/project-runner run claim`. This claims
+2. Before claiming or editing, record a dispatch preflight in the session
+   summary: current Git branch and SHA, requested scope, destination package or
+   directory, intended branch/PR outcome, and the validation commands. For a
+   frontend god-component task, this is blocking and must additionally name:
+   - the exact OD source branch and SHA;
+   - `MemorySection`'s feature, provider, and test directories as the primary
+     reference;
+   - the OD ADR, web `AGENTS.md`, and boundary guard from that same branch;
+   - every target caller and the OD-specific adapter seam left behind.
+   If any item is unavailable, report it and stop. Do not replace it with a
+   vendored snapshot, a remembered pattern, or a similarly named component.
+3. Run `pnpm --filter @jini-automation/project-runner run claim`. This claims
    the next eligible WorkItem from the committed SQLite ledger and prints
    `claimed=true/false` plus (if true) work_item_id, attempt_id, task_type,
    milestone, milestone_title, milestone_gate, sandbox_path.
    - If claimed=false: nothing is available (queue empty or everything left is
      waiting on human approval). Just report that and stop — do not force
      anything.
-3. If claimed, task_type is one of red-spec, impl, package-contract, tarball,
+4. If claimed, task_type is one of red-spec, impl, package-contract, tarball,
    consumer-canary, evidence, or human-approval — all sub-steps of the
    milestone named in milestone_title, gated by milestone_gate:
    - human-approval: this WorkItem only becomes claimable after a human
@@ -86,22 +97,24 @@ Then:
      Look at what already exists first (source-map.md, tests, tsconfig) before
      doing anything; if it already satisfies the sub-task, complete it with a
      summary explaining that, rather than duplicating work.
-4. Do the actual work for the claimed sub-task (except red-spec's inverted
+5. Do the actual work for the claimed sub-task (except red-spec's inverted
    pass/fail rule above). Follow the same rigor as the existing packages under
    packages/* that already have a source-map.md (protocol, core, platform,
    sidecar, chat-core) — same tsconfig/barrel/test/source-map pattern if
    you're producing new package code.
-5. Run `pnpm guard` and any relevant `pnpm --filter <pkg> run
+6. Run `pnpm guard` and any relevant `pnpm --filter <pkg> run
    typecheck`/`test` and make sure the REPO'S EXISTING state is green (see the
    red-spec exception above for the one new intentionally-failing test).
-6. Complete the attempt: `pnpm --filter @jini-automation/project-runner run
+7. Complete the attempt: `pnpm --filter @jini-automation/project-runner run
    complete <attempt_id> <succeeded|failed> "<one-line summary>"` — use
    `failed` honestly if the gate wasn't actually met; don't mark succeeded to
    look done.
-7. Commit everything (the code changes AND the updated
-   automation/project-runner/ledger/* files) and push to main. Write a clear
-   commit message describing exactly what was done, in the style of the
-   existing commit history (`git log` to see the pattern).
+8. Commit everything (the code changes AND the updated
+   automation/project-runner/ledger/* files) to the task branch and open a
+   draft PR. Never push directly to `main`; a human reviews the evidence and
+   merges the PR. Write a clear commit message describing exactly what was
+   done, in the style of the existing commit history (`git log` to see the
+   pattern).
 
 End your session with a clear plain-language summary of what you found, what
 you did, and what (if anything) looked wrong with the ledger/claim/complete

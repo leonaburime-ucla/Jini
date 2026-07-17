@@ -33,6 +33,31 @@ was never wrapped in the first place.
 
 ---
 
+## Required cloud-dispatch preflight
+
+Every cloud task for an item in this plan must start by recording, before any
+edit, the source branch and commit SHA, Jini destination package, task branch,
+and full validation command set. It must then prove it read the primary
+`MemorySection` canary from the same OD branch:
+
+- `apps/web/src/features/memory/`
+- `apps/web/src/providers/memory/`
+- `apps/web/tests/features/memory/`
+- `docs/adr/0002-frontend-vertical-slice-decomposition.md`
+- `apps/web/AGENTS.md`
+- `scripts/check-web-slice-boundaries.ts`
+
+The task must also enumerate the target's live callers and identify the
+product-only adapter seam. If the branch cannot supply any of these references,
+the task reports the gap and stops; a vendored snapshot is evidence only, never
+a substitute for current source. Cloud tasks work on a task branch and open a
+draft PR; they do not push directly to `main`.
+
+`automation/project-runner/cloud-routine-prompts/god-component-extraction.md`
+is the runnable template that enforces this gate for the next item.
+
+---
+
 ## 0. Canary — `ConnectorsBrowser.tsx` (1,573 lines)
 
 **Verdict (r6 §1.15): FULL SLICE — cleanest full-file candidate in the whole sweep.** Nearly the
