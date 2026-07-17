@@ -20,3 +20,24 @@ export * from './react/hooks/useToolTimeline.js';
 export * from './react/hooks/usePinnedTodos.js';
 export * from './react/hooks/useQuestionForms.js';
 export * from './react/hooks/useArtifactStream.js';
+export {
+  useT,
+  useI18n,
+  useAnalytics,
+  useProjectContext,
+  useChatTransport,
+  useArtifactRegistry,
+} from './react/hooks/context.js';
+
+export { TodoCard } from './react/components/TodoCard.js';
+export type { TodoCardProps } from './react/components/TodoCard.js';
+export { ToolCard } from './react/components/ToolCard.js';
+export type { ToolCardProps } from './react/components/ToolCard.js';
+export { QuestionForm } from './react/components/QuestionForm.js';
+export type { QuestionFormProps, QuestionFormHandle, QuestionFormFileSubmission } from './react/components/QuestionForm.js';
+export { QuestionsPanel } from './react/components/QuestionsPanel.js';
+export type { QuestionsPanelProps } from './react/components/QuestionsPanel.js';
+export { NextStepActions } from './react/components/NextStepActions.js';
+export type { NextStepAction, NextStepActionsProps } from './react/components/NextStepActions.js';
+export { Markdown } from './react/components/Markdown.js';
+export type { MarkdownProps } from './react/components/Markdown.js';
