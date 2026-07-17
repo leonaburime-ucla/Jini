@@ -1,8 +1,9 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createFakeSketchEditorEngine } from '../dependencies-fake.js';
+import { defaultSketchEditorDependencies } from '../../dependencies.js';
 import { emptySketchScene } from '../../rules.js';
-import { useSketchSaveWorkflow } from './useSketchSaveWorkflow.js';
+import { useSketchSaveWorkflow, useWiredSketchSaveWorkflow } from './useSketchSaveWorkflow.js';
 
 const t = (key: string) => key;
 
@@ -138,5 +139,37 @@ describe('useSketchSaveWorkflow', () => {
       result.current.dismissToast();
     });
     expect(result.current.toast).toBeNull();
+  });
+});
+
+describe('useWiredSketchSaveWorkflow', () => {
+  it('binds the real engine from dependencies.ts, not a hand-rolled one', async () => {
+    const exportToBlob = vi
+      .spyOn(defaultSketchEditorDependencies.engine, 'exportToBlob')
+      .mockResolvedValue(new Blob(['wired-export'], { type: 'image/png' }));
+    try {
+      const onExportImage = vi.fn(async (_base64: string, fileName: string) => ({ fileName }));
+      const { result } = renderHook(() =>
+        useWiredSketchSaveWorkflow({
+          dirty: false,
+          saving: false,
+          fileName: 'diagram.excalidraw',
+          currentScene: () => emptySketchScene('diagram.excalidraw'),
+          onSave: vi.fn(async () => true),
+          onExportImage,
+          t,
+        }),
+      );
+      await act(async () => {
+        await result.current.handleExportImage();
+      });
+      // Proves the wired hook's `handleExportImage` routed through the exact
+      // engine object `defaultSketchEditorDependencies` exports, rather than
+      // a fresh/fake one the caller would otherwise have to thread by hand.
+      expect(exportToBlob).toHaveBeenCalledTimes(1);
+      expect(onExportImage).toHaveBeenCalledTimes(1);
+    } finally {
+      exportToBlob.mockRestore();
+    }
   });
 });

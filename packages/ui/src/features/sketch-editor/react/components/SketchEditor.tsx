@@ -95,6 +95,10 @@ export function SketchEditor({
     closeActiveDialog,
   } = useSketchScene({ scene, fileName, onSceneChange, onClear });
 
+  // Calls the raw hook (not `useWiredSketchSaveWorkflow`) and threads `engine`
+  // explicitly: `SketchEditor` itself accepts a swappable `dependencies` prop
+  // (see `SketchEditorProps.dependencies` above) so hosts/tests can inject a
+  // fake engine, and the wired hook would bypass that override.
   const { showSaved, exporting, toast, handleSave, handleExportImage, dismissToast, handleToastAction } = useSketchSaveWorkflow({
     dirty,
     saving,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import { EXPORTED_IMAGE_MIME_TYPE, SAVED_VISIBLE_MS } from '../../constants.js';
+import { defaultSketchEditorDependencies } from '../../dependencies.js';
 import { exportedImageFileName, exportedImageResultFileName, isNonDeletedExcalidrawElement, sanitizeExcalidrawAppState } from '../../rules.js';
 import type { AppState, BinaryFiles, OrderedExcalidrawElement, SketchEditorEnginePort } from '../../ports.js';
 import type { SketchExportImageResult, SketchScene, SketchToastState, SketchTranslate } from '../../types.js';
@@ -140,6 +141,19 @@ export function useSketchSaveWorkflow(params: UseSketchSaveWorkflowParams): Sket
   }, [onOpenExportedImageRef, toastRef]);
 
   return { showSaved, exporting, toast, handleSave, handleExportImage, dismissToast, handleToastAction };
+}
+
+/**
+ * Wires `useSketchSaveWorkflow` to the real (`@excalidraw/excalidraw`-backed)
+ * engine from `dependencies.ts`. Production callers that don't need to swap
+ * the engine (i.e. everyone except `SketchEditor`, which accepts its own
+ * `dependencies` prop so hosts/tests can inject a fake) should call this
+ * instead of threading `engine` themselves.
+ */
+export function useWiredSketchSaveWorkflow(
+  params: Omit<UseSketchSaveWorkflowParams, 'engine'>,
+): SketchSaveWorkflowController {
+  return useSketchSaveWorkflow({ ...params, engine: defaultSketchEditorDependencies.engine });
 }
 
 function blobToBase64(blob: Blob): Promise<string> {

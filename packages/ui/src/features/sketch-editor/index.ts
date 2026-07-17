@@ -62,7 +62,7 @@ export { createFakeSketchEditorDependencies, createFakeSketchEditorEngine } from
 export { useSketchTheme } from './react/hooks/useSketchTheme.js';
 export { useSketchScene } from './react/hooks/useSketchScene.js';
 export type { SketchSceneController, UseSketchSceneParams } from './react/hooks/useSketchScene.js';
-export { useSketchSaveWorkflow } from './react/hooks/useSketchSaveWorkflow.js';
+export { useSketchSaveWorkflow, useWiredSketchSaveWorkflow } from './react/hooks/useSketchSaveWorkflow.js';
 export type { SketchSaveWorkflowController, UseSketchSaveWorkflowParams } from './react/hooks/useSketchSaveWorkflow.js';
 export { useSketchDomEnhancements } from './react/hooks/useSketchDomEnhancements.js';
 export type { UseSketchDomEnhancementsParams } from './react/hooks/useSketchDomEnhancements.js';
