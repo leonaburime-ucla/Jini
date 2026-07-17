@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 import { useT } from '../../../i18n/index.js';
+import { useDismissOnOutsideOrEscape } from '../../../../browser/index.js';
 
 export interface DeleteConfirmDialogProps {
   count: number;
@@ -8,32 +9,28 @@ export interface DeleteConfirmDialogProps {
 }
 
 /**
- * Generic bulk-delete confirmation dialog. Keeps its own escape-key-to-close
- * and body-scroll-lock behavior inline (standard modal a11y idioms) —
- * matching the same disclosed deviation `ConnectorDetailDrawer` documents in
- * `packages/ui/source-map.md`.
+ * Generic bulk-delete confirmation dialog. Keeps its own body-scroll-lock
+ * behavior inline (a standard modal a11y idiom) — matching the same
+ * disclosed deviation `ConnectorDetailDrawer` documents in
+ * `packages/ui/source-map.md`. Escape-to-close is shared plumbing (see
+ * `useDismissOnOutsideOrEscape` below); the backdrop's own `onMouseDown`
+ * already handles outside-click, so no `containerRef` is passed.
  */
 export function DeleteConfirmDialog({ count, onCancel, onConfirm }: DeleteConfirmDialogProps) {
   const t = useT();
   const titleId = useId();
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
 
+  useDismissOnOutsideOrEscape(onCancel);
+
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener('keydown', onKey);
     confirmBtnRef.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
     };
-  }, [onCancel]);
+  }, []);
 
   return (
     <div

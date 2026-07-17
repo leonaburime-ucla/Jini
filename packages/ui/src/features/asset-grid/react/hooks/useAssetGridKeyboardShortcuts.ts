@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useGlobalKeydown } from '../../../../browser/index.js';
 import { isTypingTarget } from '../../rules.js';
 
 export interface UseAssetGridKeyboardShortcutsParams {
@@ -27,9 +27,8 @@ export function useAssetGridKeyboardShortcuts(params: UseAssetGridKeyboardShortc
     onRequestDeleteSelected,
   } = params;
 
-  useEffect(() => {
-    if (!active) return;
-    const onKey = (e: KeyboardEvent) => {
+  useGlobalKeydown(
+    (e) => {
       if (!enabled) return;
       const typing = isTypingTarget(document.activeElement);
       if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) {
@@ -44,8 +43,7 @@ export function useAssetGridKeyboardShortcuts(params: UseAssetGridKeyboardShortc
         e.preventDefault();
         onRequestDeleteSelected();
       }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [active, enabled, hasAssets, hasSelection, isPreviewOpen, onSelectAll, onClearSelection, onRequestDeleteSelected]);
+    },
+    { enabled: active },
+  );
 }
