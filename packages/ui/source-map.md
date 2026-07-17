@@ -674,3 +674,228 @@ and testing state transitions directly rather than chasing a coverage
 percentage — held up cleanly against a genuinely non-trivial 1,573-line
 source file. The pattern is ready to scale; the two caveats above are
 process reminders for the next session, not blockers.
+
+## Section: `features/progress-card/` — the progress/status card pattern (2026-07-17)
+
+Source: `WorkspaceActivityCard` + `GenerationStatusCard` in
+`integrations/open-design/reference/components-original/DesignSystemFlow.tsx`
+(lines 3076–3369 of 5,439), plus their two upstream helper modules
+(`runtime/todos.ts`, `runtime/file-ops.ts` + `runtime/tool-events.ts`'s
+`dedupeToolUsesById`). Per
+`docs/jini-port/god-components-extraction-plan.md` §1 item 2 and r6 §1.5:
+the *same* "progress bar + status icon + todo/step list" shape,
+independently reimplemented twice against two different data shapes
+(`ChatMessage.events`/`AgentEvent` vs. `DesignSystemGenerationJob`). Flagged
+as higher strategic priority than a purely generic-UI finding because it
+maps almost 1:1 onto Jini's own Run/Agent/Tool vocabulary.
+
+**Preflight discrepancy, disclosed up front:** `ChatMessage`, `AgentEvent`,
+and `DesignSystemGenerationJob` are only type-imported from
+`@open-design/contracts` in the source file — that package is not vendored
+anywhere in this snapshot, so their full field sets aren't directly
+readable. This isn't a truncated/corrupted vendored file (the two card
+components themselves are complete and identical between
+`components-original/` and `od-web-src.orig/`); it's a real gap in what a
+vendored-snapshot-only session can see. The fields both cards actually
+touch were reconstructed with high confidence from call sites (lines 1636,
+1889, 1955, 2600, 2665, 2775–2860) and the two upstream helper modules,
+which *are* fully vendored.
+
+### What shipped — `packages/ui/src/features/progress-card/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `ProgressStatus` (`pending`/`running`/`succeeded`/`failed`), `ProgressCardItem` (`id`/`label`/`status`), `ProgressCardData` (`id`/`status`/`title?`/`detail?`/`progress`/`steps`/`secondaryItems?`/`secondaryItemsLabel?`). |
+| `rules.ts` | Pure helpers: status→icon mapping for the card and for individual items, a neutral (non-OD-branded) fallback title/detail per status, progress clamping, and progress-bar width/`aria-valuenow` derivation (including the indeterminate case). |
+| `reference-adapters.ts` | `chatActivityToProgressCard` (the `WorkspaceActivityCard` equivalent) and `designSystemGenerationJobToProgressCard` (the `GenerationStatusCard` equivalent), plus locally-declared structural `*Like` input types and ported todo/file-op derivation helpers (see "Adapters" below). |
+| `components/ProgressCard.tsx` | The unified presentational card: status icon + title/detail, a determinate-or-indeterminate progress bar, a primary step list, and an optional secondary item list (e.g. "files touched"). No hooks besides `useT()` — no state, no effects, no orchestration. |
+| `index.ts` | Public barrel. |
+
+Wired into `packages/ui/src/index.ts`'s top-level barrel alongside `i18n`/`observability`/`connectors`.
+
+### Design decisions worth flagging
+
+- **`title`/`detail` are host-supplied, not computed from a status+kind
+  lookup table.** Both source cards hardcode branded, kind-specific copy
+  ("Open Design is rebuilding tokens", "Workspace update ready" — see the
+  purity-grep note below for why that exact text can't even appear in this
+  package's comments). Baking any "kind"-aware copy-selection logic into the
+  generic component would just re-embed OD's product vocabulary (job
+  "kind" — generation/revision/token-contract-rebuild — is OD-specific)
+  under a different name. The generic component instead takes optional
+  `title`/`detail` and falls back to a neutral, status-only default
+  (`Queued`/`Running`/`Complete`/`Needs attention`) when omitted. Computing
+  richer, kind-aware copy is left to the host.
+- **`progress: number | 'indeterminate'`** — neither source occurrence ever
+  actually produces an indeterminate state (both always compute a 0-100
+  percentage). It's included anyway because the task's own required test
+  matrix asked for indeterminate-vs-determinate coverage, and because it's
+  a natural, forward-looking capability for Jini's own Run/Agent/Tool
+  dashboards (an agent step with no known total duration) — this is a
+  deliberate generalization beyond what the two source cards themselves
+  needed, called out here rather than silently added.
+- **Per-item `label` values are not run through `useT()`.** `steps[]`/
+  `secondaryItems[]` mix genuinely dynamic content (a todo's own text, an
+  agent-touched file path) with the reference adapter's static fallback
+  step titles, indistinguishably once they're both just strings in the same
+  array — there's no way for the component to tell them apart. This matches
+  the precedent already set by `ConnectorCard` not wrapping `connector.name`/
+  `connector.category`. What *is* wrapped in `t()`, and covered by a real
+  `I18nProvider` test: the fallback title/detail, the progress-bar
+  `aria-label`, and the default "Files touched" secondary-items heading.
+- **Adapters take a `*Like` structural input, not real `@open-design/contracts`
+  types.** The task's own framing allowed shipping these as "documented
+  reference adapters" for OD-shaped input; going one step further, the
+  input types are locally declared minimal structural subsets rather than
+  actual imports of an external, unvendored package — this package has zero
+  dependency on `@open-design/contracts`, and a host whose real types are a
+  structural superset can pass them in directly (TypeScript structural
+  typing).
+- **Slicing (`maxSteps`/`maxSecondaryItems`) moved from the adapter to the
+  component.** The source cards slice at render time (`todos.slice(0, 6)`,
+  `fileOps.slice(0, 5)`) inside the component itself. The adapters here
+  return the *full* derived list; `ProgressCard` truncates for display via
+  props (defaulting to the same 6/5 caps). This keeps the adapter's output
+  data-complete and makes the truncation a generic, overridable view
+  concern rather than something baked into one specific adapter.
+- **No orchestrator hook was needed.** Unlike the connectors canary
+  (`useConnectorCatalog`/`useConnectorAuthorization`/`useConnectorDetail`),
+  this feature has no live data-fetching or async state of its own —
+  `ProgressCard` is purely presentational, and the adapters are synchronous
+  pure functions. There is deliberately no `ports.ts`/`dependencies.ts`
+  pair in this feature; a host wires its own data source directly into
+  `ProgressCardData` (via these adapters or its own mapping) rather than
+  this package owning any transport.
+
+### Dropped, and why
+
+- **The Bash `rm`-command detection heuristic** from the source
+  `deriveFileOps` (`extractSimpleBashDeletes`/`shellWords`/
+  `isShellSeparator`/`isRedirectionOperator`/`looksUnsafeForFileList`, ~100
+  lines) — a self-contained shell-command tokenizer used only to detect
+  file deletions performed via a raw `Bash` tool call rather than a
+  dedicated `Delete`-family tool. This is a distinct, non-trivial parsing
+  concern in its own right, not core to "progress bar + status icon + step
+  list," and isn't mentioned anywhere in r6 §1.5 or the plan doc's item 2.
+  `deriveFileOpsFromAgentEvents` keeps the tool-name-based classification
+  (`Read`/`Write`/`Edit`/`MultiEdit`/`Delete`/etc., which covers the large
+  majority of real file-op tool calls) and drops only the Bash-string
+  heuristic. A future task adopting this as a real extraction target should
+  do so as its own item, not bundled here.
+- **`job.kind`** (`generation`/`revision`/`token-contract-rebuild`) was not
+  carried into `DesignSystemGenerationJobLike`/`ProgressCardData` at all —
+  it exists purely to drive the OD-branded, kind-specific copy the generic
+  title/detail design above already excludes. A host that wants
+  kind-specific text computes it itself before calling the adapter and
+  overrides `title`/`detail` on the result.
+- **`todo.activeForm`** (an alternate in-progress-tense label OD's todo
+  schema carries) — not used by either card's actual rendering, so not
+  carried into `TodoItemLike`.
+- **CSS class names were not ported verbatim** (`ds-workspace-activity-card`,
+  `ds-generation-review-card`, `ds-generation-review-progress`, etc.) — new,
+  neutral names were used (`progress-card`, `progress-card-bar`,
+  `progress-card-steps`, `progress-card-secondary-items`) since the
+  original classes are tied to OD's own stylesheet, not shipped here.
+
+### Phase 8.5 audit
+
+Enumerated every new file for the three blind spots the audit calls out:
+
+1. **Inline JSX callback props with real branching/multi-statement
+   bodies**: none — `ProgressCard.tsx` has no event handlers at all (neither
+   source card is interactive; there's nothing to click).
+2. **`useMemo`/`useEffect` bodies**: none exist — the component uses zero
+   hooks besides `useT()`. Every derived value (`title`, `detail`,
+   `secondaryHeading`, `widthPercent`, `ariaValueNow`, `visibleSteps`,
+   `visibleSecondaryItems`) is a plain `const` computed from a one-line call
+   into `rules.ts` or a trivial `.slice()` — already the audit's stated
+   target end-state, with nothing to extract.
+3. **Orphaned `useState`/`useRef`**: none — the component holds no state of
+   its own; it's a pure function of its `data`/`maxSteps`/
+   `maxSecondaryItems` props.
+
+Honest framing: this "nothing found" result is a consequence of the
+component's shape (stateless, non-interactive, three total hooks-uses —
+all `useT()`), not a shortcut taken on the audit — there was genuinely no
+orchestrator-style logic in this feature to hide in the first place, unlike
+the connectors canary where the audit caught two real issues in a
+stateful, effect-driven orchestrator.
+
+### Purity grep — reported explicitly per the task's own instructions
+
+**Product-identity strings** (`open design`, `OD_`, `--od-stamp`,
+`open-design.ai`, `@open-design/`, case-insensitive) across every file
+under `features/progress-card/`: **one match found and fixed** — a
+`rules.ts` doc comment initially quoted the source cards' actual OD-branded
+copy verbatim to explain why it was excluded (the same class of mistake
+`features/connectors/types.ts` made with a vendored file path, documented
+above). Reworded to describe the exclusion without repeating the branded
+string. Re-run after the fix: **clean, zero matches.**
+
+**Vendored path literal** (`integrations/open-design/reference`) in any
+comment: **clean, zero matches** on both the first pass and re-check.
+
+### i18n verification
+
+Every static UI string owned by the component (fallback title/detail,
+progress-bar `aria-label`, the default "Files touched" heading) is routed
+through `useT()`; `rules.ts` stays hook-free per policy and its string
+outputs are wrapped at the `ProgressCard.tsx` call site instead
+(`t(defaultProgressCardTitle(data.status))`, etc.), not threaded through as
+a `t` parameter. Per-item `label`s are deliberately not wrapped — see
+"Design decisions" above for why. Verified end-to-end with a real test
+(`ProgressCard.test.tsx`'s last case) mounting under `I18nProvider` with a
+French dictionary keyed by the English source strings and asserting the
+translated text renders, not just that `t()` calls compile — the same
+verification shape `ConnectorsBrowser.test.tsx` established.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, both before and after the
+  purity-grep fix.
+- `pnpm --filter @jini/ui exec vitest run src/features/progress-card`: **59
+  tests, 3 files, all green** — `rules.test.ts` (13, every pure helper),
+  `reference-adapters.test.ts` (32, covering `parseTodoWriteInput` field
+  fallbacks and status normalization, todo/status-detail/file-op
+  derivation including the dedupe-retried-tool-call path, and both
+  top-level adapters' status mapping — including the `hasActivity` gate's
+  parity with the source, deliberately tested both ways: activity present
+  → a card; `queued`/`running` alone with no other signal → `null`, exactly
+  matching `WorkspaceActivityCard`'s own early-return), `ProgressCard.test.tsx`
+  (14 — status transitions across all 4 states, determinate vs.
+  indeterminate progress rendering including `aria-valuenow` presence/
+  absence, per-step status classes and the succeeded-only check icon, empty
+  step-list handling, step/secondary-item truncation, the secondary-items
+  section being fully absent when there's nothing to show, and the
+  I18nProvider end-to-end case).
+- Full `pnpm --filter @jini/ui exec vitest run`: **434 tests, 56 files, all
+  green** (was 375 before this task; +59 new, 0 regressions).
+- Full monorepo `pnpm -r run typecheck`: only the same pre-existing,
+  unrelated failures already documented above (`packages/agent-runtime`,
+  `packages/chat-react` — both stub packages missing a `tsconfig.json`
+  entirely, untouched by this task).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged, no boundary violations
+  introduced.
+
+### Honesty note — did the generic shape actually turn out reusable?
+
+Yes, more so than the connectors canary, precisely because the two source
+occurrences were *already* independently converged on the same shape
+before any generification work started — that's what made them worth
+unifying in the first place. The friction was almost entirely in what to
+leave out of the generic component (kind-specific copy, job "kind" itself,
+the Bash-delete heuristic) rather than in finding a shape that fit both;
+`ProgressStatus`'s 4-value vocabulary (`pending`/`running`/`succeeded`/
+`failed`) fell directly out of `todoStatusClass`'s existing return type in
+the source, with zero forcing required. The one genuine design choice
+(rather than direct port) was making `title`/`detail` host-supplied instead
+of computed — necessary specifically because the source's own defaults are
+branded copy, but that same move is what makes the result immediately
+usable for a non-OD Run/Agent/Tool dashboard, which was the whole point of
+prioritizing this item. The "stayed more OD-shaped than expected" risk the
+task asked about mostly didn't materialize here — likely because, unlike
+`ConnectorsBrowser` (an entire OAuth-marketplace UI that happens to be
+generic), this pattern's OD-specific parts (the two orchestrators, job
+"kind" semantics, branded copy) were already cleanly separable from the
+"progress bar + status + steps" shell in the source itself.
