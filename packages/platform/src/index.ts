@@ -10,6 +10,8 @@
  * - `fs`         — filesystem containment, atomic copy, removal, log tails.
  * - `http`       — HTTP readiness polling.
  * - `toolchain`  — user-level toolchain bin discovery.
+ * - `asset-cache` — SSRF-safe same-origin cache/proxy for sandboxed content's
+ *   external media references.
  *
  * The set of names exported here is intentionally identical to the pre-split
  * public surface; importers see no change.
@@ -64,3 +66,15 @@ export { waitForHttpOk } from "./http.js";
 
 export type { WellKnownUserToolchainOptions } from "./toolchain.js";
 export { wellKnownUserToolchainBins } from "./toolchain.js";
+
+export type { AssetCache, AssetCacheOptions, AssetCacheResult } from "./asset-cache.js";
+export {
+  AssetCacheError,
+  assertSafePublicUrl,
+  assetCacheKey,
+  assetCacheRewriteUrl,
+  createAssetCache,
+  createValidatingLookup,
+  isCacheableExternalUrl,
+  isPrivateAddress,
+} from "./asset-cache.js";

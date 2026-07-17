@@ -52,6 +52,35 @@ to the Jini repo root `package.json` devDependencies (not previously present) si
 `@jini/protocol` is pure-TypeScript and never needed Node type declarations; this is
 the first engine package that touches `node:*` builtins.
 
+## Addendum: `asset-cache.ts` (2026-07-17)
+
+Sourced from the OD fork's unmerged `arch/plugins-fold-decouple` branch (not
+part of the original task-4 batch above), commit `c1ee358` on
+`leonaburime-ucla/open-design`, file `apps/daemon/src/plugins/plugin-asset-cache.ts`
+(the branch's own commit renamed it from the pre-refactor
+`apps/daemon/src/plugin-asset-cache.ts`).
+
+Verification context: this branch was one of several old capability-barrel
+refactor branches audited to see whether they held reusable engine substrate
+vs. genuinely OD-product logic. Two sibling files in the same branch
+(`plugin-preview-bakes.ts` — bakes a plugin marketplace's hover-preview video
+clips, `OD_PLUGIN_PREVIEWS_DIR`/R2 CDN specific — and the branch's `design/`
+trio ported separately, if ever — see god-components-extraction-plan.md) were
+judged genuinely OD-specific and NOT ported. `plugin-asset-cache.ts` was the
+one exception: despite its "plugin preview" framing in comments, the
+implementation itself has zero OD domain nouns — it is a generic, SSRF-hardened
+same-origin disk cache/proxy for external media any sandboxed-content renderer
+(iframe preview, embedded document, etc.) would need.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/asset-cache.ts` | `apps/daemon/src/plugins/plugin-asset-cache.ts` | Logic verbatim (SSRF guard chain: `assertSafePublicUrl` up-front rejection + `createValidatingLookup` DNS-rebinding/TOCTOU guard installed on the undici `Agent`, content-addressable disk cache with in-flight de-dup, capped streaming read). Renamed `createPluginAssetCache`/`PluginAssetCache`/`PluginAssetCacheOptions` → `createAssetCache`/`AssetCache`/`AssetCacheOptions` (the "plugin" framing wasn't load-bearing — this is generic media-proxy infra). `assetCacheRewriteUrl` gained a second `routePath` param (was hardcoded `/api/asset-cache`) since the mount path is a host-application concern, not this package's. Header comment reworded to drop "plugin preview HTML (example.html)" / "marketplace card" framing while keeping the CSP/latency/SSRF rationale. |
+| `src/asset-cache.test.ts` | `apps/daemon/tests/plugin-asset-cache.test.ts` | Same coverage (cacheable-URL predicate, IPv4/IPv6 private-range classification incl. IPv4-mapped literals, up-front + connection-time SSRF rejection, disk persistence/replay, concurrent de-dup, oversized-asset rejection with and without Content-Length, non-cacheable/private-IP short-circuits before any fetch) renamed to match the `createAssetCache` API; added one test for the new `routePath` param. Test fixture CDN hostnames (`images.higgs.ai`) swapped for `images.example.com` — a real third-party company name, not OD's own, but still not a stable fixture to depend on. |
+
+Dependency: `undici@^7.25.0` added to `package.json` (previously none) — needed
+for the `Agent`/connection-time `lookup` SSRF guard. Same major version OD's
+own daemon pins.
+
 ## Not ported (out of scope for this task)
 
 Nothing was left out — every file in the origin `packages/platform/src/` ported
