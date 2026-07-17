@@ -31,6 +31,7 @@ export * from './hooks/useInView.js';
 export * from './hooks/useCoalescedCallback.js';
 export * from './hooks/useStableHandler.js';
 export * from './hooks/useDebouncedValue.js';
+export * from './hooks/useResizableSplitPane.js';
 
 export * from './browser/useModalWindowDragGuard.js';
 

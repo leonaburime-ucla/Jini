@@ -118,6 +118,7 @@ Hooks are **feature-local and component-specific — no shared/app-level hook la
 2. **No logic changes in the same PR.** This is a structural move. Spotted a bug or a tempting cleanup? Note it for a follow-up; do not fold it in.
 3. **Orchestrator public surface stays identical.** External importers (e.g. `SettingsDialog`, `IntegrationsView`) must not notice. Same exported names, same props, same handle.
 4. **No new server-state cache library** (TanStack Query / SWR). Existing hand-rolled caching stays; ride cross-cutting caches in a context/dependency.
+5. **Checkpoint incrementally (Jini addition, decided 2026-07-17).** Commit and push after each logical unit of work (each cluster, each priority tier, each file), not just once at the end. A cloud session can die, time out, or run out of budget mid-task — if it hasn't pushed anything yet, that work is gone with no way to recover it. Report honestly what's done vs. pending either way, but push what exists as you go so partial progress survives even without a final report.
 5. **The guard must pass.** A slice whose `pnpm guard` is red is incomplete — the boundaries would rot immediately.
 
 Track the phases below as a task list so progress stays visible.

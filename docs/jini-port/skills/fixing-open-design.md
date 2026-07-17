@@ -50,6 +50,7 @@ Refactor a backend subsystem of `nexu-io/open-design` into the **machine-enforce
 2. **No behavior changes in the same PR.** This is a strangler-fig *move*. If you spot a bug or a tempting cleanup, note it for a follow-up PR — do not fold it in. A refactor PR whose diff contains logic changes is un-reviewable.
 3. **One subsystem per PR.** The design-systems PR (#5088) refactored exactly one module. Keep that bound.
 4. **Every file gets a `@module` docblock; every exported function gets JSDoc.** This is a hard acceptance bar, not a nicety — see `references/jsdoc-and-docs.md`.
+5. **Checkpoint incrementally (Jini addition, decided 2026-07-17).** Commit and push after each logical unit of work (each subdirectory extracted, each phase), not just once at the end. A cloud session can die, time out, or run out of budget mid-task — if it hasn't pushed anything yet, that work is gone with no way to recover it. Report honestly what's done vs. pending either way, but push what exists as you go so partial progress survives even without a final report.
 5. **The guard must actually enforce the result.** A capability-barrel refactor without a passing `check-barrel-imports` registration is incomplete — the boundaries would rot immediately.
 6. **Coverage bar (Jini addition, see Phase 6.5): ≥99% on all 4 metrics, 100% as the actual goal, no coverage-suppression comments ever.** Same discipline as the frontend skill, no exceptions for "this is just backend plumbing."
 
