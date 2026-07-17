@@ -56,7 +56,13 @@ Real content has landed in several parallel passes — see
   section A's flat-group components and the `useInView` hook (2026-07-17) —
   the first content in these two directories, and the first task to pull in
   `react`/`react-dom` as real dependencies of this package.
+- `src/features/connectors/` — the `ConnectorsBrowser.tsx` god-component
+  canary (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`
+  §0: an OAuth integration marketplace UI (ports+dependencies+hooks+
+  components+barrel).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
-(cross-package routing) of the extraction plan are not started.
+(cross-package routing) of the extraction plan are not started. The
+god-components-extraction-plan.md list beyond the connectors canary is also
+not started, pending the canary's own review.

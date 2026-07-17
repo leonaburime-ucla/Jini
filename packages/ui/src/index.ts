@@ -5,6 +5,7 @@
 
 export * from './features/i18n/index.js';
 export * from './features/observability/index.js';
+export * from './features/connectors/index.js';
 export * from './utils/index.js';
 export * from './utils/zip.js';
 export * from './utils/sse.js';

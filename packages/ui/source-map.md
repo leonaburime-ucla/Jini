@@ -416,3 +416,183 @@ doing frontend/component porting rather than a backend milestone:
   rendering) — worth calling out explicitly for whoever runs the next
   component-porting routine, since none of it was visible from the plan doc
   or from the prior (Node-only) utils-porting task's precedent.
+
+---
+
+## Section: `features/connectors/` — ConnectorsBrowser.tsx canary (2026-07-17)
+
+Source: `integrations/open-design/reference/components-original/ConnectorsBrowser.tsx`
+(1,573 lines) + the two pure helpers it imported from `EntryView.tsx`
+(`isTrustedConnectorCallbackOrigin`, `sortConnectorsForSearch`/
+`getConnectorSearchScore`/`sortConnectorsForDisplay`). Per
+`docs/jini-port/god-components-extraction-plan.md` §0 — the canary for the
+broader god-component extraction plan; several more components are queued
+behind it pending how this one went. Per r6 §1.15: **FULL SLICE**, the
+cleanest full-file candidate in the whole sweep — nearly the entire file is
+a generic "OAuth integration marketplace" UI.
+
+### What shipped — `packages/ui/src/features/connectors/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `Connector`/`ConnectorTool`/`ConnectorStatus`/`ConnectorActionResult`/`ConnectorAuthorizationPending(State)`/`ProviderTab` — stripped of `ConnectorDetail`/`ConnectorConnectResponse`/`ConnectorStatusResponse` verbatim shapes (Composio-specific fields dropped: no category-map dependency, `logoUrl` is host-resolved rather than Composio-CDN-derived). |
+| `constants.ts` | Poll interval, tool-preview page size, storage key (`jini-connectors-authorization-pending`, renamed from `od-connectors-authorization-pending`), a `DEFAULT_PROVIDER_TABS` single-entry fallback. |
+| `rules.ts` | All pure logic ported 1:1: connector/tool merging, authorization-pending prune/update, stale-authorization detection, status-change diffing, search scoring/sorting, origin-trust check, fallback-logo initials/palette hash, plus one **new** extraction born from the Phase 8.5 audit below (`scopeConnectorsToProvider`). |
+| `ports.ts` | `ConnectorsPort` (fetchConnectors/fetchConnectorEnrichment/fetchConnectorStatuses/fetchConnectorDetail/connectConnector/disconnectConnector/cancelConnectorAuthorization/openExternalUrl), `ConnectorAuthPendingStoragePort`, `ConnectorAuthBridgePort`. |
+| `dependencies.ts` | `createFakeConnectorsPort` — an in-memory test/demo double (per the canary's own instruction: ship a fake, not a real `providers/registry` call). `createBrowserConnectorAuthPendingStorage`/`createBrowserConnectorAuthBridge` are **real** SSR-guarded browser implementations (sessionStorage + postMessage/focus/visibility) — these two touch only generic browser APIs with no backend-specific shape, so shipping them for real (rather than faking them too) means a host only has to supply its own `data` port. |
+| `hooks/useConnectorCatalog.ts` | Two-phase catalog load: always-on lightweight fetch + lazy `unlocked`-gated enrichment. |
+| `hooks/useConnectorAuthorization.ts` | The concurrency-correctness core: auth-pending persistence, poll-while-pending, the OAuth postMessage/focus/pageshow/visibilitychange handshake, stale-authorization auto-cancel, connect/disconnect actions. Kept as one cohesive hook per the Phase 6 "one natural owning cluster" guidance — these pieces read/write the same `pending`/`cancelFailed`/`authError` state and would only fragment awkwardly if split further. |
+| `hooks/useConnectorDetail.ts` | Detail-drawer open/close + paginated tool-preview hydration with retry-token-gated failure tracking. |
+| `components/` | `ConnectorLogo` (initials-fallback + optional image, Composio-CDN slug logic dropped), `ProviderTabBar` (config-driven, `match`-predicate kept generic), `ConnectorSearchBar`, `ConnectorGate` (locked/gated state, href/copy now host-supplied instead of the hardcoded `app.composio.dev` link), `ConnectorAlertList`, `ConnectorCard`, `ConnectorGrid` (card grid + empty-state + gate composition), `ConnectorDetailDrawer` (modal detail drawer with paginated tool list). |
+| `ConnectorsBrowser.tsx` | The orchestrator — composes the 3 hooks + `rules.ts` derivations, defaults `dependencies` to the fake double. |
+| `index.ts` | Public barrel. |
+
+### Dropped (per the canary plan)
+
+- The ~90-entry Composio category→i18n label map (pure OD-specific data) — a
+  host supplies `getCategoryLabel?: (category: string) => string`, default
+  identity.
+- `ConnectorLogo`'s Composio-CDN slug-construction logic
+  (`composioLogoUrl`/`COMPOSIO_LOGO_SLUG_OVERRIDES`, a `/api/connectors/logos/*`
+  daemon-proxied endpoint) — not called out by r6 as an exclusion, but is
+  genuinely Composio-specific in the same way the category map is (another
+  instance of the plan doc under-specifying what needs generifying once the
+  file is actually read in full, consistent with the honesty note the prior
+  i18n/utils task recorded). Kept the generic initials/palette-hash fallback,
+  now taking a plain host-resolved `logoUrl` prop instead.
+- `useResolvedTheme` (the `MutationObserver`/`matchMedia` `data-theme`
+  auto-detection hook) — not in the canary's explicit "what ships" component
+  list. `ConnectorLogo`/`ConnectorCard`/`ConnectorDetailDrawer` no longer take
+  a theme at all (the logo is a single image, not theme-swapped); a host that
+  wants theme-swapped logo URLs resolves that itself before handing
+  `logoUrl` in.
+- The i18n mechanism (`useT`/`Dict`) — OD's actual translated copy for this
+  surface (~30 `connectors.*` keys) is product content, not the generic
+  mechanism `@jini/ui`'s own `features/i18n` already ports. Replaced with
+  plain English literals, matching how `constants.ts`/component defaults
+  already work elsewhere in this package (e.g. `Toast.tsx`). A host wanting
+  i18n wraps the rendered strings itself or forks the component text.
+- `VisuallyHidden` (`@open-design/components`) — the single call site
+  (a screen-reader-only `": "` separator in the alert list) was inlined as a
+  local clip-rect style rather than standing up a new shared primitive for
+  one use.
+- `connectors-events.ts`'s cross-surface `CustomEvent` broadcast
+  (`notifyConnectorsChanged`/`listenForConnectorsChanged`, used elsewhere in
+  OD to refresh other tabs) — out of scope for this slice; replaced with a
+  plain `onConnectorsChanged?: () => void` callback prop a host can wire to
+  whatever cross-component signal it already has.
+- `connectors-state.ts` was **not** ported as a file — `ConnectorsBrowser.tsx`
+  only ever imported one function from it (`hasConnectorStatusChanges`,
+  ported into `rules.ts`); its other exports (`mergeConnectorCatalog`,
+  `fetchConnectorCatalogSnapshot`, an independently-diverged
+  `applyConnectorStatuses`) belong to a different consumer (`EntryView.tsx`),
+  not this canary.
+
+### Phase 8.5 audit — what it caught
+
+Ran the mandated audit (not just the "zero top-level functions" grep) across
+every new file:
+
+1. **Inline JSX callback props with real branching/multi-statement bodies**:
+   found two 2-statement arrows in the orchestrator (`ProviderTabBar`'s
+   `onSelect` combining an analytics callback + `setSelectedProvider`; the
+   gate's `onClick` combining the same analytics callback + a host `onClick`)
+   — extracted both into named `useCallback`s (`handleProviderTabSelect`,
+   `handleGateClick`). A backdrop-click-to-close one-liner in
+   `ConnectorDetailDrawer` (`if (e.target === e.currentTarget) onClose()`)
+   was left inline — a single standard "click outside" DOM comparison, not
+   business logic.
+2. **`useMemo` bodies with multi-line derivations**: found one —
+   `providerScopedConnectors`'s find-then-filter body in the orchestrator.
+   Extracted to `rules.ts` as `scopeConnectorsToProvider` (now unit-tested in
+   isolation); the orchestrator's `useMemo` is now a one-line call, matching
+   the target end-state described in the audit instructions.
+3. **Orphaned `useState`/`useRef`**: enumerated every one across all 18 new
+   source files (listed by hand, not just grepped) — none found unassigned.
+   The two state values that stayed in the orchestrator itself
+   (`filter`, `selectedProvider`) are simple, single-owner UI state directly
+   bound to one presentational component each; not extracted into their own
+   hooks, on the judgment that doing so would be ceremony without payoff for
+   a single string + a single pure derivation. Flagged here rather than
+   silently decided, per the audit's own standard.
+
+No other hidden logic found. `pnpm --filter @jini/ui run typecheck` was
+re-run clean after each fix.
+
+### Purity grep — reported explicitly per the task's own instructions
+
+**Product-identity strings** (`Open Design`, `OD_`, `--od-stamp`,
+`open-design.ai`, `openDesignDesktop`, `@open-design/`) across every new file
+under `features/connectors/`: **clean, zero matches.**
+
+**`window`/`document`/`fetch`/`EventSource`/`localStorage`/`sessionStorage`/
+`XMLHttpRequest`/`WebSocket` used outside `dependencies.ts`**: one file, by
+design — `components/ConnectorDetailDrawer.tsx` uses `document.addEventListener`
+(Escape-to-close) and `document.body.style.overflow` (background-scroll
+lock) directly in a `useEffect`. This is a disclosed, deliberate deviation
+from the strict ADR-0002 "no DOM outside dependencies.ts" rule: these are
+standard, unavoidable modal-a11y idioms (every modal component in any React
+codebase does this inline), not business/transport logic smuggled past the
+boundary, and routing them through a port would be pure ceremony for a
+canary this scoped. `dependencies.ts` itself legitimately uses all of these
+(that's its job). No other file in the feature touches any of them.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors), both before
+  and after the Phase 8.5 fixes.
+- `pnpm --filter @jini/ui exec vitest run src/features/connectors`: **144
+  tests, 14 files, all green** — `rules.ts` (71, pure-function coverage of
+  every merge/prune/score/sort/trust-check path), `dependencies.test.ts` (13,
+  including the fake port's simulated latency and both real browser bridges'
+  trusted-origin/visibility-gated firing), `useConnectorCatalog.test.ts` (5),
+  `useConnectorAuthorization.test.ts` (11 — explicitly covers the
+  pending/authenticated/stale-cancel OAuth handshake states: a successful
+  connect with a redirect, a failed connect, ignoring a concurrent second
+  action, the postMessage callback triggering a reload, window-refocus
+  triggering reload **and** auto-cancelling a genuinely stale pending
+  authorization while leaving a not-yet-expired one alone, interval polling
+  start/continue, and pending-state persistence), `useConnectorDetail.test.ts`
+  (7, including realistic two-page pagination), plus component tests for
+  every presentational piece and a 6-test orchestrator smoke suite (load,
+  locked-gate masking, search-empty-state, an end-to-end connect through the
+  fake dependencies, provider-tab/search analytics callbacks, opening/closing
+  the detail drawer). No coverage percentage was targeted — tests were
+  written against actual state transitions and error paths per the task's
+  own instruction, not to hit a number.
+- Full monorepo `pnpm -r run typecheck` afterward: only pre-existing,
+  unrelated failures in `packages/agent-runtime` and `packages/chat-react`
+  (both stub packages missing a `tsconfig.json` entirely — not touched by
+  this task).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged from before this task, no
+  boundary violations introduced.
+
+### Honesty note — is this pattern ready to scale to the rest of the list?
+
+Mostly yes, with two caveats worth flagging before dispatching the next
+items in `docs/jini-port/god-components-extraction-plan.md` §1:
+
+- **The plan doc under-specifies what needs generifying** — this is now the
+  *second* time (after the i18n/utils task's `ExportDiagnosticsButton`/
+  `enterpriseUrl.ts` finding) that reading a file in full surfaced
+  product-specific logic the recon docs didn't call out (`ConnectorLogo`'s
+  Composio-CDN slug construction here). A session working the next item
+  should budget time to read every imported helper file, not just the god
+  component itself, before trusting a plan doc's "what ships" list as
+  complete.
+- **The Phase 8.5 audit is genuinely necessary, not optional busywork** — it
+  caught two real hidden-logic spots in a file this session wrote *itself*,
+  written carefully the first time. That's the audit doing its job (per its
+  own stated purpose: catching logic that "may just have never been
+  extracted in the first place"), and a strong signal it should stay
+  mandatory rather than get skipped as "probably fine" on faster future
+  passes.
+
+Everything else — the ports+dependencies+hooks+components+barrel shape, the
+fake-double convention for `dependencies.ts`, folding a proven concurrency
+hook (auth handshake) into one cohesive `useX` rather than over-fragmenting,
+and testing state transitions directly rather than chasing a coverage
+percentage — held up cleanly against a genuinely non-trivial 1,573-line
+source file. The pattern is ready to scale; the two caveats above are
+process reminders for the next session, not blockers.

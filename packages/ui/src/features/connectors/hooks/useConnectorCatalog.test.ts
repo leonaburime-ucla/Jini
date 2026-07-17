@@ -1,0 +1,75 @@
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { useConnectorCatalog } from './useConnectorCatalog.js';
+import { createFakeConnectorsPort } from '../dependencies.js';
+import type { Connector } from '../types.js';
+
+function makeConnector(overrides: Partial<Connector> = {}): Connector {
+  return { id: 'slack', name: 'Slack', provider: 'Composio', category: 'communication', status: 'available', tools: [], ...overrides };
+}
+
+describe('useConnectorCatalog', () => {
+  it('loads the base catalog on mount and clears loading', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    const { result } = renderHook(() => useConnectorCatalog(port, { unlocked: false }));
+
+    expect(result.current.loading).toBe(true);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.connectors).toHaveLength(1);
+  });
+
+  it('does not enrich while locked', async () => {
+    const enrich = vi.fn(async () => []);
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.fetchConnectorEnrichment = enrich;
+    const { result } = renderHook(() => useConnectorCatalog(port, { unlocked: false }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(enrich).not.toHaveBeenCalled();
+    expect(result.current.enriched).toBe(false);
+  });
+
+  it('enriches once unlocked, and only once', async () => {
+    const enrich = vi.fn(async () => [makeConnector({ toolCount: 3 })]);
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.fetchConnectorEnrichment = enrich;
+
+    const { result, rerender } = renderHook(({ unlocked }) => useConnectorCatalog(port, { unlocked }), {
+      initialProps: { unlocked: false },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    rerender({ unlocked: true });
+    await waitFor(() => expect(result.current.enriched).toBe(true));
+    expect(enrich).toHaveBeenCalledTimes(1);
+    expect(result.current.connectors[0]!.toolCount).toBe(3);
+
+    rerender({ unlocked: true });
+    await waitFor(() => expect(result.current.enriched).toBe(true));
+    expect(enrich).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-runs both fetches when refreshKey changes', async () => {
+    const fetchConnectors = vi.fn(async () => [makeConnector()]);
+    const port = createFakeConnectorsPort({ connectors: [] });
+    port.fetchConnectors = fetchConnectors;
+
+    const { rerender } = renderHook(({ refreshKey }) => useConnectorCatalog(port, { unlocked: false, refreshKey }), {
+      initialProps: { refreshKey: 0 },
+    });
+    await waitFor(() => expect(fetchConnectors).toHaveBeenCalledTimes(1));
+
+    rerender({ refreshKey: 1 });
+    await waitFor(() => expect(fetchConnectors).toHaveBeenCalledTimes(2));
+  });
+
+  it('setConnectors lets a caller apply an external update', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    const { result } = renderHook(() => useConnectorCatalog(port, { unlocked: false }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.setConnectors((curr) => curr.map((c) => ({ ...c, status: 'connected' })));
+    });
+    expect(result.current.connectors[0]!.status).toBe('connected');
+  });
+});
