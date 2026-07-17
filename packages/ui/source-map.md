@@ -916,16 +916,21 @@ test config is untouched):
   inert option in the public API.
 - **One line excluded from coverage, not faked** —
   `useBrowserNavigationStack.ts`'s `if (!currentEntry) return;` guard inside
-  the `onNavigate`-firing effect is unreachable through the hook's public API:
-  every state transition it performs (`initialNavigationState`/
+  the `onNavigate`-firing effect was unreachable through the hook's public
+  API: every state transition it performs (`initialNavigationState`/
   `recordNavigation`/`resolveNavigationHistoryDelta`/
   `updateCurrentNavigationTitle`, all in `rules.ts`) preserves
   `0 <= navigationIndex < navigationStack.length`, so `currentEntry` is always
-  defined in practice — the guard exists only because
+  defined in practice — the guard existed only because
   `noUncheckedIndexedAccess` types the array-index read as possibly-undefined.
-  Marked with an inline `/* v8 ignore next */` and a comment explaining the
-  invariant, rather than deleting a safety net demanded by strict typing or
-  writing a test that reaches into the hook's private state to fake it.
+  **Correction (2026-07-17, per the vendored `fixing-open-design-web` SKILL.md's
+  Phase 9.5 classification #4 — "TS-required fallback with no real runtime
+  path"):** an initial pass marked this with `/* v8 ignore next */`, which
+  that skill's rule explicitly forbids ("never a valid outcome... under any
+  classification"). Fixed to the classification's actual prescription: the
+  `if` branch is deleted and the index read is a non-null assertion
+  (`state.navigationStack[state.navigationIndex]!`) with a one-line comment
+  explaining the invariant — no suppression comment anywhere in this feature.
 - **`ports.ts`/`types.ts` excluded from coverage** — both are
   `export interface`/`export type` only; verified via the package's own
   esbuild transform that they compile to zero emitted statements, so

@@ -48,21 +48,16 @@ export function useBrowserNavigationStack(options: UseBrowserNavigationStackOpti
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const currentEntry = state.navigationStack[state.navigationIndex];
+  // Non-null assertion, not a guard: every state transition this hook
+  // performs (initialNavigationState / recordNavigation /
+  // resolveNavigationHistoryDelta / updateCurrentNavigationTitle, all in
+  // rules.ts) preserves `navigationStack.length >= 1` and
+  // `0 <= navigationIndex < navigationStack.length`, so this index read is
+  // always in range at runtime — `noUncheckedIndexedAccess` just can't prove
+  // that statically.
+  const currentEntry = state.navigationStack[state.navigationIndex]!;
 
   useEffect(() => {
-    // `currentEntry` is provably always defined here: every state transition
-    // this hook performs (initialNavigationState / recordNavigation /
-    // resolveNavigationHistoryDelta / updateCurrentNavigationTitle, all in
-    // rules.ts) preserves the invariant `navigationStack.length >= 1` and
-    // `0 <= navigationIndex < navigationStack.length`. The guard below is
-    // unreachable through this hook's public API (no external caller can set
-    // navigationIndex out of range), so it can never be exercised by a real
-    // test without reaching into private state — excluded from coverage
-    // rather than faked. `noUncheckedIndexedAccess` still requires the
-    // array-index read above to type as possibly-undefined, hence the guard.
-    /* v8 ignore next */
-    if (!currentEntry) return;
     const last = lastNotifiedRef.current;
     if (last && last.url === currentEntry.url && last.title === currentEntry.title) return;
     lastNotifiedRef.current = currentEntry;
