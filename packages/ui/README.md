@@ -14,9 +14,16 @@ generic toast/notification system) that isn't tied to Open Design's product
 vocabulary.
 
 **Not here:** anything OD-product-specific — `FileViewer`, `ProjectView`,
-`SettingsDialog`, `DesignSystemFlow`, memory-extraction config UI, automations,
-handoff, brand/plugin/figma-specific components. Those stay in
+`DesignSystemFlow`, memory-extraction config UI, automations, handoff,
+brand/plugin/figma-specific components. Those stay in
 `integrations/open-design/` as OD's own UI if/when that adapter needs them.
+`SettingsDialog` itself is one of these (its `execution`/`orbit`/`media`/
+`composio`/`critiqueTheater`/`pet`/`designSystems`/`projectLocations`/
+`routines`/`about` tabs and its AMR/autosave shell state stay OD-specific) —
+but its reusable tabbed-dialog *shell* and 6 of its small, clean, generic
+tabs (`appearance`, `notifications`, `language`, `instructions`,
+`integrations`, `privacy`) shipped as `src/features/settings-dialog/`; see
+`packages/ui/source-map.md`.
 Also not here: chat/artifact UI — that's `@jini/chat-core` (already built),
 `@jini/chat-react`, and `@jini/renderers-react` (separate packages, kept
 separate deliberately — see the chat-core/chat-react split discussion in
@@ -73,9 +80,15 @@ Real content has landed in several parallel passes — see
   canary (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`
   §0: an OAuth integration marketplace UI (ports+dependencies+hooks+
   components+barrel).
+- `src/features/settings-dialog/` (shell) + `src/features/settings-dialog/
+  tabs/{appearance,notifications,language,instructions,integrations,privacy}/`
+  — extracted from `SettingsDialog.tsx` (2026-07-17), per
+  `docs/jini-port/god-components-extraction-plan.md` item 5. Uses the NEW
+  `react/{hooks,components}` layout (this is the first feature built with it
+  from scratch). See `packages/ui/source-map.md`.
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
 (cross-package routing) of the extraction plan are not started. The
-god-components-extraction-plan.md list beyond the connectors canary is also
-not started, pending the canary's own review.
+god-components-extraction-plan.md list beyond the connectors canary and the
+settings-dialog item is also not started.
