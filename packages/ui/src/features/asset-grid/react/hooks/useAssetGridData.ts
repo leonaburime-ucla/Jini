@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildAssetGridQuery, defaultMatchesKindFilter, filterByKind } from '../../rules.js';
-import type { AssetGridDataPort } from '../../ports.js';
+import { createFakeAssetGridDependencies } from '../../dependencies.js';
+import type { AssetGridDataPort, AssetGridDependencies } from '../../ports.js';
 import type { AssetGridItem, AssetGridQuery } from '../../types.js';
 
 export interface UseAssetGridDataParams<TAsset extends AssetGridItem> {
@@ -70,4 +71,31 @@ export function useAssetGridData<TAsset extends AssetGridItem>(
   }, [active, reload]);
 
   return { assets, setAssets, loading, query, reload };
+}
+
+export type UseWiredAssetGridDataParams<TAsset extends AssetGridItem> = Omit<
+  UseAssetGridDataParams<TAsset>,
+  'data'
+> & {
+  /**
+   * Optional host-supplied dependencies (only the `data` port is read here).
+   * Omit to fall back to the package's in-memory fake — the same default
+   * `AssetGrid` itself uses.
+   */
+  dependencies?: AssetGridDependencies<TAsset> | undefined;
+};
+
+/**
+ * Wirer: binds `data` from `dependencies.ts` (a host-supplied port via
+ * `dependencies`, or the package's in-memory fake) so production callers
+ * don't need to import `dependencies.ts` themselves. `useAssetGridData`
+ * itself stays fake-able in tests — this is the only export in the file
+ * that touches a concrete adapter.
+ */
+export function useWiredAssetGridData<TAsset extends AssetGridItem>(
+  params: UseWiredAssetGridDataParams<TAsset>,
+): UseAssetGridDataResult<TAsset> {
+  const { dependencies, ...rest } = params;
+  const deps = useMemo(() => dependencies ?? createFakeAssetGridDependencies<TAsset>(), [dependencies]);
+  return useAssetGridData({ ...rest, data: deps.data });
 }

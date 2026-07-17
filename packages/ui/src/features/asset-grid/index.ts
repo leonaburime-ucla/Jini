@@ -56,10 +56,17 @@ export {
 } from './dependencies.js';
 export type { FakeAssetGridDataPortOptions, BrowserSseLiveUpdatesOptions } from './dependencies.js';
 
-export { useAssetGridData } from './react/hooks/useAssetGridData.js';
-export type { UseAssetGridDataParams, UseAssetGridDataResult } from './react/hooks/useAssetGridData.js';
-export { useAssetGridLiveUpdates } from './react/hooks/useAssetGridLiveUpdates.js';
-export type { UseAssetGridLiveUpdatesParams } from './react/hooks/useAssetGridLiveUpdates.js';
+export { useAssetGridData, useWiredAssetGridData } from './react/hooks/useAssetGridData.js';
+export type {
+  UseAssetGridDataParams,
+  UseAssetGridDataResult,
+  UseWiredAssetGridDataParams,
+} from './react/hooks/useAssetGridData.js';
+export { useAssetGridLiveUpdates, useWiredAssetGridLiveUpdates } from './react/hooks/useAssetGridLiveUpdates.js';
+export type {
+  UseAssetGridLiveUpdatesParams,
+  UseWiredAssetGridLiveUpdatesParams,
+} from './react/hooks/useAssetGridLiveUpdates.js';
 export { useAssetGridSelection } from './react/hooks/useAssetGridSelection.js';
 export type { UseAssetGridSelectionResult } from './react/hooks/useAssetGridSelection.js';
 export { useRubberBandDrag } from './react/hooks/useRubberBandDrag.js';

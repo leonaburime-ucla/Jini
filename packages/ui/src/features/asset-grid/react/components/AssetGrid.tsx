@@ -3,11 +3,10 @@ import { useT } from '../../../i18n/index.js';
 import { useDebouncedValue } from '../../../../hooks/useDebouncedValue.js';
 import { DEFAULT_SEARCH_DEBOUNCE_MS } from '../../constants.js';
 import { buildFacetLabelMap, dayKeyFromTimestamp, resolveFacetLabel } from '../../rules.js';
-import { createFakeAssetGridDependencies } from '../../dependencies.js';
 import type { AssetGridDependencies } from '../../ports.js';
 import type { AssetGridFacetOption, AssetGridItem, AssetGridSelectors, AssetGridViewMode } from '../../types.js';
-import { useAssetGridData } from '../hooks/useAssetGridData.js';
-import { useAssetGridLiveUpdates } from '../hooks/useAssetGridLiveUpdates.js';
+import { useWiredAssetGridData } from '../hooks/useAssetGridData.js';
+import { useWiredAssetGridLiveUpdates } from '../hooks/useAssetGridLiveUpdates.js';
 import { useAssetGridSelection } from '../hooks/useAssetGridSelection.js';
 import { useRubberBandDrag } from '../hooks/useRubberBandDrag.js';
 import { useAssetGridKeyboardShortcuts } from '../hooks/useAssetGridKeyboardShortcuts.js';
@@ -76,7 +75,6 @@ export function AssetGrid<TAsset extends AssetGridItem>({
   initialViewMode = 'grid',
 }: AssetGridProps<TAsset>) {
   const t = useT();
-  const deps = useMemo(() => dependencies ?? createFakeAssetGridDependencies<TAsset>(), [dependencies]);
 
   const [kind, setKind] = useState('');
   const [source, setSource] = useState('');
@@ -86,9 +84,13 @@ export function AssetGrid<TAsset extends AssetGridItem>({
   const debouncedSearch = useDebouncedValue(search, searchDebounceMs);
   const filtersActive = !!(kind || source || debouncedSearch.trim());
 
-  const { assets, setAssets, loading, reload } = useAssetGridData({
+  // `dependencies` (host-supplied, or omitted to fall back to the package's
+  // in-memory fake) is resolved by each wirer independently — neither this
+  // component nor the real `useAssetGridData`/`useAssetGridLiveUpdates`
+  // hooks import `dependencies.ts` themselves.
+  const { assets, setAssets, loading, reload } = useWiredAssetGridData({
+    dependencies,
     active,
-    data: deps.data,
     kind,
     source,
     debouncedSearch,
@@ -97,11 +99,10 @@ export function AssetGrid<TAsset extends AssetGridItem>({
     mapKindToQuery: selectors.mapKindToQuery,
   });
 
-  useAssetGridLiveUpdates({
+  useWiredAssetGridLiveUpdates({
+    dependencies,
     active,
-    liveUpdates: deps.liveUpdates,
     filtersActive,
-    fetchAssetById: deps.data.fetchAssetById?.bind(deps.data),
     setAssets,
     reload,
     coalesceMs: liveUpdateCoalesceMs,

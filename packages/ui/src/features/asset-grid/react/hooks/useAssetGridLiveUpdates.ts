@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { DEFAULT_LIVE_UPDATE_COALESCE_MS } from '../../constants.js';
 import { mergeIngestedAssets } from '../../rules.js';
-import type { AssetGridLiveUpdatesPort } from '../../ports.js';
+import { createFakeAssetGridDependencies } from '../../dependencies.js';
+import type { AssetGridDependencies, AssetGridLiveUpdatesPort } from '../../ports.js';
 import type { AssetGridItem } from '../../types.js';
 
 export interface UseAssetGridLiveUpdatesParams<TAsset extends AssetGridItem> {
@@ -118,4 +119,35 @@ export function useAssetGridLiveUpdates<TAsset extends AssetGridItem>(
       unsubscribe();
     };
   }, [active, liveUpdates, coalesceMs, setAssets]);
+}
+
+export type UseWiredAssetGridLiveUpdatesParams<TAsset extends AssetGridItem> = Omit<
+  UseAssetGridLiveUpdatesParams<TAsset>,
+  'liveUpdates' | 'fetchAssetById'
+> & {
+  /**
+   * Optional host-supplied dependencies (`liveUpdates` and `data.fetchAssetById`
+   * are read here). Omit to fall back to the package's in-memory fake, which
+   * carries no `liveUpdates` port — matching `AssetGrid`'s own default of
+   * disabling live-merge reconciliation when no dependencies are supplied.
+   */
+  dependencies?: AssetGridDependencies<TAsset> | undefined;
+};
+
+/**
+ * Wirer: binds `liveUpdates` and `fetchAssetById` from `dependencies.ts` so
+ * production callers don't need to import `dependencies.ts` themselves.
+ * `useAssetGridLiveUpdates` itself stays fake-able in tests — this is the
+ * only export in the file that touches a concrete adapter.
+ */
+export function useWiredAssetGridLiveUpdates<TAsset extends AssetGridItem>(
+  params: UseWiredAssetGridLiveUpdatesParams<TAsset>,
+): void {
+  const { dependencies, ...rest } = params;
+  const deps = useMemo(() => dependencies ?? createFakeAssetGridDependencies<TAsset>(), [dependencies]);
+  useAssetGridLiveUpdates({
+    ...rest,
+    liveUpdates: deps.liveUpdates,
+    fetchAssetById: deps.data.fetchAssetById?.bind(deps.data),
+  });
 }

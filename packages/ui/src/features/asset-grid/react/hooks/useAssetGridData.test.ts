@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { useAssetGridData } from './useAssetGridData.js';
-import { createFakeAssetGridDataPort } from '../../dependencies.js';
+import { useAssetGridData, useWiredAssetGridData } from './useAssetGridData.js';
+import { createFakeAssetGridDataPort, createFakeAssetGridDependencies } from '../../dependencies.js';
 
 interface TestAsset {
   id: string;
@@ -76,5 +76,36 @@ describe('useAssetGridData', () => {
     expect(result.current.assets).toEqual([]);
     await result.current.reload();
     await waitFor(() => expect(result.current.assets).toEqual([{ id: 'a', kind: 'image' }]));
+  });
+});
+
+describe('useWiredAssetGridData', () => {
+  it('binds the `data` port from the supplied `dependencies` (not a hardcoded fake)', async () => {
+    const dependencies = createFakeAssetGridDependencies<TestAsset>({ assets: [{ id: 'wired', kind: 'image' }] });
+    const { result } = renderHook(() =>
+      useWiredAssetGridData({
+        dependencies,
+        active: true,
+        kind: '',
+        source: '',
+        debouncedSearch: '',
+        getKind: (a) => a.kind,
+      }),
+    );
+    await waitFor(() => expect(result.current.assets).toEqual([{ id: 'wired', kind: 'image' }]));
+  });
+
+  it('falls back to the package in-memory fake (empty) when `dependencies` is omitted', async () => {
+    const { result } = renderHook(() =>
+      useWiredAssetGridData({
+        active: true,
+        kind: '',
+        source: '',
+        debouncedSearch: '',
+        getKind: (a: TestAsset) => a.kind,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.assets).toEqual([]);
   });
 });

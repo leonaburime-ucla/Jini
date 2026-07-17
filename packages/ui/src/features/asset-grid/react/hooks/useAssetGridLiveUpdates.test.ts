@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useAssetGridLiveUpdates } from './useAssetGridLiveUpdates.js';
-import type { AssetGridLiveUpdateHandlers, AssetGridLiveUpdatesPort } from '../../ports.js';
+import { useAssetGridLiveUpdates, useWiredAssetGridLiveUpdates } from './useAssetGridLiveUpdates.js';
+import type { AssetGridDependencies, AssetGridLiveUpdateHandlers, AssetGridLiveUpdatesPort } from '../../ports.js';
 
 interface TestAsset {
   id: string;
@@ -240,5 +240,50 @@ describe('useAssetGridLiveUpdates', () => {
     expect(unsubscribe()).toBe(false);
     unmount();
     expect(unsubscribe()).toBe(true);
+  });
+});
+
+describe('useWiredAssetGridLiveUpdates', () => {
+  it('binds `liveUpdates`/`fetchAssetById` from the supplied `dependencies` (not a hardcoded fake)', async () => {
+    vi.useFakeTimers();
+    const { port, fire } = fakeLiveUpdatesPort();
+    const fetchAssetById = vi.fn().mockResolvedValue({ id: 'new', kind: 'image' });
+    const dependencies: AssetGridDependencies<TestAsset> = {
+      data: { fetchAssets: vi.fn().mockResolvedValue([]), fetchAssetById },
+      liveUpdates: port,
+    };
+    const setAssets = vi.fn();
+    const reload = vi.fn().mockResolvedValue(undefined);
+    renderHook(() =>
+      useWiredAssetGridLiveUpdates<TestAsset>({
+        dependencies,
+        active: true,
+        filtersActive: false,
+        setAssets,
+        reload,
+        coalesceMs: 50,
+      }),
+    );
+    act(() => fire().onIngest('new'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(fetchAssetById).toHaveBeenCalledWith('new');
+    expect(setAssets).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('falls back to the package in-memory fake (no liveUpdates, no-op) when `dependencies` is omitted', () => {
+    const setAssets = vi.fn();
+    const reload = vi.fn();
+    renderHook(() =>
+      useWiredAssetGridLiveUpdates<TestAsset>({
+        active: true,
+        filtersActive: false,
+        setAssets,
+        reload,
+      }),
+    );
+    expect(setAssets).not.toHaveBeenCalled();
   });
 });
