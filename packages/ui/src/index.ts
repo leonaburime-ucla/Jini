@@ -20,6 +20,8 @@ export * from './utils/markdown-scroll-sync.js';
 export * from './hooks/useInView.js';
 export * from './hooks/useDebouncedValue.js';
 
+export * from './browser/index.js';
+
 export * from './components/Icon.js';
 export * from './components/RemixIcon.js';
 export * from './components/AgentIcon.js';

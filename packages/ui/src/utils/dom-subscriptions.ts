@@ -27,31 +27,39 @@ export function getDocumentBody(): HTMLElement | null {
 }
 
 /**
- * Fires `onClose` on a `mousedown` outside `container.current`, or on
+ * Fires `onClose` on a `pointerdown` outside `container.current`, or on
  * Escape anywhere. A no-op subscription outside the browser (SSR).
  *
+ * Uses `pointerdown` (not `mousedown`/`click`) to match every real popover/
+ * dropdown call site that dismisses on outside interaction (verified against
+ * `ViewportSwitcher`/`BrowserViewportControls` in `packages/ui/src/browser/
+ * useDismissOnOutsideOrEscape.ts`'s callers) — it fires before `mouseup`-based
+ * text selection can interfere and covers touch input `click` doesn't.
+ *
  * @param container - A ref-like box holding the element to treat as
- *   "inside" (any click within it is ignored).
+ *   "inside" (any click within it is ignored). Omit entirely (`undefined`)
+ *   to skip the outside-click listener and react to Escape only — e.g. a
+ *   modal whose backdrop click is already handled by the caller.
  * @param onClose - Called once per qualifying outside-click or Escape key.
- * @returns A cleanup function that removes both listeners.
+ * @returns A cleanup function that removes the listener(s) that were added.
  */
 export function subscribeOutsideClickOrEscape(
-  container: { current: HTMLElement | null },
+  container: { current: HTMLElement | null } | undefined,
   onClose: () => void,
 ): () => void {
   if (typeof document === 'undefined') return () => {};
-  function onPointer(e: MouseEvent) {
+  function onPointer(e: PointerEvent) {
     const target = e.target as Node;
-    if (container.current?.contains(target)) return;
+    if (container?.current?.contains(target)) return;
     onClose();
   }
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
-  document.addEventListener('mousedown', onPointer);
+  if (container) document.addEventListener('pointerdown', onPointer);
   document.addEventListener('keydown', onKey);
   return () => {
-    document.removeEventListener('mousedown', onPointer);
+    if (container) document.removeEventListener('pointerdown', onPointer);
     document.removeEventListener('keydown', onKey);
   };
 }
