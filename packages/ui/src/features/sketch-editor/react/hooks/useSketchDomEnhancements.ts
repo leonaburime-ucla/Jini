@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import type { RefObject } from 'react';
+import { useGlobalKeydown } from '../../../../browser/useGlobalKeydown.js';
 import {
   DEFAULT_CONTEXT_MENU_ACTION_ORDER,
   DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS,
@@ -80,23 +81,9 @@ export function useSketchDomEnhancements({
     const observer = new MutationObserver(scheduleEnhancements);
     observer.observe(root, { childList: true, subtree: true, characterData: true });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (!document.querySelector('.jini-sketch-modal .Modal')) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onCloseActiveDialog();
-    };
-    const handleCommandEnter = (event: KeyboardEvent) => {
-      handleSketchPortalCommandEnter(event, mermaidInsertLabelPattern);
-    };
-    document.addEventListener('keydown', handleEscape, true);
-    document.addEventListener('keydown', handleCommandEnter, true);
     return () => {
       observer.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
-      document.removeEventListener('keydown', handleEscape, true);
-      document.removeEventListener('keydown', handleCommandEnter, true);
     };
   }, [
     closeLabel,
@@ -110,4 +97,27 @@ export function useSketchDomEnhancements({
     tooltipLabels,
     tooltipTargets,
   ]);
+
+  // Both listeners run in the capture phase on `document` (not scoped to
+  // `containerRef`) to win a race against Excalidraw's own bundled
+  // listeners — see `useGlobalKeydown`'s doc comment in
+  // `packages/ui/src/browser/useGlobalKeydown.ts`, which extracted this
+  // exact shape out of this hook. `useGlobalKeydown` re-reads its handler
+  // via a latest-ref internally, so passing a fresh closure each render is
+  // fine — no memoization needed here.
+  useGlobalKeydown(
+    (event) => {
+      if (event.key !== 'Escape') return;
+      if (!document.querySelector('.jini-sketch-modal .Modal')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseActiveDialog();
+    },
+    { target: 'document', capture: true },
+  );
+
+  useGlobalKeydown((event) => handleSketchPortalCommandEnter(event, mermaidInsertLabelPattern), {
+    target: 'document',
+    capture: true,
+  });
 }
