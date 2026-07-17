@@ -155,21 +155,27 @@ function isSignedNegativeZeroJsonNumberToken(token: string): boolean {
 function isPrecisionSensitiveJsonNumberToken(token: string): boolean {
   const parsed = Number(token);
   if (!Number.isFinite(parsed)) return true;
+  // `JSON.stringify` of a finite number always returns a non-empty numeral
+  // string ("0" at minimum) — there is no finite input for which it returns
+  // "" or another falsy value, so the defensive `!rendered` check this line
+  // replaces (present in the original source) could never actually fire.
   const rendered = JSON.stringify(parsed);
-  if (!rendered) return true;
   const originalValue = parseJsonNumberTokenAsDecimal(token);
   const renderedValue = parseJsonNumberTokenAsDecimal(rendered);
-  return (
-    !originalValue ||
-    !renderedValue ||
-    originalValue.coefficient !== renderedValue.coefficient ||
-    originalValue.exponent !== renderedValue.exponent
-  );
+  return originalValue.coefficient !== renderedValue.coefficient || originalValue.exponent !== renderedValue.exponent;
 }
 
-function parseJsonNumberTokenAsDecimal(token: string): { coefficient: bigint; exponent: number } | null {
-  const match = /^(-)?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
-  if (!match) return null;
+function parseJsonNumberTokenAsDecimal(token: string): { coefficient: bigint; exponent: number } {
+  // Both call sites above only ever pass a well-formed decimal/exponential
+  // JSON number literal: either a value matched by
+  // `hasPrecisionSensitiveJsonNumberText`'s own number-token regex (a strict
+  // subset of the pattern below — no leading zeros, always digits either
+  // side of `.`) or `JSON.stringify` output of a finite number (guaranteed
+  // by the JS spec to already be in this exact shape). So this match is
+  // guaranteed to succeed; the non-null assertion exists only to satisfy
+  // TypeScript's `RegExpExecArray | null` return type, not because there is
+  // a real runtime path where it fails.
+  const match = /^(-)?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token)!;
   const [, sign, integerPart, fractionPart = '', exponentPart = '0'] = match;
   const coefficient = BigInt(`${sign ?? ''}${integerPart}${fractionPart}`);
   const exponent = Number(exponentPart) - fractionPart.length;
