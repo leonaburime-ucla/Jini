@@ -6,6 +6,7 @@
 export * from './features/i18n/index.js';
 export * from './features/observability/index.js';
 export * from './features/connectors/index.js';
+export * from './features/asset-grid/index.js';
 export * from './utils/index.js';
 export * from './utils/zip.js';
 export * from './utils/sse.js';
@@ -17,6 +18,7 @@ export * from './utils/localized-url.js';
 export * from './utils/markdown-scroll-sync.js';
 
 export * from './hooks/useInView.js';
+export * from './hooks/useDebouncedValue.js';
 
 export * from './components/Icon.js';
 export * from './components/RemixIcon.js';

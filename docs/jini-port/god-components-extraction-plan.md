@@ -153,7 +153,7 @@ across all 23 until now; the last 2 below came from reconciling this doc against
 |---|---|
 | `features/annotation-canvas/` | `PreviewDrawOverlay.tsx` (❌ reverted 2026-07-17 — a first attempt via Codex Cloud landed with 2 undisclosed gaps found on independent review, submit-action picker + keyboard shortcuts, and skipped the branch+draft-PR convention; the merged code was reverted, `packages/renderers-react` is back to a placeholder stub. Open again — see `god-component-extraction.md`) |
 | `features/sketch-editor/` (or `@jini/renderers-react`) | `SketchEditor.tsx`'s Excalidraw-integration shim |
-| `features/asset-grid/` (generic `AssetGrid<TAsset>`) | `LibrarySection.tsx` — rubber-band multi-select (the single cleanest generic core in the whole sweep, per §1.16), facets, debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch thumbnails |
+| `features/asset-grid/` (generic `AssetGrid<TAsset>`) (✅ landed 2026-07-17, redo — see `packages/ui/source-map.md`) | `LibrarySection.tsx` — rubber-band multi-select (the single cleanest generic core in the whole sweep, per §1.16), facets, debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch thumbnails |
 | `features/asset-tree-browser/` (generic `AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>`) | `DesignFilesPanel.tsx` |
 | `features/browser-chrome/` (embeddable webview/iframe browser tab) | `DesignBrowserPanel.tsx` — nav stack, address-bar normalization, history/favicon utilities, ports for `onNavigate`/history storage/brand-bridge registration |
 | `features/viewer-shell/` (the 9-times-repeated "viewer toolbar + body" shell) | `FileViewer.tsx` — `BinaryViewer`/`DocumentPreviewViewer`/`ImageViewer`/`SketchViewer`/`VideoViewer`/`AudioViewer`/`SvgViewer`/`TextViewer`, plus `CommentSidePanel`/`CommentSideDock` and the `MarkdownViewer` split-pane |
@@ -255,10 +255,11 @@ don't repeat that on the next items in this list.
    `execution`/`orbit`/`media`/`composio`/`critiqueTheater`/`pet`/`designSystems`/`projectLocations`/
    `routines`/`about` as OD-specific. Verify `privacy` in a follow-up (r6 flagged it "likely generic,
    not fully verified").
-6. **`LibrarySection.tsx`**'s rubber-band multi-select + asset-grid shell, and **`DesignsTab.tsx`**'s
-   status-kanban dashboard shell — both plausible near-term sources for Jini's own list/dashboard UI
-   (the kanban's status vocabulary — `not_started/running/awaiting_input/succeeded/failed/canceled`
-   — reads like a generic agent-run lifecycle, not an OD concept).
+6. ~~`LibrarySection.tsx`'s rubber-band multi-select + asset-grid shell~~ — ✅ landed 2026-07-17, see
+   `features/asset-grid/` above and `packages/ui/source-map.md`. **`DesignsTab.tsx`**'s
+   status-kanban dashboard shell is still open — a plausible near-term source for Jini's own list/
+   dashboard UI (the kanban's status vocabulary — `not_started/running/awaiting_input/succeeded/
+   failed/canceled` — reads like a generic agent-run lifecycle, not an OD concept).
 7. **Batch "atoms" sweep** — the remaining moderate/thin PARTIAL files each yield one or two small,
    low-risk extractions not worth an individual PR each: `OptionCards<T>`/`CompactToggle`/
    `ToggleRow`/`FidelityCard` shell (`NewProjectPanel.tsx`), `BrandLogo`/`HeaderActionsMenu`/the
