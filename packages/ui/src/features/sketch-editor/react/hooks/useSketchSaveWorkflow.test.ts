@@ -7,6 +7,27 @@ import { useSketchSaveWorkflow, useWiredSketchSaveWorkflow } from './useSketchSa
 
 const t = (key: string) => key;
 
+/**
+ * A controllable `FileReader` double for exercising `blobToBase64`'s (an
+ * unexported internal of this file) error/edge branches — real
+ * `readAsDataURL()` always succeeds with a well-formed `data:...,<payload>`
+ * string in both real browsers and jsdom, so its error path and the
+ * defensive non-string/no-comma fallbacks around `.result` can't be reached
+ * with a real Blob; this stub drives them directly instead.
+ */
+class FakeFileReader {
+  onerror: (() => void) | null = null;
+  onload: (() => void) | null = null;
+  result: string | ArrayBuffer | null = null;
+  error: Error | null = null;
+  readAsDataURL(): void {
+    queueMicrotask(() => {
+      if (this.error) this.onerror?.();
+      else this.onload?.();
+    });
+  }
+}
+
 function baseParams(overrides: Partial<Parameters<typeof useSketchSaveWorkflow>[0]> = {}) {
   return {
     dirty: false,
@@ -87,6 +108,30 @@ describe('useSketchSaveWorkflow', () => {
     });
   });
 
+  it('handleExportImage defaults exportBackground viewBackgroundColor to white when the scene has none', async () => {
+    const engine = createFakeSketchEditorEngine();
+    const exportToBlob = vi.spyOn(engine, 'exportToBlob');
+    const onExportImage = vi.fn(async () => true);
+    const { result } = renderHook(() =>
+      useSketchSaveWorkflow(
+        baseParams({ engine, onExportImage, currentScene: () => ({ elements: [], appState: {}, files: {} }) }),
+      ),
+    );
+    await act(async () => {
+      await result.current.handleExportImage();
+    });
+    expect(exportToBlob).toHaveBeenCalledWith(expect.objectContaining({ appState: expect.objectContaining({ viewBackgroundColor: '#ffffff' }) }));
+  });
+
+  it('handleExportImage does not show a toast when the host explicitly rejects the export (returns false)', async () => {
+    const onExportImage = vi.fn(async () => false);
+    const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ onExportImage })));
+    await act(async () => {
+      await result.current.handleExportImage();
+    });
+    expect(result.current.toast).toBeNull();
+  });
+
   it('handleExportImage is a no-op without an onExportImage handler', async () => {
     const engine = createFakeSketchEditorEngine();
     const exportToBlob = vi.spyOn(engine, 'exportToBlob');
@@ -95,6 +140,99 @@ describe('useSketchSaveWorkflow', () => {
       await result.current.handleExportImage();
     });
     expect(exportToBlob).not.toHaveBeenCalled();
+  });
+
+  it('handleExportImage surfaces an error toast when reading the exported blob fails', async () => {
+    const reader = new FakeFileReader();
+    reader.error = new Error('disk read failed');
+    vi.stubGlobal(
+      'FileReader',
+      vi.fn(() => reader),
+    );
+    try {
+      const engine = createFakeSketchEditorEngine();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const onExportImage = vi.fn();
+      const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ engine, onExportImage })));
+      await act(async () => {
+        await result.current.handleExportImage();
+      });
+      expect(result.current.toast).toEqual({ message: 'Could not export image', tone: 'error' });
+      expect(onExportImage).not.toHaveBeenCalled();
+      warn.mockRestore();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('handleExportImage treats a non-string/no-comma FileReader result defensively (empty/unsliced base64)', async () => {
+    const reader = new FakeFileReader();
+    reader.result = 'no-comma-in-this-string';
+    vi.stubGlobal(
+      'FileReader',
+      vi.fn(() => reader),
+    );
+    try {
+      const engine = createFakeSketchEditorEngine();
+      const onExportImage = vi.fn(async (base64: string) => ({ fileName: `captured:${base64}` }));
+      const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ engine, onExportImage })));
+      await act(async () => {
+        await result.current.handleExportImage();
+      });
+      expect(onExportImage).toHaveBeenCalledWith('no-comma-in-this-string', 'diagram.png', expect.anything());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('handleExportImage surfaces a default error message when FileReader errors with no .error set', async () => {
+    // A real FileReader always sets `.error` before firing `onerror`, but its
+    // type (`DOMException | null`) doesn't guarantee that to the type
+    // checker — this exercises the `?? new Error(...)` fallback directly.
+    class ErroringFileReaderWithNoError extends FakeFileReader {
+      override readAsDataURL(): void {
+        queueMicrotask(() => this.onerror?.());
+      }
+    }
+    vi.stubGlobal(
+      'FileReader',
+      vi.fn(() => new ErroringFileReaderWithNoError()),
+    );
+    try {
+      const engine = createFakeSketchEditorEngine();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const onExportImage = vi.fn();
+      const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ engine, onExportImage })));
+      await act(async () => {
+        await result.current.handleExportImage();
+      });
+      expect(result.current.toast).toEqual({ message: 'Could not export image', tone: 'error' });
+      expect(warn).toHaveBeenCalledWith('[SketchEditor] export image failed', expect.any(Error));
+      expect((warn.mock.calls[0]![1] as Error).message).toBe('Could not read exported image');
+      warn.mockRestore();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('handleExportImage falls back to an empty base64 string when FileReader.result is not a string', async () => {
+    const reader = new FakeFileReader();
+    reader.result = new ArrayBuffer(0); // `readAsDataURL` never actually yields this; defensive-only path
+    vi.stubGlobal(
+      'FileReader',
+      vi.fn(() => reader),
+    );
+    try {
+      const engine = createFakeSketchEditorEngine();
+      const onExportImage = vi.fn(async (base64: string) => ({ fileName: `captured:${base64}` }));
+      const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ engine, onExportImage })));
+      await act(async () => {
+        await result.current.handleExportImage();
+      });
+      expect(onExportImage).toHaveBeenCalledWith('', 'diagram.png', expect.anything());
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('handleExportImage surfaces an error toast when export fails', async () => {
@@ -125,6 +263,16 @@ describe('useSketchSaveWorkflow', () => {
       result.current.handleToastAction();
     });
     expect(onOpenExportedImage).toHaveBeenCalledWith('diagram.png');
+    expect(result.current.toast).toBeNull();
+  });
+
+  it('handleToastAction is a no-op when there is no actionable toast', () => {
+    const onOpenExportedImage = vi.fn();
+    const { result } = renderHook(() => useSketchSaveWorkflow(baseParams({ onOpenExportedImage })));
+    act(() => {
+      result.current.handleToastAction();
+    });
+    expect(onOpenExportedImage).not.toHaveBeenCalled();
     expect(result.current.toast).toBeNull();
   });
 

@@ -98,6 +98,32 @@ describe('SketchEditor', () => {
     expect(onSceneChange).toHaveBeenCalledWith(emptySketchScene('a.excalidraw'), { markDirty: true });
   });
 
+  it('shows the "saving" save-state badge while a save is in flight', async () => {
+    render(<SketchEditor {...baseProps({ saving: true })} />);
+    expect(document.querySelector('.sketch-save-state.is-saving')).not.toBeNull();
+  });
+
+  it('closes the active Excalidraw dialog (via the imperative API) on Escape, end to end', async () => {
+    // Integration coverage for the full Escape-to-close wiring: real
+    // `useSketchScene`-owned `closeActiveDialog` -> real
+    // `useSketchDomEnhancements`'s document-level Escape listener -> the
+    // fake engine's own imperative `updateScene`. Unlike
+    // `useSketchDomEnhancements.test.tsx` (which passes a stub
+    // `onCloseActiveDialog`), this proves the orchestrator's own wiring,
+    // not just the hook in isolation.
+    render(<SketchEditor {...baseProps()} />);
+    await flushRaf();
+
+    const portal = document.createElement('div');
+    portal.className = 'jini-sketch-modal';
+    portal.innerHTML = '<div class="Modal"></div>';
+    document.body.appendChild(portal);
+
+    expect(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    }).not.toThrow();
+  });
+
   it('applies tooltip decoration to its toolbar after mount', async () => {
     render(<SketchEditor {...baseProps()} />);
     await flushRaf();

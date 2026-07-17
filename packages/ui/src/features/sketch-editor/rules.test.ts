@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildInitialData,
   buildSketchTooltipLabels,
+  cloneJson,
   defaultExcalidrawLangCode,
   emptySketchScene,
   exportedImageFileName,
@@ -18,6 +19,21 @@ import {
   translateDomTextValue,
   validateSketchEmbeddableUrl,
 } from './rules.js';
+
+describe('cloneJson', () => {
+  it('deep-clones a JSON-serializable value', () => {
+    const value = { a: [1, 2, { b: 'c' }] };
+    const cloned = cloneJson(value, null);
+    expect(cloned).toEqual(value);
+    expect(cloned).not.toBe(value);
+  });
+
+  it('falls back when the value is not JSON-serializable (e.g. circular)', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(cloneJson(circular, 'fallback')).toBe('fallback');
+  });
+});
 
 describe('sanitizeExcalidrawAppState', () => {
   it('strips transient/session-only fields', () => {
@@ -51,6 +67,10 @@ describe('emptySketchScene / sketchSceneHasContent', () => {
 
   it('a scene with only deleted elements has no content', () => {
     expect(sketchSceneHasContent({ elements: [{ isDeleted: true }], appState: null, files: {} })).toBe(false);
+  });
+
+  it('skips non-object entries in the elements array', () => {
+    expect(sketchSceneHasContent({ elements: [null, 'x', 42], appState: null, files: {} })).toBe(false);
   });
 });
 
@@ -114,6 +134,13 @@ describe('sceneContentSignature', () => {
     expect(a).not.toBe(b);
   });
 
+  it('changes when a versioned element toggles isDeleted', () => {
+    const appState = { viewBackgroundColor: '#fff' };
+    const a = sceneContentSignature([{ id: '1', version: 1, versionNonce: 1, isDeleted: false }], appState, {});
+    const b = sceneContentSignature([{ id: '1', version: 1, versionNonce: 1, isDeleted: true }], appState, {});
+    expect(a).not.toBe(b);
+  });
+
   it('changes when the background color changes', () => {
     const elements = [{ id: '1', version: 1, versionNonce: 1, isDeleted: false }];
     const a = sceneContentSignature(elements, { viewBackgroundColor: '#fff' }, {});
@@ -126,6 +153,47 @@ describe('sceneContentSignature', () => {
     const a = sceneContentSignature(elements, {}, { b: { mimeType: 'image/png' }, a: { mimeType: 'image/jpeg' } });
     const b = sceneContentSignature(elements, {}, { a: { mimeType: 'image/jpeg' }, b: { mimeType: 'image/png' } });
     expect(a).toBe(b);
+  });
+
+  it('falls back to a stable JSON stringify for an element with no numeric version', () => {
+    // Excalidraw elements always carry `version`; a versionless element (a
+    // legacy/malformed shape) falls back to sorted-key JSON stringification
+    // instead of the fast id:version:versionNonce:isDeleted fingerprint.
+    const appState = { viewBackgroundColor: '#fff' };
+    const a = sceneContentSignature([{ id: '1', type: 'rectangle', extra: { z: 1, a: 2 } }], appState, {});
+    const b = sceneContentSignature([{ id: '1', extra: { a: 2, z: 1 }, type: 'rectangle' }], appState, {});
+    expect(a).toBe(b); // key order in the source object shouldn't matter
+    const c = sceneContentSignature([{ id: '1', type: 'ellipse', extra: { z: 1, a: 2 } }], appState, {});
+    expect(a).not.toBe(c);
+  });
+
+  it('sorts arrays nested inside a versionless element (element order preserved, keys sorted)', () => {
+    const appState = { viewBackgroundColor: '#fff' };
+    const a = sceneContentSignature([{ id: '1', points: [{ z: 1, a: 2 }, { z: 3, a: 4 }] }], appState, {});
+    const b = sceneContentSignature([{ id: '1', points: [{ a: 2, z: 1 }, { a: 4, z: 3 }] }], appState, {});
+    expect(a).toBe(b);
+    const c = sceneContentSignature([{ id: '1', points: [{ z: 3, a: 4 }, { z: 1, a: 2 }] }], appState, {});
+    expect(a).not.toBe(c); // array element order still matters
+  });
+
+  it('falls back to an empty stable-stringify when a versionless element is not JSON-serializable', () => {
+    const circular: Record<string, unknown> = { id: '1' };
+    circular.self = circular;
+    expect(() => sceneContentSignature([circular], {}, {})).not.toThrow();
+  });
+
+  it('treats a null/non-object file entry as just its id', () => {
+    const elements: unknown[] = [];
+    const a = sceneContentSignature(elements, {}, { f1: null });
+    const b = sceneContentSignature(elements, {}, { f1: 'not-an-object' });
+    expect(a).toBe(b);
+  });
+
+  it('defaults a file entry missing mimeType/created to empty segments', () => {
+    const elements: unknown[] = [];
+    const withDefaults = sceneContentSignature(elements, {}, { f1: { dataURL: 'data:,abc' } });
+    const withExplicit = sceneContentSignature(elements, {}, { f1: { mimeType: '', created: '', dataURL: 'data:,abc' } });
+    expect(withDefaults).toBe(withExplicit);
   });
 });
 
@@ -141,6 +209,18 @@ describe('exportedImageFileName', () => {
 
   it('falls back to "sketch" for an empty stem', () => {
     expect(exportedImageFileName('.excalidraw')).toBe('sketch.png');
+  });
+
+  it('leaves the base name untouched when a caller-supplied extension does not match', () => {
+    expect(exportedImageFileName('diagram.png', '.sketch.json')).toBe('diagram.png.png');
+  });
+
+  it('treats an explicit empty-string sourceExtension as "strip nothing" (not "unset")', () => {
+    // Regression: `sourceExtension ? … : …` (truthy check) would silently
+    // treat `''` the same as "not provided" and fall back to stripping the
+    // last extension present — `typeof … === 'string'` is what makes an
+    // explicit `''` distinguishable and honored.
+    expect(exportedImageFileName('diagram.excalidraw', '')).toBe('diagram.excalidraw.png');
   });
 });
 
@@ -257,6 +337,14 @@ describe('isExcalidrawUnableToEmbedToast', () => {
 
   it('recognizes a GitHub-issue-whitelist mention', () => {
     expect(isExcalidrawUnableToEmbedToast('Please open a GitHub issue to get this domain whitelisted')).toBe(true);
+  });
+
+  it('recognizes a GitHub+whitelist mention with no "issue" wording (the || right operand alone)', () => {
+    expect(isExcalidrawUnableToEmbedToast('This domain is not on our GitHub whitelist')).toBe(true);
+  });
+
+  it('rejects a GitHub mention with neither "issue" nor "whitelist"', () => {
+    expect(isExcalidrawUnableToEmbedToast('View this repository on GitHub')).toBe(false);
   });
 
   it('recognizes a host-supplied additional phrase', () => {

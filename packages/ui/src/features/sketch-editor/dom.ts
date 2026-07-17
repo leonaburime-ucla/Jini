@@ -109,11 +109,17 @@ export function applySketchContextMenuSimplification(
   recognizedActions: readonly string[],
 ): void {
   for (const menu of Array.from(root.querySelectorAll<HTMLUListElement>('ul.context-menu'))) {
-    const popover = menu.closest<HTMLElement>('.popover') ?? menu.parentElement;
-    if (!popover) continue;
+    // `menu` was found via `root.querySelectorAll(...)`, so it is always a
+    // strict descendant of `root` and therefore always has a parent element
+    // — `.parentElement` is only typed nullable because `Element` itself
+    // permits detached nodes, not because that's reachable here.
+    const popover = menu.closest<HTMLElement>('.popover') ?? menu.parentElement!;
     const recognized = new Set(recognizedActions);
+    // `li[data-testid]` is an attribute selector: every `item` it matches is
+    // guaranteed to carry the attribute, so `getAttribute` can't return null
+    // here — only typed nullable because `getAttribute` is nullable in general.
     const hasRecognizedAction = Array.from(menu.querySelectorAll<HTMLLIElement>('li[data-testid]')).some((item) =>
-      recognized.has(item.getAttribute('data-testid') ?? ''),
+      recognized.has(item.getAttribute('data-testid')!),
     );
     if (!hasRecognizedAction) continue;
 
@@ -172,7 +178,11 @@ export function applySketchDomTextOverrides(root: ParentNode, overrides: SketchD
   const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node = textWalker.nextNode();
   while (node) {
-    const next = translateDomTextValue(node.nodeValue ?? '', overrides);
+    // `NodeFilter.SHOW_TEXT` restricts this walk to `Text` nodes, whose
+    // `nodeValue` is always a string per spec (only `Document`/`DocumentType`
+    // nodes ever have a null `nodeValue`) — `Node.nodeValue`'s broader type
+    // is nullable only because it covers those other node kinds too.
+    const next = translateDomTextValue(node.nodeValue!, overrides);
     if (next !== null && next !== node.nodeValue) node.nodeValue = next;
     node = textWalker.nextNode();
   }

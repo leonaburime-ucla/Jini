@@ -44,6 +44,15 @@ export interface SketchEditorProps {
   /** Locale-specific phrasings of Excalidraw's "can't embed this URL" toast a
    *  host has already translated via `domTextOverrides`. */
   embedUnavailableAdditionalPhrases?: readonly string[];
+  /**
+   * Matches the Mermaid-dialog "Insert" button's rendered label, so
+   * Command/Ctrl+Enter can submit it. Defaults to English-only
+   * (`/^(Insert)(\s|$|→)/i`); a host running Excalidraw in a locale where
+   * its own bundled i18n renders this button's label differently (e.g. the
+   * source product matched `/^(Insert|插入)/i`) should pass a pattern
+   * covering that translation too.
+   */
+  mermaidInsertLabelPattern?: RegExp;
   /** Suffix stripped from `fileName` before appending `.png` on export.
    *  Defaults to stripping the last extension present. */
   sourceFileExtension?: string;
@@ -77,6 +86,7 @@ export function SketchEditor({
   contextMenuActionOrder,
   contextMenuRecognizedActions,
   embedUnavailableAdditionalPhrases,
+  mermaidInsertLabelPattern,
   sourceFileExtension,
   dependencies = defaultSketchEditorDependencies,
 }: SketchEditorProps) {
@@ -121,6 +131,7 @@ export function SketchEditor({
     contextMenuActionOrder,
     contextMenuRecognizedActions,
     embedUnavailableAdditionalPhrases,
+    mermaidInsertLabelPattern,
     onCloseActiveDialog: closeActiveDialog,
   });
 

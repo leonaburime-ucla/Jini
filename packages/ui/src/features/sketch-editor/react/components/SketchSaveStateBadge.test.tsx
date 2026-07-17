@@ -12,4 +12,16 @@ describe('SketchSaveStateBadge', () => {
     render(<SketchSaveStateBadge state="dirty" label="Unsaved changes" />);
     expect(screen.getByRole('status').className).toContain('is-dirty');
   });
+
+  it('shows a spinning spinner icon while saving', () => {
+    render(<SketchSaveStateBadge state="saving" label="Saving…" />);
+    const svg = screen.getByRole('status').querySelector('svg')!;
+    expect(svg.classList.contains('icon-spin')).toBe(true);
+  });
+
+  it('does not spin the icon once saved (non-saving states)', () => {
+    render(<SketchSaveStateBadge state="saved" label="Saved" />);
+    const svg = screen.getByRole('status').querySelector('svg')!;
+    expect(svg.classList.contains('icon-spin')).toBe(false);
+  });
 });

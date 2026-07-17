@@ -176,15 +176,22 @@ export function sceneContentSignature(
   return `${elementSignature}\n${fileSignature}\n${viewBackgroundColor}`;
 }
 
-/** Strips a known source extension (default: the last `.ext`) and appends `.png`. */
+/**
+ * Strips a known source extension (default: the last `.ext`) and appends
+ * `.png`. `sourceExtension` is checked with `typeof ... === 'string'`, not
+ * truthiness: a caller explicitly passing `''` means "strip nothing," which
+ * must be distinguishable from "not provided" (which strips the last
+ * extension present) — a truthy check would silently treat both the same.
+ */
 export function exportedImageFileName(fileName: string, sourceExtension?: string): string {
   const slash = fileName.lastIndexOf('/');
   const baseName = slash >= 0 ? fileName.slice(slash + 1) : fileName;
-  const stem = sourceExtension
-    ? (baseName.toLowerCase().endsWith(sourceExtension.toLowerCase())
+  const stem =
+    typeof sourceExtension === 'string'
+      ? baseName.toLowerCase().endsWith(sourceExtension.toLowerCase())
         ? baseName.slice(0, baseName.length - sourceExtension.length)
-        : baseName)
-    : baseName.replace(/\.[^./]+$/, '');
+        : baseName
+      : baseName.replace(/\.[^./]+$/, '');
   return `${stem || 'sketch'}.png`;
 }
 
@@ -250,10 +257,15 @@ export function buildSketchTooltipLabels(t: SketchTranslate): SketchTooltipLabel
  * in `overrides` matches (caller should leave the node untouched).
  */
 export function translateDomTextValue(value: string, overrides: SketchDomTextOverrides): string | null {
-  const match = value.match(/^(\s*)([\s\S]*?)(\s*)$/);
-  const leading = match?.[1] ?? '';
-  const core = match?.[2] ?? value;
-  const trailing = match?.[3] ?? '';
+  // Every group in this pattern is quantified with `*` (zero-or-more), so it
+  // matches every string input, including `''` — `.match()` can never return
+  // null here, and each capture group is always defined (possibly empty).
+  // The nullable return/`| undefined` group types are just `RegExp.match`'s
+  // and `RegExpMatchArray`'s general signatures, not a real runtime path.
+  const match = value.match(/^(\s*)([\s\S]*?)(\s*)$/)!;
+  const leading = match[1]!;
+  const core = match[2]!;
+  const trailing = match[3]!;
   const normalized = core.replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
   const exact = overrides[normalized];

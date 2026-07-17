@@ -4,6 +4,7 @@ import { useGlobalKeydown } from '../../../../browser/useGlobalKeydown.js';
 import {
   DEFAULT_CONTEXT_MENU_ACTION_ORDER,
   DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS,
+  DEFAULT_MERMAID_INSERT_LABEL_PATTERN,
   DEFAULT_SKETCH_TOOLTIP_TARGETS,
 } from '../../constants.js';
 import {
@@ -16,8 +17,6 @@ import {
 } from '../../dom.js';
 import { buildSketchTooltipLabels } from '../../rules.js';
 import type { SketchDomTextOverrides, SketchTooltipTarget, SketchTranslate } from '../../types.js';
-
-const DEFAULT_MERMAID_INSERT_LABEL_PATTERN = /^(Insert)(\s|$|→)/i;
 
 export interface UseSketchDomEnhancementsParams {
   containerRef: RefObject<HTMLElement | null>;

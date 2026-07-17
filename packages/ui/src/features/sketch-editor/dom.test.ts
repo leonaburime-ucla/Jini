@@ -5,6 +5,7 @@ import {
   applySketchContextMenuSimplification,
   applySketchDomTextOverrides,
   applySketchEditorTooltips,
+  clampSketchContextPopover,
   enhanceSketchExcalidrawPortals,
   findSketchMermaidInsertButton,
   handleSketchPortalCommandEnter,
@@ -38,6 +39,20 @@ describe('readDefaultSketchToolColor', () => {
     expect(readDefaultSketchToolColor()).toBe('#ffffff');
     document.documentElement.setAttribute('data-theme', 'light');
     expect(readDefaultSketchToolColor()).toBe('#1c1b1a');
+  });
+
+  it('falls back to prefers-color-scheme via window.matchMedia when data-theme is unset', () => {
+    // jsdom ships no `matchMedia` implementation at all (`window.matchMedia`
+    // is `undefined`), so `window.matchMedia?.(...)` always short-circuits
+    // in every other test in this file — stub it to exercise the real call.
+    const matchMedia = vi.fn().mockReturnValue({ matches: true });
+    vi.stubGlobal('matchMedia', matchMedia);
+    try {
+      expect(readDefaultSketchToolColor()).toBe('#ffffff');
+      expect(matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -96,6 +111,110 @@ describe('applySketchEditorTooltips', () => {
     expect(button.getAttribute('data-tooltip')).toBe('Main menu');
     expect(button.getAttribute('data-tooltip-placement')).toBe('bottom');
   });
+
+  it('skips a target whose resolved label normalizes to empty', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<button data-testid="main-menu-trigger"></button>';
+    document.body.appendChild(root);
+    const blankLabels = { ...labels, mainMenu: '   ' };
+    applySketchEditorTooltips(root, blankLabels, DEFAULT_SKETCH_TOOLTIP_TARGETS);
+    const button = root.querySelector('[data-testid="main-menu-trigger"]')!;
+    expect(button.hasAttribute('data-tooltip')).toBe(false);
+    expect(button.classList.contains('jini-tooltip')).toBe(false);
+  });
+
+  it('defaults placement to "bottom" when a target omits it', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<button data-testid="main-menu-trigger"></button>';
+    document.body.appendChild(root);
+    applySketchEditorTooltips(root, labels, [{ selector: '[data-testid="main-menu-trigger"]', label: 'mainMenu' }]);
+    const button = root.querySelector('[data-testid="main-menu-trigger"]')!;
+    expect(button.getAttribute('data-tooltip-placement')).toBe('bottom');
+  });
+});
+
+describe('clampSketchContextPopover', () => {
+  function stubRect(el: HTMLElement, rect: Partial<DOMRect>): void {
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      toJSON: () => ({}),
+      ...rect,
+    } as DOMRect);
+  }
+
+  it('is a no-op when the popover has no measured width', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    stubRect(popover, { width: 0, height: 0 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    expect(popover.style.left).toBe('');
+    expect(popover.style.top).toBe('');
+  });
+
+  it('is a no-op when the popover has measured width but no height', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    stubRect(popover, { width: 200, height: 0 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    expect(popover.style.left).toBe('');
+    expect(popover.style.top).toBe('');
+  });
+
+  it('is a no-op when the derived position is not finite (a non-numeric inline style keyword)', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    // 'auto' is a valid CSS `left`/`top` keyword (so jsdom's CSSOM accepts
+    // the assignment, unlike a garbage string) but parses to NaN.
+    popover.style.left = 'auto';
+    stubRect(popover, { width: 100, height: 50, left: 10, top: 10, right: 110, bottom: 60 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    expect(popover.style.top).toBe('');
+  });
+
+  it('clamps a popover overflowing the right/bottom viewport edges', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    stubRect(popover, { width: 200, height: 100, left: 700, top: 550, right: 900, bottom: 650 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    // maxRight = 800-8=792, overflow = 900-792=108, nextLeft = 700-108=592
+    expect(popover.style.left).toBe('592px');
+    // maxBottom = 600-8=592, overflow = 650-592=58, nextTop = 550-58=492
+    expect(popover.style.top).toBe('492px');
+  });
+
+  it('clamps a popover overflowing the left/top viewport edges, floored at 0', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    stubRect(popover, { width: 100, height: 50, left: -20, top: -20, right: 80, bottom: 30 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    // minLeft = 0+8=8, nextLeft = -20+(8-(-20)) = 8
+    expect(popover.style.left).toBe('8px');
+    expect(popover.style.top).toBe('8px');
+  });
+
+  it('does not touch inline style when the current position already satisfies the clamp', () => {
+    const popover = document.createElement('div');
+    const viewport = document.createElement('div');
+    popover.style.left = '10px';
+    popover.style.top = '10px';
+    stubRect(popover, { width: 100, height: 50, left: 10, top: 10, right: 110, bottom: 60 });
+    stubRect(viewport, { left: 0, top: 0, right: 800, bottom: 600 });
+    clampSketchContextPopover(popover, viewport);
+    expect(popover.style.left).toBe('10px');
+    expect(popover.style.top).toBe('10px');
+  });
 });
 
 describe('applySketchContextMenuSimplification', () => {
@@ -149,6 +268,37 @@ describe('applySketchContextMenuSimplification', () => {
     applySketchContextMenuSimplification(root, root, DEFAULT_CONTEXT_MENU_ACTION_ORDER, DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS);
     expect(menu.children[0]).toBe(firstChildBefore);
   });
+
+  it('falls back to the menu\'s parent element when there is no .popover ancestor', () => {
+    const root = document.createElement('div');
+    const menu = document.createElement('ul');
+    menu.className = 'context-menu';
+    const li = document.createElement('li');
+    li.setAttribute('data-testid', 'copy');
+    menu.appendChild(li);
+    root.appendChild(menu); // menu's parent is `root` itself, no `.popover` wrapper
+    document.body.appendChild(root);
+
+    applySketchContextMenuSimplification(root, root, DEFAULT_CONTEXT_MENU_ACTION_ORDER, DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS);
+    expect(root.classList.contains('jini-sketch-context-popover')).toBe(true);
+  });
+
+  it('leaves a non-<li>, non-<hr> child untouched but removes a <li> without a data-testid', () => {
+    const { root, menu } = buildMenu(['copy']);
+    const stray = document.createElement('div');
+    stray.textContent = 'stray';
+    menu.appendChild(stray);
+    const bareLi = document.createElement('li');
+    bareLi.textContent = 'no testid';
+    menu.appendChild(bareLi);
+
+    applySketchContextMenuSimplification(root, root, DEFAULT_CONTEXT_MENU_ACTION_ORDER, DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS);
+    // Only <li>/<hr> children are ever touched; an unrelated element child
+    // (not part of Excalidraw's own context-menu markup) is simply skipped.
+    expect(menu.contains(stray)).toBe(true);
+    expect(menu.contains(bareLi)).toBe(false);
+    expect(Array.from(menu.querySelectorAll('li')).map((li) => li.getAttribute('data-testid'))).toEqual(['copy']);
+  });
 });
 
 describe('applySketchDomTextOverrides', () => {
@@ -169,6 +319,17 @@ describe('applySketchDomTextOverrides', () => {
     applySketchDomTextOverrides(root, {});
     expect(root.querySelector('button')!.textContent).toBe('Close');
   });
+
+  it('walks a non-Element ParentNode (e.g. a DocumentFragment) too', () => {
+    const fragment = document.createDocumentFragment();
+    const button = document.createElement('button');
+    button.title = 'Close';
+    button.textContent = 'Close';
+    fragment.appendChild(button);
+    applySketchDomTextOverrides(fragment, { Close: 'Fermer' });
+    expect(button.textContent).toBe('Fermer');
+    expect(button.getAttribute('title')).toBe('Fermer');
+  });
 });
 
 describe('rewriteExcalidrawUnableToEmbedToasts', () => {
@@ -187,6 +348,13 @@ describe('rewriteExcalidrawUnableToEmbedToasts', () => {
     root.innerHTML = '<div class="Toast"><div class="Toast__message">Saved successfully</div></div>';
     rewriteExcalidrawUnableToEmbedToasts(root, 'Cannot embed this link');
     expect(root.querySelector('.Toast__message')!.textContent).toBe('Saved successfully');
+  });
+
+  it('is a no-op when the replacement text itself is empty/whitespace-only', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div class="Toast"><div class="Toast__message">Embedding this URL is currently not allowed</div></div>';
+    rewriteExcalidrawUnableToEmbedToasts(root, '   ');
+    expect(root.querySelector('.Toast__message')!.textContent).toBe('Embedding this URL is currently not allowed');
   });
 });
 
@@ -210,6 +378,37 @@ describe('findSketchMermaidInsertButton / removeSketchMermaidShortcutHints', () 
   it('returns null for a non-Mermaid dialog', () => {
     const content = document.createElement('div');
     content.innerHTML = '<div>Some other dialog</div><button>Insert</button>';
+    expect(findSketchMermaidInsertButton(content, INSERT_PATTERN)).toBeNull();
+  });
+
+  it('falls back to aria-label when textContent normalizes to empty', () => {
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <div>Mermaid syntax</div>
+      <button aria-label="Insert"></button>
+    `;
+    const button = findSketchMermaidInsertButton(content, INSERT_PATTERN);
+    expect(button?.getAttribute('aria-label')).toBe('Insert');
+  });
+
+  it('skips a button with neither textContent nor an aria-label', () => {
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <div>Mermaid syntax</div>
+      <button></button>
+      <button aria-label="Insert diagram">Insert</button>
+    `;
+    const button = findSketchMermaidInsertButton(content, INSERT_PATTERN);
+    expect(button?.getAttribute('aria-label')).toBe('Insert diagram');
+  });
+
+  it('returns null when a Mermaid dialog has buttons but none match the insert pattern', () => {
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <div>Mermaid syntax</div>
+      <button>Cancel</button>
+      <button>Close</button>
+    `;
     expect(findSketchMermaidInsertButton(content, INSERT_PATTERN)).toBeNull();
   });
 });
@@ -297,5 +496,51 @@ describe('handleSketchPortalCommandEnter', () => {
     const div = document.createElement('div');
     document.body.appendChild(div);
     expect(() => handleSketchPortalCommandEnter(keydown(div), INSERT_PATTERN)).not.toThrow();
+  });
+
+  it('does nothing when the event target is not an Element (e.g. a detached Text node)', () => {
+    const text = document.createTextNode('hi');
+    expect(() => handleSketchPortalCommandEnter(keydown(text as unknown as Element), INSERT_PATTERN)).not.toThrow();
+  });
+
+  it('does nothing inside a modal that has no textarea', () => {
+    const portal = document.createElement('div');
+    portal.className = 'jini-sketch-modal';
+    portal.innerHTML = '<div class="Modal__content">Mermaid<button aria-label="Insert diagram">Insert</button></div>';
+    document.body.appendChild(portal);
+    const button = portal.querySelector('button')!;
+    const onClick = vi.fn();
+    button.addEventListener('click', onClick);
+    const content = portal.querySelector('.Modal__content')!;
+    handleSketchPortalCommandEnter(keydown(content), INSERT_PATTERN);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the matched Insert button is disabled', () => {
+    const portal = document.createElement('div');
+    portal.className = 'jini-sketch-modal';
+    portal.innerHTML =
+      '<div class="Modal__content">Mermaid<textarea></textarea><button aria-label="Insert diagram" disabled>Insert</button></div>';
+    document.body.appendChild(portal);
+    const button = portal.querySelector('button')!;
+    const onClick = vi.fn();
+    button.addEventListener('click', onClick);
+    const textarea = portal.querySelector('textarea')!;
+    handleSketchPortalCommandEnter(keydown(textarea), INSERT_PATTERN);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the matched Insert button is aria-disabled', () => {
+    const portal = document.createElement('div');
+    portal.className = 'jini-sketch-modal';
+    portal.innerHTML =
+      '<div class="Modal__content">Mermaid<textarea></textarea><button aria-label="Insert diagram" aria-disabled="true">Insert</button></div>';
+    document.body.appendChild(portal);
+    const button = portal.querySelector('button')!;
+    const onClick = vi.fn();
+    button.addEventListener('click', onClick);
+    const textarea = portal.querySelector('textarea')!;
+    handleSketchPortalCommandEnter(keydown(textarea), INSERT_PATTERN);
+    expect(onClick).not.toHaveBeenCalled();
   });
 });
