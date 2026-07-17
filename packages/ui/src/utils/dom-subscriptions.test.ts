@@ -108,26 +108,26 @@ describe('with window/document stubbed', () => {
   });
 
   describe('subscribeOutsideClickOrEscape', () => {
-    it('calls onClose for a mousedown target outside the container', () => {
+    it('calls onClose for a pointerdown target outside the container', () => {
       const doc = createListenerTarget();
       vi.stubGlobal('document', doc);
       const container = { current: { contains: vi.fn(() => false) } as unknown as HTMLElement };
       const onClose = vi.fn();
       subscribeOutsideClickOrEscape(container, onClose);
 
-      doc.fire('mousedown', { target: 'outside-node' });
+      doc.fire('pointerdown', { target: 'outside-node' });
       expect(container.current.contains).toHaveBeenCalledWith('outside-node');
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('does not call onClose for a mousedown target inside the container', () => {
+    it('does not call onClose for a pointerdown target inside the container', () => {
       const doc = createListenerTarget();
       vi.stubGlobal('document', doc);
       const container = { current: { contains: vi.fn(() => true) } as unknown as HTMLElement };
       const onClose = vi.fn();
       subscribeOutsideClickOrEscape(container, onClose);
 
-      doc.fire('mousedown', { target: 'inside-node' });
+      doc.fire('pointerdown', { target: 'inside-node' });
       expect(onClose).not.toHaveBeenCalled();
     });
 
@@ -144,12 +144,32 @@ describe('with window/document stubbed', () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
+    it('without a container, skips the outside-click listener entirely and reacts to Escape only', () => {
+      const doc = createListenerTarget();
+      vi.stubGlobal('document', doc);
+      const onClose = vi.fn();
+      subscribeOutsideClickOrEscape(undefined, onClose);
+
+      expect(doc.has('pointerdown')).toBe(false);
+      doc.fire('keydown', { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
     it('cleanup removes both listeners', () => {
       const doc = createListenerTarget();
       vi.stubGlobal('document', doc);
       const unsubscribe = subscribeOutsideClickOrEscape({ current: null }, () => {});
       unsubscribe();
-      expect(doc.removeEventListener).toHaveBeenCalledWith('mousedown', expect.any(Function));
+      expect(doc.removeEventListener).toHaveBeenCalledWith('pointerdown', expect.any(Function));
+      expect(doc.removeEventListener).toHaveBeenCalledWith('keydown', expect.any(Function));
+    });
+
+    it('cleanup without a container only removes the keydown listener', () => {
+      const doc = createListenerTarget();
+      vi.stubGlobal('document', doc);
+      const unsubscribe = subscribeOutsideClickOrEscape(undefined, () => {});
+      unsubscribe();
+      expect(doc.removeEventListener).not.toHaveBeenCalledWith('pointerdown', expect.any(Function));
       expect(doc.removeEventListener).toHaveBeenCalledWith('keydown', expect.any(Function));
     });
   });
