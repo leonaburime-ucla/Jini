@@ -40,9 +40,19 @@ function toFile(item: Omit<ArtifactStreamItem, 'file' | 'match'>): ArtifactFile 
 export function useArtifactStream(content: string, registry?: RendererRegistry): UseArtifactStreamResult {
   return useMemo(() => {
     const items: ArtifactStreamItem[] = [];
-    let current: { identifier: string; artifactType: string; title: string; content: string } | null = null;
 
-    for (const ev of parseArtifacts(content)) {
+    // `splitStreamingArtifact` is the authority on "is there a trailing,
+    // still-open artifact": split first so `parseArtifacts` (a one-shot
+    // feed+flush that synthesizes an `artifact:end` for whatever is still
+    // open when it's called — correct for a genuinely complete message, but
+    // wrong here) only ever sees the CLOSED-artifact-only `head` portion.
+    // Running it on the raw `content` would double-count a live artifact:
+    // once (wrongly) as "complete" via the synthetic flush, and again (correctly)
+    // as "streaming" below.
+    const { head, live } = splitStreamingArtifact(content);
+
+    let current: { identifier: string; artifactType: string; title: string; content: string } | null = null;
+    for (const ev of parseArtifacts(head)) {
       if (ev.type === 'artifact:start') {
         current = { identifier: ev.identifier, artifactType: ev.artifactType, title: ev.title, content: '' };
       } else if (ev.type === 'artifact:chunk' && current && current.identifier === ev.identifier) {
@@ -56,7 +66,6 @@ export function useArtifactStream(content: string, registry?: RendererRegistry):
 
     // A trailing artifact whose close tag hasn't streamed in yet — surfaced
     // separately so a live preview can render mid-generation.
-    const { live } = splitStreamingArtifact(content);
     if (live) {
       const streaming = { identifier: live.identifier, artifactType: live.artifactType, title: live.title, content: live.content, status: 'streaming' as const };
       items.push({ ...streaming, file: toFile(streaming), match: registry?.resolve({ file: toFile(streaming) }) ?? null });
