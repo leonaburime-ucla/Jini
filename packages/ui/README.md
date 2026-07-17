@@ -98,6 +98,13 @@ Real content has landed in several parallel passes — see
   bulk-delete-with-confirm, keyboard shortcuts, kind-aware thumbnail
   dispatch. The first feature built under the **new**
   `react/{hooks,components}/` layout described above.
+- `src/features/viewer-shell/` — the file-viewer's media-viewer shell family
+  (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`'s
+  consolidation map: a generic viewer-toolbar/body chrome, a resolved
+  viewport-switcher-overlap pair (`ViewportSwitcher`/`ViewportToggleGroup`),
+  the comment side-panel, and a markdown split-pane with scroll-sync. The
+  first feature built under the new `react/{hooks,components}` layout
+  described above (not yet retrofitted onto `connectors`/`progress-card`).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
