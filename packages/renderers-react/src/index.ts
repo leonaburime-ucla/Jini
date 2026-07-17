@@ -1,1 +1,1 @@
-// @jini/renderers-react — placeholder. See docs/jini-port/extraction-plan.md for the target.
+export * from './annotation-canvas/index.js';
