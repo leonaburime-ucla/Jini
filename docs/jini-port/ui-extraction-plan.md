@@ -73,21 +73,28 @@ domain — resolve which package owns it before landing either copy.
 
 ## B. Vertical-slice items (MIXED, r5 §2/§5) — MemorySection-pattern
 
+**Reconciled against `god-components-extraction-plan.md`'s Consolidation map (2026-07-17)** — that
+doc is now the source of truth for any row below that also names a god-file; this table's job is
+just to carry the non-god-sized source files that map doesn't cover.
+
 | Source | Target | Generic core | OD residue to drop/port-behind-a-slot |
 |---|---|---|---|
-| `byok/*` (6 files: `ByokKeyField`, `ByokModelField`, `ByokProviderPicker`, `ByokConnectionTestControl`, `ByokProviderBaseUrl`, `validation.ts`) | `src/features/byok-config/` | Bring-your-own-API-key config UI — genuinely reusable for any agent-runtime consumer | Typed against OD's `state/config.KnownProvider` / `state/apiProtocols.API_KEY_PLACEHOLDERS` — port these out as a generic provider-catalog port (`ProviderCatalogPort`) the slice's `dependencies.ts` binds |
-| `McpClientSection.tsx` | `src/features/mcp-config/` | MCP server add/list/test config UX | Bound to `providers/registry` + `SettingsDialog` tab placement — extract an `McpConfigPort` (add/list/test), drop the dialog-placement assumption |
-| `composer/*` minus `MentionNode.ts`'s one OD binding (`LexicalComposerInput.tsx`, `CaretFloatingLayer.tsx`, `serialize.ts`, `deserialize.ts`) | `src/features/rich-text-input/` (or ship as a `src/components/` primitive with an injectable color-resolver prop if the vertical-slice ceremony turns out to be overkill — implementation-time judgment call, r5 §7 flags this as smaller than a full feature slice) | Generic Lexical rich-text/mention editor — verified zero OD imports in the four files above | `MentionNode.ts` imports `connectorBrandColor`/`resolveBrandTheme` from `utils/` to color-code `@mention` chips by OD "connector" brand — drop this import, accept an injected `resolveMentionColor` prop instead |
-| `workspace/`'s tab-bar half (`SideChatTab.tsx`, `TabLauncherMenu.tsx`) | `src/features/workspace-tabs/` (or fold into a plain component if state stays simple after extraction) | Generic open-tabs bar layout, `od=0` | The rest of `workspace/` (`useConversationChat.ts`, `TerminalViewer.tsx`) is NOT part of this — those bind directly to `state/projects.ts`/`providers/daemon.ts` and belong to `@jini/chat-react` territory or stay OD-adapter, not `@jini/ui` |
-| `WorkspaceTabsBar.tsx` | Fold into `src/features/workspace-tabs/` above, or `src/components/` if it turns out to need no state of its own beyond what the tab-bar slice already owns | Generic open-tabs-bar layout | One `router.ts` import (OD's hand-rolled singleton) — extract behind a navigation port |
+| `byok/*` (6 files: `ByokKeyField`, `ByokModelField`, `ByokProviderPicker`, `ByokConnectionTestControl`, `ByokProviderBaseUrl`, `validation.ts`) | **Superseded** — was `src/features/byok-config/`, now `src/features/source-config-list/` per `god-components-extraction-plan.md`'s Consolidation map (folds in with `McpClientSection.tsx`, not a separate slice) | Bring-your-own-API-key config UI — genuinely reusable for any agent-runtime consumer | Typed against OD's `state/config.KnownProvider` / `state/apiProtocols.API_KEY_PLACEHOLDERS` — port these out as a generic provider-catalog port (`ProviderCatalogPort`) the slice's `dependencies.ts` binds |
+| `McpClientSection.tsx` | **Superseded** — was `src/features/mcp-config/`, now `src/features/source-config-list/` per `god-components-extraction-plan.md`'s Consolidation map (folds in with `byok/*`, not a separate slice) | MCP server add/list/test config UX | Bound to `providers/registry` + `SettingsDialog` tab placement — extract an `McpConfigPort` (add/list/test), drop the dialog-placement assumption |
+| `composer/*` minus `MentionNode.ts`'s one OD binding (`LexicalComposerInput.tsx`, `CaretFloatingLayer.tsx`, `serialize.ts`, `deserialize.ts`) | `src/features/rich-text-input/` (or ship as a `src/components/` primitive with an injectable color-resolver prop if the vertical-slice ceremony turns out to be overkill — implementation-time judgment call, r5 §7 flags this as smaller than a full feature slice) | Generic Lexical rich-text/mention editor — verified zero OD imports in the four files above. **Before extracting**: `god-components-extraction-plan.md`'s Consolidation map now flags a possible 3-way overlap between this, `QuickSwitcher.tsx`, and `NewAutomationModal.tsx`'s `@mention`/capability-picker — all three are "type a trigger, filter a list, pick an item" shapes; read them side by side first. | `MentionNode.ts` imports `connectorBrandColor`/`resolveBrandTheme` from `utils/` to color-code `@mention` chips by OD "connector" brand — drop this import, accept an injected `resolveMentionColor` prop instead |
+| `workspace/`'s tab-bar half (`SideChatTab.tsx`, `TabLauncherMenu.tsx`) | **Naming reconciled** — was `src/features/workspace-tabs/`, now `src/features/tab-strip/` (same target `god-components-extraction-plan.md`'s Consolidation map gives `WorkspaceTabsBar.tsx`/`FileWorkspace.tsx`'s inline `Tab`). That doc flags this fold-in as an **unverified hypothesis** — `SideChatTab.tsx`/`TabLauncherMenu.tsx` were only described shallowly here ("tab-bar UI, low coupling"), not verified at the depth `WorkspaceTabsBar.tsx` got — confirm they're really the same tab-strip-item shape (not a different "tab launcher" concept) before merging. | Generic open-tabs bar layout, `od=0` | The rest of `workspace/` (`useConversationChat.ts`, `TerminalViewer.tsx`) is NOT part of this — those bind directly to `state/projects.ts`/`providers/daemon.ts` and belong to `@jini/chat-react` territory or stay OD-adapter, not `@jini/ui` |
+| `WorkspaceTabsBar.tsx` | See `god-components-extraction-plan.md`'s Consolidation map — `features/tab-strip/` | Generic open-tabs-bar layout | One `router.ts` import (OD's hand-rolled singleton) — extract behind a navigation port |
 
 **MIXED items needing a closer read before committing to a plan row (r5 §5,
 flagged as not-fully-verified):** `QuickSwitcher.tsx` (generic Cmd-K pattern,
 typed on OD's `WorkspaceContextItem`/`ProjectFile` — needs a generic
-"switchable item" type param), `EditorIcon.tsx` (same shape as `Icon.tsx`, keyed
-by OD's `HostEditorId` — generify the key union), `DesignKitView.tsx` (only 1
-OD-dir import hit despite the OD-sounding name — r5 explicitly did not verify
-this one, read it in full before deciding).
+"switchable item" type param — see the 3-way mention-shape overlap note above),
+`EditorIcon.tsx` (same shape as the already-ported `Icon.tsx`, keyed by OD's
+`HostEditorId` — `god-components-extraction-plan.md`'s Consolidation map flags
+this as possibly not needing its own component at all, just a data config
+registered with `Icon.tsx` — check before porting as a separate file),
+`DesignKitView.tsx` (only 1 OD-dir import hit despite the OD-sounding name —
+r5 explicitly did not verify this one, read it in full before deciding).
 
 ---
 

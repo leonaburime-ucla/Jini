@@ -82,16 +82,18 @@ Three destination *kinds*, not just "own feature folder":
 
 | Target | Sources | Notes |
 |---|---|---|
-| `features/connectors/` (already exists — the canary) | `ConnectorsBrowser.tsx` (✅ done), `PluginsView.tsx`'s `SourcesPanel` (§1.11), `EntryShell.tsx`'s `OnboardingByokSetupPanel` (§1.7, reinforces not newly discovers), `McpClientSection.tsx`, `byok/*`, Memory slice's connector reducers | **The biggest cluster — 6 places.** Still an **open question**, not a decision: the plan already flags "revisit whether `mcp-config`/`byok-config` should be rebuilt as thin configs of one shared `SourceConfigList` primitive instead of three separate extractions" (item 4 below) — resolve that *before* dispatching `SourcesPanel`/`OnboardingByokSetupPanel`, or they'll land as a 7th near-duplicate instead of configs of the existing one. |
-| `features/progress-card/` | `DesignSystemFlow.tsx`'s `WorkspaceActivityCard`+`GenerationStatusCard` (🔄 in flight) | r6 §3 also lists `RevisionDiffCard`/`RevisionHistoryList` (same file, §1.5) as conceptually related ("status-badged... progress bar + status icon" family) — not confirmed identical, but evaluate together before the in-flight routine's PR merges, since both are on-domain for Jini's `Run`/`Agent`/`Tool` vocabulary. |
-| `features/tab-strip/` | `WorkspaceTabsBar.tsx` (1,220 lines, §1.3 addendum), `FileWorkspace.tsx`'s inline `Tab` (§1.4) | Independently reimplemented — not even shared *within* OD's own codebase. `WorkspaceTabsBar.tsx` needs 3 things parameterized before it generifies: the tab-kind union, route-mapping functions, and storage/event key names (two of which are literal product-identity strings that would trip the neutrality guard verbatim). |
+| `features/connectors/` (already exists — the canary) | `ConnectorsBrowser.tsx` (✅ done) | **Resolved (2026-07-17), narrower than first thought.** This is an OAuth-catalog-browse shape (search/filter a catalog, click to OAuth-connect, disconnect) — genuinely different from the shape below. Only Memory slice's connector *reducers* (not its UI) actually reuse this feature: `@jini/ui`'s shipped `features/connectors/rules.ts` already has `mergeConnectors`/`applyConnectorStatuses`/`hasConnectorStatusChanges`/`connectorAuthSnapshotChanged`, which substantially overlap Memory's `mergeMemoryConnector`/`applyMemoryConnectorStatus(es)`/`connectorStatusesChanged` (r6 §2 line ~546). When Memory slice work happens, check whether it can import these directly instead of re-deriving equivalents — a real, low-risk win, but a rules-level one, not a UI-component fold-in. |
+| `features/source-config-list/` (new — generic `SourceConfigList`) | `McpClientSection.tsx`, `byok/*` (6 files), `PluginsView.tsx`'s `SourcesPanel` (§1.11), `EntryShell.tsx`'s `OnboardingByokSetupPanel` (§1.7, reinforces not newly discovers) | **Formerly bundled with `features/connectors/` above — split out (2026-07-17) because the interaction shape actually differs.** This is "add a source by URL/key + set trust level + list + per-item test/refresh/remove," not OAuth-catalog-browse. Still the single most-repeated shape in the whole sweep (4 places once split from the connectors cluster). `ui-extraction-plan.md`'s Bucket B previously targeted `byok/*` → `src/features/byok-config/` and `McpClientSection.tsx` → `src/features/mcp-config/` as two *separate* slices — that's now superseded; both fold into this one shared primitive instead, `ui-extraction-plan.md` updated to point here. |
+| `features/progress-card/` | `DesignSystemFlow.tsx`'s `WorkspaceActivityCard`+`GenerationStatusCard` (✅ landed, PR #1) | r6 §3 also lists `RevisionDiffCard`/`RevisionHistoryList` (same file, §1.5) as conceptually related ("status-badged... progress bar + status icon" family) — not confirmed identical, still worth evaluating together before extracting either. |
+| `features/tab-strip/` | `WorkspaceTabsBar.tsx` (1,220 lines, §1.3 addendum), `FileWorkspace.tsx`'s inline `Tab` (§1.4) | **Naming reconciled (2026-07-17):** `ui-extraction-plan.md`'s Bucket B previously named this same target `features/workspace-tabs/` and additionally listed `workspace/`'s `SideChatTab.tsx`/`TabLauncherMenu.tsx` as sources — `features/tab-strip/` is now the canonical name (updated in both docs). `SideChatTab.tsx`/`TabLauncherMenu.tsx` were only described at a shallow "tab-bar UI, low coupling" level (r5 §2), not verified at the depth `WorkspaceTabsBar.tsx` got (r6 §1.3) — treat their overlap with this target as an **unverified hypothesis, not a confirmed fold-in**: read `WorkspaceTabsBar.tsx`'s actual tab-strip-item shape first, then check whether `SideChatTab.tsx` is really the same shape or a different "tab launcher" concept before merging them in. `WorkspaceTabsBar.tsx` itself needs 3 things parameterized before it generifies: the tab-kind union, route-mapping functions, and storage/event key names (two of which are literal product-identity strings that would trip the neutrality guard verbatim). |
 | `features/list-detail-panel/` (generic `ListDetailPanel<TSummary,TDetail>`) | `DesignSystemsTab.tsx` (§1.18) | r6 §3 also names `PluginsView.tsx`'s detail modal and `ProjectView.tsx`'s composition as "conceptually" related — neither's own per-file section (§1.11, §1.2) calls out a concrete second instance of this shape, so treat those two as aspirational, not confirmed; `DesignSystemsTab.tsx` is the only verified source today. |
 | Blocked — provider-grouped model picker | `NewProjectPanel.tsx`'s `MediaModelCards` (§1.13), `InlineModelSwitcher.tsx` (r5 §4, not one of these 23 files) | Confirmed recurring shape, but straddles the `@jini/ui` vs `@jini/chat-react`/`@jini/agent-runtime` package boundary r5 already flagged as unresolved. Don't dispatch either half until that boundary ruling happens — extracting `MediaModelCards` into `@jini/ui` first risks landing on the wrong side of a line not yet drawn. |
 | Not yet actionable — iframe keep-alive LRU | `FileWorkspace.tsx`'s inline browser-webview cache (§1.4) | Third occurrence of the "cap N mounted iframes, LRU-evict" pattern (after `IframeKeepAlivePool.tsx`, r5 §3 — outside this 23-file sweep). §1.4's own read calls this instance "not independently extractable without a rewrite." Recognize it as a future third consumer once `IframeKeepAlivePool.tsx` itself gets a real slice; nothing to dispatch here yet. |
 
-**3 more overlaps spotted while building this map, not in r6's own cross-file table** (r6's 9
+**5 more overlaps spotted while building this map, not in r6's own cross-file table** (r6's 9
 parallel sub-analyses each read 2-5 files in isolation — nothing forced a side-by-side compare
-across all 23 until now):
+across all 23 until now; the last 2 below came from reconciling this doc against
+`ui-extraction-plan.md`'s coverage of the other ~230 non-god-sized files):
 
 - **Viewport-preset switcher, twice**: `FileViewer.tsx`'s `PreviewViewportControls`/
   `FileVersionViewportControls` (§1.1, "self-contained responsive desktop/tablet/mobile viewport
@@ -115,6 +117,22 @@ across all 23 until now):
   card shape") all describe a selectable card with icon/title/body — not confirmed identical (could
   be 2-3 genuinely distinct shapes that just sound similar in prose), but worth a direct read-side-by-
   side before extracting more than one "choice card" primitive.
+- **Icon-by-key renderer, twice**: the already-ported `Icon.tsx` (bucket A, `packages/ui/src/
+  components/Icon.tsx`) and `EditorIcon.tsx` (r5 §5, "same shape as `Icon.tsx`," keyed by OD's
+  `HostEditorId`) render the identical pattern — a lookup table mapping a string key to an SVG/icon.
+  Never resolved whether `EditorIcon.tsx` should just become a data config passed to the existing
+  `Icon.tsx` (a new icon set registered under a different key namespace) rather than its own
+  component. Check this before porting `EditorIcon.tsx` as a separate file.
+- **"Type a trigger character, get a filtered picker" shape, maybe three times**: `QuickSwitcher.tsx`
+  (r5 §5, Cmd-K-style fuzzy switcher, typed on OD's `WorkspaceContextItem`/`ProjectFile`),
+  `NewAutomationModal.tsx`'s `@mention`/capability-picker (already named in this plan's §1 item 5 as
+  "directly analogous to the `QuickSwitcher.tsx` precedent" — the only pair r6 itself cross-referenced),
+  and `composer/*`'s Lexical `@mention` system (`MentionNode.ts` + siblings, r5 §2, "generic Lexical
+  rich-text/mention editor primitive," `ui-extraction-plan.md`'s target `features/rich-text-input/`).
+  All three are "type a trigger, filter a list, pick an item" interactions; whether the rich-text
+  editor's inline `@mention` really shares a component-level shape with a Cmd-K modal switcher (as
+  opposed to just superficially both being "autocomplete") hasn't been checked — read all three
+  side by side before committing to 3 separate primitives.
 
 ### B. Own feature (single source, no known duplicate elsewhere in this sweep)
 
@@ -209,13 +227,13 @@ don't repeat that on the next items in this list.
    or a components package. Drop: legacy sketch-item migration, `.sketch.json` naming convention,
    OD's i18n override tables, `od-*` CSS classes.
 4. **Consolidate the McpClientSection-archetype duplicates** — the "URL/OAuth source add +
-   trust/status + list + per-item test/refresh/remove" shape recurs independently in at least 6
-   places: `McpClientSection.tsx`, `byok/*`, `PluginsView.tsx`'s `SourcesPanel`,
-   `ConnectorsBrowser.tsx` (the canary above), the Memory slice's connector reducers, and
-   `EntryShell.tsx`'s `OnboardingByokSetupPanel`. Once the canary lands, revisit whether
-   `mcp-config`/`byok-config` (already planned in `ui-extraction-plan.md`) should be rebuilt as thin
-   configurations of one shared `SourceConfigList`/`ConnectorCatalog` primitive instead of three
-   separate extractions.
+   trust/status + list + per-item test/refresh/remove" shape recurs independently in
+   `McpClientSection.tsx`, `byok/*`, `PluginsView.tsx`'s `SourcesPanel`, and `EntryShell.tsx`'s
+   `OnboardingByokSetupPanel`. **Resolved (2026-07-17), see the Consolidation map above**: this is
+   a different interaction shape than `ConnectorsBrowser.tsx`'s OAuth-catalog-browse pattern (the
+   canary), so it does NOT fold into `features/connectors/` — it gets its own shared
+   `features/source-config-list/` instead. Memory slice's connector reducers are a separate,
+   rules-level (not UI) reuse case — see the Consolidation map's `features/connectors/` row.
 5. **`SettingsDialog.tsx`**'s shell + clean tabs (8,538 lines total, but 8 of 17 tabs are *already*
    separate files — this is mostly assembly, not fresh extraction). Ship the tab-container shell as
    reusable chrome, plus the `appearance`/`notifications`/`language`/`instructions` tabs (small,

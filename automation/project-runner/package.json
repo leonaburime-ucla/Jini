@@ -12,7 +12,8 @@
     "approve": "tsx src/cli/approve.ts",
     "claim": "tsx src/cli/claim.ts",
     "complete": "tsx src/cli/complete.ts",
-    "verify:od-preview-reference": "tsx src/cli/verify-od-preview-reference.ts"
+    "verify:od-preview-reference": "tsx src/cli/verify-od-preview-reference.ts",
+    "verify:od-reference": "tsx src/cli/verify-od-reference.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"

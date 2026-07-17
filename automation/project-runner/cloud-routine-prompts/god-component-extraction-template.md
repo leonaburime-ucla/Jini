@@ -66,6 +66,11 @@ Before editing any file, complete and print this exact Reference Preflight:
 6. Name what stays OD-specific and why, matching the consolidation map's own
    framing for this row.
 7. Record the exact green-baseline commands you'll re-run at the end.
+8. Print a retained-behavior manifest before implementation. Every generic
+   behavior needs its source line(s), target module/port, and proving test.
+   Explicitly include keyboard, pointer/cancel/drag/edit, history,
+   resize/observer/transform, accessibility, and responsive-placement behavior
+   when applicable. Mark only genuinely product-bound behavior as host-owned.
 
 Read these Jini references before designing the slice:
 - AGENTS.md
@@ -98,6 +103,13 @@ Implementation rules:
   so far — do not skip it because the component feels small.
 - Run the package typecheck/tests, pnpm guard, and a purity grep for
   product-identity strings. Report concrete outputs, not just command names.
+- Turn each retained-behavior row into a focused test before completion. A
+  pure-helper test does not prove its mounted integration. Run a final
+  source-parity audit and list every host-owned/deferred row explicitly.
+- Delivery is a gate: verify the remote task branch and draft PR URL after
+  commit. If either is missing, commit `ADS-memory/cloud-reports/<task-branch>.md`
+  with command output and the exact retry command; do not report `READY` as
+  success.
 
 Finish with a concise summary: the full Reference Preflight output (including
 the exact consolidation-map row quoted), files changed, OD behavior left
