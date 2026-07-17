@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { LanguageMenu } from './LanguageMenu.js';
@@ -39,6 +39,39 @@ describe('LanguageMenu', () => {
     await user.click(screen.getByRole('button'));
     expect(screen.getByRole('menu')).toBeTruthy();
     await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('falls back to the raw locale code when it is not in the supplied list', () => {
+    render(<LanguageMenu locales={LOCALES} locale="fr" onLocaleChange={vi.fn()} />);
+    expect(screen.getByTitle('fr')).toBeTruthy();
+  });
+
+  it('renders compact mode as an icon-only pill with an aria-label and compact popover classes', async () => {
+    const user = userEvent.setup();
+    render(<LanguageMenu locales={LOCALES} locale="en" onLocaleChange={vi.fn()} compact />);
+    const button = screen.getByRole('button');
+    expect(button.getAttribute('aria-label')).toBe('English');
+    expect(screen.queryByText('English')).toBeNull();
+    await user.click(button);
+    expect(screen.getByRole('menu').className).toContain('lang-menu-popover--compact');
+  });
+
+  it('does not close when a mousedown lands inside the menu wrap', async () => {
+    const user = userEvent.setup();
+    render(<LanguageMenu locales={LOCALES} locale="en" onLocaleChange={vi.fn()} />);
+    await user.click(screen.getByRole('button'));
+    const menu = screen.getByRole('menu');
+    fireEvent.mouseDown(menu);
+    expect(screen.getByRole('menu')).toBeTruthy();
+  });
+
+  it('closes when a mousedown lands outside the menu wrap', async () => {
+    const user = userEvent.setup();
+    render(<LanguageMenu locales={LOCALES} locale="en" onLocaleChange={vi.fn()} />);
+    await user.click(screen.getByRole('button'));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('menu')).toBeNull();
   });
 });

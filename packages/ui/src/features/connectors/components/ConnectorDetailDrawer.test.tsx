@@ -182,4 +182,290 @@ describe('ConnectorDetailDrawer', () => {
     );
     expect(screen.getAllByRole('alert')[0]!.textContent).toContain('Something went wrong');
   });
+
+  it('renders the About section without an authorization block when not mid-authorization', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ description: 'Team messaging' })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(screen.getByText('Team messaging')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('shows the in-progress authorization hint without a continue-in-browser link when no redirect URL is present yet', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ description: 'Team messaging' })}
+        disabled={false}
+        pendingAction={null}
+        authorizationPending={{}}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(screen.getByText('Authorization in progress. It should finish shortly.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Continue in browser' })).toBeNull();
+  });
+
+  it('hides the tools badge chip when the tool count is not yet knowable', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector()}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded={false}
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(document.querySelector('.connector-drawer-tool-count-chip')).toBeNull();
+  });
+
+  it('shows an in-progress authorization hint and opens the redirect URL from the About section', async () => {
+    const onOpenExternalUrl = vi.fn();
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ description: 'Team messaging' })}
+        disabled={false}
+        pendingAction={null}
+        authorizationPending={{ redirectUrl: 'https://oauth.example.com' }}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+        onOpenExternalUrl={onOpenExternalUrl}
+      />,
+    );
+    expect(screen.getByText('Authorization in progress. It should finish shortly.')).toBeTruthy();
+    expect(screen.getAllByText('Authorization pending').length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Continue in browser' }));
+    expect(onOpenExternalUrl).toHaveBeenCalledWith('https://oauth.example.com');
+  });
+
+  it('shows the cancel-authorization footer action while authorization is pending, and fires onCancelAuthorization', async () => {
+    const onCancelAuthorization = vi.fn();
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector()}
+        disabled={false}
+        pendingAction={null}
+        authorizationPending={{ redirectUrl: 'https://oauth.example.com' }}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={onCancelAuthorization}
+        onLoadMoreTools={noop}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel authorization' }));
+    expect(onCancelAuthorization).toHaveBeenCalledWith('slack');
+  });
+
+  it('shows the cancel-failed hint when cancellation previously failed', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector()}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+        cancelFailedMessage="Try again please"
+      />,
+    );
+    expect(screen.getAllByRole('alert').at(-1)!.textContent).toContain('Try again please');
+  });
+
+  it('fires onDisconnect from the Details-section action for a connected connector', async () => {
+    const onDisconnect = vi.fn();
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ status: 'connected' })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={onDisconnect}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith('slack');
+  });
+
+  it('reflects a pending disconnect as a loading, disabled state on the Details-section action', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ status: 'connected' })}
+        disabled={false}
+        pendingAction="disconnect"
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    const disconnectButton = screen.getByRole('button', { name: 'Disconnect' });
+    expect(disconnectButton.className).toContain('is-loading');
+    expect((disconnectButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('fires onConnect from the footer for an available connector', async () => {
+    const onConnect = vi.fn();
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector()}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={onConnect}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(onConnect).toHaveBeenCalledWith('slack');
+  });
+
+  it('shows an account label and a last-error detail row when present', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ accountLabel: 'user@example.com', lastError: 'Token expired' })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(screen.getByText('user@example.com')).toBeTruthy();
+    expect(screen.getByText('Token expired')).toBeTruthy();
+  });
+
+  it('shows a tools badge chip once the tool count is knowable', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({ toolCount: 4 })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded={false}
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(document.querySelector('.connector-drawer-tool-count-chip')).toBeTruthy();
+  });
+
+  it('renders a tool list without a load-more button when there is no next cursor', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({
+          tools: [{ name: 'send_message', title: 'Send message', safety: { sideEffect: 'no_side_effect' } }],
+        })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(screen.getByText('Send message')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Load more tools' })).toBeNull();
+  });
+
+  it('falls back to the tool name when a tool has no title, and renders a tool description when present', () => {
+    render(
+      <ConnectorDetailDrawer
+        connector={makeConnector({
+          tools: [{ name: 'raw_tool_name', description: 'Does a thing', safety: { sideEffect: 'no_side_effect' } }],
+        })}
+        disabled={false}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        authorizationError={null}
+        toolsPreviewLoading={false}
+        toolsLoaded
+        onClose={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onLoadMoreTools={noop}
+      />,
+    );
+    expect(screen.getByText('raw_tool_name', { selector: '.connector-drawer-tool-title' })).toBeTruthy();
+    expect(screen.getByText('Does a thing')).toBeTruthy();
+  });
 });

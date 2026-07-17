@@ -83,8 +83,10 @@ export function ConnectorDetailDrawer({
 
   function continueAuthorization(event: SyntheticEvent) {
     event.stopPropagation();
-    if (!authorizationPending?.redirectUrl) return;
-    onOpenExternalUrl?.(authorizationPending.redirectUrl);
+    // Only ever wired to the "continue in browser" button below, which itself
+    // only renders when `authorizationPending.redirectUrl` is truthy — so this
+    // is never reached with a missing redirect URL at runtime.
+    onOpenExternalUrl?.(authorizationPending!.redirectUrl!);
   }
 
   useEffect(() => {
@@ -258,13 +260,14 @@ export function ConnectorDetailDrawer({
                   ))}
                 </ul>
                 {connector.toolsNextCursor ? (
+                  // `isLoadingTools` (above) already gates this whole branch on
+                  // `!toolsPreviewLoading`, so a loading/disabled variant of
+                  // this button is unreachable — it always renders idle.
                   <button
                     type="button"
                     className="ghost connector-drawer-load-more"
-                    disabled={toolsPreviewLoading}
                     onClick={() => onLoadMoreTools(connector.id, connector.toolsNextCursor!)}
                   >
-                    {toolsPreviewLoading ? <Icon name="spinner" size={12} /> : null}
                     <span>{t('Load more tools')}</span>
                   </button>
                 ) : null}

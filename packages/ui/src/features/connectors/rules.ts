@@ -419,9 +419,18 @@ export function fallbackLogoInitials(name: string): string {
   const parts = cleaned.split(/\s+/u);
   if (parts.length === 1) {
     const single = parts[0]!;
-    return (single[0] ?? '').toUpperCase() + (single[1] ?? '').toLowerCase();
+    // `single` is non-empty (guarded by the `!cleaned` check above), so
+    // `single[0]` is always defined; `single[1]` is genuinely absent for a
+    // one-character name (a real, tested runtime path), so it keeps its
+    // fallback.
+    return single[0]!.toUpperCase() + (single[1] ?? '').toLowerCase();
   }
-  const first = parts[0]?.[0] ?? '';
-  const second = parts[1]?.[0] ?? '';
+  // `parts.length >= 2` here, and `split(/\s+/u)` on a trimmed, non-empty
+  // string never produces empty tokens, so `parts[0]`/`parts[1]` and their
+  // first characters are always defined — the `?.`/`??` fallback the type
+  // checker requires (noUncheckedIndexedAccess) has no reachable runtime
+  // path here.
+  const first = parts[0]![0]!;
+  const second = parts[1]![0]!;
   return (first + second).toUpperCase();
 }

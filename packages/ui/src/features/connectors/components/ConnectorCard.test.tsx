@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ConnectorCard } from './ConnectorCard.js';
@@ -159,5 +159,138 @@ describe('ConnectorCard', () => {
       />,
     );
     expect(screen.getByText('CRM')).toBeTruthy();
+  });
+
+  it('shows the tools badge once tools are loaded', () => {
+    render(
+      <ConnectorCard
+        connector={makeConnector()}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={noop}
+      />,
+    );
+    expect(document.querySelector('.connector-tools-badge.is-ready')).toBeTruthy();
+  });
+
+  it('fires onDisconnect when the disconnect action is clicked', async () => {
+    const onDisconnect = vi.fn();
+    render(
+      <ConnectorCard
+        connector={makeConnector({ status: 'connected' })}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={onDisconnect}
+        onCancelAuthorization={noop}
+        onOpenDetails={noop}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith('slack');
+  });
+
+  it('reflects a pending disconnect as a loading, disabled state', () => {
+    render(
+      <ConnectorCard
+        connector={makeConnector({ status: 'connected' })}
+        pendingAction="disconnect"
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={noop}
+      />,
+    );
+    const disconnectButton = screen.getByRole('button', { name: 'Disconnect' });
+    expect(disconnectButton.className).toContain('is-loading');
+    expect((disconnectButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('hides the disconnect action from the tab order when disabled while connected', () => {
+    render(
+      <ConnectorCard
+        connector={makeConnector({ status: 'connected' })}
+        disabled
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={noop}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Disconnect' }).getAttribute('tabIndex')).toBe('-1');
+  });
+
+  it('does not open details when the card itself is clicked while disabled', async () => {
+    const onOpenDetails = vi.fn();
+    render(
+      <ConnectorCard
+        connector={makeConnector()}
+        disabled
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={onOpenDetails}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Slack' }));
+    expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-activation keys and keydowns that bubble from a child element', async () => {
+    const onOpenDetails = vi.fn();
+    render(
+      <ConnectorCard
+        connector={makeConnector()}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={onOpenDetails}
+      />,
+    );
+    const card = screen.getByRole('button', { name: 'Open details for Slack' });
+    card.focus();
+    await userEvent.keyboard('{Tab}');
+    expect(onOpenDetails).not.toHaveBeenCalled();
+
+    // A keydown that bubbles up to the card from a plain descendant (target
+    // !== currentTarget) must not activate it, even for an activation key.
+    fireEvent.keyDown(screen.getByText('Slack'), { key: 'Enter' });
+    expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+
+  it('opens details on Space when focused directly on the card', async () => {
+    const onOpenDetails = vi.fn();
+    render(
+      <ConnectorCard
+        connector={makeConnector()}
+        pendingAction={null}
+        authorizationCancelFailed={false}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={onOpenDetails}
+      />,
+    );
+    const card = screen.getByRole('button', { name: 'Open details for Slack' });
+    card.focus();
+    await userEvent.keyboard(' ');
+    expect(onOpenDetails).toHaveBeenCalledWith('slack');
   });
 });

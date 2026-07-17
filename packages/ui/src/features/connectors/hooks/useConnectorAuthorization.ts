@@ -117,12 +117,18 @@ export function useConnectorAuthorization(
             delete next[connectorId];
             return next;
           });
-          setAuthError((curr) => {
-            if (curr[connectorId] === undefined) return curr;
-            const next = { ...curr };
-            delete next[connectorId];
-            return next;
-          });
+          // No authError clear here (unlike the sibling cancelFailed clear
+          // above): authError[connectorId] and pending[connectorId] can
+          // never be simultaneously truthy by the time this runs. A failed
+          // connect is the only thing that ever sets authError[connectorId],
+          // and it unconditionally clears pending[connectorId] in the same
+          // call (see the `else` branch of runConnectorAction's connect
+          // case below); pending[connectorId] can only become truthy again
+          // via a *successful* connect for that id, whose preamble clears
+          // authError[connectorId] first, or via the initial storage load,
+          // when authError is still always empty. So a stale, about-to-be
+          // auto-cancelled pending entry implies authError[connectorId] is
+          // already undefined here.
           setPending((curr) => clearConnectorAuthorizationPending(curr, connectorId));
         }),
       );

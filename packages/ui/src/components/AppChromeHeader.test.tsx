@@ -29,6 +29,25 @@ describe('AppChromeHeader', () => {
     const { container } = render(<AppChromeHeader />);
     expect(container.querySelector(`#${APP_CHROME_FILE_ACTIONS_ID}`)).toBeTruthy();
   });
+
+  it('omits the traffic space when showTrafficSpace is false', () => {
+    const { container } = render(<AppChromeHeader showTrafficSpace={false} />);
+    expect(container.querySelector('.app-chrome-traffic-space')).toBeNull();
+  });
+
+  it('renders children, fileActionsBefore, and actions when supplied', () => {
+    render(
+      <AppChromeHeader
+        fileActionsBefore={<span>before</span>}
+        actions={<span>the-actions</span>}
+      >
+        <span>the-children</span>
+      </AppChromeHeader>,
+    );
+    expect(screen.getByText('before')).toBeTruthy();
+    expect(screen.getByText('the-children')).toBeTruthy();
+    expect(screen.getByText('the-actions')).toBeTruthy();
+  });
 });
 
 describe('SettingsIconButton', () => {

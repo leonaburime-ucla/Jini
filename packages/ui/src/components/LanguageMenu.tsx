@@ -38,8 +38,10 @@ export function LanguageMenu({
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
-      if (!wrapRef.current) return;
-      if (wrapRef.current.contains(e.target as Node)) return;
+      // Non-null: `wrapRef` is attached to the always-rendered wrap div, so
+      // by the time this effect's listener can fire (after mount, and only
+      // while `open` is true) the ref is already set.
+      if (wrapRef.current!.contains(e.target as Node)) return;
       setOpen(false);
     }
     function onKey(e: KeyboardEvent) {

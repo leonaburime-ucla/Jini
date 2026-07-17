@@ -56,6 +56,36 @@ describe('ConnectorGrid', () => {
     expect(onClearSearch).toHaveBeenCalled();
   });
 
+  it('passes the pending action through only to the matching connector, and forwards optional callbacks', () => {
+    render(
+      <ConnectorGrid
+        connectors={[makeConnector({ id: 'a', name: 'A' }), makeConnector({ id: 'b', name: 'B', status: 'connected' })]}
+        locked={false}
+        hasNoResults={false}
+        searchQuery=""
+        pendingConnectorAction={{ connectorId: 'a', action: 'connect' }}
+        authorizationPending={{}}
+        authorizationCancelFailed={{}}
+        toolsLoaded={false}
+        onConnect={noop}
+        onDisconnect={noop}
+        onCancelAuthorization={noop}
+        onOpenDetails={noop}
+        onClearSearch={noop}
+        getCategoryLabel={(c) => c.toUpperCase()}
+        onOpenExternalUrl={noop}
+      />,
+    );
+    // Connector "a" gets the pending action (its connect button shows a busy state).
+    const cardA = screen.getByRole('button', { name: 'Open details for A' });
+    expect(cardA.querySelector('.connector-action.is-connect.is-loading')).toBeTruthy();
+    // Connector "b" does not match the pending action's connectorId, so it stays idle.
+    const cardB = screen.getByRole('button', { name: 'Open details for B' });
+    expect(cardB.querySelector('.connector-action.is-disconnect.is-loading')).toBeNull();
+    // getCategoryLabel was forwarded and applied.
+    expect(screen.getAllByText('COMMUNICATION')).toHaveLength(2);
+  });
+
   it('shows the gate overlay when locked and a gate is supplied', () => {
     render(
       <ConnectorGrid

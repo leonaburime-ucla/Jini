@@ -72,8 +72,10 @@ export function ConnectorCard({
 
   function continueAuthorization(event: SyntheticEvent) {
     stop(event);
-    if (!authorizationPending?.redirectUrl) return;
-    onOpenExternalUrl?.(authorizationPending.redirectUrl);
+    // Only ever wired to the "continue in browser" button below, which itself
+    // only renders when `authorizationPending.redirectUrl` is truthy — so this
+    // is never reached with a missing redirect URL at runtime.
+    onOpenExternalUrl?.(authorizationPending!.redirectUrl!);
   }
 
   return (

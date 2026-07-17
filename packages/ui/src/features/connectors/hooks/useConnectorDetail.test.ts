@@ -165,4 +165,165 @@ describe('useConnectorDetail', () => {
     rerender({ retryToken: 'b' });
     await waitFor(() => expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(2));
   });
+
+  it('detailConnector resolves to null via the ?? fallback when the open id drops out of the catalog', () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    const setConnectors = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ conns }: { conns: Connector[] }) =>
+        useConnectorDetail(port, { connectors: conns, setConnectors, unlocked: false, retryToken: 'a' }),
+      { initialProps: { conns: [makeConnector()] } },
+    );
+
+    act(() => result.current.openDetails('slack'));
+    expect(result.current.detailConnector?.id).toBe('slack');
+
+    rerender({ conns: [] });
+    expect(result.current.detailConnector).toBeNull();
+  });
+
+  it('loadMoreTools is a no-op when called directly while locked', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    const fetchDetail = vi.fn(port.fetchConnectorDetail.bind(port));
+    port.fetchConnectorDetail = fetchDetail;
+    const setConnectors = vi.fn();
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors: [connector], setConnectors, unlocked: false, retryToken: 'a' }),
+    );
+
+    await act(async () => {
+      await result.current.loadMoreTools('slack');
+    });
+    expect(fetchDetail).not.toHaveBeenCalled();
+  });
+
+  it('loadMoreTools ignores a second call for the same connector while the first is still in flight', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    let resolveFetch!: (v: Connector | null) => void;
+    const fetchDetail = vi.fn(() => new Promise<Connector | null>((resolve) => (resolveFetch = resolve)));
+    port.fetchConnectorDetail = fetchDetail;
+    const setConnectors = vi.fn();
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors: [connector], setConnectors, unlocked: true, retryToken: 'a' }),
+    );
+
+    act(() => {
+      void result.current.loadMoreTools('slack');
+    });
+    act(() => {
+      // Same connectorId while the first call's loadingIds flag is still set —
+      // this dedup guard must skip issuing a second in-flight fetch.
+      void result.current.loadMoreTools('slack');
+    });
+    expect(fetchDetail).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFetch(null);
+      await Promise.resolve();
+    });
+  });
+
+  it('auto-hydrate catches a thrown fetch error and marks the connector failed with the current retryToken', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    port.fetchConnectorDetail = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    const setConnectors = vi.fn();
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors: [connector], setConnectors, unlocked: true, retryToken: 'a' }),
+    );
+
+    act(() => result.current.openDetails('slack'));
+    await waitFor(() => expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(1));
+    // toolsLoaded flips true once failedIds[id] === retryToken, proving the
+    // catch block ran (not just that the promise rejected).
+    await waitFor(() => expect(result.current.toolsLoaded).toBe(true));
+  });
+
+  it('loadMoreTools only updates the matching connector when multiple are present', async () => {
+    const connectorA = makeConnector({ id: 'slack', toolCount: 2, tools: [] });
+    const connectorB = makeConnector({
+      id: 'github',
+      name: 'GitHub',
+      toolCount: 1,
+      tools: [{ name: 'x', safety: { sideEffect: 'no_side_effect' } }],
+    });
+    const port = createFakeConnectorsPort({ connectors: [connectorA, connectorB] });
+    const fetchDetail = vi.fn(async (id: string) =>
+      id === 'slack' ? { ...connectorA, tools: [{ name: 'a', safety: { sideEffect: 'no_side_effect' } as const }] } : null,
+    );
+    port.fetchConnectorDetail = fetchDetail;
+    let connectors = [connectorA, connectorB];
+    const setConnectors = makeSetConnectorsSpy(
+      () => connectors,
+      (next) => {
+        connectors = next;
+      },
+    );
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors, setConnectors, unlocked: true, retryToken: 'a' }),
+    );
+
+    await act(async () => {
+      await result.current.loadMoreTools('slack');
+    });
+
+    // The non-matching connector must come through the map's passthrough
+    // branch unchanged (same reference), not be rebuilt.
+    expect(connectors.find((c) => c.id === 'github')).toBe(connectorB);
+    expect(connectors.find((c) => c.id === 'slack')?.tools.length).toBeGreaterThan(0);
+  });
+
+  it('a successful retry clears a previous fetch failure for that connector', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    let shouldFail = true;
+    port.fetchConnectorDetail = vi.fn(async () => {
+      if (shouldFail) throw new Error('network down');
+      return { ...connector, tools: [{ name: 'a', safety: { sideEffect: 'no_side_effect' } }] };
+    });
+    let connectors = [connector];
+    const setConnectors = makeSetConnectorsSpy(
+      () => connectors,
+      (next) => {
+        connectors = next;
+      },
+    );
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors, setConnectors, unlocked: true, retryToken: 'a' }),
+    );
+
+    act(() => result.current.openDetails('slack'));
+    await waitFor(() => expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.toolsLoaded).toBe(true));
+
+    shouldFail = false;
+    await act(async () => {
+      await result.current.loadMoreTools('slack');
+    });
+    expect(connectors[0]!.tools.map((t) => t.name)).toEqual(['a']);
+  });
+
+  it('openDetails clears a previous fetch failure for that connector so it can retry immediately', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    port.fetchConnectorDetail = vi.fn(async () => null);
+    const setConnectors = vi.fn();
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors: [connector], setConnectors, unlocked: true, retryToken: 'a' }),
+    );
+
+    act(() => result.current.openDetails('slack'));
+    await waitFor(() => expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.toolsLoaded).toBe(true));
+
+    act(() => result.current.closeDetails());
+    act(() => result.current.openDetails('slack'));
+    // Reopening cleared the failedIds entry (same retryToken), so the effect
+    // must retry immediately instead of treating it as already-failed.
+    await waitFor(() => expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(2));
+  });
 });

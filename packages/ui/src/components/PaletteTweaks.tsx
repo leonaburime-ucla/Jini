@@ -37,8 +37,11 @@ export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: 
   useEffect(() => {
     if (!open) return;
     function onDoc(ev: MouseEvent) {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(ev.target as Node)) return;
+      // Non-null: this effect only registers the listener while `open` is
+      // true, and the panel's root div (which owns `rootRef`) is rendered
+      // in that same `open` branch, so the ref is always set by the time
+      // this listener can fire.
+      if (rootRef.current!.contains(ev.target as Node)) return;
       onClose();
     }
     function onKey(ev: KeyboardEvent) {

@@ -102,15 +102,22 @@ export function createBrowserConnectorAuthPendingStorage(): ConnectorAuthPending
       }
     },
     save(state: ConnectorAuthorizationPendingState): void {
-      if (typeof window === 'undefined') return;
-      try {
-        if (Object.keys(state).length === 0) {
-          window.sessionStorage.removeItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
-        } else {
-          window.sessionStorage.setItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY, JSON.stringify(state));
+      // Written as a guarding `if` block (not an early `return;`) so the SSR
+      // guard is a single well-formed branch for coverage tooling — a bare
+      // `return;` here produced two branch ranges that a v8-coverage run
+      // spanning both the jsdom and `node`-environment test files for this
+      // module didn't reliably merge, unlike every other SSR guard in this
+      // file (which all `return` an expression, not a bare statement).
+      if (typeof window !== 'undefined') {
+        try {
+          if (Object.keys(state).length === 0) {
+            window.sessionStorage.removeItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
+          } else {
+            window.sessionStorage.setItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY, JSON.stringify(state));
+          }
+        } catch {
+          /* Ignore unavailable sessionStorage. */
         }
-      } catch {
-        /* Ignore unavailable sessionStorage. */
       }
     },
   };

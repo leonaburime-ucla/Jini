@@ -72,4 +72,41 @@ describe('useConnectorCatalog', () => {
     });
     expect(result.current.connectors[0]!.status).toBe('connected');
   });
+
+  it('ignores a stale base-catalog fetch that resolves after unmount', async () => {
+    let resolveFetch!: (v: Connector[]) => void;
+    const fetchConnectors = vi.fn(() => new Promise<Connector[]>((resolve) => (resolveFetch = resolve)));
+    const port = createFakeConnectorsPort({ connectors: [] });
+    port.fetchConnectors = fetchConnectors;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderHook(() => useConnectorCatalog(port, { unlocked: false }));
+    unmount();
+    // The effect's cleanup already ran (cancelled = true) before this resolves,
+    // so the post-unmount `if (cancelled) return;` guard must skip setState —
+    // otherwise React logs an "update on an unmounted component" error.
+    resolveFetch([makeConnector()]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('ignores a stale enrichment fetch that resolves after unmount', async () => {
+    let resolveEnrich!: (v: Connector[]) => void;
+    const enrich = vi.fn(() => new Promise<Connector[]>((resolve) => (resolveEnrich = resolve)));
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.fetchConnectorEnrichment = enrich;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result, unmount } = renderHook(() => useConnectorCatalog(port, { unlocked: true }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(enrich).toHaveBeenCalledTimes(1));
+    unmount();
+    resolveEnrich([makeConnector({ toolCount: 5 })]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });

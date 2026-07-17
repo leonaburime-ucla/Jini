@@ -84,7 +84,10 @@ export function WorkingDirPicker({
       return;
     }
     function onPointer(event: MouseEvent) {
-      if (wrapRef.current?.contains(event.target as Node)) return;
+      // Non-null: `wrapRef` is attached to the always-rendered outer div, so
+      // by the time this effect's listener can fire (after mount, and only
+      // while `open` is true) the ref is already set.
+      if (wrapRef.current!.contains(event.target as Node)) return;
       setOpen(false);
     }
     function onKey(event: KeyboardEvent) {

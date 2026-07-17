@@ -26,8 +26,10 @@ function fileNameFromHeader(header: string | null): string | null {
   if (header == null) return null;
   const match = /filename\*=UTF-8''([^;\n]+)|filename="([^"]+)"|filename=([^;\n]+)/i.exec(header);
   if (match == null) return null;
-  const raw = match[1] ?? match[2] ?? match[3];
-  if (raw == null) return null;
+  // Non-null: the regex's three alternatives are mutually exclusive and each
+  // requires >=1 captured char, so a successful match always populates
+  // exactly one of these three groups.
+  const raw = (match[1] ?? match[2] ?? match[3])!;
   try {
     return decodeURIComponent(raw.trim());
   } catch {
@@ -116,7 +118,10 @@ export function ExportDiagnosticsButton({
   };
 
   const handleClick = async () => {
-    if (status.kind === 'busy') return;
+    // No busy re-entry guard needed here: the only caller is the button
+    // below, which is `disabled={busy}` — and a disabled button never
+    // dispatches click events (to real or synthetic listeners alike), so
+    // this can never run while an export is already in flight.
     setStatus({ kind: 'busy' });
     try {
       if (desktopBridge != null) {

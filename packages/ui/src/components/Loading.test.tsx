@@ -27,4 +27,14 @@ describe('Loading primitives', () => {
     render(<CenteredLoader label="Bootstrapping" />);
     expect(screen.getByText('Bootstrapping')).toBeTruthy();
   });
+
+  it('CenteredLoader renders without a label', () => {
+    const { container } = render(<CenteredLoader />);
+    expect(container.querySelector('.centered-loader-label')).toBeNull();
+  });
+
+  it('Skeleton appends a custom className', () => {
+    const { container } = render(<Skeleton className="extra" />);
+    expect((container.firstChild as HTMLElement).className).toBe('skeleton-block extra');
+  });
 });

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createBrowserConnectorAuthBridge,
   createBrowserConnectorAuthPendingStorage,
+  createFakeConnectorsDependencies,
   createFakeConnectorsPort,
 } from './dependencies.js';
 import type { Connector } from './types.js';
@@ -11,10 +12,21 @@ function makeConnector(overrides: Partial<Connector> = {}): Connector {
 }
 
 describe('createFakeConnectorsPort', () => {
+  it('defaults to an empty catalog and zero latency when called with no options', async () => {
+    const port = createFakeConnectorsPort();
+    expect(await port.fetchConnectors()).toEqual([]);
+  });
+
   it('fetchConnectors returns a copy of the seeded catalog', async () => {
     const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
     const connectors = await port.fetchConnectors();
     expect(connectors).toEqual([makeConnector()]);
+  });
+
+  it('fetchConnectorEnrichment returns a copy of the seeded catalog', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    const enriched = await port.fetchConnectorEnrichment!();
+    expect(enriched).toEqual([makeConnector()]);
   });
 
   it('connectConnector marks the connector connected', async () => {
@@ -50,9 +62,36 @@ describe('createFakeConnectorsPort', () => {
     expect(statuses.slack).toEqual({ status: 'connected', accountLabel: 'me@x.com' });
   });
 
+  it('fetchConnectorStatuses omits accountLabel when the connector has none', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    const statuses = await port.fetchConnectorStatuses();
+    expect(statuses.slack).toEqual({ status: 'available' });
+  });
+
   it('fetchConnectorDetail returns null for an unknown id', async () => {
     const port = createFakeConnectorsPort({ connectors: [] });
     expect(await port.fetchConnectorDetail('missing')).toBeNull();
+  });
+
+  it('fetchConnectorDetail returns a copy of the matching connector', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    expect(await port.fetchConnectorDetail('slack')).toEqual(makeConnector());
+  });
+
+  it('cancelConnectorAuthorization marks the connector available again', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    const result = await port.cancelConnectorAuthorization('slack');
+    expect(result?.status).toBe('available');
+  });
+
+  it('cancelConnectorAuthorization returns null for an unknown id', async () => {
+    const port = createFakeConnectorsPort({ connectors: [] });
+    expect(await port.cancelConnectorAuthorization('missing')).toBeNull();
+  });
+
+  it('openExternalUrl resolves true', async () => {
+    const port = createFakeConnectorsPort({ connectors: [] });
+    expect(await port.openExternalUrl('https://example.com')).toBe(true);
   });
 
   it('honors simulated latency', async () => {
@@ -92,6 +131,45 @@ describe('createBrowserConnectorAuthPendingStorage', () => {
     storage.save({ slack: {} });
     storage.save({});
     expect(window.sessionStorage.getItem('jini-connectors-authorization-pending')).toBeNull();
+  });
+
+  it('load() swallows a thrown sessionStorage error and returns {}', () => {
+    // Replacing the whole sessionStorage object (rather than spying on/patching
+    // one method of the real jsdom instance) keeps v8 coverage attribution
+    // correct for the resulting catch block.
+    const originalSessionStorage = window.sessionStorage;
+    Object.defineProperty(window, 'sessionStorage', {
+      value: {
+        getItem(): string {
+          throw new Error('sessionStorage unavailable');
+        },
+      },
+      configurable: true,
+    });
+    try {
+      const storage = createBrowserConnectorAuthPendingStorage();
+      expect(storage.load()).toEqual({});
+    } finally {
+      Object.defineProperty(window, 'sessionStorage', { value: originalSessionStorage, configurable: true });
+    }
+  });
+
+  it('save() swallows a thrown sessionStorage error', () => {
+    const originalSessionStorage = window.sessionStorage;
+    Object.defineProperty(window, 'sessionStorage', {
+      value: {
+        setItem(): void {
+          throw new Error('sessionStorage unavailable');
+        },
+      },
+      configurable: true,
+    });
+    try {
+      const storage = createBrowserConnectorAuthPendingStorage();
+      expect(() => storage.save({ slack: { expiresAt: '2099-01-01T00:00:00Z' } })).not.toThrow();
+    } finally {
+      Object.defineProperty(window, 'sessionStorage', { value: originalSessionStorage, configurable: true });
+    }
   });
 });
 
@@ -147,5 +225,14 @@ describe('createBrowserConnectorAuthBridge', () => {
     expect(onRefocus).toHaveBeenCalledTimes(3);
 
     vi.restoreAllMocks();
+  });
+});
+
+describe('createFakeConnectorsDependencies', () => {
+  it('wires a fake data port together with the real browser storage/bridge implementations', async () => {
+    const deps = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    expect(await deps.data.fetchConnectors()).toEqual([makeConnector()]);
+    expect(deps.authPendingStorage.load()).toEqual({});
+    expect(typeof deps.authBridge.subscribeAuthCallback).toBe('function');
   });
 });
