@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import { useCopyToClipboard } from './useCopyToClipboard.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useCopyToClipboard, useWiredCopyToClipboard } from './useCopyToClipboard.js';
 import type { ViewerClipboardPort } from '../../ports.js';
 
 function makeClipboard(result: boolean): ViewerClipboardPort {
@@ -68,5 +68,41 @@ describe('useCopyToClipboard', () => {
       await result.current.copy('two');
     });
     expect(result.current.copied).toBe(true);
+  });
+});
+
+describe('useWiredCopyToClipboard', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('wires the real browser clipboard port end-to-end', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+
+    const { result } = renderHook(() => useWiredCopyToClipboard());
+    expect(result.current.copied).toBe(false);
+    await act(async () => {
+      await result.current.copy('wired text');
+    });
+    expect(writeText).toHaveBeenCalledWith('wired text');
+    expect(result.current.copied).toBe(true);
+  });
+
+  it('honors a custom resetMs like the underlying hook', async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+
+    const { result } = renderHook(() => useWiredCopyToClipboard(50));
+    await act(async () => {
+      await result.current.copy('hello');
+    });
+    expect(result.current.copied).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+    expect(result.current.copied).toBe(false);
+    vi.useRealTimers();
   });
 });

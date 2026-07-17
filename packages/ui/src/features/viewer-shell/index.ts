@@ -18,7 +18,7 @@ export * from './rules.js';
 export type { ViewerClipboardPort, ViewerShellDependencies } from './ports.js';
 export { createBrowserViewerClipboard, createDefaultViewerShellDependencies } from './dependencies.js';
 
-export { useCopyToClipboard } from './react/hooks/useCopyToClipboard.js';
+export { useCopyToClipboard, useWiredCopyToClipboard } from './react/hooks/useCopyToClipboard.js';
 export type { UseCopyToClipboardResult } from './react/hooks/useCopyToClipboard.js';
 export { useCommentReorder } from './react/hooks/useCommentReorder.js';
 export type { UseCommentReorderResult } from './react/hooks/useCommentReorder.js';
