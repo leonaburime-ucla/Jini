@@ -13,6 +13,7 @@ import type { WindowLifecyclePort } from './window-lifecycle.js';
 import type { ProtocolHandlerPort } from './protocol.js';
 import type { SidecarLauncherPort } from './sidecar.js';
 import type { RenderService } from './render-service.js';
+import type { ShellPort } from './shell.js';
 
 export interface DesktopHostPorts {
   singleInstance: SingleInstanceLockPort;
@@ -20,6 +21,7 @@ export interface DesktopHostPorts {
   protocolHandler: ProtocolHandlerPort;
   sidecarLauncher: SidecarLauncherPort;
   renderService: RenderService;
+  shell: ShellPort;
 }
 
 export interface DesktopHost {

@@ -5,6 +5,7 @@ import type {
   ElectronBrowserWindowLike,
   ElectronBrowserWindowOptions,
   ElectronProtocolLike,
+  ElectronShellLike,
   ElectronWebContentsLike,
 } from './electron-surfaces.js';
 
@@ -127,6 +128,25 @@ export function createFakeElectronProtocol(): ElectronProtocolLike & { handlers:
     registerSchemesAsPrivileged() {},
     handle(scheme, handler) {
       handlers.set(scheme, handler);
+    },
+  };
+}
+
+export function createFakeElectronShell(options: { openPathError?: string } = {}): ElectronShellLike & {
+  openedExternalUrls: string[];
+  openedPaths: string[];
+} {
+  const openedExternalUrls: string[] = [];
+  const openedPaths: string[] = [];
+  return {
+    openedExternalUrls,
+    openedPaths,
+    async openExternal(url: string) {
+      openedExternalUrls.push(url);
+    },
+    async openPath(path: string) {
+      openedPaths.push(path);
+      return options.openPathError ?? '';
     },
   };
 }

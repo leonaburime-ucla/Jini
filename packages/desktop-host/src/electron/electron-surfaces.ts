@@ -77,3 +77,9 @@ export interface ElectronProtocolLike {
   registerSchemesAsPrivileged(schemes: Array<{ scheme: string; privileges: ElectronProtocolPrivileges }>): void;
   handle(scheme: string, handler: (request: Request) => Promise<Response>): void;
 }
+
+export interface ElectronShellLike {
+  /** Resolves to the empty string on success, an error message otherwise — matches Electron's real `shell.openPath` contract. */
+  openPath(path: string): Promise<string>;
+  openExternal(url: string): Promise<void>;
+}
