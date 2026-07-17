@@ -19,6 +19,10 @@ describe('SvgRenderer', () => {
     expect(SvgRenderer.canRender({ file: file({ name: 'icon.png' }) })).toBe(false);
   });
 
+  it('refuses a sketch-kind file with a non-svg extension', () => {
+    expect(SvgRenderer.canRender({ file: file({ kind: 'sketch', name: 'icon.png' }) })).toBe(false);
+  });
+
   it('refuses a file kind that is neither image nor sketch when an explicit non-svg manifest is set', () => {
     // A bare .svg name always legacy-infers to the svg renderer (see the test
     // above), so the file.kind fallback only matters once an explicit

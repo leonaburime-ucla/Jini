@@ -47,6 +47,41 @@ describe('sanitizeTitleInDoc', () => {
     const doc = '<html><head></head><body>hi</body></html>';
     expect(sanitizeTitleInDoc(doc)).toBe(doc);
   });
+
+  it('skips a <title>-like string inside an HTML comment and sanitizes the real title after it', () => {
+    const doc = '<html><head><!-- <title>fake</title> --><title>Real: Title</title></head><body></body></html>';
+    expect(sanitizeTitleInDoc(doc)).toContain('<title>Real- Title</title>');
+  });
+
+  it('returns the input unchanged when an unterminated HTML comment prevents finding any title', () => {
+    const doc = '<html><head><!-- never closes<title>Real</title></head><body></body></html>';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
+  });
+
+  it('returns the input unchanged when a <script> block before the title never closes (malformed doc)', () => {
+    const doc = '<html><head><script>var s = "<title>fake</title>";';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
+  });
+
+  it('returns the input unchanged when <title> opens but never closes', () => {
+    const doc = '<html><head><title>Oops, no closing tag';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
+  });
+
+  it('returns the input unchanged when <title itself never closes with a >', () => {
+    const doc = '<title ';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
+  });
+
+  it('decodes numeric and hex character references in the title', () => {
+    const doc = '<html><head><title>&#65;&#x42; Report</title></head><body></body></html>';
+    expect(sanitizeTitleInDoc(doc)).toContain('<title>AB Report</title>');
+  });
+
+  it('replaces an out-of-range numeric character reference with the Unicode replacement character', () => {
+    const doc = '<html><head><title>&#99999999;bad</title></head><body></body></html>';
+    expect(sanitizeTitleInDoc(doc)).toContain(`<title>�bad</title>`);
+  });
 });
 
 describe('splice helpers', () => {
@@ -77,6 +112,18 @@ describe('splice helpers', () => {
     expect(injectBeforeBodyEnd('<html><body><p>hi</p></body></html>', '<X/>')).toBe(
       '<html><body><p>hi</p><X/></body></html>',
     );
+  });
+
+  it('injectBeforeHeadEnd falls back to DOMParser when the doc has no <head> tag and no </head> at all', () => {
+    const out = injectBeforeHeadEnd('<html><body>hi</body></html>', '<meta data-probe="1">');
+    expect(out.toLowerCase()).toContain('<head>');
+    expect(out).toContain('<meta data-probe="1">');
+  });
+
+  it('injectBeforeBodyEnd falls back to DOMParser when the doc has no <body> tag and no </body> at all', () => {
+    const out = injectBeforeBodyEnd('<html><head></head></html>', '<script data-probe="1"></script>');
+    expect(out.toLowerCase()).toContain('<body>');
+    expect(out).toContain('<script data-probe="1"></script>');
   });
 });
 
@@ -141,6 +188,33 @@ describe('buildSrcDoc', () => {
 
   it('returns the lazy transport shell when lazyTransport is set', () => {
     expect(buildSrcDoc('<p>hi</p>', { lazyTransport: true })).toBe(buildLazySrcDocTransport());
+  });
+
+  it('injects the base href/sandbox shim/focus guard into <body> when a full document has no <head> at all', () => {
+    // A full document (starts with <html>, so buildSrcDoc passes it through
+    // unwrapped) that omits <head> entirely exercises each injector's
+    // "<body> but no <head>" fallback branch.
+    const doc = buildSrcDoc('<html><body>Hi</body></html>', {
+      baseHref: 'https://example.com/artifact/',
+      previewFocusGuard: true,
+    });
+    expect(doc).toContain('<base href="https://example.com/artifact/">');
+    expect(doc).toContain('data-jini-sandbox-shim');
+    expect(doc).toContain('data-jini-preview-focus-guard');
+  });
+
+  it('prepends the base href/sandbox shim/focus guard when a full document has neither <head> nor <body>', () => {
+    // Starts with <!doctype so buildSrcDoc treats it as a full document and
+    // passes it through unwrapped, but the fragment itself has no <head> or
+    // <body> tag anywhere — the last-resort "neither" fallback branch.
+    const doc = buildSrcDoc('<!doctype html>just plain content, no head or body tags', {
+      baseHref: 'https://example.com/other/',
+      previewFocusGuard: true,
+    });
+    expect(doc).toContain('<base href="https://example.com/other/">');
+    expect(doc).toContain('data-jini-sandbox-shim');
+    expect(doc).toContain('data-jini-preview-focus-guard');
+    expect(doc).toContain('just plain content, no head or body tags');
   });
 });
 

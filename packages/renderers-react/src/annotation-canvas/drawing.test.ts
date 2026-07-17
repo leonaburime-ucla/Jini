@@ -71,6 +71,14 @@ describe('redrawStrokesAndBoxes', () => {
     redrawStrokesAndBoxes(ctx, { strokes: [], drawingStroke, selectionBoxes: [], boxDraft: null }, 100, 100, 1);
     expect(calls).toContain('moveTo');
   });
+
+  it('draws an in-progress box draft in addition to committed selection boxes', () => {
+    const { ctx, calls } = fakeCtx();
+    const boxDraft: NormalizedRect = { x: 0.4, y: 0.4, width: 0.1, height: 0.1 };
+    redrawStrokesAndBoxes(ctx, { strokes: [], drawingStroke: null, selectionBoxes: [], boxDraft }, 100, 100, 1);
+    // One dashed rect (save/setLineDash/fillRect/strokeRect/restore) for the draft box.
+    expect(calls).toEqual(['clearRect', 'save', 'setLineDash', 'fillRect', 'strokeRect', 'restore']);
+  });
 });
 
 describe('drawTextMarks', () => {
@@ -94,9 +102,16 @@ describe('drawCaptureTarget', () => {
     expect(calls).toEqual([]);
   });
 
-  it('draws nothing for a non-finite or zero-size position', () => {
+  it('draws nothing for a zero-size position', () => {
     const { ctx, calls } = fakeCtx();
     const target: CaptureTarget = { position: { x: 0, y: 0, width: 0, height: 10 } };
+    drawCaptureTarget(ctx, 1, 1, target);
+    expect(calls).toEqual([]);
+  });
+
+  it('draws nothing for a non-finite position (a host measurement glitch)', () => {
+    const { ctx, calls } = fakeCtx();
+    const target: CaptureTarget = { position: { x: NaN, y: 0, width: 10, height: 10 } };
     drawCaptureTarget(ctx, 1, 1, target);
     expect(calls).toEqual([]);
   });
@@ -106,6 +121,13 @@ describe('drawCaptureTarget', () => {
     const target: CaptureTarget = { position: { x: 10, y: 10, width: 50, height: 20 }, label: 'Header' };
     drawCaptureTarget(ctx, 1, 1, target);
     expect(calls).toEqual(['save', 'setLineDash', 'fillRect', 'strokeRect', 'setLineDash', 'fillRect', 'fillText', 'restore']);
+  });
+
+  it('falls back to the elementId as the label when no label is set', () => {
+    const { ctx, calls } = fakeCtx();
+    const target: CaptureTarget = { position: { x: 10, y: 10, width: 50, height: 20 }, elementId: 'submit-button' };
+    drawCaptureTarget(ctx, 1, 1, target);
+    expect(calls).toContain('fillText');
   });
 
   it('draws the box but skips the label when there is no label/elementId', () => {
@@ -135,5 +157,19 @@ describe('compositeMarksOntoCanvas', () => {
     expect(calls).toContain('fillRect'); // target + box
     expect(calls).toContain('stroke'); // freehand stroke
     expect(calls).toContain('fillText'); // text mark
+  });
+
+  it('skips a stroke with no points', () => {
+    const { ctx, calls } = fakeCtx();
+    compositeMarksOntoCanvas(
+      ctx,
+      { target: null, selectionBoxes: [], strokes: [{ points: [] }], textMarks: [] },
+      100,
+      100,
+      1,
+      1,
+    );
+    expect(calls).not.toContain('moveTo');
+    expect(calls).not.toContain('stroke');
   });
 });

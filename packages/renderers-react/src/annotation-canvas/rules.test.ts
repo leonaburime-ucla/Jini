@@ -115,6 +115,16 @@ describe('computeDockPlacement', () => {
       expect(rectsOverlap(placedRect, anchor)).toBe(false);
     }
   });
+
+  it('falls back to docked when the anchor fills nearly the entire host, so none of the 4 candidate sides has room to fit', () => {
+    // Big enough host/dock to clear the early "host too small" bail-out, but
+    // an anchor that fills almost the whole host so every one of right/left/
+    // bottom/top's own `fits` check fails and the loop runs out of
+    // candidates (not the same code path as the "too small" guard above).
+    const anchor: Rect = { x: 20, y: 20, width: 760, height: 560 };
+    const placement = computeDockPlacement({ dockedStyle, hostRect, wrapRect, dockRect, anchor });
+    expect(placement).toEqual({ layout: 'docked', side: null, style: dockedStyle });
+  });
 });
 
 describe('mergeBounds', () => {

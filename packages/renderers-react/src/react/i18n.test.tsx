@@ -39,4 +39,13 @@ describe('I18nProvider / useT', () => {
     );
     expect(screen.getByText('Hello, Ada!')).toBeInTheDocument();
   });
+
+  it('leaves a placeholder literally in place when the vars map does not supply that name', () => {
+    function Incomplete() {
+      const t = useT();
+      return <p>{t('Hi {name}, you have {count} new messages', { name: 'Ada' })}</p>;
+    }
+    render(<Incomplete />);
+    expect(screen.getByText('Hi Ada, you have {count} new messages')).toBeInTheDocument();
+  });
 });
