@@ -44,8 +44,8 @@ port it first as the pattern-setter for this bucket).
 | `AgentIcon.tsx` | `src/components/AgentIcon.tsx` | Name suggests agent-domain; confirm it's a generic icon-by-key renderer, not hardcoding OD's agent list |
 | `Toast.tsx` | `src/components/Toast.tsx` | — |
 | `Loading.tsx` | `src/components/Loading.tsx` | — |
-| `TooltipLayer.tsx` | `src/components/TooltipLayer.tsx` | **0 fan-in** — confirm it's actually referenced (barrel export, dynamic import, test) before porting; may be dead code |
-| `CustomSelect.tsx` | `src/components/CustomSelect.tsx` | Same 0-fan-in caveat as `TooltipLayer.tsx` |
+| `TooltipLayer.tsx` | `src/components/TooltipLayer.tsx` | Not dead — the graph tool showed 0 fan-in but a direct grep found real consumers (`SketchEditor.tsx`, `FileViewer.tsx`, both OD-product). Fine to port; graph coverage gap noted for future sweeps. |
+| `CustomSelect.tsx` | `src/components/CustomSelect.tsx` | Verified 0 consumers via direct grep too (not just the graph tool) — likely dead code. Confirm before porting; may not be worth shipping. |
 | `KitErrorBoundary.tsx` | `src/components/KitErrorBoundary.tsx` | Swap the concrete `reportHandledException` import for an injected callback prop (analytics-adapter pattern, r4 §4 slot table) |
 | `LanguageMenu.tsx` | `src/components/LanguageMenu.tsx` | `LOCALES`/`LOCALE_LABEL` content is swappable data — keep as a prop/config, not hardcoded |
 | `WorkingDirPicker.tsx` | `src/components/WorkingDirPicker.tsx` | This is the UI atom the chat-composer slice's `WorkingDirPort` binds to — coordinate with `@jini/chat-react` work so the port and the atom agree on shape |
@@ -53,7 +53,17 @@ port it first as the pattern-setter for this bucket).
 | `ExportDiagnosticsButton.tsx` | `src/components/ExportDiagnosticsButton.tsx` | — |
 | `PaletteTweaks.tsx` | `src/components/PaletteTweaks.tsx` | **0 fan-in** — verify it's live before porting |
 | `plugins-home/useInView.ts` | `src/hooks/useInView.ts` | — |
-| `agentOrdering.ts`, `auto-open-file.ts`, `composer-detail-position.ts`, `composer-flyout-placement.ts`, `enterpriseUrl.ts`, `markdown-scroll-sync.ts` | `src/utils/` (new — `packages/ui/README.md` doesn't define this slot yet; add it, these are non-component pure helpers) | — |
+| `auto-open-file.ts`, `enterpriseUrl.ts`, `markdown-scroll-sync.ts` | `src/utils/` (new — `packages/ui/README.md` doesn't define this slot yet; add it, these are non-component pure helpers) | Verified consumers (`ProjectView`/`DesignSystemFlow`, `EntryShell`/`EntrySettingsMenu`, `FileViewer` respectively) are all OD-product today — that's fine, a package can ship reusable logic before anyone outside OD uses it, but keep an eye out in case these turn out narrower than they look on a closer read |
+
+**Moved out of this bucket after checking real consumers, not just import-count (this is
+exactly the check you should run before finalizing any "pure, so it's generic" call):**
+`composer-detail-position.ts` and `composer-flyout-placement.ts` looked generic
+(zero deps) but their only consumer is `ComposerPlusMenu.tsx` — chat-composer's
+plus-menu, not generic UI. Likewise `agentOrdering.ts`'s consumers include
+`InlineModelSwitcher.tsx` (bucket C, agent-runtime/chat-react domain), alongside
+`SettingsDialog.tsx`/`AvatarMenu.tsx` (OD-product). All three move to bucket C
+below — they belong with chat-composer/agent-runtime work, not `@jini/ui`,
+regardless of how clean their own code reads.
 
 **Deferred pending an architecture ruling (r5 §4/§5c) — do NOT port to `@jini/ui` yet:**
 `IframeKeepAlivePool.tsx` overlaps `@jini/renderers-react`'s srcdoc sandbox
@@ -93,9 +103,14 @@ not resolve that call:
 `SessionModeToggle.tsx`, `NextStepActions.tsx`, `ConversationsMenu.tsx`,
 `FileOpsSummary.tsx` → `@jini/chat-react`. `InlineModelSwitcher.tsx`,
 `modelOptions.tsx`, `modelCapabilityTags.ts`, `agentModelSelection.ts`,
-`providerModelsCache.ts`, `AgentDiagnosticRow.tsx`, `AgentPicker.tsx` →
+`providerModelsCache.ts`, `AgentDiagnosticRow.tsx`, `AgentPicker.tsx`,
+`agentOrdering.ts` (found via real-consumer check, not import count —
+`InlineModelSwitcher.tsx` is one of its consumers) →
 `@jini/agent-runtime` UI surface or `@jini/chat-react` (needs the ruling).
-`PreviewModal.tsx` → `@jini/renderers-react`.
+`PreviewModal.tsx` → `@jini/renderers-react`. `composer-detail-position.ts`,
+`composer-flyout-placement.ts` (found the same way — only consumer is
+`ComposerPlusMenu.tsx`) → wherever `@jini/chat-react`'s Composer positioning
+logic lands.
 
 ---
 
