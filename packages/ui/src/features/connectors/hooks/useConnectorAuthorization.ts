@@ -57,7 +57,9 @@ export function useConnectorAuthorization(
 ): ConnectorAuthorizationController {
   const { connectors, setConnectors, onConnectorsChanged, onAuthResult, pollMs = CONNECTOR_AUTH_PENDING_POLL_MS } = params;
 
-  const [pending, setPending] = useState<ConnectorAuthorizationPendingState>(() => authPendingStorage.load());
+  const [pending, setPending] = useState<ConnectorAuthorizationPendingState>(() =>
+    pruneConnectorAuthorizationPending(authPendingStorage.load(), Date.now()),
+  );
   const [cancelFailed, setCancelFailed] = useState<Record<string, boolean>>({});
   const [authError, setAuthError] = useState<Record<string, string>>({});
   const [pendingConnectorAction, setPendingConnectorAction] = useState<PendingConnectorAction | null>(null);

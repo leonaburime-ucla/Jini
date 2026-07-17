@@ -3,10 +3,10 @@ import type { SyntheticEvent } from 'react';
 import { useT } from '../../i18n/index.js';
 import type { Connector, ConnectorAction, ConnectorAuthorizationPending } from '../types.js';
 import {
-  formatToolsBadge,
   getConnectorDisplayToolCount,
   getDisplayableConnectorAccountLabel,
   statusLabel,
+  toolsBadgeTranslation,
 } from '../rules.js';
 import { Icon } from '../../../components/Icon.js';
 import { ConnectorLogo } from './ConnectorLogo.js';
@@ -27,6 +27,7 @@ export interface ConnectorDetailDrawerProps {
   onLoadMoreTools: (connectorId: string, cursor: string) => void;
   onOpenExternalUrl?: (url: string) => void;
   getCategoryLabel?: (category: string) => string;
+  getDisplayableAccountLabel?: (connector: Connector) => string | undefined;
   cancelFailedMessage?: string;
   continueInBrowserLabel?: string;
 }
@@ -55,6 +56,7 @@ export function ConnectorDetailDrawer({
   onLoadMoreTools,
   onOpenExternalUrl,
   getCategoryLabel = (category) => category,
+  getDisplayableAccountLabel = getDisplayableConnectorAccountLabel,
   cancelFailedMessage,
   continueInBrowserLabel,
 }: ConnectorDetailDrawerProps) {
@@ -68,7 +70,7 @@ export function ConnectorDetailDrawer({
   const isPending = pendingAction !== null || isAuthorizationPending;
   const canConnect = !disabled && !isPending && connector.status === 'available';
   const canDisconnect = !disabled && !isPending && isConnected;
-  const accountLabel = getDisplayableConnectorAccountLabel(connector);
+  const accountLabel = getDisplayableAccountLabel(connector);
   const actualToolCount = connector.tools.length;
   const toolCount = getConnectorDisplayToolCount(connector);
   const isLoadingTools = toolsPreviewLoading || !toolsLoaded;
@@ -76,7 +78,8 @@ export function ConnectorDetailDrawer({
   const showToolsBadge = connector.toolCount !== undefined || actualToolCount > 0 || toolsLoaded;
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const categoryLabel = getCategoryLabel(connector.category);
-  const toolsBadgeLabel = formatToolsBadge(toolCount);
+  const toolsBadge = toolsBadgeTranslation(toolCount);
+  const toolsBadgeLabel = t(toolsBadge.key, toolsBadge.vars);
 
   function continueAuthorization(event: SyntheticEvent) {
     event.stopPropagation();

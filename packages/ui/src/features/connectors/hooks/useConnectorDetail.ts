@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { ConnectorsPort } from '../ports.js';
 import type { Connector } from '../types.js';
 import { hasLoadedAllAdvertisedConnectorTools, mergeConnectorToolPreview } from '../rules.js';
+import { CONNECTOR_TOOL_PREVIEW_LIMIT } from '../constants.js';
 
 export interface UseConnectorDetailParams {
   connectors: Connector[];
@@ -11,6 +12,8 @@ export interface UseConnectorDetailParams {
   unlocked: boolean;
   /** Changes whenever a previously-failed preview fetch should be retried (e.g. catalog refresh). */
   retryToken: string;
+  /** Page size requested per tool-preview fetch. Defaults to {@link CONNECTOR_TOOL_PREVIEW_LIMIT}. */
+  toolsLimit?: number;
 }
 
 export interface ConnectorDetailController {
@@ -25,7 +28,7 @@ export interface ConnectorDetailController {
 
 /** Owns the detail drawer's open/close state and its paginated tool-preview hydration. */
 export function useConnectorDetail(port: ConnectorsPort, params: UseConnectorDetailParams): ConnectorDetailController {
-  const { connectors, setConnectors, unlocked, retryToken } = params;
+  const { connectors, setConnectors, unlocked, retryToken, toolsLimit = CONNECTOR_TOOL_PREVIEW_LIMIT } = params;
   const [detailConnectorId, setDetailConnectorId] = useState<string | null>(null);
   const [loadingIds, setLoadingIds] = useState<Record<string, boolean>>({});
   const [fetchedIds, setFetchedIds] = useState<Record<string, boolean>>({});
@@ -44,6 +47,7 @@ export function useConnectorDetail(port: ConnectorsPort, params: UseConnectorDet
       try {
         const next = await port.fetchConnectorDetail(connectorId, {
           hydrateTools: true,
+          toolsLimit,
           ...(cursor === undefined ? {} : { toolsCursor: cursor }),
         });
         if (next) {
@@ -64,7 +68,7 @@ export function useConnectorDetail(port: ConnectorsPort, params: UseConnectorDet
         setLoadingIds((curr) => ({ ...curr, [connectorId]: false }));
       }
     },
-    [unlocked, loadingIds, port, setConnectors, retryToken],
+    [unlocked, loadingIds, port, setConnectors, retryToken, toolsLimit],
   );
 
   useEffect(() => {

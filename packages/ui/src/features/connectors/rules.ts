@@ -360,10 +360,15 @@ export function connectorPanelAlerts(
   return alerts;
 }
 
+/**
+ * Default `getDisplayableAccountLabel` — shows any account label the host
+ * supplies. The origin hid this for one specific provider (Composio) with no
+ * documented rationale; that's provider-specific policy, not generic logic,
+ * so it's now a host-overridable default rather than baked in here. A host
+ * that wants to hide the label for a specific provider passes its own
+ * `getDisplayableAccountLabel` prop.
+ */
 export function getDisplayableConnectorAccountLabel(connector: Connector): string | undefined {
-  if (!connector.accountLabel) return undefined;
-  const provider = connector.auth?.provider ?? connector.provider.toLowerCase();
-  if (provider === 'composio') return undefined;
   return connector.accountLabel;
 }
 
@@ -371,6 +376,15 @@ export function formatToolsBadge(count: number): string {
   if (count === 0) return 'No tools';
   if (count === 1) return '1 tool';
   return `${count} tools`;
+}
+
+/** i18n-friendly variant of {@link formatToolsBadge}: a translation key plus
+ *  interpolation vars, so a host dictionary can translate independent of the
+ *  specific count rather than needing one entry per possible count value. */
+export function toolsBadgeTranslation(count: number): { key: string; vars?: Record<string, number> } {
+  if (count === 0) return { key: 'No tools' };
+  if (count === 1) return { key: '1 tool' };
+  return { key: '{count} tools', vars: { count } };
 }
 
 export function statusLabel(status: ConnectorStatus): string {

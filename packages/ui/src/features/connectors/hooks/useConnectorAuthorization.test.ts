@@ -178,9 +178,16 @@ describe('useConnectorAuthorization', () => {
   });
 
   it('window refocus reloads statuses and auto-cancels a stale pending authorization', async () => {
+    // expiresAt is in the near future *as of mount* (so the load-time prune
+    // below doesn't discard it before the refocus path ever runs), and goes
+    // stale a moment later, before refocus fires — this is what actually
+    // goes stale mid-session, as opposed to an already-expired entry from a
+    // prior session (which the load-time prune test below covers instead).
+    // Real timers throughout (a short real delay, not vi.useFakeTimers())
+    // since waitFor's internal polling doesn't play well with mocked timers.
     const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
     const cancelSpy = vi.spyOn(port, 'cancelConnectorAuthorization');
-    const storage = makeMemoryStorage({ slack: { expiresAt: '2020-01-01T00:00:00Z' } });
+    const storage = makeMemoryStorage({ slack: { expiresAt: new Date(Date.now() + 20).toISOString() } });
     const { bridge, fireRefocus } = makeControllableBridge();
     const { result } = renderHook(() => {
       const setConnectors = vi.fn();
@@ -188,6 +195,7 @@ describe('useConnectorAuthorization', () => {
     });
 
     expect(result.current.pending.slack).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 30));
     await act(async () => {
       fireRefocus();
       await Promise.resolve();
@@ -196,6 +204,18 @@ describe('useConnectorAuthorization', () => {
 
     expect(cancelSpy).toHaveBeenCalledWith('slack');
     await waitFor(() => expect(result.current.pending.slack).toBeUndefined());
+  });
+
+  it('prunes an already-expired pending entry from storage immediately on load (no refocus/poll needed)', () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    const storage = makeMemoryStorage({ slack: { expiresAt: '2020-01-01T00:00:00Z' } });
+    const { bridge } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    expect(result.current.pending.slack).toBeUndefined();
   });
 
   it('does not auto-cancel a pending authorization that has not expired yet', async () => {

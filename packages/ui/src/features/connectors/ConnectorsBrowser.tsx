@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useT } from '../i18n/index.js';
 import type { ConnectorsDependencies } from './ports.js';
-import type { ConnectorAuthResultEvent, ProviderTab } from './types.js';
+import type { Connector, ConnectorAuthResultEvent, ProviderTab } from './types.js';
 import { createFakeConnectorsDependencies } from './dependencies.js';
 import { useConnectorCatalog } from './hooks/useConnectorCatalog.js';
 import { useConnectorAuthorization } from './hooks/useConnectorAuthorization.js';
@@ -23,6 +23,7 @@ export interface ConnectorsBrowserProps {
   catalogRefreshKey?: string | number;
   dependencies?: ConnectorsDependencies;
   getCategoryLabel?: (category: string) => string;
+  getDisplayableAccountLabel?: (connector: Connector) => string | undefined;
   /** Copy + link for the locked/gated state. Omit to hide the gate overlay entirely while locked. */
   gate?: ConnectorGateProps;
   onProviderTabClick?: (element: 'provider_chip' | 'search_connectors' | 'gate_card') => void;
@@ -43,6 +44,7 @@ export function ConnectorsBrowser({
   catalogRefreshKey = 0,
   dependencies,
   getCategoryLabel,
+  getDisplayableAccountLabel,
   gate,
   onProviderTabClick,
   onConnectorAuthResult,
@@ -176,6 +178,7 @@ export function ConnectorsBrowser({
           onLoadMoreTools={(connectorId, cursor) => void detail.loadMoreTools(connectorId, cursor)}
           onOpenExternalUrl={(url) => void deps.data.openExternalUrl(url)}
           {...(getCategoryLabel ? { getCategoryLabel } : {})}
+          {...(getDisplayableAccountLabel ? { getDisplayableAccountLabel } : {})}
         />
       ) : null}
     </div>

@@ -598,6 +598,54 @@ zero matches" self-report missed — reworded per the same convention
 instance of the same pattern in `src/utils/visual-stability.ts`'s doc comment
 was fixed at the same time.
 
+### Addendum: independent review fixes (2026-07-17)
+
+An independent second-opinion review (a different model, prompted to disprove the canary's own
+"clean" self-report) confirmed the 3 correctness-neutral drops (category map, CDN slug logic,
+CustomEvent) and the partial i18n fix above, then found 4 more real issues, all verified against
+source and fixed:
+
+1. **`formatToolsBadge()` was still unwrapped** at both its call sites (`ConnectorCard.tsx`,
+   `ConnectorDetailDrawer.tsx`) — the i18n retrofit above missed it. Since its output bakes a count
+   into the string (`"4 tools"`), wrapping the raw output in `t()` would need one dictionary entry
+   per possible count — impractical. Added `toolsBadgeTranslation(count)` (returns a `{ key, vars }`
+   pair; `formatToolsBadge` itself is unchanged, still tested, still used as the plain-string
+   building block) and call `t(key, vars)` at both sites instead.
+2. **`getDisplayableConnectorAccountLabel()` had a hardcoded `if (provider === 'composio') return
+   undefined` branch** — the same class of provider-specific-logic-in-neutral-code bug as the
+   category map and CDN slug, just missed in the first pass (the original has this exact branch
+   with zero documented rationale). Stripped it — the function now always returns the label when
+   present — and added a `getDisplayableAccountLabel` host-override prop on `ConnectorDetailDrawer`
+   (threaded from `ConnectorsBrowserProps`, same shape as `getCategoryLabel`) so a host that
+   legitimately wants to hide a specific provider's label can do so itself.
+3. **The `toolsLimit`/`CONNECTOR_TOOL_PREVIEW_LIMIT` (50) option existed in `ports.ts`/`constants.ts`
+   but was never passed** at the one hydration call site in `useConnectorDetail.ts` — a real bug, a
+   host's `fetchConnectorDetail` could receive no limit at all and return an unbounded first page.
+   Added a `toolsLimit` param to `useConnectorDetail`'s params (defaults to
+   `CONNECTOR_TOOL_PREVIEW_LIMIT`), now actually passed on every `fetchConnectorDetail` call.
+4. **Expired OAuth-pending entries from a prior session weren't pruned until the first poll
+   interval fired** — `useConnectorAuthorization.ts`'s initial `useState` seeded directly from
+   `authPendingStorage.load()` with no pruning. Checked the actual original
+   (`ConnectorsBrowser.tsx:72-95`): `loadConnectorAuthorizationPending()` **does** call
+   `pruneConnectorAuthorizationPending()` before returning — the port had silently dropped this.
+   Fixed by wrapping the initial load with `pruneConnectorAuthorizationPending(..., Date.now())`.
+   This changed real behavior a test had encoded: the "window refocus auto-cancels a stale pending
+   authorization" test seeded an *already-expired* entry and asserted it survived until refocus —
+   that setup can no longer work (it's now pruned on load, correctly). Rewrote it to seed an entry
+   that's still valid at mount and goes stale a few milliseconds later (real timers + a short real
+   delay, not `vi.useFakeTimers()` — fake timers don't play well with `waitFor`'s internal polling
+   and leaked broken timer state into an unrelated test when tried), and added a new test asserting
+   the load-time prune itself.
+
+Two more "low" severity findings from the same review (swapping `dependencies` at runtime doesn't
+refresh the catalog; removing the selected provider tab from `providerTabs` leaves none visibly
+selected) were verified plausible but not fixed — genuine edge cases, lower impact, left for a host
+to work around via `catalogRefreshKey`/controlled `providerTabs` state for now.
+
+`packages/ui` test count: 375 (was 373 after the initial i18n fix omitted `formatToolsBadge`; net
++2 for `toolsLimit`-override and load-time-prune tests, +0 from the refocus-test rewrite since it
+replaces the prior test 1:1).
+
 ### Honesty note — is this pattern ready to scale to the rest of the list?
 
 Mostly yes, with two caveats worth flagging before dispatching the next

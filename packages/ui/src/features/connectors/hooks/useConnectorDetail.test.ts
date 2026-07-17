@@ -59,8 +59,22 @@ describe('useConnectorDetail', () => {
     );
 
     act(() => result.current.openDetails('slack'));
-    await waitFor(() => expect(fetchDetail).toHaveBeenCalledWith('slack', { hydrateTools: true }));
+    await waitFor(() => expect(fetchDetail).toHaveBeenCalledWith('slack', { hydrateTools: true, toolsLimit: 50 }));
     rerender({ conns: connectors });
+  });
+
+  it('honors a caller-supplied toolsLimit instead of the default', async () => {
+    const connector = makeConnector({ toolCount: 2, tools: [] });
+    const port = createFakeConnectorsPort({ connectors: [connector] });
+    const fetchDetail = vi.fn(port.fetchConnectorDetail.bind(port));
+    port.fetchConnectorDetail = fetchDetail;
+    const setConnectors = vi.fn();
+    const { result } = renderHook(() =>
+      useConnectorDetail(port, { connectors: [connector], setConnectors, unlocked: true, retryToken: 'a', toolsLimit: 10 }),
+    );
+
+    act(() => result.current.openDetails('slack'));
+    await waitFor(() => expect(fetchDetail).toHaveBeenCalledWith('slack', { hydrateTools: true, toolsLimit: 10 }));
   });
 
   it('does not hydrate while locked', async () => {

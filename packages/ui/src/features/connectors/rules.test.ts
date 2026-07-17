@@ -398,11 +398,8 @@ describe('connectorPanelAlerts', () => {
 });
 
 describe('getDisplayableConnectorAccountLabel', () => {
-  it('hides the account label for composio-provider connectors', () => {
-    expect(getDisplayableConnectorAccountLabel(makeConnector({ accountLabel: 'me@x.com', auth: { provider: 'composio' } }))).toBeUndefined();
-  });
-
-  it('shows the account label for other providers', () => {
+  it('shows the account label regardless of provider (no provider-specific policy baked in)', () => {
+    expect(getDisplayableConnectorAccountLabel(makeConnector({ accountLabel: 'me@x.com', auth: { provider: 'composio' } }))).toBe('me@x.com');
     expect(getDisplayableConnectorAccountLabel(makeConnector({ accountLabel: 'me@x.com', auth: { provider: 'zapier' } }))).toBe('me@x.com');
   });
 
