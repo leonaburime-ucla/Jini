@@ -83,6 +83,13 @@ Real content has landed in several parallel passes — see
   the new `react/{hooks,components}/` layout described above. See
   `packages/ui/source-map.md` for the full breakdown, including a confirmed
   duplicate with `FileViewer.tsx`'s (not-yet-ported) viewport controls.
+- `src/features/sketch-editor/` — `SketchEditor.tsx`'s Excalidraw-integration
+  shim (2026-07-17), per the god-components-extraction-plan.md Consolidation
+  map §B: theme sync, dirty/save/export orchestration, and a DOM-enhancement
+  toolkit for embedding `@excalidraw/excalidraw`. The first feature to use
+  the **new** `react/{hooks,components}/` layout described above, and the
+  first to take a real third-party UI-library dependency (not just
+  browser/DOM primitives).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
