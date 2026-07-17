@@ -73,6 +73,13 @@ Real content has landed in several parallel passes — see
   canary (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`
   §0: an OAuth integration marketplace UI (ports+dependencies+hooks+
   components+barrel).
+- `src/features/sketch-editor/` — `SketchEditor.tsx`'s Excalidraw-integration
+  shim (2026-07-17), per the god-components-extraction-plan.md Consolidation
+  map §B: theme sync, dirty/save/export orchestration, and a DOM-enhancement
+  toolkit for embedding `@excalidraw/excalidraw`. The first feature to use
+  the **new** `react/{hooks,components}/` layout described above, and the
+  first to take a real third-party UI-library dependency (not just
+  browser/DOM primitives).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C

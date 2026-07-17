@@ -8,5 +8,16 @@ export default defineConfig({
     // `// @vitest-environment node` pragma — see packages/ui/source-map.md.
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
+    server: {
+      // @excalidraw/excalidraw's dev build ships extensionless deep imports
+      // (e.g. `roughjs/bin/rough`) that assume a bundler's resolver — Vitest's
+      // default SSR path hands externalized deps straight to Node's loader,
+      // which requires exact extensions and fails to resolve them. Routing it
+      // (and its own dependency tree) through Vite's transform pipeline
+      // instead resolves those imports correctly.
+      deps: {
+        inline: [/@excalidraw\/excalidraw/, /roughjs/],
+      },
+    },
   },
 });

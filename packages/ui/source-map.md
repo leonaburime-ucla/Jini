@@ -674,3 +674,162 @@ and testing state transitions directly rather than chasing a coverage
 percentage — held up cleanly against a genuinely non-trivial 1,573-line
 source file. The pattern is ready to scale; the two caveats above are
 process reminders for the next session, not blockers.
+
+---
+
+## Section: `features/sketch-editor/` — SketchEditor.tsx's Excalidraw shim (2026-07-17)
+
+Source: `integrations/open-design/reference/components-original/SketchEditor.tsx`
+(1,088 lines) + the two pure helpers it imported (`sketch-model.ts`'s
+`sanitizeExcalidrawAppState`/`emptySketchScene`/`sketchSceneHasContent`,
+`sketch-colors.ts`'s theme-aware default stroke color). Per
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §B row
+and `docs/jini-port/recon/r6-god-component-internals.md` §1.22: "near-FULL
+SLICE — strongest find among the small files," ~60-70% of the file is a
+reusable Excalidraw-integration shim. Target was `packages/ui/src/features/sketch-editor/`
+rather than `@jini/renderers-react` — that package's README/source-map didn't
+exist yet on `main` when this task read them (its only real content lives in
+an unmerged draft PR, #2, `port/annotation-canvas`), so it had no established
+natural home to fold into per the map's own fallback rule.
+
+This is the first task in this list to use the **new** `react/` layout
+(decided 2026-07-17): `types.ts`/`constants.ts`/`rules.ts`/`dom.ts`/`ports.ts`/
+`dependencies.ts`/`index.ts` stay at the feature's top level; `hooks/`/
+`components/` move under `react/`. It's also the first `@jini/ui` feature to
+take a real third-party UI-library dependency (`@excalidraw/excalidraw@0.18.1`,
+matching the version named in this session's own architecture debate
+transcripts) rather than binding only to browser/DOM primitives.
+
+### What shipped
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `SketchScene` (elements/appState/files — the OD legacy `SketchItem`/`legacyItems` shape is dropped entirely), `SketchSceneChangeOptions`, `SketchExportImageResult(Result)`, `SketchToastState`, `SketchTooltipLabelKey(s)`, `SketchTooltipTarget`, `SketchDomTextOverrides` (a plain `{ english: translated }` table — the generic mechanism only), `SketchTranslate`. |
+| `constants.ts` | `SAVED_VISIBLE_MS`, `EXPORTED_IMAGE_MIME_TYPE`, `SKETCH_CONTEXT_MENU_MARGIN`, `DEFAULT_SKETCH_TOOLTIP_TARGETS` (Excalidraw's own toolbar `data-testid`s), `DEFAULT_CONTEXT_MENU_ACTION_ORDER`/`DEFAULT_CONTEXT_MENU_RECOGNIZED_ACTIONS` (Excalidraw's own action-id vocabulary), `DEFAULT_EXCALIDRAW_LANG_CODES` (locale → the string Excalidraw itself expects for `langCode`), `SKETCH_TEXT_OVERRIDE_ATTRS`, `DEFAULT_SKETCH_LIGHT_TOOL_COLOR`/`DEFAULT_SKETCH_DARK_TOOL_COLOR`. |
+| `rules.ts` | Every pure function ported 1:1 or genericized: `sanitizeExcalidrawAppState`/`emptySketchScene`/`sketchSceneHasContent` (ported from `sketch-model.ts` — generic Excalidraw scene helpers that happened to live alongside OD's legacy-format code, not legacy-format code themselves), `buildInitialData`/`sceneFromExcalidraw` (legacy-item conversion dropped), `sceneContentSignature`/`isNonDeletedExcalidrawElement` (the dirty-dedupe engine), `exportedImageFileName`/`exportedImageResultFileName` (genericized: takes an optional `sourceExtension` instead of hardcoding `.sketch.json`), `resolveDefaultSketchToolColor` (ported from `sketch-colors.ts`), `defaultExcalidrawLangCode`, `normalizeTooltipLabel`, `buildSketchTooltipLabels` (the `t()`-wiring point for tooltip text), `translateDomTextValue`/`orderContextMenuActions` (pure halves of the DOM toolkit), `validateSketchEmbeddableUrl`, `isExcalidrawUnableToEmbedToast` (genericized — see "Generification findings" below). |
+| `dom.ts` | The DOM-manipulation toolkit, kept separate from `rules.ts` since it touches `document`/`window` directly (by design — see "ADR-0002 DOM boundary" note below): `readExcalidrawTheme`/`readDefaultSketchToolColor`, `applySketchEditorTooltips`, `applySketchContextMenuSimplification`/`clampSketchContextPopover`, `applySketchDomTextOverrides` (generic version of the old i18n-override walker), `rewriteExcalidrawUnableToEmbedToasts`, `enhanceSketchExcalidrawPortals`/`removeSketchMermaidShortcutHints`/`findSketchMermaidInsertButton`/`handleSketchPortalCommandEnter`. |
+| `ports.ts` | `SketchEditorEnginePort` — the one real "swap point": `Excalidraw` (the component), `MainMenu` (+ `Item`/`Separator`/`DefaultItems` sub-shape), `exportToBlob`. `convertToExcalidrawElements` was **not** ported into the port — its only call site in the original file was the legacy-item converter, which is dropped entirely, so the generic shim never needs it. |
+| `dependencies.ts` | `realSketchEditorEngine`/`defaultSketchEditorDependencies` — binds the real `@excalidraw/excalidraw` package. Zero React import, per convention. |
+| `react/dependencies-fake.tsx` | `createFakeSketchEditorEngine`/`createFakeSketchEditorDependencies` — a lightweight non-canvas React stand-in for Excalidraw (matching toolbar `data-testid`s, a menu-trigger, a `renderTopRightUI` slot, and `children`/MainMenu rendering), used by every test in this feature. **Deliberately lives under `react/`, not at the top-level `dependencies.ts`** — the thing being faked is itself a React component, so unlike every other port in this package, its fake unavoidably needs JSX. Documented inline as a disclosed exception to the "dependencies.ts has zero React import" convention. |
+| `react/hooks/useSketchTheme.ts` | Theme MutationObserver + `prefers-color-scheme` tracking. |
+| `react/hooks/useSketchScene.ts` | Excalidraw imperative-API ref, reset-on-clear instance key, initial-data memoization, and the content-signature-deduped change/save/clear plumbing. |
+| `react/hooks/useSketchSaveWorkflow.ts` | Save/export orchestration, the transient "Saved" indicator timer, and the single toast slot (save success, export success+action, export failure). |
+| `react/hooks/useSketchDomEnhancements.ts` | Wires the MutationObserver-driven DOM-enhancement effect (tooltips, context-menu simplification, DOM text overrides, toast rewriting, portal/modal enhancement) using `dom.ts`'s pure-ish functions. |
+| `react/components/SketchMainMenu.tsx` | Dumb component composing the engine's `MainMenu`/`Item`/`Separator`/`DefaultItems`. |
+| `react/components/SketchSaveStateBadge.tsx` | Dumb component for the `renderTopRightUI` save-state indicator. |
+| `react/components/SketchEditor.tsx` | The orchestrator — composes the 4 hooks + engine + `Toast`, matching the deps-bag/hook-composition shape already proven by `features/connectors`. |
+| `index.ts` | Public barrel. |
+
+### Dropped (OD-specific residue, per the god-components-extraction-plan's own framing for this row)
+
+- **Legacy sketch-item migration** (`convertLegacySketchItemsToExcalidrawElements`, the `SketchItem`/`legacyItems`/`hasPreservedRawItems` props) — the source product's pre-Excalidraw hand-rolled freehand/rect/arrow/text format and its one-time upgrade path. No generic Excalidraw-embedding host needs this; a host still migrating off a legacy format converts before handing this component its initial `SketchScene`.
+- **The `.sketch.json` file-naming convention** — `exportedImageFileName` no longer hardcodes stripping `.sketch.json`; it takes an optional `sourceExtension` and otherwise strips whatever single extension is present.
+- **The source product's own i18n hook and locale-override tables** (`ZH_CN_SKETCH_TEXT_OVERRIDES`/`ZH_TW_SKETCH_TEXT_OVERRIDES`, ~60 translated Excalidraw-UI-string entries) — real translated copy, not a mechanism. The *mechanism* (a locale-keyed English→translated table applied by walking Excalidraw's own rendered DOM) is kept as `SketchDomTextOverrides`, host-supplied, defaulting to no overrides.
+- **`od-*` CSS class names** (`od-tooltip`, `od-sketch-context-menu`, `od-sketch-context-popover`, `od-sketch-modal`, `od-sketch-help-modal`, `od-sketch-dialog-close`, `od-embed-toast-rewritten`) — renamed `jini-tooltip`/`jini-sketch-*`, same rationale as the `Toast`/`TooltipLayer` renames earlier in this file. `jini-tooltip` specifically now drives this package's own shipped `TooltipLayer.tsx` contract (`.jini-tooltip[data-tooltip]`), a real (if incidental) integration rather than just a rename.
+- **`sketch-model.ts`'s `OPEN_DESIGN_EXCALIDRAW_SOURCE` marketing-domain string** and the rest of that file's legacy-format types (`SketchDocument`, `SketchItem` union, `parseSketchDocument`/`buildSketchDocument`/`computeSketchBounds`/`isSketchJsonFileName`) — not ported; `SketchEditor.tsx` itself never called these, only the three generic scene helpers noted above.
+
+### Generification findings beyond the plan doc's own notes
+
+Consistent with this list's honesty note above (the plan doc reliably under-specifies what needs generifying once a file is actually read), two things surfaced only on a close read:
+
+1. **`isExcalidrawUnableToEmbedToast`'s detection heuristic was itself coupled to the source product's translations** — the original hardcodes `message.includes('目前不允许嵌入此网址')`/`'目前不允許嵌入此網址'` (the exact Chinese strings from the dropped override tables) as part of *detecting* Excalidraw's own "can't embed this URL" toast, not just displaying it. Since the translated-copy tables are dropped, this detection would have silently stopped recognizing the toast in any non-English locale. Genericized to `isExcalidrawUnableToEmbedToast(message, additionalPhrases?)` — English detection ships by default; a host that has translated the toast via its own `domTextOverrides` passes that same translated phrase back in as `additionalPhrases` so detection stays in sync with whatever it chose to translate.
+2. **The Mermaid-dialog "Close" button's label** originally pulled from the same dropped override table (`sketchTextOverrides(locale)?.Close ?? 'Close'`) even though this button is one *this component itself creates and injects* into Excalidraw's portal (not text belonging to Excalidraw's own baked-in UI). Routed through this feature's own `useT()` (`t('Close')`) instead — a real i18n integration via `@jini/ui`'s own mechanism, not a DOM-text-override case at all.
+
+### ADR-0002 DOM boundary — a disclosed, deliberate deviation
+
+Per the vertical-slice discipline, `features/**` files shouldn't touch `document`/`window` outside `dependencies.ts`. This feature is a legitimate, disclosed exception at a different scale than the connectors canary's one inline `document.addEventListener` (a standard modal-a11y idiom): `dom.ts`'s entire ~250-line toolkit *is* direct DOM manipulation of a mounted third-party library's own rendered output — that's this feature's whole purpose (embedding a library with "no hooks for any of this," per r6 §1.22), not business/transport logic smuggled past a boundary meant to keep transport swappable. The one thing that *is* swappable — the Excalidraw engine itself — is properly bound through `ports.ts`/`dependencies.ts`, same as every other feature in this package.
+
+### i18n
+
+Every user-facing string in the shipped component is routed through `useT()`
+with the English string as the key (tooltip labels via `buildSketchTooltipLabels`,
+the save-state badge, the `MainMenu` items, toast messages, the injected
+Mermaid-dialog close button). Verified end-to-end: `SketchEditor.test.tsx`
+mounts under `I18nProvider` with a French dictionary and asserts the
+`MainMenu`'s Save/Clear-canvas text renders translated, not just that `t()`
+calls compile.
+
+### Phase 8.5 audit
+
+Ran the mandated audit across every new file: no inline JSX callback with
+real branching/multiple setters (the `renderTopRightUI`/`onSave`/`onExportImage`
+arrows are all single-expression); no `useMemo`/`useEffect` body containing
+unextracted multi-line derivation (`excalidrawUIOptions` is a static literal;
+`tooltipLabels` is a one-line call into `rules.ts`; the DOM-enhancement effect
+and the scene/save-workflow hooks' effects are the feature's own intended
+DOM-registration/orchestration logic, already delegating their actual pure
+computation to `rules.ts`/`dom.ts`); every `useState`/`useRef` across all 4
+hooks and the orchestrator enumerated by hand and accounted for (none
+orphaned).
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, zero errors.
+- `pnpm --filter @jini/ui exec vitest run src/features/sketch-editor`: **109
+  tests, 10 files, all green** — `rules.test.ts` (40), `dom.test.ts` (22, DOM-
+  fixture tests for every tooltip/context-menu/text-override/toast-rewrite/
+  portal function), `dependencies.test.ts` (2, asserting the real engine binds
+  correctly), `react/hooks/*.test.ts(x)` (25, incl. the theme observer, the
+  scene hook's hydration-skip/dedupe/clear/close-dialog behavior, and the
+  save-workflow's save/export/error/toast-action paths), `react/components/*.test.tsx`
+  (20, incl. the full orchestrator wired against the fake engine and the
+  I18nProvider end-to-end mount).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **484 tests, 63
+  files, all green** (was 375 before this task).
+- `pnpm -r --no-bail --if-present run typecheck`: `packages/ui typecheck: Done`
+  (clean); remaining failures are the same pre-existing, unrelated set every
+  prior task in this file has reported (`agent-runtime`/`chat-react`/`cli`/
+  `http`/`node-host`/`renderers-react`/`sqlite` missing `tsconfig.json`;
+  `daemon`/`deploy` needing `@jini/protocol`/`@jini/core` built first) — none
+  touched by this task.
+- `pnpm guard`: `[guard] ok (skeleton — rules pending implementation during
+  extraction)`.
+- Purity grep (`Open Design`/`OD_`/`--od-stamp`/`open-design.ai`/
+  `openDesignDesktop`/`@open-design/`, plus the stricter lowercase `od-`
+  prefix pass and a check for the vendored-reference-path-in-comment mistake):
+  **6 hits found and fixed** — all were explanatory doc-comment mentions of
+  "Open Design" as provenance context (e.g. "that migration path is a host
+  (Open Design) concern"), not runtime strings, but per this file's own
+  connectors-canary precedent (a provenance comment citing a vendored path
+  literally was treated as a real leak, not a false positive) these were
+  reworded to "host-product"/"the source product" instead. Clean after.
+
+### Environment finding worth flagging for future `@excalidraw/excalidraw`-adjacent work
+
+Getting real component tests running against this dependency required two
+non-obvious environment fixes, recorded here since they'll recur for any
+future task touching `@excalidraw/excalidraw` (e.g. if `@jini/renderers-react`'s
+own annotation-canvas work ever needs to render real Excalidraw rather than
+its own canvas primitives):
+
+1. **`@excalidraw/excalidraw`'s dev bundle ships extensionless deep imports**
+   (`roughjs/bin/rough`, no `.js`) that assume a bundler's resolver. Vitest's
+   default SSR path hands externalized deps straight to Node's own loader,
+   which requires exact extensions and fails. Fixed via
+   `vitest.config.ts`'s `test.server.deps.inline: [/@excalidraw\/excalidraw/, /roughjs/]`,
+   routing it through Vite's transform pipeline instead.
+2. **The bundle also runs an unconditional module-load-time canvas-capability
+   probe** (`"filter" in document.createElement("canvas").getContext("2d")`)
+   that throws under jsdom's real (unimplemented) `getContext` — crashing the
+   *import* itself, before any test body runs, even for tests that never
+   render real Excalidraw. The obvious fix (add the native `canvas` npm
+   package so jsdom has real `getContext` support) was attempted and reverted:
+   the package installed but its native addon's build script requires system
+   Cairo/Pango libraries and a build toolchain not available in this sandbox,
+   and pulling in a heavy native addon as a devDependency for one package's
+   tests felt like the wrong tradeoff even where it does work (fragile across
+   environments, not a "lean engine" fit). Fixed instead with a minimal
+   `HTMLCanvasElement.prototype.getContext` stub in `vitest.setup.ts` (a fake
+   2D context object, no real drawing) — sufficient because every test in
+   this feature always renders the package's own fake engine, never real
+   `<Excalidraw>`; the stub exists only so importing the real binding (for
+   `dependencies.test.ts`'s shape assertions, and because the orchestrator's
+   default-prop import of `dependencies.ts` is eager regardless of which
+   `dependencies` a given render actually uses) doesn't crash the module
+   graph. Documented inline in `vitest.setup.ts` as a deliberate, narrow shim,
+   not a real canvas polyfill.
+3. Also confirmed (via `pnpm install`, not a blocker): `@excalidraw/excalidraw@0.18.1`'s
+   own `@radix-ui/*` transitive dependencies declare a `react@"^16.8 || ^17.0 || ^18.0"`
+   peer range, unmet by this package's `react@^19.2.0` — a peer-dependency
+   warning only, install and every test above succeeded regardless, but worth
+   flagging for whoever next upgrades React in this package.
