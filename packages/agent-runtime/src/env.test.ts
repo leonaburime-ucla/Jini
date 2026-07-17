@@ -13,9 +13,29 @@ describe('spawnEnvForAgent', () => {
     expect(env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('true');
   });
 
+  it('leaves an already-set OPENCODE_DISABLE_PROJECT_CONFIG value untouched', () => {
+    const env = spawnEnvForAgent('opencode', { OPENCODE_DISABLE_PROJECT_CONFIG: 'false' }, {}, {});
+    expect(env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('false');
+  });
+
   it('disables MiMo project-config discovery by default', () => {
     const env = spawnEnvForAgent('mimo', {}, {}, {});
     expect(env.MIMOCODE_DISABLE_PROJECT_CONFIG).toBe('true');
+  });
+
+  it('leaves an already-set MIMOCODE_DISABLE_PROJECT_CONFIG value untouched', () => {
+    const env = spawnEnvForAgent('mimo', { MIMOCODE_DISABLE_PROJECT_CONFIG: 'false' }, {}, {});
+    expect(env.MIMOCODE_DISABLE_PROJECT_CONFIG).toBe('false');
+  });
+
+  it('leaves an already-set HOME value untouched for the amr branch', () => {
+    const env = spawnEnvForAgent('amr', { HOME: '/already/set/home' }, {}, {});
+    expect(env.HOME).toBe('/already/set/home');
+  });
+
+  it('leaves an already-set VELA_OPENCODE_BIN value untouched for the amr branch', () => {
+    const env = spawnEnvForAgent('amr', { HOME: '/h', VELA_OPENCODE_BIN: '/already/set/opencode' }, {}, {});
+    expect(env.VELA_OPENCODE_BIN).toBe('/already/set/opencode');
   });
 
   it('strips OpenCode server-identity env keys case-insensitively', () => {
