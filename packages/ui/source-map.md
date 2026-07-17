@@ -958,3 +958,59 @@ excluding `ports.ts`/`types.ts` per above) is **100% Lines, 100% Branches,
 before this pass. Full suite: 101 tests across 7 files for this feature (up
 from 78), 476 tests across 60 files package-wide (up from 453).
 `pnpm --filter @jini/ui run typecheck` and `pnpm guard` both remain clean.
+
+### Second follow-up pass (2026-07-17): `useX`/`useWiredX` wiring pairs, toolbox merge
+
+Two retrofits landed on this branch after the audit pass above:
+
+**`useWiredX` wirers.** Per the now-required `useX(port)` / zero-arg
+`useWiredX()` pattern (see `apps/web/src/features/memory/hooks/
+useMemoryConfig.hooks.ts` on the OD repo's `refactor/web-memory-slice` for
+the reference shape), audited every hook in this feature against
+`ports.ts`/`dependencies.ts` to see which actually take an injected port:
+
+- `useBrowserHistory` (takes `{ historyStorage: BrowserHistoryStoragePort }`)
+  — got `useWiredBrowserHistory(scopeKey, options?)`, binding a module-level
+  `createBrowserHistoryStorage()` singleton (the real, SSR-guarded
+  `localStorage`-backed implementation — a meaningful production default).
+- `useBrowserBridgeRegistration` (takes `{ bridgeRegistration:
+  BrowserBridgeRegistrationPort }`) — got `useWiredBrowserBridgeRegistration
+  (scopeKey, handle)`, binding `createNoopBrowserBridgeRegistration()`.
+  Unlike the history port, there's no generic "real" default here by design
+  (see `ports.ts`'s doc comment) — registering a handle only means something
+  in the context of a host's own external bridge. A host that wants real
+  bridge registration keeps calling `useBrowserBridgeRegistration` directly
+  with its own port, same carve-out as a swappable test port, just for a
+  real host implementation instead of a fake.
+- `useBrowserNavigationStack` — **no wirer added.** Its `options` (`initialUrl`/
+  `initialTitle`/`homeEntry`/`onNavigate`) are all plain local config, not a
+  `ports.ts` port; the hook owns its state entirely via `rules.ts`'s pure
+  functions. Nothing to wire.
+
+Both wirers exported from `index.ts`; no internal call sites needed updating
+— this feature has no top-level assembling component (that lives in the
+consuming host, out of scope per this feature's own "OUT OF SCOPE" section
+above), so `useBrowserHistory`/`useBrowserBridgeRegistration` had zero
+in-package callers before or after.
+
+**Toolbox merge.** Merged local branch `feat/ui-browser-toolbox` (commit
+`c3e7f21`, not pushed to origin) — a clean merge, no conflicts (it branched
+off a commit before `features/browser-chrome/` existed, so it never touched
+this feature's files). It adds `packages/ui/src/browser/` (`useDismissOnOutsideOrEscape`,
+`useGlobalKeydown`) as a thin wrapper over `utils/dom-subscriptions.ts`'s
+`subscribeOutsideClickOrEscape`. `BrowserViewportControls.tsx`'s hand-rolled
+`document.addEventListener('pointerdown'/'keydown', ...)` pair (the one
+disclosed DOM-outside-`dependencies.ts` deviation noted earlier in this
+section) is now `useDismissOnOutsideOrEscape(() => setOpen(false), { enabled:
+open, containerRef: menuRef })` — same `pointerdown`-outside-or-Escape
+behavior, dead local listener code removed. All of `BrowserViewportControls.test.tsx`'s
+existing outside-click/Escape assertions pass unchanged against the shared
+hook, confirming no behavior change.
+
+**Result**: still 100% Lines/Branches/Functions/Statements on the
+executable-code portion after both retrofits (wirers came with their own
+tests; the toolbox swap needed none new since it's a drop-in behind the same
+public component API). 103 tests across 7 files for this feature; 494 tests
+across 62 files package-wide (the toolbox branch's own `useDismissOnOutsideOrEscape.test.ts`/
+`useGlobalKeydown.test.ts` account for the rest of the file-count jump).
+`pnpm --filter @jini/ui run typecheck` and `pnpm guard` both remain clean.

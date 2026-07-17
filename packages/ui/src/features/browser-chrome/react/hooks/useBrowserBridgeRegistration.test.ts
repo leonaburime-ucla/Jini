@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useBrowserBridgeRegistration } from './useBrowserBridgeRegistration.js';
+import { useBrowserBridgeRegistration, useWiredBrowserBridgeRegistration } from './useBrowserBridgeRegistration.js';
 import type { BrowserTabHandle } from '../../types.js';
 import type { BrowserBridgeRegistrationPort } from '../../ports.js';
 
@@ -53,5 +53,17 @@ describe('useBrowserBridgeRegistration', () => {
     rerender({ scopeKey: 'tab-2' });
     expect(registerBrowserHandle).toHaveBeenCalledWith('tab-1', null);
     expect(registerBrowserHandle).toHaveBeenLastCalledWith('tab-2', handle);
+  });
+});
+
+describe('useWiredBrowserBridgeRegistration', () => {
+  it('binds the no-op bridge registration port and never throws', () => {
+    const handle = makeHandle('https://a.com');
+    const { unmount, rerender } = renderHook(
+      ({ h }: { h: BrowserTabHandle | null }) => useWiredBrowserBridgeRegistration('tab-1', h),
+      { initialProps: { h: handle } },
+    );
+    rerender({ h: makeHandle('https://b.com') });
+    expect(() => unmount()).not.toThrow();
   });
 });

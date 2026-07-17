@@ -55,7 +55,7 @@ export {
 } from './dependencies.js';
 export type { BrowserChromeDependencies } from './dependencies.js';
 
-export { useBrowserHistory } from './react/hooks/useBrowserHistory.js';
+export { useBrowserHistory, useWiredBrowserHistory } from './react/hooks/useBrowserHistory.js';
 export type { BrowserHistoryController, UseBrowserHistoryOptions } from './react/hooks/useBrowserHistory.js';
 
 export { useBrowserNavigationStack } from './react/hooks/useBrowserNavigationStack.js';
@@ -64,7 +64,10 @@ export type {
   UseBrowserNavigationStackOptions,
 } from './react/hooks/useBrowserNavigationStack.js';
 
-export { useBrowserBridgeRegistration } from './react/hooks/useBrowserBridgeRegistration.js';
+export {
+  useBrowserBridgeRegistration,
+  useWiredBrowserBridgeRegistration,
+} from './react/hooks/useBrowserBridgeRegistration.js';
 
 export { BrowserViewportControls } from './react/components/BrowserViewportControls.js';
 export type { BrowserViewportControlsProps } from './react/components/BrowserViewportControls.js';

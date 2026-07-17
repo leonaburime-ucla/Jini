@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { BrowserViewportId, BrowserViewportPreset } from '../../types.js';
 import { BROWSER_VIEWPORT_PRESETS } from '../../constants.js';
 import { useT } from '../../../i18n/index.js';
 import { Icon } from '../../../../components/Icon.js';
 import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { useDismissOnOutsideOrEscape } from '../../../../browser/index.js';
 
 function viewportIconName(viewport: BrowserViewportId): string {
   if (viewport === 'tablet') return 'tablet-line';
@@ -22,7 +23,8 @@ export interface BrowserViewportControlsProps {
 /**
  * Responsive viewport-preset switcher: a dropdown trigger showing the active
  * preset, expanding into a listbox of presets on click. Closes on an
- * outside pointerdown or Escape.
+ * outside pointerdown or Escape via the shared `useDismissOnOutsideOrEscape`
+ * hook (`packages/ui/src/browser/`) rather than a hand-rolled listener pair.
  *
  * Confirmed (2026-07-17) to be the same shape as `FileViewer.tsx`'s
  * `PreviewViewportControls` — see `packages/ui/source-map.md`'s
@@ -39,21 +41,7 @@ export function BrowserViewportControls({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const activePreset = presets.find((preset) => preset.id === viewport) ?? presets[0];
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
+  useDismissOnOutsideOrEscape(() => setOpen(false), { enabled: open, containerRef: menuRef });
 
   if (!activePreset) return null;
 

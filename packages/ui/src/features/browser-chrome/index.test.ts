@@ -51,8 +51,10 @@ describe('browser-chrome barrel (index.ts)', () => {
     expect(typeof browserChrome.createNoopBrowserBridgeRegistration).toBe('function');
     expect(typeof browserChrome.createDefaultBrowserChromeDependencies).toBe('function');
     expect(typeof browserChrome.useBrowserHistory).toBe('function');
+    expect(typeof browserChrome.useWiredBrowserHistory).toBe('function');
     expect(typeof browserChrome.useBrowserNavigationStack).toBe('function');
     expect(typeof browserChrome.useBrowserBridgeRegistration).toBe('function');
+    expect(typeof browserChrome.useWiredBrowserBridgeRegistration).toBe('function');
     expect(typeof browserChrome.BrowserViewportControls).toBe('function');
   });
 });

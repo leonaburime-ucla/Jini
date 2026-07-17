@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { useBrowserHistory } from './useBrowserHistory.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { useBrowserHistory, useWiredBrowserHistory } from './useBrowserHistory.js';
 import type { BrowserHistoryEntry } from '../../types.js';
 import type { BrowserHistoryStoragePort } from '../../ports.js';
+import { DEFAULT_HISTORY_STORAGE_NAMESPACE } from '../../constants.js';
 
 function createInMemoryStorage(initial: Record<string, BrowserHistoryEntry[]> = {}): BrowserHistoryStoragePort {
   const store = new Map<string, BrowserHistoryEntry[]>(Object.entries(initial));
@@ -64,5 +65,25 @@ describe('useBrowserHistory', () => {
 
     rerender({ scopeKey: 'project-2' });
     expect(result.current.history[0]?.url).toBe('https://b.com');
+  });
+});
+
+describe('useWiredBrowserHistory', () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('binds the real localStorage-backed history port under the default namespace', async () => {
+    const { result } = renderHook(() => useWiredBrowserHistory('project-1', { debounceMs: 1 }));
+    expect(result.current.history).toEqual([]);
+
+    act(() => result.current.commitVisit('https://a.com', { title: 'A Site' }));
+    expect(result.current.history[0]).toMatchObject({ url: 'https://a.com', title: 'A Site' });
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(`${DEFAULT_HISTORY_STORAGE_NAMESPACE}:project-1`);
+      expect(raw).not.toBeNull();
+      expect(JSON.parse(raw!)).toHaveLength(1);
+    });
   });
 });

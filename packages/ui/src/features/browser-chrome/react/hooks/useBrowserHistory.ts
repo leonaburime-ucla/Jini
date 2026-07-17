@@ -3,6 +3,7 @@ import type { BrowserHistoryEntry } from '../../types.js';
 import { HISTORY_SAVE_DEBOUNCE_MS } from '../../constants.js';
 import { mergeHistoryEntry, type MergeHistoryEntryMeta, type MergeHistoryEntryOptions } from '../../rules.js';
 import type { BrowserHistoryStoragePort } from '../../ports.js';
+import { createBrowserHistoryStorage } from '../../dependencies.js';
 
 export interface UseBrowserHistoryOptions {
   debounceMs?: number;
@@ -50,4 +51,21 @@ export function useBrowserHistory(
   }, [scopeKey]);
 
   return { history, commitVisit, clearHistory };
+}
+
+// Module-level singleton: `createBrowserHistoryStorage()` is stateless
+// (closures over namespace/limit only), so one shared instance is enough —
+// avoids reallocating a fresh port object on every `useWiredBrowserHistory`
+// render for no benefit.
+const defaultHistoryStorage: BrowserHistoryStoragePort = createBrowserHistoryStorage();
+
+/**
+ * Production wiring for `useBrowserHistory`: binds the real, SSR-guarded
+ * `localStorage`-backed history port from `dependencies.ts` under the
+ * default namespace/limit. A host that needs a non-default namespace/limit,
+ * or a swappable/test port, should call `useBrowserHistory` directly with
+ * its own `{ historyStorage }` instead of this zero-arg wirer.
+ */
+export function useWiredBrowserHistory(scopeKey: string, options?: UseBrowserHistoryOptions): BrowserHistoryController {
+  return useBrowserHistory(scopeKey, { historyStorage: defaultHistoryStorage }, options);
 }
