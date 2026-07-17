@@ -108,12 +108,17 @@ parallel sub-analyses each read 2-5 files in isolation — nothing forced a side
 across all 23 until now; the last 2 below came from reconciling this doc against
 `ui-extraction-plan.md`'s coverage of the other ~230 non-god-sized files):
 
-- **Viewport-preset switcher, twice**: `FileViewer.tsx`'s `PreviewViewportControls`/
-  `FileVersionViewportControls` (§1.1, "self-contained responsive desktop/tablet/mobile viewport
-  switcher, zero business types") and `DesignBrowserPanel.tsx`'s `BrowserViewportControls` (§1.12,
-  "a responsive viewport-preset switcher") read as the same shape from two independent
-  descriptions. Diff them before shipping both — this may be a 2-file version of the tab-strip
-  situation above, not two separate primitives.
+- **Viewport-preset switcher, twice — RESOLVED (2026-07-17), confirmed same shape.** `FileViewer.tsx`'s
+  `PreviewViewportControls`/`FileVersionViewportControls` (§1.1, "self-contained responsive
+  desktop/tablet/mobile viewport switcher, zero business types") and `DesignBrowserPanel.tsx`'s
+  `BrowserViewportControls` (§1.12, "a responsive viewport-preset switcher") were diffed directly
+  (identical 3-preset dimensions, identical origin i18n keys, identical dropdown-trigger+listbox
+  interaction) while building `features/browser-chrome/` — genuinely the same primitive, not two.
+  `BrowserViewportControls` shipped in `features/browser-chrome/`, generic and reusable; whoever
+  does `FileViewer.tsx`'s `PreviewViewportControls` next should import it from there instead of
+  building a second one. `FileVersionViewportControls` is a real second shape (inline toggle-button
+  group vs. dropdown) over the same preset data — not folded in, still open. See
+  `packages/ui/source-map.md`'s `features/browser-chrome/` section.
 - **Resource-dashboard shell, twice, both directly Run-vocabulary-relevant**: `DesignsTab.tsx`'s
   dashboard shell (§1.17 — sub-tabs, search, bulk-actions, a **config-driven status-kanban** whose
   vocabulary `not_started/running/awaiting_input/succeeded/failed/canceled` "reads like a generic
@@ -155,7 +160,7 @@ across all 23 until now; the last 2 below came from reconciling this doc against
 | `features/sketch-editor/` (or `@jini/renderers-react`) | `SketchEditor.tsx`'s Excalidraw-integration shim |
 | `features/asset-grid/` (generic `AssetGrid<TAsset>`) | `LibrarySection.tsx` — rubber-band multi-select (the single cleanest generic core in the whole sweep, per §1.16), facets, debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch thumbnails |
 | `features/asset-tree-browser/` (generic `AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>`) | `DesignFilesPanel.tsx` |
-| `features/browser-chrome/` (embeddable webview/iframe browser tab) | `DesignBrowserPanel.tsx` — nav stack, address-bar normalization, history/favicon utilities, ports for `onNavigate`/history storage/brand-bridge registration |
+| `features/browser-chrome/` (embeddable webview/iframe browser tab) | `DesignBrowserPanel.tsx` — nav stack, address-bar normalization, history/favicon utilities, ports for `onNavigate`/history storage/brand-bridge registration (✅ partial slice shipped 2026-07-17 — the listed pieces only, not the full file; webview/iframe embedding, brand-extraction logic, comment annotation, the AI browser-use catalog, and `REFERENCE_GROUPS` stay in OD. `BrowserUseMenu`/`BrowserInspectPanel` deferred, not silently dropped. Confirmed `BrowserViewportControls` duplicates `FileViewer.tsx`'s (not yet ported) `PreviewViewportControls` — whoever does `FileViewer.tsx` next should reuse this one. See `packages/ui/source-map.md`.) |
 | `features/viewer-shell/` (the 9-times-repeated "viewer toolbar + body" shell) | `FileViewer.tsx` — `BinaryViewer`/`DocumentPreviewViewer`/`ImageViewer`/`SketchViewer`/`VideoViewer`/`AudioViewer`/`SvgViewer`/`TextViewer`, plus `CommentSidePanel`/`CommentSideDock` and the `MarkdownViewer` split-pane |
 | `features/settings-dialog/` (shell) + `features/settings-dialog/tabs/{appearance,notifications,language,instructions,integrations}` | `SettingsDialog.tsx` — shell is reusable chrome (8 of 17 tabs already separate files prove it); `integrations` needs its hardcoded `'open-design'`-branded MCP-install-snippet strings parameterized (same shape-class as `McpClientSection`, installer-direction-reversed — plausibly worth a note in the connectors cluster above, since it's the mirror image, even though it doesn't share code today); `privacy` still needs the r6-flagged follow-up verification before it's added to this list |
 | `features/schedule-picker/` (`RecurringSchedulePicker`) | `NewAutomationModal.tsx` |

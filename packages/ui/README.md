@@ -73,9 +73,19 @@ Real content has landed in several parallel passes — see
   canary (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`
   §0: an OAuth integration marketplace UI (ports+dependencies+hooks+
   components+barrel).
+- `src/features/browser-chrome/` — a **partial** slice of
+  `DesignBrowserPanel.tsx` (2026-07-17), per
+  `docs/jini-port/god-components-extraction-plan.md`'s Section B: the
+  generic "embeddable webview/iframe browser tab" primitive (navigation
+  stack, address-bar normalization, history/favicon utilities, a
+  viewport-preset switcher, and ports for `onNavigate`/history storage/
+  brand-bridge registration) — not the full file. The first feature to use
+  the new `react/{hooks,components}/` layout described above. See
+  `packages/ui/source-map.md` for the full breakdown, including a confirmed
+  duplicate with `FileViewer.tsx`'s (not-yet-ported) viewport controls.
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
 (cross-package routing) of the extraction plan are not started. The
-god-components-extraction-plan.md list beyond the connectors canary is also
-not started, pending the canary's own review.
+god-components-extraction-plan.md list beyond the connectors canary and the
+browser-chrome partial slice is also not started.
