@@ -6,3 +6,4 @@ export * from './paths.js';
 export * from './config.js';
 export * from './logging.js';
 export * from './windows-registry.js';
+export * from './bridge.js';
