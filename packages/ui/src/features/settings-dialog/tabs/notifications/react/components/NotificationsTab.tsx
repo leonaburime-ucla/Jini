@@ -37,27 +37,27 @@ export interface NotificationsTabProps {
   labels?: NotificationsTabLabels;
 }
 
-type TestStatus = 'sent' | 'blocked' | 'unsupported' | 'failed';
+/**
+ * Only 'sent'/'failed' — NOT the 4-value shape ('sent'/'blocked'/
+ * 'unsupported'/'failed') `showCompletionNotification`'s result maps to
+ * conceptually. `sendTestNotification` below only ever calls this send
+ * button while `desktopEnabled && permission === 'granted'` (the JSX gate),
+ * and its own `setPermission(notificationPermission())` resync re-reads
+ * that same non-granted state in the same tick whenever
+ * `showCompletionNotification` returns 'permission-denied'/'unsupported' —
+ * closing the gate this status line renders behind before either result
+ * could ever actually be shown. Confirmed this isn't an extraction
+ * regression: the origin `NotificationsSection`/`testNotificationStatusText`
+ * in `SettingsDialog.tsx` has the identical gate-plus-resync shape, so
+ * 'settings.notifyDesktopBlocked'/'settings.notifyDesktopUnsupported' were
+ * already dead there too. Narrowed the type instead of keeping unreachable
+ * members around (see this package's coverage discipline notes — a
+ * genuinely dead branch gets refactored away, not tested around).
+ */
+type TestStatus = 'sent' | 'failed';
 
-function testStatusLabel(result: TestStatus, labels: Required<Pick<NotificationsTabLabels, 'testSentLabel' | 'testFailedLabel' | 'desktopBlocked' | 'desktopUnsupported'>>): string {
-  switch (result) {
-    case 'sent':
-      return labels.testSentLabel;
-    /* v8 ignore start -- `result` only reaches this function as 'blocked'/
-     * 'unsupported' when `sendTestNotification` set `testStatus` to one of
-     * those two values, which (see the ignore-annotated block in that
-     * function, above) only happens in the same narrow race that also
-     * closes this component's `desktopEnabled && permission === 'granted'`
-     * render gate the whole "send test notification" block — including
-     * this call — lives behind. Kept for the same defensive reason. */
-    case 'blocked':
-      return labels.desktopBlocked;
-    case 'unsupported':
-      return labels.desktopUnsupported;
-    /* v8 ignore stop */
-    default:
-      return labels.testFailedLabel;
-  }
+function testStatusLabel(result: TestStatus, labels: { testSentLabel: string; testFailedLabel: string }): string {
+  return result === 'sent' ? labels.testSentLabel : labels.testFailedLabel;
 }
 
 /**
@@ -108,33 +108,11 @@ export function NotificationsTab({ preferences, onChange, testNotificationTitle,
       body: testNotificationBody ?? t('This is what a completion notification looks like.'),
     });
     setPermission(notificationPermission());
-    if (result === 'shown') {
-      setTestStatus('sent');
-      return;
-    }
-    /* v8 ignore start -- the 'permission-denied'/'unsupported' arms below
-     * are truly unreachable via legitimate UI interaction: this send button
-     * only renders while `permission === 'granted'` (the gate in the JSX
-     * below), and `showCompletionNotification` only returns
-     * 'permission-denied'/'unsupported' when `Notification.permission` is
-     * itself not-granted / `Notification` itself is undefined at the moment
-     * of this same call — the `setPermission(notificationPermission())`
-     * resync just above therefore always re-reads that same non-granted
-     * state in the same tick, closing the gate this status line depends on
-     * before either arm's text could ever actually render. Kept (not
-     * deleted) as defensive handling for a real, if narrow, race a browser
-     * could in principle produce (permission revoked between the two
-     * reads). The 'failed' `else` arm below stays covered — the
-     * Notification constructor can throw while permission is still
-     * 'granted', which does NOT close the gate. */
-    if (result === 'permission-denied') {
-      setTestStatus('blocked');
-    } else if (result === 'unsupported') {
-      setTestStatus('unsupported');
-    } else {
-      /* v8 ignore stop */
-      setTestStatus('failed');
-    }
+    // Only 'shown' vs. everything-else is a distinction this component can
+    // ever actually show — see the `TestStatus` doc comment above for why
+    // 'permission-denied'/'unsupported' collapse into the same "failed"
+    // outcome here rather than getting their own dead states.
+    setTestStatus(result === 'shown' ? 'sent' : 'failed');
   };
 
   return (
@@ -259,7 +237,7 @@ export function NotificationsTab({ preferences, onChange, testNotificationTitle,
             </button>
             {testStatus ? (
               <p className="jini-hint" role="status">
-                {testStatusLabel(testStatus, { testSentLabel, testFailedLabel, desktopBlocked, desktopUnsupported })}
+                {testStatusLabel(testStatus, { testSentLabel, testFailedLabel })}
               </p>
             ) : null}
           </>

@@ -44,15 +44,15 @@ export function SnippetBlock({ snippet, language, placeholder, copyAriaLabel, co
   const resolvedCopyLabel = copyLabel ?? t('Copy');
   const resolvedCopiedLabel = copiedLabel ?? t('Copied');
 
+  // No `if (!snippet) return` guard here (the origin has one — see
+  // `onCopy` inline in `IntegrationsSection`): the only caller is the copy
+  // button below, which is already `disabled={!snippet}`, and a disabled
+  // button never receives a click event at all (browsers don't dispatch
+  // one, and jsdom matches — verified `fireEvent.click` on a disabled
+  // button doesn't invoke its handler either). The origin's guard was a
+  // dead duplicate of that same disablement; removed rather than carried
+  // forward or tested around.
   async function onCopy() {
-    // Truly unreachable via any DOM-level interaction: the only caller is
-    // the copy button below, which is `disabled={!snippet}` — a disabled
-    // button never receives a click event at all (verified: not even
-    // `fireEvent.click` invokes a disabled button's handler in jsdom,
-    // matching real browser behavior). Kept as a defensive guard in case a
-    // future caller invokes `onCopy` some other way.
-    /* v8 ignore next */
-    if (!snippet) return;
     const ok = await copyToClipboard(snippet);
     if (!ok) return;
     setCopied(true);

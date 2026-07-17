@@ -140,7 +140,6 @@ describe('NotificationsTab', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Test notification sent.');
   });
 
-
   it('shows "failed" status text when the Notification constructor throws', async () => {
     class ThrowingNotification {
       static permission = 'granted';

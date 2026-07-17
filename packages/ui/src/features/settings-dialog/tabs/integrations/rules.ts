@@ -183,16 +183,15 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
           ),
         },
       };
-    /* v8 ignore start -- truly unreachable: `methodLabelForClient(clientId)`
-     * above already throws for any value outside the `McpClientId` union
-     * (its own exhaustiveness check runs first), so this switch's own
-     * default arm can never execute at runtime — kept only so `tsc` still
-     * flags a missing case here too if `McpClientId` grows a member and
-     * only one of the two switches gets updated. */
-    default: {
-      const exhaustive: never = clientId;
-      throw new Error(`Unknown MCP client id: ${String(exhaustive)}`);
-    }
-    /* v8 ignore stop */
   }
+  // No `default` arm here (contrast `methodLabelForClient` above, which
+  // still needs one): `methodLabelForClient(clientId)` on line 121 already
+  // throws for any value outside the `McpClientId` union before this switch
+  // is ever reached, which made a second identical throw here dead code —
+  // refactored away rather than kept behind a coverage-suppression comment.
+  // TypeScript still catches a missing case if `McpClientId` grows a member
+  // and only `methodLabelForClient` gets updated: with every current case
+  // returning, `tsc` requires this switch to be exhaustive too, or the
+  // function's declared `McpClientSnippet` return type is violated on the
+  // "falls through" path.
 }
