@@ -38,7 +38,7 @@ substitute a similar-looking local file or infer the pattern from memory.
 1. The exact target component, source branch, and source commit SHA.
 2. The primary canary was read in full: `apps/web/src/features/memory/`,
    `apps/web/src/providers/memory/`, and `apps/web/tests/features/memory/`.
-3. `docs/adr/0002-frontend-vertical-slice-decomposition.md`, `apps/web/AGENTS.md`,
+3. `docs/adr/0002-frontend-vertical-slice-decomposition.md`, `apps/AGENTS.md`,
    and `scripts/check-web-slice-boundaries.ts` were read from the same branch as
    the canary.
 4. Every current caller/importer of the target was enumerated and its public

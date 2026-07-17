@@ -11,10 +11,10 @@
     "worker": "tsx src/cli/worker.ts",
     "approve": "tsx src/cli/approve.ts",
     "claim": "tsx src/cli/claim.ts",
-    "complete": "tsx src/cli/complete.ts"
+    "complete": "tsx src/cli/complete.ts",
+    "verify:od-preview-reference": "tsx src/cli/verify-od-preview-reference.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"
   }
 }
-

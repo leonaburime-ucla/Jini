@@ -8,6 +8,23 @@ one carries the reference preflight required for a frontend god-component.
 The initial task is `PreviewDrawOverlay.tsx`. Do not reuse this prompt for a
 different component without replacing the target and its source references.
 
+## Dispatch guard (required before creating the Cloud task)
+
+Run this locally first and paste its JSON output into the Cloud prompt:
+
+```bash
+pnpm --filter @jini-automation/project-runner run verify:od-preview-reference
+```
+
+This is deliberately a **pre-dispatch** gate. The Cloud CLI currently exposes
+coarse task state and URL metadata to the coordinator, not the task's complete
+transcript, so waiting for a `READY`/zero-diff result is not a valid way to
+discover a broken source reference. If a task still blocks after dispatch, it
+must commit `ADS-memory/cloud-reports/<task-branch>.md` containing its exact
+preflight commands, outputs, and the next retry command before ending. That
+makes the failure reviewable from GitHub and lets the next dispatch repair the
+specific cause instead of blindly retrying.
+
 ```text
 You are working in the Jini repository. Your task is to extract the generic
 core of Open Design's PreviewDrawOverlay into the appropriate @jini package,
@@ -25,16 +42,20 @@ Before editing any file, complete and print this exact Reference Preflight:
    - apps/web/src/providers/memory/
    - apps/web/tests/features/memory/
    - docs/adr/0002-frontend-vertical-slice-decomposition.md
-   - apps/web/AGENTS.md
+   - apps/AGENTS.md
    - scripts/check-web-slice-boundaries.ts
 4. Every PreviewDrawOverlay caller/importer and its public prop/event contract.
 5. The chosen Jini destination package, why it owns this component, and the
    OD-only seam that will remain in integrations/open-design.
 6. Green baseline commands and their results.
 
-If any preflight item is unavailable or the live source materially disagrees
-with the vendored snapshot, stop and report the discrepancy. Do not substitute
-memory, a nearby component, or an inferred design.
+First run `pnpm --filter @jini-automation/project-runner run
+verify:od-preview-reference`. It fetches the canonical PR ref and proves the
+target matches the vendored source. If it passes, use that fetched ref; do not
+look for a separately-cloned OD checkout and do not use od-web-src.orig as live
+source. If it fails, commit ADS-memory/cloud-reports/<task-branch>.md with the
+full command output and exact retry recommendation, then stop. Do not
+substitute memory, a nearby component, or an inferred design.
 
 Read these Jini references before designing the slice:
 - AGENTS.md
