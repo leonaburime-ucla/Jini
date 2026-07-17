@@ -89,4 +89,16 @@ describe('createDefaultBrowserChromeDependencies', () => {
     expect(deps.historyStorage.loadHistory('s')).toHaveLength(1);
     expect(() => deps.bridgeRegistration.registerBrowserHandle('s', null)).not.toThrow();
   });
+
+  it('defaults the namespace and forwards a custom historyLimit when only historyLimit is supplied', () => {
+    const deps = createDefaultBrowserChromeDependencies({ historyLimit: 1 });
+    const history: BrowserHistoryEntry[] = [
+      { title: 'A', url: 'https://a.com', lastVisitedAt: 1, visitCount: 1 },
+      { title: 'B', url: 'https://b.com', lastVisitedAt: 2, visitCount: 1 },
+    ];
+    deps.historyStorage.saveHistory('s', history);
+    // Capped at the supplied limit (1), and stored under the default namespace.
+    expect(deps.historyStorage.loadHistory('s')).toHaveLength(1);
+    expect(window.localStorage.getItem('jini:browser-chrome:history:s')).not.toBeNull();
+  });
 });

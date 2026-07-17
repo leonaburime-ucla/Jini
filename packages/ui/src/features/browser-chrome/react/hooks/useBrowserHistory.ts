@@ -6,7 +6,6 @@ import type { BrowserHistoryStoragePort } from '../../ports.js';
 
 export interface UseBrowserHistoryOptions {
   debounceMs?: number;
-  homeLabel?: string;
 }
 
 export interface BrowserHistoryController {
@@ -42,13 +41,8 @@ export function useBrowserHistory(
   }, [history, scopeKey, debounceMs]);
 
   const commitVisit = useCallback((url: string, meta?: MergeHistoryEntryMeta, mergeOptions?: MergeHistoryEntryOptions) => {
-    const homeLabel = mergeOptions?.homeLabel ?? options.homeLabel;
-    setHistory((current) =>
-      mergeHistoryEntry(current, url, meta ?? {}, {
-        ...(mergeOptions ?? {}),
-        ...(homeLabel !== undefined ? { homeLabel } : {}),
-      }));
-  }, [options.homeLabel]);
+    setHistory((current) => mergeHistoryEntry(current, url, meta ?? {}, mergeOptions ?? {}));
+  }, []);
 
   const clearHistory = useCallback(() => {
     setHistory([]);

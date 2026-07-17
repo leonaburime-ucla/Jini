@@ -68,6 +68,25 @@ describe('BrowserViewportControls', () => {
     expect(screen.getByRole('option', { name: /Desktop/ }).getAttribute('aria-selected')).toBe('false');
   });
 
+  it('falls back to the first custom preset when the current viewport id has no matching entry', async () => {
+    const user = userEvent.setup();
+    const presets = [
+      { id: 'tablet' as const, label: 'Tab', title: 'Tab title', width: 820, height: 1180 },
+      { id: 'mobile' as const, label: 'Phone', title: 'Phone title', width: 390, height: 844 },
+    ];
+    // 'desktop' isn't in this custom preset list, so activePreset must fall
+    // back to presets[0] ('tablet') rather than finding nothing.
+    render(<BrowserViewportControls viewport="desktop" onViewport={() => {}} presets={presets} />);
+    expect(screen.getByText('Tab')).not.toBeNull();
+    await user.click(screen.getByRole('button'));
+    expect(screen.getByRole('option', { name: /Phone/ })).not.toBeNull();
+  });
+
+  it('renders nothing when given an empty custom presets list', () => {
+    const { container } = render(<BrowserViewportControls viewport="desktop" onViewport={() => {}} presets={[]} />);
+    expect(container.querySelector('button')).toBeNull();
+  });
+
   it('renders translated copy when mounted under an I18nProvider with a matching dictionary', async () => {
     const user = userEvent.setup();
     render(

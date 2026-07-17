@@ -1,3 +1,9 @@
+// Coverage note: this file is `export interface` only — TypeScript erases it
+// to an empty module (verified via the package's own esbuild transform: zero
+// emitted statements), so v8/istanbul coverage has no executable line to
+// measure and reports 0/0 as 0% rather than N/A. Excluded from the feature's
+// coverage run via `--coverage.exclude` (see packages/ui/source-map.md's
+// browser-chrome section) rather than chasing a phantom gap.
 import type { BrowserHistoryEntry, BrowserTabHandle } from './types.js';
 
 export interface BrowserHistoryStoragePort {

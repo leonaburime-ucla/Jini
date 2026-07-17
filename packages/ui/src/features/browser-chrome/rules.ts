@@ -162,7 +162,6 @@ export interface MergeHistoryEntryMeta {
 export interface MergeHistoryEntryOptions {
   /** Pass `false` to update an entry's metadata without counting a visit (e.g. a back/forward replay). Defaults to counting. */
   countVisit?: boolean;
-  homeLabel?: string;
 }
 
 /**
@@ -180,9 +179,11 @@ export function mergeHistoryEntry(
 ): BrowserHistoryEntry[] {
   if (!isHistoryUrl(url)) return history;
   const existing = history.find((entry) => sameUrl(entry.url, url));
+  // `isHistoryUrl` above already excludes `EMPTY_URL`, so `labelFromUrl`'s
+  // home-label branch can never trigger here — no `homeLabel` option to pass.
   const nextTitle = meta.title && meta.title.trim()
     ? meta.title.trim()
-    : existing?.title || labelFromUrl(url, options.homeLabel);
+    : existing?.title || labelFromUrl(url);
   const nextIconUrl = cleanIconUrl(meta.iconUrl) || existing?.iconUrl || faviconUrl(url);
   const visitIncrement = options.countVisit === false ? 0 : 1;
   const entry: BrowserHistoryEntry = existing
@@ -262,8 +263,15 @@ export function recordNavigation(
   if (url !== EMPTY_URL && !isHistoryUrl(url)) return state;
 
   const { navigationStack: stack, navigationIndex: index } = state;
+  // Bug fix: this used to hardcode DEFAULT_HOME_NAVIGATION_ENTRY.title here,
+  // ignoring a caller-supplied `options.homeLabel` — so a host configuring a
+  // custom `homeEntry` (via useBrowserNavigationStack) would see the entry's
+  // title silently revert to "New Tab" on any navigation back to EMPTY_URL,
+  // even though `initialNavigationState`/`labelFromUrl` both honor the
+  // custom label correctly. Falls back to the generic default only when no
+  // homeLabel is supplied.
   const nextTitle = url === EMPTY_URL
-    ? DEFAULT_HOME_NAVIGATION_ENTRY.title
+    ? (options.homeLabel ?? DEFAULT_HOME_NAVIGATION_ENTRY.title)
     : title && title.trim()
       ? title.trim()
       : labelFromUrl(url, options.homeLabel);

@@ -884,3 +884,77 @@ the AI browser-use tool-action catalog, `REFERENCE_GROUPS`) is confirmed not
 ported above. No gap between r6's description and what shipped was found on this
 cross-check — the two deferred "ALSO NOTE" components are called out explicitly
 above as a judgment-call deferral, not a silent drop.
+
+### Post-merge audit pass (2026-07-17): a real bug fix, a dead-code removal, and 100% coverage
+
+A follow-up audit re-diffed every in-scope piece above against the vendored
+original function-by-function and found the port faithful — every
+generification already listed in this section checked out against the
+original's actual behavior. The audit did surface two real issues once
+branch-coverage was wired up (`@vitest/coverage-v8`, run via a scoped CLI
+include/exclude filter — `--coverage.include='src/features/browser-chrome/**'`
+— rather than a shared `vitest.config.ts` change, so the rest of the package's
+test config is untouched):
+
+- **Real bug, fixed** — `rules.ts`'s `recordNavigation` hardcoded
+  `DEFAULT_HOME_NAVIGATION_ENTRY.title` ("New Tab") for a navigation to
+  `EMPTY_URL`, ignoring a caller-supplied `options.homeLabel`. Since
+  `useBrowserNavigationStack` passes `homeLabel: homeEntry.title` on every
+  call, a host configuring a custom `homeEntry` would see any navigation back
+  to the home url silently retitle itself to the generic default instead of
+  the host's own label — a regression relative to `initialNavigationState`/
+  `labelFromUrl`, which both already honored a custom home label correctly.
+  Fixed to `options.homeLabel ?? DEFAULT_HOME_NAVIGATION_ENTRY.title`; covered
+  by new `rules.test.ts`/`useBrowserNavigationStack.test.ts` cases.
+- **Dead code, removed** — `MergeHistoryEntryOptions.homeLabel` (threaded
+  through `mergeHistoryEntry` → `useBrowserHistory`'s `commitVisit`) could
+  never actually affect anything: `mergeHistoryEntry` only calls
+  `labelFromUrl` after its own `isHistoryUrl(url)` guard has already excluded
+  `EMPTY_URL`, and `homeLabel` only changes `labelFromUrl`'s output on the
+  `url === EMPTY_URL` branch. Removed the field from `MergeHistoryEntryOptions`
+  and `UseBrowserHistoryOptions` rather than leaving a permanently-uncovered,
+  inert option in the public API.
+- **One line excluded from coverage, not faked** —
+  `useBrowserNavigationStack.ts`'s `if (!currentEntry) return;` guard inside
+  the `onNavigate`-firing effect is unreachable through the hook's public API:
+  every state transition it performs (`initialNavigationState`/
+  `recordNavigation`/`resolveNavigationHistoryDelta`/
+  `updateCurrentNavigationTitle`, all in `rules.ts`) preserves
+  `0 <= navigationIndex < navigationStack.length`, so `currentEntry` is always
+  defined in practice — the guard exists only because
+  `noUncheckedIndexedAccess` types the array-index read as possibly-undefined.
+  Marked with an inline `/* v8 ignore next */` and a comment explaining the
+  invariant, rather than deleting a safety net demanded by strict typing or
+  writing a test that reaches into the hook's private state to fake it.
+- **`ports.ts`/`types.ts` excluded from coverage** — both are
+  `export interface`/`export type` only; verified via the package's own
+  esbuild transform that they compile to zero emitted statements, so
+  v8/istanbul has no executable line to measure (reports 0/0 as 0%, not N/A).
+  Excluded via `--coverage.exclude`, documented inline at the top of each
+  file. `index.ts` (the barrel) is NOT excluded — it has real re-export
+  statements that execute on import, and nothing else in the suite imported
+  the barrel directly, so a small `index.test.ts` smoke test was added instead
+  (also catches a typo'd/missing re-export a concrete-module test wouldn't).
+
+Also closed several genuine (non-dead) branch-coverage gaps with targeted
+tests rather than exclusions: `recordNavigation`'s adjacent-entry rejoin and
+`replacePendingTarget` branches (the back/forward state-machine logic
+faithfully ported from the origin, previously untested); `recordNavigation`/
+`updateCurrentNavigationTitle` given an out-of-bounds `navigationIndex` (both
+are exported pure functions, so a malformed `BrowserNavigationState` is a
+legitimately reachable input, not hook-internal dead code); `faviconUrl`'s
+catch branch (`https://` with no host); `labelFromUrl`'s empty-hostname
+fallback (`file://` urls); `cleanIconUrl`'s `data:image/` branch; the
+`onNavigate` dedup-by-content check (a re-recorded identical url+title still
+produces a new object reference via `updateEntry`, so the effect re-runs and
+must dedupe on content, not just skip via unchanged reference);
+`BrowserViewportControls`'s custom-`presets`-with-no-match and empty-`presets`
+branches; and `createDefaultBrowserChromeDependencies`'s `historyLimit`-only
+option combination.
+
+**Result**: feature-aggregate coverage on the executable-code portion (i.e.
+excluding `ports.ts`/`types.ts` per above) is **100% Lines, 100% Branches,
+100% Functions, 100% Statements** — up from 99.15% / 87.77% / 97.56% / 99.15%
+before this pass. Full suite: 101 tests across 7 files for this feature (up
+from 78), 476 tests across 60 files package-wide (up from 453).
+`pnpm --filter @jini/ui run typecheck` and `pnpm guard` both remain clean.

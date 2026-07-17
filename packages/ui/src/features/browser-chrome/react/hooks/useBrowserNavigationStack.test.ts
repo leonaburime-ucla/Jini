@@ -85,4 +85,55 @@ describe('useBrowserNavigationStack', () => {
     rerender({ onNavigate: secondCallback });
     expect(secondCallback).not.toHaveBeenCalled();
   });
+
+  it('calls onNavigate again when only the title changes for the same url', () => {
+    const onNavigate = vi.fn();
+    const { result } = renderHook(() => useBrowserNavigationStack({ onNavigate }));
+    act(() => result.current.recordNavigation('https://a.com', 'A'));
+    onNavigate.mockClear();
+
+    // Same url, different title (e.g. the page's document.title arrived
+    // after the initial navigation) — must still notify, not dedupe away.
+    act(() => result.current.updateCurrentTitle('A (loaded)'));
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenLastCalledWith({ title: 'A (loaded)', url: 'https://a.com' });
+  });
+
+  it('does not refire onNavigate for a re-recorded entry with identical url+title (dedupes by content, not just by object reference)', () => {
+    const onNavigate = vi.fn();
+    const { result } = renderHook(() => useBrowserNavigationStack({ onNavigate }));
+    act(() => result.current.recordNavigation('https://a.com', 'A'));
+    onNavigate.mockClear();
+
+    // recordNavigation's in-place "same url" update path (rules.ts) always
+    // builds a brand-new entry object, even when its content is identical —
+    // so `currentEntry`'s object *reference* changes and the effect re-runs,
+    // but the dedupe check must still catch that url+title didn't actually
+    // change and skip notifying.
+    act(() => result.current.recordNavigation('https://a.com', 'A'));
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('recordNavigation to EMPTY_URL clears addressValue and honors a custom homeEntry title', () => {
+    const homeEntry = { title: 'Custom Home', url: EMPTY_URL };
+    const { result } = renderHook(() => useBrowserNavigationStack({ homeEntry }));
+    act(() => result.current.recordNavigation('https://a.com', 'A'));
+    expect(result.current.addressValue).toBe('https://a.com');
+
+    act(() => result.current.recordNavigation(EMPTY_URL));
+    expect(result.current.addressValue).toBe('');
+    expect(result.current.currentEntry).toEqual({ title: 'Custom Home', url: EMPTY_URL });
+  });
+
+  it('goBack lands on an EMPTY_URL home entry and clears addressValue', () => {
+    const { result } = renderHook(() => useBrowserNavigationStack());
+    act(() => result.current.recordNavigation('https://a.com', 'A'));
+    expect(result.current.addressValue).toBe('https://a.com');
+
+    act(() => {
+      result.current.goBack();
+    });
+    expect(result.current.addressValue).toBe('');
+    expect(result.current.currentEntry).toEqual({ title: 'New Tab', url: EMPTY_URL });
+  });
 });

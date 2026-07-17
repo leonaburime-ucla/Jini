@@ -84,6 +84,10 @@ describe('labelFromUrl', () => {
     expect(labelFromUrl('https://www.example.com/path')).toBe('example.com');
   });
 
+  it('falls back to the raw url when the parsed hostname is empty (e.g. a file: url)', () => {
+    expect(labelFromUrl('file:///a.html')).toBe('file:///a.html');
+  });
+
   it('returns the raw value for an unparsable URL', () => {
     expect(labelFromUrl('not a url')).toBe('not a url');
   });
@@ -130,6 +134,12 @@ describe('hostnameFromUrl / sameUrl / isHistoryUrl / faviconUrl', () => {
     expect(faviconUrl('https://example.com/page')).toBe('https://example.com/favicon.ico');
     expect(faviconUrl('file:///a.html')).toBeUndefined();
     expect(faviconUrl('not a url')).toBeUndefined();
+  });
+
+  it('returns undefined rather than throwing for a malformed-but-http-prefixed url', () => {
+    // Passes the `^https?://` prefix check but `new URL(...)` itself throws
+    // ("Invalid URL") because there's no host — exercises faviconUrl's catch.
+    expect(faviconUrl('https://')).toBeUndefined();
   });
 });
 
@@ -219,6 +229,23 @@ describe('mergeHistoryEntry', () => {
     const result = mergeHistoryEntry([], 'https://a.com', { iconUrl: 'javascript:alert(1)' }, {}, 1);
     expect(result[0]?.iconUrl).toBe('https://a.com/favicon.ico');
   });
+
+  it('accepts a data:image/ iconUrl meta value as-is', () => {
+    const result = mergeHistoryEntry([], 'https://a.com', { iconUrl: 'data:image/png;base64,abcd' }, {}, 1);
+    expect(result[0]?.iconUrl).toBe('data:image/png;base64,abcd');
+  });
+
+  it('omits iconUrl entirely when no meta/existing/favicon icon is available (e.g. a file: url)', () => {
+    // New entry: no meta.iconUrl, no existing entry, and faviconUrl() returns
+    // undefined for non-http(s) urls — nextIconUrl ends up undefined.
+    const inserted = mergeHistoryEntry([], 'file:///a.html', {}, {}, 1);
+    expect(inserted[0]).not.toHaveProperty('iconUrl');
+
+    // Existing entry, re-merged: same all-undefined sources, so the existing
+    // (icon-less) entry's shape is preserved without adding an iconUrl key.
+    const updated = mergeHistoryEntry(inserted, 'file:///a.html', {}, {}, 2);
+    expect(updated[0]).not.toHaveProperty('iconUrl');
+  });
 });
 
 describe('navigation stack', () => {
@@ -240,6 +267,15 @@ describe('navigation stack', () => {
     });
   });
 
+  it('initialNavigationState derives the title from the url when no initialTitle is given', () => {
+    expect(initialNavigationState('https://example.com')).toEqual({
+      addressValue: 'https://example.com',
+      navigationIndex: 0,
+      navigationStack: [{ title: 'example.com', url: 'https://example.com' }],
+      url: 'https://example.com',
+    });
+  });
+
   it('recordNavigation appends a new entry and truncates forward history', () => {
     let state: BrowserNavigationState = { navigationStack: [{ title: 'Home', url: EMPTY_URL }], navigationIndex: 0 };
     state = recordNavigation(state, 'https://a.com', 'A');
@@ -251,6 +287,36 @@ describe('navigation stack', () => {
     const back = resolveNavigationHistoryDelta(state, -1)!;
     state = recordNavigation(back.state, 'https://c.com', 'C');
     expect(state.navigationStack.map((e) => e.url)).toEqual([EMPTY_URL, 'https://a.com', 'https://c.com']);
+  });
+
+  it('recordNavigation is a no-op for a non-empty, non-history url', () => {
+    const state: BrowserNavigationState = { navigationStack: [{ title: 'A', url: 'https://a.com' }], navigationIndex: 0 };
+    expect(recordNavigation(state, 'not a url')).toBe(state);
+  });
+
+  it('recordNavigation falls back through existing.title when a caller-supplied empty-string homeLabel makes nextTitle falsy', () => {
+    // `options.homeLabel ?? DEFAULT...` only replaces a *nullish* homeLabel —
+    // an explicit `''` survives as nextTitle, which is falsy, so updateEntry
+    // must fall back to the existing entry's title rather than blanking it.
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: 'Custom Home', url: EMPTY_URL }],
+      navigationIndex: 0,
+    };
+    const result = recordNavigation(state, EMPTY_URL, undefined, { homeLabel: '' });
+    expect(result.navigationStack).toEqual([{ title: 'Custom Home', url: EMPTY_URL }]);
+  });
+
+  it('recordNavigation falls all the way through to labelFromUrl when both nextTitle and the existing entry title are falsy', () => {
+    // Degenerate-but-reachable case (a malformed existing entry with title:
+    // '', combined with an explicit empty homeLabel): exercises updateEntry's
+    // final `labelFromUrl(url, options.homeLabel)` fallback rather than just
+    // the `existing?.title` one above.
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: '', url: EMPTY_URL }],
+      navigationIndex: 0,
+    };
+    const result = recordNavigation(state, EMPTY_URL, undefined, { homeLabel: '' });
+    expect(result.navigationStack).toEqual([{ title: '', url: EMPTY_URL }]);
   });
 
   it('recordNavigation updates the current entry in place for the same url', () => {
@@ -350,6 +416,37 @@ describe('navigation stack', () => {
     expect(result.navigationIndex).toBe(2);
   });
 
+  it('recordNavigation titles a navigation to EMPTY_URL with the generic default when no homeLabel is supplied', () => {
+    // 3-entry stack with the pointer on the LAST entry and no EMPTY_URL entry
+    // adjacent to it, so this exercises a genuine append (not an
+    // adjacent-entry rejoin) for the EMPTY_URL title-computation branch.
+    const state: BrowserNavigationState = {
+      navigationStack: [
+        { title: 'Home', url: EMPTY_URL },
+        { title: 'A', url: 'https://a.com' },
+        { title: 'B', url: 'https://b.com' },
+      ],
+      navigationIndex: 2,
+    };
+    const result = recordNavigation(state, EMPTY_URL);
+    expect(result.navigationStack).toHaveLength(4);
+    expect(result.navigationStack[3]).toEqual({ title: 'New Tab', url: EMPTY_URL });
+  });
+
+  it('recordNavigation honors a caller-supplied homeLabel for a navigation to EMPTY_URL (regression: this used to hardcode the generic default)', () => {
+    const state: BrowserNavigationState = {
+      navigationStack: [
+        { title: 'Custom Home', url: EMPTY_URL },
+        { title: 'A', url: 'https://a.com' },
+        { title: 'B', url: 'https://b.com' },
+      ],
+      navigationIndex: 2,
+    };
+    const result = recordNavigation(state, EMPTY_URL, undefined, { homeLabel: 'Custom Home' });
+    expect(result.navigationStack).toHaveLength(4);
+    expect(result.navigationStack[3]).toEqual({ title: 'Custom Home', url: EMPTY_URL });
+  });
+
   it('resolveNavigationHistoryDelta returns null at either end of the stack', () => {
     const state: BrowserNavigationState = { navigationStack: [{ title: 'A', url: 'https://a.com' }], navigationIndex: 0 };
     expect(resolveNavigationHistoryDelta(state, -1)).toBeNull();
@@ -379,6 +476,38 @@ describe('navigation stack', () => {
   it('updateCurrentNavigationTitle is a no-op for a blank title', () => {
     const state: BrowserNavigationState = { navigationStack: [{ title: 'A', url: 'a' }], navigationIndex: 0 };
     expect(updateCurrentNavigationTitle(state, '  ')).toBe(state);
+  });
+
+  it('updateCurrentNavigationTitle is a no-op when navigationIndex points past the stack (defensive — a malformed state passed directly to this exported pure function)', () => {
+    const state: BrowserNavigationState = { navigationStack: [], navigationIndex: 0 };
+    expect(updateCurrentNavigationTitle(state, 'X')).toBe(state);
+  });
+
+  // recordNavigation is exported as a standalone pure function, so — unlike
+  // useBrowserNavigationStack's fully-encapsulated internal state — any
+  // caller can hand it a `BrowserNavigationState` with a `navigationIndex`
+  // that doesn't actually correspond to a real stack entry. The following
+  // cases exercise its defensive out-of-bounds handling directly.
+  it('recordNavigation degrades gracefully when navigationIndex points past the end of the stack', () => {
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: 'A', url: 'https://a.com' }],
+      navigationIndex: 5,
+    };
+    const result = recordNavigation(state, 'https://z.com', 'Z');
+    // previousIndex (4) has no real entry to rejoin, so this falls through to
+    // an append, treating the out-of-range index as "past the end".
+    expect(result.navigationStack.map((e) => e.url)).toEqual(['https://a.com', 'https://z.com']);
+    expect(result.navigationIndex).toBe(1);
+  });
+
+  it('recordNavigation appends fresh (base []) when navigationIndex is negative and neither adjacent-index check matches', () => {
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: 'A', url: 'https://a.com' }],
+      navigationIndex: -3,
+    };
+    const result = recordNavigation(state, 'https://z.com', 'Z');
+    expect(result.navigationStack).toEqual([{ title: 'Z', url: 'https://z.com' }]);
+    expect(result.navigationIndex).toBe(0);
   });
 });
 
