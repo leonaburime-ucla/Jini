@@ -11,6 +11,26 @@ guard, a real review of what shipped), and only then dispatch the rest of this l
 multiple FULL SLICE items in parallel until the canary proves the pattern holds up for a cloud
 session working from this plan doc alone.
 
+**i18n policy (added after the canary's first pass got this wrong):** the vendored
+`fixing-open-design-web/SKILL.md` says to preserve i18n keys verbatim — correct for its native
+context (refactoring *inside* OD's own codebase, where OD's dictionaries stay in scope), but this
+plan is extracting *into a different package* (`@jini/ui`) with its **own**, separate
+`features/i18n` mechanism. Do NOT read "preserve i18n keys" as license to drop i18n from the ported
+component — and do NOT read "OD's translated copy is product content, don't ship it" as license to
+drop the *mechanism* either (that was the canary's first-pass mistake, self-corrected afterward).
+The two are separable: OD's actual translated dictionaries are genuinely product content and should
+NOT be ported, but `@jini/ui`'s `useT()` hook is a zero-cost no-op when unconfigured — `t(key)`
+returns `key` verbatim with no `I18nProvider` mounted. The convention is **the English string itself
+is the key** (`t('Connect')`, not a namespaced key like `t('connectors.connectLabel')`), so wrapping
+every user-facing string costs nothing today and makes the component translatable for free later.
+Wrap every user-facing string (JSX text, `aria-label`, `title`, default prop values for
+label/message props) in `useT()`'s `t()`. Pure logic modules (a `rules.ts` with no React) stay
+hook-free by design — wrap their return value at the call site instead (`t(statusLabel(status))`),
+don't thread `t` into them. Verify the wiring actually works with a real test that mounts the
+component under `I18nProvider` with a dictionary and asserts the translated text renders — a test
+suite that only exercises the unconfigured/passthrough case cannot catch a hardcoded literal that
+was never wrapped in the first place.
+
 ---
 
 ## 0. Canary — `ConnectorsBrowser.tsx` (1,573 lines)
@@ -43,7 +63,10 @@ not just its own isolated feature).
 
 **Gate for calling the canary successful:** typecheck/test/guard all green, `source-map.md` written
 with the same rigor as every prior package, no product-identity strings, real tests exercising the
-OAuth handshake states (pending/authenticated/stale-cancel), not just the presentational shell.
+OAuth handshake states (pending/authenticated/stale-cancel), not just the presentational shell, and
+(per the i18n policy above) every user-facing string wired through `useT()` with an `I18nProvider`
+end-to-end test proving it — the canary's first pass shipped without this and needed a follow-up fix;
+don't repeat that on the next items in this list.
 
 ---
 
