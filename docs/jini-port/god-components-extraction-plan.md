@@ -151,7 +151,7 @@ across all 23 until now; the last 2 below came from reconciling this doc against
 
 | Target | Source | 
 |---|---|
-| `features/annotation-canvas/` | `PreviewDrawOverlay.tsx` (🔄 in flight via Codex Cloud) |
+| `features/annotation-canvas/` | `PreviewDrawOverlay.tsx` (❌ reverted 2026-07-17 — a first attempt via Codex Cloud landed with 2 undisclosed gaps found on independent review, submit-action picker + keyboard shortcuts, and skipped the branch+draft-PR convention; the merged code was reverted, `packages/renderers-react` is back to a placeholder stub. Open again — see `god-component-extraction.md`) |
 | `features/sketch-editor/` (or `@jini/renderers-react`) | `SketchEditor.tsx`'s Excalidraw-integration shim |
 | `features/asset-grid/` (generic `AssetGrid<TAsset>`) | `LibrarySection.tsx` — rubber-band multi-select (the single cleanest generic core in the whole sweep, per §1.16), facets, debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch thumbnails |
 | `features/asset-tree-browser/` (generic `AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>`) | `DesignFilesPanel.tsx` |
