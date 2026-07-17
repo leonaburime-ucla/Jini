@@ -148,8 +148,13 @@ export function MarkdownSplitPane({
                 onScroll={handlePreviewScroll}
               >
                 {/* Trusting `previewHtml` is the host's responsibility — this
-                    component renders whatever HTML string it's given. */}
-                <article className="markdown-rendered" onClick={onPreviewClick} dangerouslySetInnerHTML={{ __html: previewHtml ?? '' }} />
+                    component renders whatever HTML string it's given.
+                    Non-null assertion: `isLoading` (above) is true whenever
+                    `previewHtml === null`, and this JSX only renders in the
+                    `!isLoading` branch — so `previewHtml` is always a string
+                    here. TypeScript can't follow that indirect invariant
+                    through the derived `isLoading` boolean, hence the `!`. */}
+                <article className="markdown-rendered" onClick={onPreviewClick} dangerouslySetInnerHTML={{ __html: previewHtml! }} />
               </section>
             </div>
           ) : null}

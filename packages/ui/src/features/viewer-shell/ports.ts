@@ -7,6 +7,12 @@
  * following the same "context/callback + host-injected adapter, default a
  * real browser implementation" shape as `features/connectors/`'s
  * `authPendingStorage`/`authBridge`.
+ *
+ * Coverage: this file is `export interface` only — zero emitted executable
+ * statements (verified via `@vitest/coverage-v8`: 0 statements, and its sole
+ * reported "function"/"branch" is v8's own synthetic whole-module wrapper,
+ * already counted as covered). Excluded from the coverage run rather than
+ * padded with a no-op test.
  */
 export interface ViewerClipboardPort {
   copyText(text: string): Promise<boolean>;

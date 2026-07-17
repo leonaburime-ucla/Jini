@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../../i18n/index.js';
 import { CommentSidePanel } from './CommentSidePanel.js';
@@ -43,6 +44,12 @@ describe('CommentSidePanel', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
+  it('renders a collapsed rail with no count badge when there are no comments', () => {
+    render(<CommentSidePanel {...baseProps({ collapsed: true, comments: [] })} />);
+    const rail = screen.getByTestId('comment-side-collapsed-rail');
+    expect(rail.querySelector('strong')).toBeNull();
+  });
+
   it('expands from the collapsed rail', async () => {
     const onCollapsedChange = vi.fn();
     render(<CommentSidePanel {...baseProps({ collapsed: true, onCollapsedChange })} />);
@@ -55,6 +62,16 @@ describe('CommentSidePanel', () => {
     render(<CommentSidePanel {...baseProps({ onCollapsedChange })} />);
     await userEvent.click(screen.getByLabelText('Hide Comments'));
     expect(onCollapsedChange).toHaveBeenCalledWith(true);
+  });
+
+  it('marks the active comment row with the active class and aria-current', () => {
+    render(<CommentSidePanel {...baseProps({ activeCommentId: 'c1' })} />);
+    const activeRow = screen.getByText('1. Button').closest('[data-testid="comment-side-item"]')!;
+    expect(activeRow).toHaveClass('active');
+    expect(activeRow).toHaveAttribute('aria-current', 'true');
+    const inactiveRow = screen.getByText('2. Header').closest('[data-testid="comment-side-item"]')!;
+    expect(inactiveRow).not.toHaveClass('active');
+    expect(inactiveRow).not.toHaveAttribute('aria-current');
   });
 
   it('renders every comment with its label, index, and body', () => {
@@ -113,6 +130,17 @@ describe('CommentSidePanel', () => {
     expect(screen.getByText('Queue')).toBeInTheDocument();
   });
 
+  it('shows "Sending…" on the select-bar send button while sending', () => {
+    render(<CommentSidePanel {...baseProps({ selectedIds: new Set(['c1']), sending: true })} />);
+    expect(screen.getByTestId('comment-side-send-claude')).toHaveTextContent('Sending…');
+  });
+
+  it('shows a sending state on the new-comment submit button while sending', () => {
+    render(<CommentSidePanel {...baseProps({ onCreateComment: vi.fn(), sending: true })} />);
+    const submitButton = screen.getByRole('button', { name: /Sending…/ });
+    expect(submitButton).toHaveClass('is-sending');
+  });
+
   it('submits a new comment through the create form', async () => {
     const onCreateComment = vi.fn().mockResolvedValue(true);
     render(<CommentSidePanel {...baseProps({ onCreateComment })} />);
@@ -120,6 +148,32 @@ describe('CommentSidePanel', () => {
     await userEvent.type(textarea, 'A new note');
     await userEvent.click(screen.getByRole('button', { name: /^Send$/ }));
     expect(onCreateComment).toHaveBeenCalledWith('A new note');
+  });
+
+  it('submits the new comment on Cmd/Ctrl+Enter from the textarea', async () => {
+    const onCreateComment = vi.fn().mockResolvedValue(true);
+    render(<CommentSidePanel {...baseProps({ onCreateComment })} />);
+    const textarea = screen.getByPlaceholderText('Add a comment…');
+    await userEvent.type(textarea, 'Quick note');
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onCreateComment).toHaveBeenCalledWith('Quick note');
+  });
+
+  it('Cmd+Enter on an empty/whitespace-only draft does not submit', () => {
+    const onCreateComment = vi.fn().mockResolvedValue(true);
+    render(<CommentSidePanel {...baseProps({ onCreateComment })} />);
+    const textarea = screen.getByPlaceholderText('Add a comment…');
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onCreateComment).not.toHaveBeenCalled();
+  });
+
+  it('does not submit on a plain Enter in the textarea (allows multi-line drafts)', async () => {
+    const onCreateComment = vi.fn().mockResolvedValue(true);
+    render(<CommentSidePanel {...baseProps({ onCreateComment })} />);
+    const textarea = screen.getByPlaceholderText('Add a comment…');
+    await userEvent.type(textarea, 'Quick note');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onCreateComment).not.toHaveBeenCalled();
   });
 
   it('keeps the submit button disabled with an empty draft', () => {
@@ -147,6 +201,37 @@ describe('CommentSidePanel', () => {
     expect(attachment).toHaveAttribute('href', '/raw/a.png');
   });
 
+  it('clicking an attachment link does not also trigger the row onReply', () => {
+    const onReply = vi.fn();
+    render(
+      <CommentSidePanel
+        {...baseProps({
+          onReply,
+          getCommentAttachments: () => [{ path: 'a.png', name: 'a.png' }],
+          resolveAttachmentUrl: (a) => `/raw/${a.path}`,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByTestId('comment-side-attachment')[0]!);
+    expect(onReply).not.toHaveBeenCalled();
+  });
+
+  it('shows the drop-edge indicator class while a comment is being dragged over another', () => {
+    render(<CommentSidePanel {...baseProps({ onReorder: vi.fn() })} />);
+    const dragHandle = screen.getAllByLabelText('Drag to reorder')[0]!;
+    const dataTransfer = { setData: vi.fn(), getData: vi.fn(() => ''), dropEffect: '' };
+    fireEvent.dragStart(dragHandle, { dataTransfer });
+
+    const firstRow = screen.getByText('1. Button').closest('[data-testid="comment-side-item"]')!;
+    expect(firstRow).toHaveClass('dragging');
+
+    const secondRow = screen.getByText('2. Header').closest('[data-testid="comment-side-item"]')!;
+    fireEvent.dragOver(secondRow, { dataTransfer, clientY: 1000 });
+    expect(secondRow.className).toMatch(/comment-side-item-drop-/);
+
+    fireEvent.dragEnd(dragHandle);
+  });
+
   it('formats the timestamp using the default relative-time translation', () => {
     const now = 1_700_000;
     const recentComments: TestComment[] = [{ id: 'c1', label: 'Recent', body: 'x', ts: now - 5 * 60_000 }];
@@ -160,6 +245,50 @@ describe('CommentSidePanel', () => {
   it('honors a custom formatTimestamp override', () => {
     render(<CommentSidePanel {...baseProps({ formatTimestamp: () => 'custom time' })} />);
     expect(screen.getAllByText('custom time')).toHaveLength(2);
+  });
+
+  it('moves focus to the collapsed rail after collapsing, and back to the toggle after re-expanding', async () => {
+    function Wrapper() {
+      const [collapsed, setCollapsed] = useState(false);
+      return <CommentSidePanel {...baseProps({ collapsed, onCollapsedChange: setCollapsed })} />;
+    }
+    render(<Wrapper />);
+    await userEvent.click(screen.getByLabelText('Hide Comments'));
+    expect(screen.getByTestId('comment-side-collapsed-rail')).toHaveFocus();
+    await userEvent.click(screen.getByTestId('comment-side-collapsed-rail'));
+    expect(screen.getByLabelText('Hide Comments')).toHaveFocus();
+  });
+
+  it('triggers onReply on Enter/Space and ignores other keys', () => {
+    const onReply = vi.fn();
+    render(<CommentSidePanel {...baseProps({ onReply })} />);
+    const row = screen.getByText('1. Button').closest('[data-testid="comment-side-item"]')!;
+    fireEvent.keyDown(row, { key: 'a' });
+    expect(onReply).not.toHaveBeenCalled();
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(onReply).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(onReply).toHaveBeenCalledTimes(2);
+  });
+
+  it('reorders comments via drag/dragover/drop on the row, and the drag handle click does not trigger onReply', () => {
+    const onReorder = vi.fn();
+    const onReply = vi.fn();
+    render(<CommentSidePanel {...baseProps({ onReorder, onReply })} />);
+
+    const dragHandle = screen.getAllByLabelText('Drag to reorder')[0]!;
+    fireEvent.click(dragHandle);
+    expect(onReply).not.toHaveBeenCalled();
+
+    const dataTransfer = { setData: vi.fn(), getData: vi.fn(() => ''), dropEffect: '' };
+    fireEvent.dragStart(dragHandle, { dataTransfer });
+
+    const secondRow = screen.getByText('2. Header').closest('[data-testid="comment-side-item"]')!;
+    fireEvent.dragOver(secondRow, { dataTransfer, clientY: 1000 });
+    fireEvent.drop(secondRow, { dataTransfer, clientY: 1000 });
+    expect(onReorder).toHaveBeenCalledWith(['c2', 'c1']);
+
+    fireEvent.dragEnd(dragHandle);
   });
 
   it('translates its chrome strings through I18nProvider end-to-end', () => {

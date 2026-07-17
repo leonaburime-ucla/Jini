@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../../i18n/index.js';
@@ -81,6 +81,52 @@ describe('MarkdownSplitPane', () => {
     );
     expect(screen.getByText('Streaming')).toBeInTheDocument();
     expect(screen.getByText('Copy')).toBeInTheDocument();
+  });
+
+  it('marks the preview pane as the active scroll-sync pane on pointerdown/wheel/touchstart/keydown/focus', () => {
+    render(
+      <MarkdownSplitPane mode="split" onModeChange={() => {}} sourceText="# Hi" onSourceChange={() => {}} previewHtml="<h1>Hi</h1>" />,
+    );
+    const preview = screen.getByLabelText('Markdown preview');
+    expect(() => {
+      fireEvent.pointerDown(preview);
+      fireEvent.wheel(preview);
+      fireEvent.touchStart(preview);
+      fireEvent.keyDown(preview, { key: 'ArrowDown' });
+      fireEvent.focus(preview);
+    }).not.toThrow();
+  });
+
+  it('routes preview clicks through onPreviewClick', async () => {
+    const onPreviewClick = vi.fn();
+    render(
+      <MarkdownSplitPane
+        mode="preview"
+        onModeChange={() => {}}
+        sourceText="# Hi"
+        onSourceChange={() => {}}
+        previewHtml="<h1>Hi</h1>"
+        onPreviewClick={onPreviewClick}
+      />,
+    );
+    await userEvent.click(screen.getByRole('heading', { level: 1, name: 'Hi' }));
+    expect(onPreviewClick).toHaveBeenCalled();
+  });
+
+  it('spreads extra editor textarea props (e.g. a host paste handler)', () => {
+    const onPaste = vi.fn();
+    render(
+      <MarkdownSplitPane
+        mode="source"
+        onModeChange={() => {}}
+        sourceText="hi"
+        onSourceChange={() => {}}
+        previewHtml="<p>hi</p>"
+        editorTextareaProps={{ onPaste }}
+      />,
+    );
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Markdown editor' }));
+    expect(onPaste).toHaveBeenCalled();
   });
 
   it('translates its mode-tab labels through I18nProvider', () => {

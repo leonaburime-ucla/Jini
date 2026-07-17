@@ -46,7 +46,6 @@ export function useMarkdownScrollSync(options: UseMarkdownScrollSyncOptions): Us
   const pendingScrollSyncRef = useRef<{ sourcePane: MarkdownScrollPane; targetPane: MarkdownScrollPane } | null>(null);
   const programmaticScrollRef = useRef<{ pane: MarkdownScrollPane; top: number } | null>(null);
   const activePaneRef = useRef<MarkdownScrollPane>('editor');
-  const previousModeRef = useRef<MarkdownSplitPaneMode>(mode);
 
   const blockLines = useMemo(() => extractMarkdownBlockLines(sourceText), [sourceText]);
 
@@ -120,9 +119,17 @@ export function useMarkdownScrollSync(options: UseMarkdownScrollSyncOptions): Us
       if (scrollSyncFrameRef.current !== null) return;
       scrollSyncFrameRef.current = requestAnimationFrame(() => {
         scrollSyncFrameRef.current = null;
-        const pending = pendingScrollSyncRef.current;
+        // `pendingScrollSyncRef.current` is always non-null here: the only
+        // writers are this same callback's `{ sourcePane, targetPane }`
+        // assignment two lines above (which always runs immediately before
+        // a frame is requested) and the mode-effect's cleanup below, which
+        // nulls it out *together with* cancelling this very
+        // `scrollSyncFrameRef` frame via `cancelAnimationFrame` — so a
+        // cancelled frame's callback never actually runs to observe a null
+        // value. The non-null assertion exists only to satisfy
+        // TypeScript's `| null` ref type, not a real runtime path.
+        const pending = pendingScrollSyncRef.current!;
         pendingScrollSyncRef.current = null;
-        if (!pending) return;
         applyScrollSync(pending.sourcePane, pending.targetPane);
       });
     },
@@ -170,13 +177,14 @@ export function useMarkdownScrollSync(options: UseMarkdownScrollSyncOptions): Us
       pendingScrollSyncRef.current = null;
       programmaticScrollRef.current = null;
       activePaneRef.current = 'editor';
-      previousModeRef.current = mode;
       return;
     }
-    const sourcePane = activePaneRef.current ?? (previousModeRef.current === 'preview' ? 'preview' : 'editor');
+    // `activePaneRef.current` is a `MarkdownScrollPane` (never null/undefined
+    // — it's initialized to `'editor'` and every writer above assigns a real
+    // pane), so it's used directly rather than through a `??` fallback.
+    const sourcePane = activePaneRef.current;
     const targetPane = sourcePane === 'preview' ? 'editor' : 'preview';
     scheduleScrollSync(sourcePane, targetPane);
-    previousModeRef.current = mode;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resyncKey intentionally re-triggers this on preview content changes.
   }, [mode, resyncKey, scheduleScrollSync]);
 

@@ -15,6 +15,12 @@ describe('ViewerFileActions', () => {
     expect(screen.queryByText('Open')).toBeNull();
   });
 
+  it('renders only the open link when downloadUrl is omitted', () => {
+    render(<ViewerFileActions openUrl="/f.png?open" />);
+    expect(screen.getByText('Open')).toHaveAttribute('href', '/f.png?open');
+    expect(screen.queryByText('Download')).toBeNull();
+  });
+
   it('renders both links with correct attributes', () => {
     render(<ViewerFileActions downloadUrl="/f.png" openUrl="/f.png?open" fileName="f.png" />);
     const download = screen.getByText('Download');

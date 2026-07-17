@@ -78,6 +78,18 @@ describe('useCommentReorder', () => {
     expect(result.current.dragState).toBeNull();
   });
 
+  it('onDragOver and onDrop are no-ops when reordering is disabled', () => {
+    const { result } = renderHook(() => useCommentReorder(['a'], undefined));
+    act(() => {
+      result.current.onDragOver(makeDragEvent(), 'a');
+    });
+    expect(result.current.dragState).toBeNull();
+    act(() => {
+      result.current.onDrop(makeDragEvent(), 'a');
+    });
+    expect(result.current.dragState).toBeNull();
+  });
+
   it('no-ops a drop onto the same id', () => {
     const onReorder = vi.fn();
     const { result } = renderHook(() => useCommentReorder(['a', 'b'], onReorder));
@@ -127,5 +139,103 @@ describe('useCommentReorder', () => {
       result.current.clear();
     });
     expect(result.current.dragState).toBeNull();
+  });
+
+  it('onDragOver no-ops when neither dragState nor the DOM dataTransfer carries a dragging id', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b'], onReorder));
+    act(() => {
+      result.current.onDragOver(makeDragEvent({ dataTransfer: makeDataTransfer() }), 'a');
+    });
+    expect(result.current.dragState).toBeNull();
+  });
+
+  it('onDragOver hovering back over the dragged item itself clears any edge and updates overId', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b', 'c'], onReorder));
+    const dataTransfer = makeDataTransfer();
+    act(() => {
+      result.current.onDragStart(makeDragEvent({ dataTransfer }), 'a');
+    });
+    // First move it over a different target to pick up a non-null edge...
+    act(() => {
+      result.current.onDragOver(makeDragEvent({ dataTransfer, clientY: 10 }), 'b');
+    });
+    expect(result.current.dragState).toEqual({ draggingId: 'a', overId: 'b', edge: 'before' });
+    // ...then drag back over itself: draggingId === targetId branch, edge resets to null.
+    act(() => {
+      result.current.onDragOver(makeDragEvent({ dataTransfer }), 'a');
+    });
+    expect(result.current.dragState).toEqual({ draggingId: 'a', overId: 'a', edge: null });
+  });
+
+  it('onDragOver hovering over the dragged item again is a no-op once already {overId, edge:null}', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b'], onReorder));
+    const dataTransfer = makeDataTransfer();
+    act(() => {
+      result.current.onDragStart(makeDragEvent({ dataTransfer }), 'a');
+    });
+    const before = result.current.dragState;
+    act(() => {
+      // Same target as the drag start (already {overId:'a', edge:null}) - condition is false, no state churn.
+      result.current.onDragOver(makeDragEvent({ dataTransfer }), 'a');
+    });
+    expect(result.current.dragState).toBe(before);
+  });
+
+  it('onDrop recovers a missing dragState from the DOM dataTransfer (mime type then text/plain fallback)', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b', 'c'], onReorder));
+
+    const mimeTransfer = makeDataTransfer({ [COMMENT_SIDE_DRAG_MIME]: 'a' });
+    act(() => {
+      result.current.onDrop(makeDragEvent({ dataTransfer: mimeTransfer, clientY: 10 }), 'c');
+    });
+    // clientY 10 with rect {top:0,height:100} -> midpoint 50 -> 'before'
+    expect(onReorder).toHaveBeenCalledWith(['b', 'a', 'c']);
+
+    onReorder.mockClear();
+    const textOnlyTransfer = makeDataTransfer({ 'text/plain': 'a' });
+    act(() => {
+      result.current.onDrop(makeDragEvent({ dataTransfer: textOnlyTransfer, clientY: 10 }), 'c');
+    });
+    expect(onReorder).toHaveBeenCalledWith(['b', 'a', 'c']);
+  });
+
+  it('onDragOver hovering the same non-self target with an unchanged edge does not churn state', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b', 'c'], onReorder));
+    const dataTransfer = makeDataTransfer();
+    act(() => {
+      result.current.onDragStart(makeDragEvent({ dataTransfer }), 'a');
+    });
+    act(() => {
+      result.current.onDragOver(makeDragEvent({ dataTransfer, clientY: 10 }), 'b');
+    });
+    const afterFirstMove = result.current.dragState;
+    expect(afterFirstMove).toEqual({ draggingId: 'a', overId: 'b', edge: 'before' });
+    act(() => {
+      // Identical target and clientY -> same edge -> the update condition is
+      // false, so the hook must not call setDragState again.
+      result.current.onDragOver(makeDragEvent({ dataTransfer, clientY: 10 }), 'b');
+    });
+    expect(result.current.dragState).toBe(afterFirstMove);
+  });
+
+  it('onDrop recomputes the edge from the pointer position when the cached dragState is over a different target', () => {
+    const onReorder = vi.fn();
+    const { result } = renderHook(() => useCommentReorder(['a', 'b', 'c'], onReorder));
+    const dataTransfer = makeDataTransfer();
+    act(() => {
+      result.current.onDragStart(makeDragEvent({ dataTransfer }), 'a');
+    });
+    // dragState.overId is still 'a' (from onDragStart), never updated to 'c' via onDragOver,
+    // so onDrop must fall back to dropEdgeForClientY instead of reusing a stale cached edge.
+    act(() => {
+      // clientY 90 with rect {top:0,height:100} -> midpoint 50 -> 'after'
+      result.current.onDrop(makeDragEvent({ dataTransfer, clientY: 90 }), 'c');
+    });
+    expect(onReorder).toHaveBeenCalledWith(['b', 'c', 'a']);
   });
 });

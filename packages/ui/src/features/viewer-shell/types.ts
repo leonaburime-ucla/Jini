@@ -8,6 +8,12 @@
  * and markdown split-pane. See `packages/ui/source-map.md`'s
  * `features/viewer-shell/` section for full provenance and what was
  * deliberately dropped.
+ *
+ * Coverage: this file is `export interface`/`export type` only — zero
+ * emitted executable statements (verified via `@vitest/coverage-v8`: 0
+ * statements, and its sole reported "function"/"branch" is v8's own
+ * synthetic whole-module wrapper, already counted as covered). Excluded
+ * from the coverage run rather than padded with a no-op test.
  */
 
 /**
