@@ -1,3 +1,13 @@
+// @vitest-environment node
+//
+// The "SSR safety" block below asserts real no-op behavior when
+// `window`/`document` are genuinely absent from the global scope, which
+// only holds under Node's default environment — jsdom (this package's
+// package-wide default, added by the parallel i18n/observability porting
+// task) always defines both globally. The "with window/document stubbed"
+// block doesn't need real DOM either (it stubs its own minimal doubles via
+// `vi.stubGlobal`), so running this whole file under `node` costs nothing.
+// See `packages/ui/source-map.md`.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getDocumentBody,

@@ -1,5 +1,4 @@
-import { act } from 'react';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider, useI18n, useT } from './context.js';
 import type { TranslationDict } from './types.js';
