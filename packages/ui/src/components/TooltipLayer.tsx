@@ -140,8 +140,11 @@ export function TooltipLayer() {
   }, [hideTooltip, suppressNativeTitle]);
 
   const showTooltip = useCallback((target: HTMLElement) => {
-    const text = target.dataset.tooltip?.trim();
-    if (!text) return;
+    // Both callers (onPointerOver, onFocusIn) reach `target` only via
+    // `readTooltipTarget`, which already verified a non-empty
+    // `data-tooltip` through `isTooltipTarget` — so `text` is always
+    // defined and non-empty here.
+    const text = target.dataset.tooltip!.trim();
     suppressNativeTitle(target);
     const placement = tooltipPlacement(target);
     setState((current) => {
@@ -163,8 +166,12 @@ export function TooltipLayer() {
       if (!current) return null;
       if (!document.contains(current.target)) return null;
       if (current.target.getAttribute('aria-expanded') === 'true') return null;
-      const node = tooltipRef.current;
-      if (!node) return current;
+      // React attaches refs synchronously during commit, before layout
+      // effects run, and the only other caller (the rAF in
+      // `scheduleUpdatePosition`) is cancelled by the unmount/hide cleanup
+      // before `current` can go stale — so by the time we reach here with a
+      // non-null `current`, the portaled tooltip node is always mounted.
+      const node = tooltipRef.current!;
       const placement = tooltipPlacement(current.target);
       const nextText = current.target.dataset.tooltip?.trim() ?? current.text;
       const nextStyle = positionTooltip(current.target, node, placement);

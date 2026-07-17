@@ -79,8 +79,6 @@ export function CustomSelect({
   const idBase = reactId.replace(/:/g, '');
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const wasOpenRef = useRef(false);
-  const activeSourceValueRef = useRef(value);
   const [open, setOpen] = useState(false);
   const [activeValue, setActiveValue] = useState(value);
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -103,8 +101,10 @@ export function CustomSelect({
   const activeOptionId = open && activeValue ? optionIdByValue.get(activeValue) : undefined;
 
   const updatePosition = useCallback(() => {
-    if (!buttonRef.current) return;
-    const rect = buttonRef.current.getBoundingClientRect();
+    // The trigger `<button>` is rendered unconditionally, and both callers
+    // (the mount/open effect and the open-gated resize/scroll handler) only
+    // ever run after that render has committed, so the ref is always set.
+    const rect = buttonRef.current!.getBoundingClientRect();
     const gap = 4;
     const viewportPad = 12;
     const below = window.innerHeight - rect.bottom - viewportPad;
@@ -132,16 +132,12 @@ export function CustomSelect({
   }, [open, portal, updatePosition]);
 
   useEffect(() => {
-    if (!open) {
-      wasOpenRef.current = false;
-      activeSourceValueRef.current = value;
-      return;
-    }
-    if (wasOpenRef.current && activeSourceValueRef.current === value) return;
+    // This effect only ever runs when `open` or `value` actually changed
+    // (that's what the dependency array guarantees), so there's no
+    // "unchanged, skip recompute" case to special-case here.
+    if (!open) return;
     const selectedOption = flatOptionsRef.current.find((option) => option.value === value && !option.disabled);
     setActiveValue(selectedOption?.value ?? enabledOptionsRef.current[0]?.value ?? '');
-    wasOpenRef.current = true;
-    activeSourceValueRef.current = value;
   }, [open, value]);
 
   useEffect(() => {

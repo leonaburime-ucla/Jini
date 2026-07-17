@@ -69,7 +69,9 @@ interface ToneSpec {
   type: OscillatorType;
   start: number;
   duration: number;
-  gain?: number;
+  // Every entry in SOUND_PLAYERS below sets this explicitly, so it's
+  // required rather than defaulted — there's no real caller that omits it.
+  gain: number;
   /** Optional lowpass cutoff applied via a BiquadFilter for plucky textures. */
   lowpass?: number;
 }
@@ -81,7 +83,7 @@ function playTones(c: AudioContext, tones: ToneSpec[]): void {
     const gain = c.createGain();
     osc.type = tone.type;
     osc.frequency.value = tone.freq;
-    const peak = tone.gain ?? 0.18;
+    const peak = tone.gain;
     const startAt = now + tone.start;
     const endAt = startAt + tone.duration;
     // Short attack to avoid clicks; exponential-ish decay via a linear
@@ -225,9 +227,10 @@ async function showViaServiceWorker(
   }
 }
 
-function showViaConstructor(opts: CompletionNotificationOpts): CompletionNotificationResult {
-  if (typeof Notification === 'undefined') return 'unsupported';
-  if (Notification.permission !== 'granted') return 'permission-denied';
+// Only called from `showCompletionNotification` after it has already
+// verified `Notification` exists and permission is granted — no need to
+// re-check either condition here.
+function showViaConstructor(opts: CompletionNotificationOpts): 'shown' | 'failed' {
   try {
     const note = new Notification(opts.title, notificationOptionsFor(opts));
     activeNotifications.add(note);

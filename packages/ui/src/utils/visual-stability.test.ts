@@ -28,9 +28,25 @@ describe('isVisualStabilityMode', () => {
   });
 
   it('returns false rather than throwing when localStorage access throws', () => {
-    vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
-      throw new Error('access denied');
+    // Replacing the whole `localStorage` object (rather than monkey-patching
+    // `getItem` on jsdom's native Storage instance) is required here: v8's
+    // coverage instrumentation fails to attribute the catch block's hits
+    // back to this file when the throw originates from a patched method on
+    // jsdom's built-in Storage object, even though the behavior itself
+    // (catching and returning false) is identical either way.
+    const original = window.localStorage;
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        getItem: () => {
+          throw new Error('access denied');
+        },
+      },
+      configurable: true,
     });
-    expect(isVisualStabilityMode()).toBe(false);
+    try {
+      expect(isVisualStabilityMode()).toBe(false);
+    } finally {
+      Object.defineProperty(window, 'localStorage', { value: original, configurable: true });
+    }
   });
 });

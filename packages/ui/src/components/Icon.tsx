@@ -1,97 +1,103 @@
 import type { SVGProps } from 'react';
 
-export type IconName =
-  | 'alert-triangle'
-  | 'arrow-left'
-  | 'arrow-up'
-  | 'attach'
-  | 'bell'
-  | 'blocks'
-  | 'check'
-  | 'chevron-down'
-  | 'chevron-left'
-  | 'chevron-right'
-  | 'close'
-  | 'copy'
-  | 'comment'
-  | 'message-circle'
-  | 'discord'
-  | 'download'
-  | 'draw'
-  | 'edit'
-  | 'external-link'
-  | 'eye'
-  | 'eye-off'
-  | 'file'
-  | 'file-code'
-  | 'file-text'
-  | 'folder'
-  | 'folder-filled'
-  | 'fork'
-  | 'github'
-  | 'github-filled'
-  | 'grip-vertical'
-  | 'grid'
-  | 'globe'
-  | 'hammer'
-  | 'help-circle'
-  | 'history'
-  | 'home'
-  | 'home-filled'
-  | 'image'
-  | 'import'
-  | 'info'
-  | 'kanban'
-  | 'layers-filled'
-  | 'languages'
-  | 'layout'
-  | 'lightbulb'
-  | 'link'
-  | 'lock'
-  | 'log-out'
-  | 'integrations-filled'
-  | 'maximize'
-  | 'mic'
-  | 'minimize'
-  | 'minus'
-  | 'more-horizontal'
-  | 'orbit'
-  | 'paint-bucket'
-  | 'panel-left'
-  | 'palette'
-  | 'palette-filled'
-  | 'pencil'
-  | 'plus'
-  | 'plus-filled'
-  | 'puzzle'
-  | 'slides'
-  | 'star'
-  | 'swatchbook'
-  | 'play'
-  | 'present'
-  | 'refresh'
-  | 'reload'
-  | 'search'
-  | 'send'
-  | 'settings'
-  | 'share'
-  | 'sliders'
-  | 'smartphone'
-  | 'spinner'
-  | 'sparkles'
-  | 'stop'
-  | 'sun'
-  | 'moon'
-  | 'sun-moon'
-  | 'terminal'
-  | 'thumbs-down'
-  | 'thumbs-up'
-  | 'tweaks'
-  | 'upload'
-  | 'trash'
-  | 'volume'
-  | 'zoom-in'
-  | 'zoom-out';
+// Single source of truth for the icon set: drives the `IconName` type below
+// AND lets tests exhaustively render every case in the switch without the
+// list drifting out of sync (see Icon.test.tsx).
+export const ICON_NAMES = [
+  'alert-triangle',
+  'arrow-left',
+  'arrow-up',
+  'attach',
+  'bell',
+  'blocks',
+  'check',
+  'chevron-down',
+  'chevron-left',
+  'chevron-right',
+  'close',
+  'copy',
+  'comment',
+  'message-circle',
+  'discord',
+  'download',
+  'draw',
+  'edit',
+  'external-link',
+  'eye',
+  'eye-off',
+  'file',
+  'file-code',
+  'file-text',
+  'folder',
+  'folder-filled',
+  'fork',
+  'github',
+  'github-filled',
+  'grip-vertical',
+  'grid',
+  'globe',
+  'hammer',
+  'help-circle',
+  'history',
+  'home',
+  'home-filled',
+  'image',
+  'import',
+  'info',
+  'kanban',
+  'layers-filled',
+  'languages',
+  'layout',
+  'lightbulb',
+  'link',
+  'lock',
+  'log-out',
+  'integrations-filled',
+  'maximize',
+  'mic',
+  'minimize',
+  'minus',
+  'more-horizontal',
+  'orbit',
+  'paint-bucket',
+  'panel-left',
+  'palette',
+  'palette-filled',
+  'pencil',
+  'plus',
+  'plus-filled',
+  'puzzle',
+  'slides',
+  'star',
+  'swatchbook',
+  'play',
+  'present',
+  'refresh',
+  'reload',
+  'search',
+  'send',
+  'settings',
+  'share',
+  'sliders',
+  'smartphone',
+  'spinner',
+  'sparkles',
+  'stop',
+  'sun',
+  'moon',
+  'sun-moon',
+  'terminal',
+  'thumbs-down',
+  'thumbs-up',
+  'tweaks',
+  'upload',
+  'trash',
+  'volume',
+  'zoom-in',
+  'zoom-out',
+] as const;
+
+export type IconName = (typeof ICON_NAMES)[number];
 
 interface Props extends Omit<SVGProps<SVGSVGElement>, 'name'> {
   name: IconName;

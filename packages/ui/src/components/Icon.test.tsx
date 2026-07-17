@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { Icon } from './Icon.js';
+import { Icon, ICON_NAMES, type IconName } from './Icon.js';
 
 describe('Icon', () => {
   it('renders an svg with the requested size for a known name', () => {
@@ -23,5 +23,17 @@ describe('Icon', () => {
     const svg = container.querySelector('svg');
     expect(svg?.getAttribute('width')).toBe('14');
     expect(svg?.getAttribute('stroke-width')).toBe('1.6');
+  });
+
+  it.each(ICON_NAMES)('renders a non-empty svg for icon "%s"', (name) => {
+    const { container } = render(<Icon name={name} />);
+    const svg = container.querySelector('svg');
+    expect(svg).not.toBeNull();
+    expect(svg?.children.length).toBeGreaterThan(0);
+  });
+
+  it('renders nothing for an unrecognized name (defensive runtime fallback)', () => {
+    const { container } = render(<Icon name={'not-a-real-icon' as IconName} />);
+    expect(container.querySelector('svg')).toBeNull();
   });
 });
