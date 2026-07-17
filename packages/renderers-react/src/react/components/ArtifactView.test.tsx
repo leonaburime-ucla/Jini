@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ArtifactView } from './ArtifactView.js';
 import { createDefaultRendererRegistry } from '../../renderers/index.js';
 import { I18nProvider } from '../i18n.js';
 import type { ArtifactFile } from '../../types.js';
+import { createFakeAnnotationCanvasPort } from '../../annotation-canvas/index.js';
 
 const registry = createDefaultRendererRegistry();
 
@@ -67,5 +68,37 @@ describe('ArtifactView', () => {
       </I18nProvider>,
     );
     expect(screen.getByRole('status')).toHaveTextContent('Aucun moteur de rendu enregistré.');
+  });
+
+  it('wraps the resolved rendering in an AnnotationCanvas overlay when `annotation` is supplied — the renderer-registry integration point, not a standalone bolt-on', () => {
+    const file: ArtifactFile = { name: 'index.html', kind: 'html', content: '<p>hi</p>' };
+    render(
+      <ArtifactView
+        file={file}
+        registry={registry}
+        annotation={{ active: true, port: createFakeAnnotationCanvasPort() }}
+      />,
+    );
+    expect(screen.getByRole('toolbar', { name: 'Annotation tools' })).toBeInTheDocument();
+    expect(document.querySelector('iframe')).toBeInTheDocument();
+  });
+
+  it('wraps even the fallback message in the annotation overlay', () => {
+    const file: ArtifactFile = { name: 'data.bin', kind: 'binary', content: '' };
+    render(
+      <ArtifactView
+        file={file}
+        registry={registry}
+        annotation={{ active: true, port: createFakeAnnotationCanvasPort() }}
+      />,
+    );
+    expect(screen.getByRole('toolbar', { name: 'Annotation tools' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('No renderer is registered for this artifact.');
+  });
+
+  it('renders without any annotation overlay when `annotation` is omitted', () => {
+    const file: ArtifactFile = { name: 'index.html', kind: 'html', content: '<p>hi</p>' };
+    render(<ArtifactView file={file} registry={registry} />);
+    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
   });
 });

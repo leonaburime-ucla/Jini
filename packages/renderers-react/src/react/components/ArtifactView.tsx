@@ -17,6 +17,7 @@ import type { BuildSrcDocOptions } from '../../srcdoc/build.js';
 import { renderMarkdownToSafeHtml } from '../../renderers/markdown.js';
 import { useT } from '../i18n.js';
 import { SrcDocSandbox } from './SrcDocSandbox.js';
+import { AnnotationCanvas, type AnnotationCanvasProps } from '../../annotation-canvas/index.js';
 
 export interface ArtifactViewSlotProps {
   file: ArtifactFile;
@@ -39,48 +40,59 @@ export interface ArtifactViewProps {
   srcDocOptions?: BuildSrcDocOptions | undefined;
   slots?: ArtifactViewSlots | undefined;
   className?: string | undefined;
+  /**
+   * Wraps whatever this artifact resolves to render (a built-in renderer, a
+   * host slot, or the fallback message) in an `<AnnotationCanvas>` overlay —
+   * this is the annotation-canvas feature's actual integration point with
+   * the renderer-registry pipeline, rather than a standalone component a
+   * caller bolts on separately. Omit entirely to render without any
+   * annotation overlay.
+   */
+  annotation?: Omit<AnnotationCanvasProps, 'children'> | undefined;
 }
 
-export function ArtifactView({ file, registry, hints, srcDocOptions, slots, className }: ArtifactViewProps) {
+export function ArtifactView({ file, registry, hints, srcDocOptions, slots, className, annotation }: ArtifactViewProps) {
   const t = useT();
   const match = useMemo(() => registry.resolve({ file, hints }), [registry, file, hints]);
 
+  const wrap = (node: ReactNode): ReactNode => (annotation ? <AnnotationCanvas {...annotation}>{node}</AnnotationCanvas> : node);
+
   if (!match) {
-    return (
+    return wrap(
       <div className={className} role="status">
         {t('No renderer is registered for this artifact.')}
-      </div>
+      </div>,
     );
   }
 
   const slotRenderer = slots?.renderers?.[match.renderer.id];
-  if (slotRenderer) return <>{slotRenderer({ file, match })}</>;
+  if (slotRenderer) return wrap(<>{slotRenderer({ file, match })}</>);
 
   switch (match.renderer.id) {
     case 'html':
     case 'svg':
-      return (
+      return wrap(
         <SrcDocSandbox
           className={className}
           html={file.content ?? ''}
           options={srcDocOptions}
           title={match.manifest.title}
-        />
+        />,
       );
     case 'markdown': {
       const html = match.renderer.renderPartial
         ? match.renderer.renderPartial(file.content ?? '')
         : renderMarkdownToSafeHtml(file.content ?? '');
       // eslint-disable-next-line react/no-danger -- html is produced by renderMarkdownToSafeHtml, which escapes/allow-lists links; see markdown.ts.
-      return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+      return wrap(<div className={className} dangerouslySetInnerHTML={{ __html: html }} />);
     }
     default:
-      return (
+      return wrap(
         <div className={className} role="status">
           {t('No renderer registered for "{rendererId}" — supply one via slots.renderers.', {
             rendererId: match.renderer.id,
           })}
-        </div>
+        </div>,
       );
   }
 }

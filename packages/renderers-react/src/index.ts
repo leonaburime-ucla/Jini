@@ -60,3 +60,5 @@ export {
   type ArtifactViewSlotProps,
   type ArtifactViewSlots,
 } from './react/components/ArtifactView.js';
+
+export * from './annotation-canvas/index.js';

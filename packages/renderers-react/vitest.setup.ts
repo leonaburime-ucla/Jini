@@ -25,3 +25,15 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// jsdom does not implement `URL.createObjectURL`/`revokeObjectURL`.
+// `annotation-canvas`'s `useAnnotationCanvas` hook calls these to build
+// thumbnail previews for attached images; this stub returns a stable fake
+// URL per call so tests can exercise that flow without a real browser.
+let fakeObjectUrlCounter = 0;
+if (typeof URL !== 'undefined' && !URL.createObjectURL) {
+  URL.createObjectURL = () => `blob:jini-fake-${(fakeObjectUrlCounter += 1)}`;
+}
+if (typeof URL !== 'undefined' && !URL.revokeObjectURL) {
+  URL.revokeObjectURL = () => {};
+}

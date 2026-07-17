@@ -7,6 +7,7 @@ import * as srcdoc from './srcdoc/index.js';
 import * as i18n from './react/i18n.js';
 import * as srcDocSandbox from './react/components/SrcDocSandbox.js';
 import * as artifactView from './react/components/ArtifactView.js';
+import * as annotationCanvas from './annotation-canvas/index.js';
 
 // Guards against a module being fully built and tested but never re-exported
 // from the package's public barrel (see packages/ui/src/index.test.ts for
@@ -19,6 +20,7 @@ const modules: Record<string, object> = {
   'react/i18n': i18n,
   'react/components/SrcDocSandbox': srcDocSandbox,
   'react/components/ArtifactView': artifactView,
+  'annotation-canvas/index': annotationCanvas,
 };
 
 describe('package barrel (src/index.ts)', () => {
