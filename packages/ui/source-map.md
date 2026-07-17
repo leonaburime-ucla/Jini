@@ -1838,3 +1838,81 @@ addition, registered in `vitest.setup.ts` for runtime and re-exported via a
 new `src/vitest-jest-dom.d.ts` ambient-import shim so `tsc -p tsconfig.json`
 (whose `include` is `["src"]`, not the package root) also picks up the
 matcher-type augmentation.
+
+---
+
+## Section: `features/settings-dialog/` shell + 6 tabs — `SettingsDialog.tsx` (2026-07-17)
+
+Source: `integrations/open-design/reference/components-original/SettingsDialog.tsx`
+(8,538 lines) — item 5 in `docs/jini-port/god-components-extraction-plan.md`'s
+priority list, resolving the exact Consolidation-map row: `features/settings-dialog/`
+(shell) + `features/settings-dialog/tabs/{appearance,notifications,language,
+instructions,integrations}`. Per r6 §1.3: 8 of the file's 17 real tabs were
+*already* separate files the origin merely mounted — proof the dialog shell has
+no hidden dependency on any one tab's content. This is the first feature in this
+package built from scratch under the NEW `react/{hooks,components}` layout
+(decided 2026-07-17, see `packages/ui/README.md`) rather than the old flat
+`hooks/`/`components/` layout `features/connectors/` and `features/progress-card/`
+still use.
+
+### What shipped
+
+**Shell — `packages/ui/src/features/settings-dialog/`**
+
+| File | Contents |
+|---|---|
+| `types.ts` | `SettingsDialogTabMeta<TId>` (id/label/navHint/title/subtitle — no `panel`/`icon`, those are React-shaped and live on the `react/`-layer `SettingsDialogTab` prop type instead), `SettingsDialogChromeLabels`. |
+| `rules.ts` | `resolveInitialActiveTabId` (id-or-first-tab-or-null), `findActiveTab` — pulled out of the origin's inline `useState` initializer / `sectionHeader[activeSection]` lookup so both are unit-testable without mounting React. |
+| `react/hooks/useSettingsDialogShell.ts` | Owns activeTabId (controlled or uncontrolled), sidebarCollapsed, fullscreen, the content-pane scroll-reset-on-tab-change effect, and global-Escape-closes-the-dialog (a disclosed direct `document` use — no ports.ts exists for this feature at all, so there's no DI seam to route it through; same disclosed-deviation precedent as `features/connectors`' `ConnectorDetailDrawer`). |
+| `react/components/SettingsDialogShell.tsx` | The orchestrator: backdrop + `role="dialog"` chrome + fullscreen/close buttons + welcome-vs-per-tab header + collapsible sidebar nav (generic over a host-supplied `tabs: SettingsDialogTab[]` array, each `{id, label, navHint?, title?, subtitle?, icon?, panel}`) + content pane. |
+| `index.ts` | Public barrel. |
+
+Dropped (per the plan's own instruction to leave shared shell state that's genuinely OD-bound behind): the AMR-card scroll/highlight coachmark, the autosave-status pill + autosave polling/retry timers, agent-scan/AMR-wallet state, telemetry/privacy-prop reconciliation on `initial` changes, and `settingsSectionToTracking`-keyed analytics. The chrome strip has an optional `chromeExtra?: ReactNode` slot a host can use to reintroduce its own autosave indicator without this package needing to know what one looks like.
+
+**Tabs — `packages/ui/src/features/settings-dialog/tabs/<name>/`**
+
+| Tab | r6 verdict | Ports? | Notes |
+|---|---|---|---|
+| `appearance` | GENERIC | No | Theme segmented control + accent swatches + custom picker. Reuses `src/utils/appearance.ts` (`applyAppearanceToDocument`/`ACCENT_SWATCHES`/`DEFAULT_ACCENT_COLOR`/`normalizeAccentColor`/`resolveAccentColor`, already shipped 2026-07-16) rather than re-deriving it — origin's `AppearanceSection` already called the same shape of function. `livePreview` prop (default `true`) reproduces the origin's live-document-preview-before-save behavior. |
+| `notifications` | GENERIC | No | Sound toggle/picker + browser Notification-permission flow. Reuses `src/utils/notifications.ts` in full (`SUCCESS_SOUNDS`/`FAILURE_SOUNDS`/`notificationPermission`/`requestNotificationPermission`/`showCompletionNotification`/`playSound`, already shipped 2026-07-16) — zero new browser-API code needed. |
+| `language` | GENERIC | No | Locale radio-tile grid. Reuses the `LocaleOption` type already shipped for `components/LanguageMenu.tsx` (`{code, label}`) instead of declaring a near-duplicate. OD's own fixed 19-locale `LOCALES`/`LOCALE_LABEL` tables are product content, not ported — a host supplies its own `LocaleOption[]`. |
+| `instructions` | GENERIC | No | The simplest tab in the whole sweep: a controlled `<textarea>` bound to one string, `rows`/`maxLength` overridable (defaults 5/5000, matching the origin). |
+| `privacy` | **First full verification** (r6 flagged "likely generic, not fully verified") | No | Telemetry consent card (share/decline + two per-category toggles) + installation-id generate/rotate ("Delete my data") flow. Verified generic: the only OD coupling in `PrivacySection.tsx` was the `AppConfig`/`TelemetryConfig` type import (replaced by local `PrivacyConsentState`/`TelemetryPreferences` in `types.ts`) and the analytics tracking calls (dropped, same as every other tab). All state transitions (`nextStateForTelemetryPatch`/`nextStateForShareAll`/`nextStateForDeclineAll`/`nextStateForDeleteMyData`) extracted as pure, unit-tested `rules.ts` functions taking an injectable `newInstallationId`/`now` — the component just calls them. `generateInstallationId` reuses `src/utils/uuid.ts`'s `randomUUID()` (already shipped, has its own secure/non-secure/Math.random 3-tier fallback) instead of re-deriving the origin's simpler `crypto.randomUUID()`-with-string-fallback. **Judgment call**: shipped rather than skipped — small, clean, and the only real risk (the analytics/type coupling) was shallow once read in full. |
+| `integrations` | Generic mechanism, 100% branded content | **Yes** (`ports.ts`/`dependencies.ts`) | The multi-client "install me as an MCP server" snippet generator (Claude Code/Codex/Cursor/VS Code/Antigravity/Zed/Windsurf). The origin hardcoded the literal MCP server name `'open-design'` in every snippet builder (`claude mcp add-json --scope user open-design ...`, `[mcp_servers.open-design]`, `"mcpServers": {"open-design": ...}}`, the Cursor deeplink's `name=open-design` query param, etc.) — every builder in `rules.ts` now takes `serverName: string` as an explicit parameter instead. The origin also called OD's own daemon endpoints directly (`fetch('/api/mcp/install-info')`, `fetch('/api/mcp/install/codex/status')`, `fetch('/api/mcp/install/codex', {method})`) — routed through an injected `McpIntegrationsPort` (`fetchInstallInfo` + optional `fetchCodexInstallStatus`/`installCodexMcp`/`uninstallCodexMcp`) instead, with `dependencies.ts` shipping only an in-memory fake (`createFakeMcpIntegrationsPort`), same convention as `features/connectors`. |
+
+`integrations`' full file breakdown:
+- `types.ts` — `McpClientId`, `McpInstallInfo`, `McpStdioServerConfig`, `McpSnippetLanguage`, `McpClientDescriptor`, `McpClientSnippet` (snippet + language + a *templated* instruction string with `{path}`/`{shortcut}` placeholders + resolved vars, so the component can wrap it in `t()` — same i18n convention as every other tab, not baked-in English), `CodexInstallStatus`.
+- `constants.ts` — `MCP_CLIENTS` (7 client descriptors), `DEFAULT_MCP_CLIENT_ID`, `DEFAULT_MCP_SERVER_NAME` (a generic `'mcp-server'` placeholder default — a real host is expected to pass its own `serverName`).
+- `rules.ts` — every snippet builder ported 1:1 from the origin's inline `IntegrationsSection` (`homeConfigPath`/`commandPaletteShortcut`/`settingsShortcut`/`utf8Btoa`/`buildMcpStdioServerConfig`/`buildCodexEnvToml`/`buildSharedMcpJson`/per-client builders), all now `serverName`-parameterized, plus `snippetForClient` (the per-client dispatch the origin did via an array of closures capturing `t`, now a plain switch returning data instead).
+- `ports.ts` / `dependencies.ts` — as described above.
+- `react/hooks/useMcpInstallInfo.ts` / `useCodexInstallToggle.ts` — origin's inline `useEffect(() => fetch(...))` and the origin's standalone `CodexInstallToggle()` function, both now hook-shaped and port-driven.
+- `react/components/ClientPicker.tsx` (the origin's inline `ds-picker` dropdown), `SnippetBlock.tsx` (the origin's inline `<pre>`+copy-button, now using the package's existing `utils/copy-to-clipboard.ts` instead of a bespoke `navigator.clipboard.writeText` try/catch), `CodexInstallToggleButton.tsx` (wires `useCodexInstallToggle`), `IntegrationsTab.tsx` (orchestrator, takes `serverName` as a prop — no default that reintroduces a product name beyond the generic placeholder).
+
+### Dropped (OD-specific, per the plan's own scope)
+
+`execution` (AMR/Vela wallet + local-CLI agent chrome), `memory` (pre-extracted `MemorySection`, separate task), `media` (per-provider credential cards, duplicates the byok pattern), `mcpClient` (pre-extracted `McpClientSection`, belongs to the separate `features/source-config-list/` cluster per the Consolidation map, not this task), `composio` (Composio key mgmt + embeds `ConnectorsBrowser`), `critiqueTheater` (OD's design-review feature flag), `pet`/`designSystems`/`projectLocations`/`routines` (own files, OD-specific), `about` (OD/Electron version-updater UI), `orbit` (~800 lines, OD's autonomous agent-run automation). Also dropped: the shell's `library` token (a dead-letter `SettingsSection` value routed elsewhere by OD's `EntryShell`, not a real tab) and every `settingsSectionToTracking`/`trackSettings*` analytics call throughout (same convention as every prior tab-porting task in this file).
+
+### i18n
+
+Every user-facing string in every new component routes through `useT()`, English string as key (`t('Close')`, not `t('settings.close')`), per this plan's i18n policy. Pure `rules.ts` functions stay hook-free — `integrations`' `snippetForClient` returns an untranslated `{instructionTemplate, instructionVars}` pair; the component wraps it (`t(resolved.instructionTemplate, resolved.instructionVars)`). Every feature/tab has a real test mounting under `I18nProvider` with a translated dictionary and asserting the translated text actually renders (not just that `t()` compiles), per the policy's own explicit warning about the connectors canary's first-pass mistake.
+
+### Phase 8.5 audit
+
+Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsTab`'s `clientId` state and `NotificationsTab`'s `permission`/`testStatus` state are each single-owner, directly bound to their own component, same judgment call the connectors canary made for its `filter`/`selectedProvider`). No inline JSX callback with real multi-statement branching was found — every `onClick`/`onChange` is either a one-line call or a named handler already extracted to the component body. No `useMemo`/`useEffect` body contains unextracted multi-line derivation — `IntegrationsTab`'s only `useMemo` (`resolvedPort`) is a one-line `port ?? createFakeMcpIntegrationsPort()`.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|open-design\.ai\|openDesignDesktop\|@open-design/"` across every new file under `features/settings-dialog/`: **clean, zero matches.** A stricter self-imposed pass for the literal substring `open-design` (case-insensitive, no word-boundary) found it only inside test assertions proving it is *not* emitted (`rules.test.ts`'s "no builder ever emits the literal open-design" test, `IntegrationsTab.test.tsx`'s `queryByText('open-design')` negative assertion) and inside doc comments describing what the origin hardcoded and this port removed — never in a runtime string literal. Also checked the `od-`-class-prefix convention from the flat-group porting task: every new CSS class in this feature uses the `jini-` prefix (e.g. `jini-settings-section`, `jini-seg-control`), none use `od-`.
+
+### Deviations from a strict read of the task brief
+
+- **Added `@testing-library/jest-dom` as a devDependency** (+ `packages/ui/vitest.setup.ts` import, + `"types": ["@testing-library/jest-dom"]` in `packages/ui/tsconfig.json`) — every prior test file in this package (e.g. `features/connectors`) asserts against plain DOM/element properties (`.disabled`, `toBeNull()`) rather than jest-dom matchers, so this is new tooling, not just new tests. Chosen over rewriting ~20 new test files to avoid matchers because `toBeInTheDocument`/`toHaveAttribute`/`toBeDisabled`/`toHaveValue`/`toHaveTextContent` read significantly clearer for this feature's assertion-heavy tests, and the addition is a pure devDependency with zero runtime/bundle impact — it augments `expect` globally, so every existing test file in the package keeps working unchanged (verified: full package test run stayed at 100% green after adding it).
+- **`privacy` shipped**, not left for a "follow-up pass" as the plan doc's item 5 says — see the tab table above for why (first full verification done here, judged small/clean enough to include rather than defer).
+- **`SettingsDialogTab`'s `panel`/`icon` fields live in the `react/`-layer prop type, not `types.ts`** — a deliberate reading of the React-layout policy: `types.ts` should have zero *runtime* React import, but a tab descriptor's `panel: ReactNode` is meaningless outside the React layer, so splitting it (`SettingsDialogTabMeta` in `types.ts`, extended by `SettingsDialogTab` in the component file) keeps the pure layer honestly free of React-shaped fields rather than just free of a literal `import react`.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors) — required two `exactOptionalPropertyTypes` fixes (optional destructured hook/prop params need `| undefined` added explicitly to their interface field types, not just `?`) and reusing the existing `LocaleOption` type from `components/LanguageMenu.tsx` instead of declaring a colliding duplicate (the package barrel does `export *` from every feature, so two same-named exports is a real compile error, not just a lint nit).
+- `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
+- Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
