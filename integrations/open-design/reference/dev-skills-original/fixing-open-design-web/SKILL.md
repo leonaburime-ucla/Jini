@@ -51,6 +51,17 @@ also record the destination package and the explicit product seam that remains
 in OD. The MemorySection structure still governs the split; only OD transport,
 submission, and product-domain bindings may cross that seam through a port.
 
+If the destination repository is Jini specifically: first read
+`docs/jini-port/god-components-extraction-plan.md`'s "Consolidation map"
+section in that repository and quote the exact row covering the target
+component before choosing a destination package name. Several patterns in
+this sweep recur across more than one god-component (the same "URL/OAuth
+source config" shape shows up in at least 6 places, for example) — that map
+exists specifically so each one lands in a shared destination instead of a
+new near-duplicate every time. If the target isn't in that map, or its row is
+marked "blocked" or "not yet actionable," stop and report the gap rather than
+inventing a destination.
+
 ---
 
 ## The architecture in one screen — the four homes

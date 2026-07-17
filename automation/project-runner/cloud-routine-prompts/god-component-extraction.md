@@ -5,8 +5,15 @@ from Open Design into Jini. It supplements, rather than replaces,
 `cloud-routine-prompt.md`: that template drives the extraction ledger; this
 one carries the reference preflight required for a frontend god-component.
 
-The initial task is `PreviewDrawOverlay.tsx`. Do not reuse this prompt for a
-different component without replacing the target and its source references.
+The initial task was `PreviewDrawOverlay.tsx` — it landed at
+`packages/renderers-react/src/annotation-canvas/` (2026-07-17), but an
+independent manual review found 2 real, undisclosed gaps versus the original
+(the send/draft/queue submit-action picker, and all keyboard shortcuts —
+neither is OD-specific, both were flagged by r6 as part of the generic value
+worth keeping). Re-run this prompt to fix those before treating the item as
+done. For a *different* component, use
+`god-component-extraction-template.md` instead — it generalizes this file's
+preflight and forces reading the consolidation map first.
 
 ## Dispatch guard (required before creating the Cloud task)
 
@@ -34,20 +41,27 @@ PR; never push directly to main.
 
 Before editing any file, complete and print this exact Reference Preflight:
 
-1. Jini branch and SHA; OD source repository, branch, and SHA.
-2. Target: apps/web/src/components/PreviewDrawOverlay.tsx, read from the live
+1. Read docs/jini-port/god-components-extraction-plan.md's "Consolidation
+   map" section and quote the exact row covering PreviewDrawOverlay.tsx
+   (destination kind, exact destination name — packages/renderers-react/src/
+   annotation-canvas/ already exists as of this writing, so if you're
+   re-running this task, read that existing code first rather than
+   redesigning it from scratch, and treat this run as a gap-fix, not a fresh
+   port).
+2. Jini branch and SHA; OD source repository, branch, and SHA.
+3. Target: apps/web/src/components/PreviewDrawOverlay.tsx, read from the live
    OD source branch, not only the vendored Jini snapshot.
-3. Primary canary read in full from the same OD branch:
+4. Primary canary read in full from the same OD branch:
    - apps/web/src/features/memory/
    - apps/web/src/providers/memory/
    - apps/web/tests/features/memory/
    - docs/adr/0002-frontend-vertical-slice-decomposition.md
    - apps/AGENTS.md
    - scripts/check-web-slice-boundaries.ts
-4. Every PreviewDrawOverlay caller/importer and its public prop/event contract.
-5. The chosen Jini destination package, why it owns this component, and the
+5. Every PreviewDrawOverlay caller/importer and its public prop/event contract.
+6. The chosen Jini destination package, why it owns this component, and the
    OD-only seam that will remain in integrations/open-design.
-6. Green baseline commands and their results.
+7. Green baseline commands and their results.
 
 First run `pnpm --filter @jini-automation/project-runner run
 verify:od-preview-reference`. It fetches the canonical PR ref and proves the
