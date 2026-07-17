@@ -7,10 +7,10 @@
  * De-branded from OD's `apps/daemon/src/runtimes/core/metadata.ts`: the
  * table is now an injectable parameter (`installMetaForAgent(id, table)`)
  * instead of a module-private constant, and `DEFAULT_AGENT_INSTALL_LINKS`
- * drops the three OD-self-referential entries the origin had (an
- * `open-design.ai` install URL and two `github.com/.../open-design/...`
- * docs URLs for `amr`, `pi`, and `hermes`) — those pointed at OD's own
- * fork/docs, not at the third-party CLI vendor, so they don't belong in a
+ * drops the three OD-self-referential entries the origin had for `amr`,
+ * `pi`, and `hermes` (an install URL and two docs URLs that pointed at
+ * OD's own site/fork rather than at the third-party CLI vendor — see
+ * `source-map.md` for the exact original URLs), so they don't belong in a
  * product-neutral default. Every other agent's real third-party vendor
  * link is unchanged. See `source-map.md`.
  */

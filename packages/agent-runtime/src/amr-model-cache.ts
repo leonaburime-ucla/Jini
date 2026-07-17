@@ -6,7 +6,8 @@
  * list on cold start. Ported verbatim from OD's
  * `apps/daemon/src/runtimes/amr/amr-model-cache.ts` with one change: the
  * `AmrModelsResponse` return type is now vendored locally (a small,
- * self-contained shape) instead of imported from `@open-design/contracts`.
+ * self-contained shape) instead of imported from OD's contracts workspace
+ * package.
  *
  * Named for its origin use (the AMR/vela agent's live model list), but the
  * caching pattern itself is generic to any agent with a similarly-shaped

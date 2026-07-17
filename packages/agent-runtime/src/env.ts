@@ -9,12 +9,11 @@
  *
  * Heavily de-branded from OD's `apps/daemon/src/runtimes/env/env.ts`. The
  * origin file was far more coupled than r1b's "supporting generic file"
- * classification anticipated — it read OD's own app-config subsystem
- * (`../../app-config.js`), OD's sandbox-mode subsystem
- * (`../../sandbox-mode.js`), and vela/AMR-specific env forwarding
- * (`../../integrations/vela-profile.js`, `AMR_CLIENT_SOURCE = 'open_design'`,
- * `OD_INSTALLATION_ID`, `OD_DATA_DIR`-derived `OPENCODE_TEST_HOME`). None of
- * that is ported:
+ * classification anticipated — it read OD's own app-config subsystem, OD's
+ * sandbox-mode subsystem, and vela/AMR-specific env forwarding including a
+ * literal product-name identity value and two product-prefixed env var
+ * names (see `source-map.md` for the exact originals). None of that is
+ * ported:
  *
  * - `mergeProxyAwareEnv` / `resolveSystemProxyEnv` now come from
  *   `@jini/platform` (the same functions, already verbatim-lifted there).
@@ -25,12 +24,11 @@
  *   …) without this package needing to know about vela or app-config.
  * - Sandbox-mode env application is replaced by an optional
  *   `sandboxOverlay` hook with the same shape, for the same reason.
- * - OD's `openDesignAmrTraceEnv` (emitting `OPEN_DESIGN_RUN_ID` /
- *   `OPEN_DESIGN_RUN_ATTEMPT` / `OPEN_DESIGN_SESSION_ID`) is dropped
- *   entirely — it is OD/vela-adapter-owned trace-correlation env, not a
- *   generic runtime concern, and its very name is OD-branded. A host that
- *   needs equivalent trace correlation can build it as a `perAgentEnv`
- *   hook.
+ * - OD's AMR trace-env helper (emitting a product-prefixed run-id/attempt/
+ *   session-id triad) is dropped entirely — it is OD/vela-adapter-owned
+ *   trace-correlation env, not a generic runtime concern, and its own name
+ *   was itself product-branded. A host that needs equivalent trace
+ *   correlation can build it as a `perAgentEnv` hook.
  *
  * See `source-map.md` for the full accounting.
  */

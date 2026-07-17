@@ -6,11 +6,12 @@
  * `mcpDiscovery === 'mature-acp'`.
  *
  * De-branded from OD's `apps/daemon/src/runtimes/core/mcp.ts`. The origin
- * function was hardwired to inject exactly one OD product feature — a
- * server named `'open-design-live-artifacts'`, spawned as
- * `od mcp live-artifacts`, with the args tail (`'mcp', 'live-artifacts'`)
- * baked in. That's a specific product's MCP tool, not a generic runtime
- * concern, so it is not ported. What genuinely is generic — and is kept
+ * function was hardwired to inject exactly one product feature — a
+ * specifically-named, specifically-branded MCP server spawned via that
+ * product's own CLI binary, with a fixed args tail baked in (see
+ * `source-map.md` for the exact literal). That's a specific product's MCP
+ * tool, not a generic runtime concern, so it is not ported. What genuinely
+ * is generic — and is kept
  * here — is the *gating + env-shape* mechanism: only attach a server when
  * the def opts into `mcpDiscovery === 'mature-acp'`, and shape its `env`
  * field as an array (`[{name, value}]`) or a map (`{KEY: value}`) per

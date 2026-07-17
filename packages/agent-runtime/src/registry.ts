@@ -1,21 +1,21 @@
 /**
  * @module registry
  *
- * The static `BASE_AGENT_DEFS` catalog (the 25 built-in CLI adapters, minus
- * `vibe`/`aider`/etc. duplicated — see below), a dup-id guard, and
- * `getAgentDef(id)` lookup.
+ * The static `BASE_AGENT_DEFS` catalog (the 24 built-in CLI adapters), a
+ * dup-id guard, and `getAgentDef(id)` lookup.
  *
  * Ported from OD's `apps/daemon/src/runtimes/registry/registry.ts`. Per the
  * task's explicit scope ("`registry.ts` → `BASE_AGENT_DEFS` array + dup-id
  * guard + `getAgentDef(id)`"), the origin's `readLocalAgentProfileDefs`
- * local-profile-file loader is deliberately NOT ported here — it reads an
- * OD-branded env var (`OD_AGENT_PROFILES_CONFIG`), an OD-branded default
- * path (`~/.open-design/agents.local.json`), and OD's `OD_DATA_DIR`, and it
- * depends on OD's daemon-level `sandbox-mode.ts` subsystem (out of this
- * package's charter entirely). `AGENT_DEFS` here is exactly
- * `BASE_AGENT_DEFS` (no local-profile merge). A future task can reintroduce
- * a de-branded, sandbox-free local-profile loader as an injected port if a
- * consumer needs it. See `source-map.md`.
+ * local-profile-file loader is deliberately NOT ported here — it reads a
+ * product-prefixed config-path override env var, falls back to a
+ * product-branded default path under the user's home dir, reads a
+ * product-prefixed data-dir env var, and depends on OD's daemon-level
+ * sandbox-runtime-config subsystem (out of this package's charter
+ * entirely; see `source-map.md` for the exact original names). `AGENT_DEFS`
+ * here is exactly `BASE_AGENT_DEFS` (no local-profile merge). A future task
+ * can reintroduce a de-branded, sandbox-free local-profile loader as an
+ * injected port if a consumer needs it. See `source-map.md`.
  */
 import {
   aiderAgentDef,

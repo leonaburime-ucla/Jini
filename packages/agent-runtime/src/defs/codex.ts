@@ -1,10 +1,10 @@
 /**
  * Ported from OD's `apps/daemon/src/runtimes/defs/codex.ts` with one
- * de-branding change: the two operator-override env vars
- * `OD_CODEX_SANDBOX` / `OD_CODEX_DISABLE_PLUGINS` are renamed to
- * `CODEX_SANDBOX_MODE` / `CODEX_DISABLE_PLUGINS` (dropping the `OD_`
- * prefix — these are already codex-adapter-scoped operator knobs, not
- * OD-branded, so no further namespacing is needed). See `source-map.md`.
+ * de-branding change: the two operator-override env vars (originally
+ * product-prefixed) are renamed to `CODEX_SANDBOX_MODE` /
+ * `CODEX_DISABLE_PLUGINS` — these are already codex-adapter-scoped
+ * operator knobs, so no product namespacing is needed. See
+ * `source-map.md` for the exact original names.
  */
 import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';

@@ -10,9 +10,9 @@
  *
  * Ported from OD's `apps/daemon/src/runtimes/launch/terminal-launch.ts`
  * with one de-branding change: the Windows path opened a `cmd.exe` window
- * titled literally `"Open Design"`. `launchAgentInSystemTerminal` now takes
- * an optional `windowTitle` (default `'Agent Sign-in'`). See
- * `source-map.md`.
+ * titled literally with the product's own name (see `source-map.md` for
+ * the exact original string). `launchAgentInSystemTerminal` now takes an
+ * optional `windowTitle` (default `'Agent Sign-in'`).
  *
  * Each platform branch uses primitives that are safe against shell
  * injection BECAUSE we never accept user input here — the `command`

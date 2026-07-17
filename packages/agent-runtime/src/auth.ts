@@ -9,9 +9,10 @@
  * de-branding change: the five guidance-text functions
  * (`cursorAuthGuidance`, `deepseekAuthGuidance`, `antigravityAuthGuidance`,
  * `antigravityQuotaGuidance`, `reasonixAuthGuidance`, `claudeAuthGuidance`)
- * and `genericAuthGuidance` took an implicit "Open Design" product name
- * baked into nine literal strings (e.g. "expose CURSOR_API_KEY in the Open
- * Design process environment"). Each now takes an optional `hostName`
+ * and `genericAuthGuidance` took an implicit product name baked into nine
+ * literal strings (e.g. "expose CURSOR_API_KEY in the <product>'s process
+ * environment" — see `source-map.md` for the exact original text). Each
+ * now takes an optional `hostName`
  * parameter (default `'the host application'`) so the guidance text is
  * product-neutral by default and a consumer can substitute its own name.
  * `classifyAgentAuthFailure`/`probeAgentAuthStatus` thread `hostName`

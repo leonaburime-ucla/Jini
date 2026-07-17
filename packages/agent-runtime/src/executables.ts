@@ -9,14 +9,15 @@
  * changes:
  *
  * 1. `wellKnownUserToolchainBins` now comes from `@jini/platform` instead of
- *    `@open-design/platform` (same function, already verbatim-lifted).
- * 2. De-branded: the origin's `OD_AGENT_HOME` / `OD_RESOURCE_ROOT` env var
- *    names and its `resolveSandboxRuntimeConfigFromEnv` sandbox-mode
- *    integration (an OD-daemon-level subsystem out of this package's
- *    charter) are replaced by `configureExecutableResolutionEnv()` — an
- *    injectable pair of env-var names, defaulting to
- *    `AGENT_RUNTIME_HOME` / `AGENT_RUNTIME_RESOURCE_ROOT`, with no sandbox
- *    dependency. See `source-map.md`.
+ *    the OD workspace package it originally shipped from (same function,
+ *    already verbatim-lifted — see `@jini/platform`'s own `source-map.md`).
+ * 2. De-branded: the origin's product-prefixed agent-home / resource-root
+ *    env var names and its sandbox-runtime-config integration (an
+ *    OD-daemon-level subsystem out of this package's charter) are replaced
+ *    by `configureExecutableResolutionEnv()` — an injectable pair of
+ *    env-var names, defaulting to `AGENT_RUNTIME_HOME` /
+ *    `AGENT_RUNTIME_RESOURCE_ROOT`, with no sandbox dependency. See
+ *    `source-map.md` for the exact original names.
  */
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { delimiter } from 'node:path';

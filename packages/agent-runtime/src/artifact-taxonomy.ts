@@ -7,9 +7,9 @@
  * `countDesignSystemPreviewModules`). That file's real behavior is entirely
  * OD-product classification (HTML-prototype/SVG/design-system-file
  * taxonomy feeding PostHog `run_finished.artifact_count` /
- * `design_system_created` analytics) plus OD-specific imports
- * (`@open-design/contracts/analytics`, `../../question-form-detect.js`) —
- * none of it is ported.
+ * `design_system_created` analytics) plus OD-specific imports into OD's own
+ * analytics-contracts and question-form-detection modules — none of it is
+ * ported.
  *
  * Per r1b §1b, only the taxonomy/classification *interface* belongs to
  * this package. `ArtifactTaxonomy`'s companion `ArtifactStore` (actual

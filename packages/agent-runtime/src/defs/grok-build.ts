@@ -1,9 +1,8 @@
 /**
  * Ported from OD's `apps/daemon/src/runtimes/defs/grok-build.ts` with
- * comments de-branded ("Open Design's xAI Settings panel" / "OD detects
- * the binary" / "OD's composed prompts" / "chat with grok inside OD" —
- * all reworded to generic host-application phrasing; no behavior change).
- * See `source-map.md`.
+ * several product-named comment mentions reworded to generic
+ * host-application phrasing (no behavior change; see `source-map.md` for
+ * the exact original wording).
  */
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';

@@ -263,8 +263,8 @@ export type RuntimeExecOptions = ExecFileOptions & {
  *
  * Vendored (minimal, unmodified shape) from OD's
  * `packages/contracts/src/api/registry.ts#AgentFixIntent` — see
- * `source-map.md`. `@jini/agent-runtime` does not depend on
- * `@open-design/contracts`.
+ * `source-map.md`. `@jini/agent-runtime` does not depend on OD's
+ * contracts workspace package.
  */
 export type AgentFixIntent =
   /** Open the agent's configuration / auth docs (`AgentInfo.docsUrl`). */
@@ -306,7 +306,7 @@ export type AgentDiagnosticSeverity = 'error' | 'warning' | 'info';
 /**
  * Why a CLI agent is unavailable or only partially usable, in a shape a UI
  * can render as "one-line reason + fix button(s)" instead of a silent grey
- * card. Vendored from `@open-design/contracts` — see
+ * card. Vendored from OD's contracts workspace package — see
  * `AgentFixIntent`'s doc comment.
  */
 export interface AgentDiagnostic {

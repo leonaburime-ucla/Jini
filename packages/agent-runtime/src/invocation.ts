@@ -4,9 +4,10 @@
  * Short, read-only metadata probes (model-list / version / help /
  * auth-status) for an agent CLI. Ported from OD's
  * `apps/daemon/src/runtimes/core/invocation.ts` with one dependency swap:
- * `createCommandInvocation` now comes from `@jini/platform` instead of
- * `@open-design/platform` — the two are the same function (platform was
- * already verbatim-lifted into `@jini/platform`, see its `source-map.md`).
+ * `createCommandInvocation` now comes from `@jini/platform` instead of the
+ * OD workspace package it originally shipped from — the two are the same
+ * function (platform was already verbatim-lifted into `@jini/platform`,
+ * see its `source-map.md`).
  */
 import { execFile } from 'node:child_process';
 import os from 'node:os';

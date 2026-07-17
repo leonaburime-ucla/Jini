@@ -1,11 +1,12 @@
 /**
  * Ported from OD's `apps/daemon/src/runtimes/defs/copilot.ts` with two
- * de-branding edits to comments (no behavior change): "Any non-trivial
- * Open Design prompt" → "any non-trivial prompt", and the
- * `OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS` env var name → generic phrasing
- * (this package's `types.ts` already documents `inactivityTimeoutMs` as
- * "callers may still allow an operator override via their own env var").
- * See `source-map.md`.
+ * de-branding edits to comments (no behavior change): a product-named
+ * prompt-size example reworded to generic phrasing, and a
+ * product-prefixed operator-override env var name replaced with generic
+ * phrasing (this package's `types.ts` already documents
+ * `inactivityTimeoutMs` as "callers may still allow an operator override
+ * via their own env var"). See `source-map.md` for the exact original
+ * wording.
  */
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 import type { RuntimeAgentDef } from '../types.js';

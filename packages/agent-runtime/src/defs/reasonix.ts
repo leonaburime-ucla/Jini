@@ -2,12 +2,13 @@
  * Ported from OD's `apps/daemon/src/runtimes/defs/reasonix.ts` with one
  * real strip (not just a comment reword): the origin injected a
  * product-specific system-prompt block via
- * `env.REASONIX_ACP_SYSTEM_APPEND` — a `DESIGN_INSTRUCTIONS` constant
- * literally instructing the model "You are running inside Open Design, a
- * design tool" and to wrap output in OD's `<artifact>` convention. That is
- * genuine OD-product prompt content baked into what's supposed to be a
- * pure declarative def literal, not the generic ACP-transport config the
- * rest of this file is. It is dropped here; a host that wants an
+ * `env.REASONIX_ACP_SYSTEM_APPEND` — a `DESIGN_INSTRUCTIONS` constant that
+ * literally named the host product and instructed the model to wrap output
+ * in that product's own artifact-tag convention (see `source-map.md` for
+ * the exact original text). That is genuine product-specific prompt
+ * content baked into what's supposed to be a pure declarative def literal,
+ * not the generic ACP-transport config the rest of this file is. It is
+ * dropped here; a host that wants an
  * equivalent system-prompt append for reasonix should supply it via
  * `PromptAugmenter.systemOverlay` (see `prompt-augmenter.ts`) and merge it
  * into this def's `env.REASONIX_ACP_SYSTEM_APPEND` itself, since the
