@@ -108,12 +108,20 @@ parallel sub-analyses each read 2-5 files in isolation — nothing forced a side
 across all 23 until now; the last 2 below came from reconciling this doc against
 `ui-extraction-plan.md`'s coverage of the other ~230 non-god-sized files):
 
-- **Viewport-preset switcher, twice**: `FileViewer.tsx`'s `PreviewViewportControls`/
+- **Viewport-preset switcher, twice** (✅ resolved 2026-07-17, alongside the `features/viewer-shell/`
+  extraction above): `FileViewer.tsx`'s `PreviewViewportControls`/
   `FileVersionViewportControls` (§1.1, "self-contained responsive desktop/tablet/mobile viewport
   switcher, zero business types") and `DesignBrowserPanel.tsx`'s `BrowserViewportControls` (§1.12,
   "a responsive viewport-preset switcher") read as the same shape from two independent
-  descriptions. Diff them before shipping both — this may be a 2-file version of the tab-strip
-  situation above, not two separate primitives.
+  descriptions. Diffed side by side: `PreviewViewportControls` and `BrowserViewportControls` really
+  are the same dropdown/listbox shape (same outside-click/Escape wiring, same per-item layout,
+  differing only in cosmetic wrapper markup) — shipped as one shared `ViewportSwitcher` in
+  `packages/ui/src/features/viewer-shell/`; when `DesignBrowserPanel.tsx` is eventually extracted it
+  should bind to this component rather than re-implement `BrowserViewportControls`.
+  `FileVersionViewportControls`, however, turned out to be a genuinely different shape (an
+  always-visible toggle-button row, not a dropdown) — shipped as a second, disclosed primitive,
+  `ViewportToggleGroup`. See `packages/ui/source-map.md`'s `features/viewer-shell/` section for the
+  full comparison.
 - **Resource-dashboard shell, twice, both directly Run-vocabulary-relevant**: `DesignsTab.tsx`'s
   dashboard shell (§1.17 — sub-tabs, search, bulk-actions, a **config-driven status-kanban** whose
   vocabulary `not_started/running/awaiting_input/succeeded/failed/canceled` "reads like a generic
@@ -156,7 +164,7 @@ across all 23 until now; the last 2 below came from reconciling this doc against
 | `features/asset-grid/` (generic `AssetGrid<TAsset>`) | `LibrarySection.tsx` — rubber-band multi-select (the single cleanest generic core in the whole sweep, per §1.16), facets, debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch thumbnails |
 | `features/asset-tree-browser/` (generic `AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>`) | `DesignFilesPanel.tsx` |
 | `features/browser-chrome/` (embeddable webview/iframe browser tab) | `DesignBrowserPanel.tsx` — nav stack, address-bar normalization, history/favicon utilities, ports for `onNavigate`/history storage/brand-bridge registration |
-| `features/viewer-shell/` (the 9-times-repeated "viewer toolbar + body" shell) | `FileViewer.tsx` — `BinaryViewer`/`DocumentPreviewViewer`/`ImageViewer`/`SketchViewer`/`VideoViewer`/`AudioViewer`/`SvgViewer`/`TextViewer`, plus `CommentSidePanel`/`CommentSideDock` and the `MarkdownViewer` split-pane |
+| `features/viewer-shell/` (the 9-times-repeated "viewer toolbar + body" shell) (✅ done 2026-07-17) | `FileViewer.tsx` — `BinaryViewer`/`DocumentPreviewViewer`/`ImageViewer`/`SketchViewer`/`VideoViewer`/`AudioViewer`/`SvgViewer`/`TextViewer`, plus `CommentSidePanel`/`CommentSideDock` and the `MarkdownViewer` split-pane. Shipped as `packages/ui/src/features/viewer-shell/` — see `packages/ui/source-map.md` for the full writeup, including two gaps this row's own description didn't call out (the comment-label/timestamp derivation is OD-specific *logic*, not just an OD-specific type; `MarkdownViewer`'s coupling goes well beyond "just the artifact-status gate" — its autosave/upload/rendering/highlighting pipeline was also dropped, not ported). |
 | `features/settings-dialog/` (shell) + `features/settings-dialog/tabs/{appearance,notifications,language,instructions,integrations}` | `SettingsDialog.tsx` — shell is reusable chrome (8 of 17 tabs already separate files prove it); `integrations` needs its hardcoded `'open-design'`-branded MCP-install-snippet strings parameterized (same shape-class as `McpClientSection`, installer-direction-reversed — plausibly worth a note in the connectors cluster above, since it's the mirror image, even though it doesn't share code today); `privacy` still needs the r6-flagged follow-up verification before it's added to this list |
 | `features/schedule-picker/` (`RecurringSchedulePicker`) | `NewAutomationModal.tsx` |
 | `features/mention-autocomplete/` (`MentionAutocomplete`, same shape as the existing `QuickSwitcher.tsx` precedent) | `NewAutomationModal.tsx` |
@@ -264,8 +272,10 @@ don't repeat that on the next items in this list.
    `ToggleRow`/`FidelityCard` shell (`NewProjectPanel.tsx`), `BrandLogo`/`HeaderActionsMenu`/the
    `designMd*` markdown-slice utilities (`DesignKitView.tsx`), `scrollWorkspaceTabsWithWheel`
    (`FileWorkspace.tsx`), `useResizableSplitPane` (`ProjectView.tsx`), `home-hero/EdgeAutoScroll.tsx`
-   (as-is, already isolated), the media-viewer-shell family + `PreviewViewportControls` +
-   `CommentSidePanel`/`CommentSideDock` + `CodeWithLines`/`JsonPanel` (`FileViewer.tsx`),
+   (as-is, already isolated). The media-viewer-shell family + `PreviewViewportControls` +
+   `CommentSidePanel`/`CommentSideDock` + `CodeWithLines`/`JsonPanel` (`FileViewer.tsx`) — listed here
+   as part of the batch sweep — was pulled forward and done as its own dispatch (✅ done 2026-07-17,
+   see the `features/viewer-shell/` row in the consolidation map above), not bundled into this batch.
    `RecurringSchedulePicker`/`MentionAutocomplete`/popover chrome primitives
    (`NewAutomationModal.tsx`), a generic `ListDetailPanel<TSummary,TDetail>` shell
    (`DesignSystemsTab.tsx`), `AssetTreeBrowser<TFile>`/`FilePreviewPane<TFile>`

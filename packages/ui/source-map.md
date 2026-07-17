@@ -674,3 +674,261 @@ and testing state transitions directly rather than chasing a coverage
 percentage — held up cleanly against a genuinely non-trivial 1,573-line
 source file. The pattern is ready to scale; the two caveats above are
 process reminders for the next session, not blockers.
+
+---
+
+## Section: `features/viewer-shell/` — media-viewer shell extraction (2026-07-17)
+
+Source: a vendored OD file-viewer god-component's media-viewer shell family
+(the specific pieces named in `docs/jini-port/god-components-extraction-plan.md`'s
+consolidation map row for this target — the file itself stays vendored,
+14,275 lines, and is not otherwise touched). Per that doc's own r6-derived
+verdict, this is a **PARTIAL** extraction of a **PARTIAL** file: only the
+~6-9 named generic pieces, not the file's `HtmlViewer` (~7,110 lines) or
+`FileVersionManagerModal` (~1,050 lines), both confirmed OD-specific.
+
+### New layout, not the connectors/progress-card precedent
+
+This is the first `@jini/ui` feature built under the 2026-07-17 layout
+decision (`packages/ui/README.md`): `types.ts`/`constants.ts`/`rules.ts`/
+`ports.ts`/`dependencies.ts`/`index.ts` at the feature's top level;
+everything importing React under `features/viewer-shell/react/{hooks,components}/`.
+`features/connectors/` (read as the structural example per this task's
+brief) still uses the old flat `hooks/`/`components/` layout — its internal
+ports+dependencies+hooks+components+barrel *discipline* was the template,
+not its exact paths. Note: `features/progress-card/`, the other file this
+task was pointed at as a structural example, does **not exist** in this
+branch's checkout (`packages/ui/src/features/` only contains `connectors/`,
+`i18n/`, `observability/` before this task) — the extraction-plan doc's "✅
+landed" note for it appears to describe work merged on a different branch
+than this one was cut from. Not a blocker for this task; flagged as a
+discrepancy for whoever reconciles branches next.
+
+### What shipped — `packages/ui/src/features/viewer-shell/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `ViewerFileRef` (`{name,size,mtime,mime?}`), `ViewportPreset`, `SegmentedOption<T>`, `ViewerFileActionUrls`, `ViewerCommentAttachment`, `ViewerCommentBase`, `CommentSideDragState`, `MarkdownSplitPaneMode`. |
+| `constants.ts` | `DEFAULT_VIEWPORT_PRESETS` (desktop/tablet/mobile convenience default), `COMMENT_SIDE_DRAG_MIME` (renamed from the source's `application/x-open-design-preview-comment`), `COPY_FEEDBACK_RESET_MS`. |
+| `rules.ts` | `humanFileSize`; comment-reorder helpers (`dropEdgeForClientY`, `reorderCommentIds`, `appendSavedCommentOrder`, `visibleSelectedCommentIds`); `relativeCommentTimeTranslation` (a `{key,vars}`-returning port of the source's inline `formatCommentTime`, generic — see the i18n note below); the full JSON-precision-safe formatting chain (`formatJsonTextForDisplay`, `hasPrecisionSensitiveJsonNumberText`, `hasUnsafeJsonNumber`, and their private token/decimal helpers) ported verbatim from `TextViewer`'s body, since it's genuinely pure and zero-OD-coupled; `scrollRange`/`scrollRatio`/`scrollTopForRatio` (new, small — the 3 markdown-scroll-sync helpers not already in `src/utils/markdown-scroll-sync.ts`); `computeSplitPaneScrollTarget` (orchestrates the already-ported `buildScrollAnchors`/`mapScrollPosition`/`measureEditorBlockOffsets`/`measurePreviewBlockOffsets`, re-exported from this file for convenience). |
+| `ports.ts` / `dependencies.ts` | `ViewerClipboardPort` — the one injectable seam this feature needs (no fetch/transport port: see "What's out of scope" below). Ships a real browser implementation (`createBrowserViewerClipboard`, wrapping the already-ported `src/utils/copy-to-clipboard.ts`) rather than a fake, same reasoning as connectors' SSR-guarded browser adapters — clipboard access is a generic browser API with no backend shape to fake. |
+| `react/hooks/useCopyToClipboard.ts` | The "copy, flip a `copied` flag, auto-reset after ~1.5s" pattern independently repeated by the source's plain-text viewer and its markdown viewer's copy button — generalized into one hook. |
+| `react/hooks/useCommentReorder.ts` | The comment side-panel's drag/dragover/drop reorder state machine, pulled out of the presentational component per the MemorySection-pattern "feature-local hooks own the fiddly state" discipline. |
+| `react/hooks/useMarkdownScrollSync.ts` | The scroll-sync orchestration (rAF scheduling, programmatic-scroll suppression, active-pane tracking) built on top of `rules.ts`'s `computeSplitPaneScrollTarget` and the already-ported block-offset measurers. |
+| `react/components/ViewerShell.tsx` | The generic "viewer-toolbar + viewer-body" chrome — the actual highest-value piece per r6, replacing 8 near-duplicate toolbar+body layouts with one shell taking `toolbarLeft`/`toolbarActions`/`children` slots. Also exports the trivial `ViewerEmptyState`. |
+| `react/components/ViewerFileActions.tsx` | Generic download/open link pair — the source's `FileActions` with `projectFileUrl(projectId, file.name)` replaced by host-resolved `downloadUrl`/`openUrl` props. |
+| `react/components/SegmentedToggle.tsx` | New shared primitive — see "Viewport-controls overlap resolution" below. |
+| `react/components/ViewportSwitcher.tsx` | Dropdown/listbox viewport-preset switcher, generalizing `PreviewViewportControls`. |
+| `react/components/ViewportToggleGroup.tsx` | Always-visible toggle-button row, generalizing `FileVersionViewportControls`; a thin wrapper over `SegmentedToggle`. |
+| `react/components/CodeWithLines.tsx`, `JsonPanel.tsx` | Ported verbatim, per r6. |
+| `react/components/ImageViewerBody.tsx`, `VideoViewerBody.tsx`, `AudioViewerBody.tsx` | New, small — trivial presentational bodies (`<img>`, `<video>`, `<audio>`+icon) generalizing `ImageViewer`/`VideoViewer`/`AudioViewer` once the daemon URL-building is stripped (host resolves a final `src`). Not explicitly named as separate deliverables by r6/the plan (which describe one generic shell, not 8 ported viewers), but small enough, and different enough from "8 near-duplicate viewers," to ship as convenience leaves over the shared shell rather than leaving image/video/audio bodies unaddressed. |
+| `react/components/SvgSourcePane.tsx` | New — `SvgViewer`'s preview/source body content (its toolbar's mode-toggle and reload/download chrome are composed by the host from `ViewerShell`/`SegmentedToggle`/`ViewerFileActions` instead of being re-baked into this component). |
+| `react/components/CommentSidePanel.tsx`, `CommentSideDock.tsx` | Generic over a `TComment extends ViewerCommentBase` type parameter — see the discrepancy writeup below for what else had to become a prop, beyond just the type. |
+| `react/components/MarkdownSplitPane.tsx` | The split source/preview pane + mode tabs + scroll-sync, with the artifact-status gate, autosave pipeline, image upload, and shiki highlighting all dropped — see below. |
+| `index.ts` | Public barrel. |
+
+### Viewport-controls overlap — resolved per Step 1.1
+
+Three viewport-preset switchers exist across the sweep: the source file's
+`PreviewViewportControls` (main preview toolbar) and `FileVersionViewportControls`
+(version-manager toolbar), plus `DesignBrowserPanel.tsx`'s `BrowserViewportControls`
+(not yet extracted — a different, not-yet-touched god-file).
+
+Read side by side:
+- **`PreviewViewportControls` and `BrowserViewportControls` are the same
+  shape.** Both are a trigger button showing the active preset that opens a
+  `role="listbox"` dropdown menu of the other presets, with identical
+  outside-pointerdown/Escape-to-close wiring (`document.addEventListener`
+  in a `useEffect` gated on `open`) and an identical per-item shape (icon +
+  label + a checkmark on the selected one). They differ only cosmetically:
+  `BrowserViewportControls` wraps its trigger in OD's `IconTooltipButton`
+  and supports a `disabled` prop the other lacks; class-name prefixes differ
+  (`viewer-viewport-*` vs. `db-viewport-*`). **Resolution: ship ONE shared
+  primitive** — `ViewportSwitcher` — generalizing `PreviewViewportControls`.
+  When `DesignBrowserPanel.tsx` is eventually extracted, it should bind to
+  this component rather than re-implement `BrowserViewportControls` as a
+  second competing dropdown switcher; `ViewportSwitcher`'s doc comment says
+  so explicitly.
+- **`FileVersionViewportControls` is a genuinely different shape**, not a
+  third instance of the same dropdown: it's an always-visible `role="group"`
+  row of toggle buttons (`aria-pressed`, no open/closed state, no menu) —
+  used in the version manager's tighter toolbar where a dropdown didn't fit.
+  Ported as `ViewportToggleGroup`, itself a thin wrapper over a new shared
+  primitive, `SegmentedToggle<T>`.
+- **One disclosed simplification while building `SegmentedToggle`**: the
+  source's `FileVersionViewportControls` used `role="group"`/`aria-pressed`
+  buttons, while its *other* two "toggle a few options" call sites in the
+  same file (`SvgViewer`'s preview/source tabs, `MarkdownViewer`'s
+  edit/split/preview tabs) used a `role="tablist"`/`aria-selected` tab
+  pattern instead — a real, if minor, ARIA difference. Rather than ship a
+  third near-identical primitive just for that distinction,
+  `MarkdownSplitPane` reuses `SegmentedToggle` (group/pressed semantics) for
+  its mode tabs too. This is a deliberate, disclosed simplification, not an
+  oversight — flagging it here per the task's audit requirement rather than
+  letting it pass as a silent behavioral gap.
+
+### The `CommentSidePanel` generic-type gap the recon doc didn't call out
+
+`docs/jini-port/god-components-extraction-plan.md` (quoting r6 §1.1)
+describes `CommentSidePanel`/`CommentSideDock` as "already prop-abstracted
+... only `PreviewComment`'s type is OD-specific — textbook generic-shape-OD-
+type-parameter." Reading the full component surfaced two more real gaps a
+type parameter alone can't close:
+
+1. **`commentDisplayLabel(comment, t)`** derives a comment's one-line label
+   by regex-matching HTML tag names out of `elementId`/`label`/`htmlHint`
+   fields (a board-annotation-specific heuristic: "does this look like an
+   image, a button, a heading, a link, a page comment?"). This is *logic*,
+   not just a type — it can't be ported generically. `CommentSidePanelProps`
+   makes it a required `getCommentLabel(comment, index)` callback instead.
+2. **`projectRawUrl(projectId, attachment.path)`** (attachment thumbnail
+   URLs) is a daemon-route builder, not portable. Replaced with an optional
+   `resolveAttachmentUrl` callback; attachments render only when a host
+   supplies one.
+3. `commentActivityAt`/`formatCommentTime` (timestamp derivation + relative-
+   time formatting) *are* genuinely generic — ported as
+   `relativeCommentTimeTranslation` in `rules.ts`, with an overridable
+   `formatTimestamp` prop for a host that wants different phrasing.
+
+None of this is a silent drop — `CommentSidePanelProps`' doc comments call
+out exactly why `getCommentLabel`/`getCommentTimestamp`/`getCommentBody`/
+`resolveAttachmentUrl` exist as host-supplied functions instead of being
+derived internally.
+
+### `MarkdownSplitPane` — narrower than the plan's one-line description
+
+The plan doc says: *"MarkdownViewer's split source/preview pane with
+scroll-sync — generic; only the artifact-status gate around it ties it to
+OD (drop the gate, keep the split-pane/scroll-sync mechanism)."* Reading the
+full ~680-line `MarkdownViewer` function shows this undersells the coupling
+by a wide margin — a second instance (after this same plan's `ExportDiagnosticsButton`/
+`enterpriseUrl.ts` and `ConnectorLogo`'s CDN-slug finding) of the plan's own
+documented pattern: reading a file in full surfaces more product coupling
+than the recon pass's one-line note implies. Beyond the artifact-status gate
+(`isStreaming`/`isError`), the following are **also** genuinely OD/product-
+specific and were **not ported**:
+
+- The autosave pipeline (`saveMarkdownText`, its 700ms debounce, in-flight/
+  pending-save merge logic, `writeProjectTextFile` daemon calls, the
+  auto-save-status indicator UI).
+- Image paste/drop upload (`insertImageFiles`, `uploadProjectFiles`,
+  markdown-image-snippet insertion).
+- The markdown-to-HTML rendering pipeline itself (`MarkdownRenderer`/
+  `renderMarkdownToSafeHtml`, project-relative image-src rewriting) and its
+  shiki-based code-block syntax highlighting + inject-a-copy-button-into-
+  the-DOM mechanism.
+- The export-as-.md download menu and `OPEN_DESIGN_GITHUB_REPO_URL`-adjacent
+  social-share wiring (not shown in the snippet quoted in r6, found on the
+  full read).
+
+What's left, and what `MarkdownSplitPane` actually ships, is the genuinely
+generic core: the source/split/preview mode toggle and the two-pane layout
+whose scroll positions stay aligned via block-anchored interpolation
+(`useMarkdownScrollSync`, built on the already-ported
+`extractMarkdownBlockLines`/`measureEditorBlockOffsets`/
+`measurePreviewBlockOffsets`/`buildScrollAnchors`/`mapScrollPosition` in
+`src/utils/markdown-scroll-sync.ts`). A host renders its own markdown-to-
+HTML pipeline and passes the resulting string as `previewHtml`; the
+component's `toolbarActions`/`toolbarLeftExtra` slots are where a host
+plugs in its own save-status indicator, copy/download buttons, and
+streaming/error labels.
+
+### What's out of scope (confirmed OD-specific, not touched)
+
+- **`HtmlViewer`** (~7,110 lines) — deploy-provider selection, live-artifact
+  daemon streaming, board/pod annotation, manual-edit CSS bridge
+  (`InspectPanel` and its `rgbToHex`/`pxToNumber` helpers, read far enough
+  to confirm the boundary, live here).
+- **`FileVersionManagerModal`** (~1,050 lines) — version history UI
+  saturated with OD analytics/deploy/export calls.
+- **No fetch/transport port beyond the clipboard.** Every other piece in
+  this feature is either pure logic or presentational-only; the actual
+  file-content loading (`fetchProjectFileText`/`fetchProjectFilePreview`),
+  saving, and rendering pipelines are host responsibilities by design, not
+  a gap — see the `MarkdownSplitPane` writeup above for why that's a
+  deliberate scope boundary, not an oversight.
+- **No `Button`/`Input`/`Select` primitives.** The source's
+  `CommentSidePanel`/`InspectPanel` import these from `@open-design/components`
+  (OD's own component library, not vendored here, and not yet ported into
+  `@jini/ui`). `CommentSidePanel` uses plain `<button>` elements instead,
+  matching the existing `Toast.tsx`/`CustomSelect.tsx` precedent of not
+  depending on an unavailable external UI kit.
+
+### i18n
+
+Every user-facing string in the new `react/components/` files is wired
+through `useT()` with the English string itself as the key (`t('Download')`,
+not `t('fileViewer.download')`), per the plan's i18n policy. `rules.ts`'s
+`relativeCommentTimeTranslation` stays hook-free (pure, returns a
+`{key,vars}` pair); callers wrap it in `t()` at the call site
+(`CommentSidePanel`), matching the same pattern already used for
+`features/connectors/`'s `statusLabel()`/`toolsBadgeTranslation()`. Verified
+end-to-end, not just compiled: `ViewerFileActions.test.tsx`,
+`CommentSidePanel.test.tsx`, and `MarkdownSplitPane.test.tsx` each mount
+under `I18nProvider` with a translated (French) dictionary and assert the
+translated text actually renders.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"`
+across `packages/ui/src/features/viewer-shell/`: clean, zero matches.
+A second, stricter pass for the literal vendored reference path
+(`grep -rn "components-original\|integrations/open-design"`) is also clean
+— every doc comment in this feature describes provenance as "the source
+component" rather than citing the vendored file path literally, per the
+connectors addendum's warning about exactly this leak.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean.
+- `pnpm --filter @jini/ui exec vitest run`: **495 tests, 72 files, all
+  green** (120 new tests across 19 new files for this feature: 36 in
+  `rules.test.ts`, the rest split across the hook and component tests
+  listed above).
+- `pnpm -r --filter='!@jini/agent-runtime' --filter='!@jini/chat-react' --filter='!@jini/cli' run typecheck`:
+  clean for every real package. `@jini/agent-runtime`/`@jini/chat-react`/
+  `@jini/cli` fail with `tsc: path does not exist: 'tsconfig.json'` — these
+  are stub packages with no `tsconfig.json` at all yet (per `AGENTS.md`'s
+  package list: only `protocol, core, platform, sidecar, chat-core, deploy`
+  have real implementations), unrelated to and pre-dating this task; the
+  connectors canary's own source-map section hit and documented the same
+  two pre-existing failures.
+- `pnpm guard`: `[guard] ok (skeleton — rules pending implementation during
+  extraction)` — unchanged, no boundary violations introduced.
+
+### Phase 8.5 audit
+
+Ran the mandated audit across every new file:
+
+1. **Inline JSX callbacks with real branching/multi-statement bodies**: found
+   one — `CommentSidePanel`'s per-comment "select" checkbox button combines
+   `event.stopPropagation()` + delegating to `onToggleSelect(comment.id)`.
+   Left inline (single call site, trivial DOM-bookkeeping + a one-line
+   delegate call, no branching) — the same disposition the connectors
+   canary's own audit gave a materially identical backdrop-click pattern.
+   No other multi-statement inline callback found.
+2. **`useMemo`/`useEffect` bodies with real derivations**: `useMarkdownScrollSync`'s
+   `blockLines` `useMemo` is already a one-line call to the ported
+   `extractMarkdownBlockLines` (matches the audit's target end-state).
+   `CommentSidePanel`'s one `useEffect` (restoring focus to whichever toggle
+   button triggered a collapse/expand) is DOM-only and tightly bound to this
+   component's own three refs — not extracted to a shared `providers/dom.ts`
+   helper, since it isn't a reusable DOM utility, just this component's own
+   ref-juggling; flagged here rather than silently decided.
+3. **Orphaned `useState`/`useRef`**: enumerated every one across all new
+   files by hand — every state value and ref is read somewhere (render,
+   an effect, or a callback); none found unassigned.
+
+`pnpm --filter @jini/ui run typecheck` re-run clean after this pass (no
+changes were needed as a result of it, beyond the two callouts above).
+
+### New devDependency
+
+`@testing-library/jest-dom` (`^6.6.3`) — added so component tests could use
+idiomatic DOM matchers (`toBeInTheDocument`, `toHaveAttribute`, `toHaveClass`,
+`toBeDisabled`, etc.). No prior `@jini/ui` test used these (the connectors
+suite asserts against raw DOM/text-content instead), so this is a new
+addition, registered in `vitest.setup.ts` for runtime and re-exported via a
+new `src/vitest-jest-dom.d.ts` ambient-import shim so `tsc -p tsconfig.json`
+(whose `include` is `["src"]`, not the package root) also picks up the
+matcher-type augmentation.

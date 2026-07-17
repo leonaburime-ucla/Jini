@@ -1,0 +1,95 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../../../i18n/index.js';
+import { MarkdownSplitPane } from './MarkdownSplitPane.js';
+
+describe('MarkdownSplitPane', () => {
+  it('shows a loading state while previewHtml is null', () => {
+    render(
+      <MarkdownSplitPane mode="split" onModeChange={() => {}} sourceText="# Hi" onSourceChange={() => {}} previewHtml={null} />,
+    );
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+  });
+
+  it('renders both panes in split mode', () => {
+    render(
+      <MarkdownSplitPane
+        mode="split"
+        onModeChange={() => {}}
+        sourceText="# Hi"
+        onSourceChange={() => {}}
+        previewHtml="<h1>Hi</h1>"
+      />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Markdown editor' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Markdown preview')).toBeInTheDocument();
+  });
+
+  it('renders only the editor pane in source mode', () => {
+    render(
+      <MarkdownSplitPane mode="source" onModeChange={() => {}} sourceText="# Hi" onSourceChange={() => {}} previewHtml="<h1>Hi</h1>" />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Markdown editor' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Markdown preview')).toBeNull();
+  });
+
+  it('renders only the preview pane in preview mode', () => {
+    render(
+      <MarkdownSplitPane mode="preview" onModeChange={() => {}} sourceText="# Hi" onSourceChange={() => {}} previewHtml="<h1>Hi</h1>" />,
+    );
+    expect(screen.queryByRole('textbox', { name: 'Markdown editor' })).toBeNull();
+    expect(screen.getByLabelText('Markdown preview')).toBeInTheDocument();
+  });
+
+  it('renders the given HTML into the preview pane', () => {
+    render(
+      <MarkdownSplitPane mode="preview" onModeChange={() => {}} sourceText="# Hi" onSourceChange={() => {}} previewHtml="<h1>Hi</h1>" />,
+    );
+    expect(screen.getByRole('heading', { level: 1, name: 'Hi' })).toBeInTheDocument();
+  });
+
+  it('calls onModeChange when a mode tab is clicked', async () => {
+    const onModeChange = vi.fn();
+    render(
+      <MarkdownSplitPane mode="split" onModeChange={onModeChange} sourceText="# Hi" onSourceChange={() => {}} previewHtml="<h1>Hi</h1>" />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(onModeChange).toHaveBeenCalledWith('preview');
+  });
+
+  it('calls onSourceChange as the editor is typed into', async () => {
+    const onSourceChange = vi.fn();
+    render(
+      <MarkdownSplitPane mode="source" onModeChange={() => {}} sourceText="hi" onSourceChange={onSourceChange} previewHtml="<p>hi</p>" />,
+    );
+    await userEvent.type(screen.getByRole('textbox', { name: 'Markdown editor' }), '!');
+    expect(onSourceChange).toHaveBeenCalled();
+  });
+
+  it('renders host-supplied toolbar extras', () => {
+    render(
+      <MarkdownSplitPane
+        mode="split"
+        onModeChange={() => {}}
+        sourceText="hi"
+        onSourceChange={() => {}}
+        previewHtml="<p>hi</p>"
+        toolbarLeftExtra={<span>Streaming</span>}
+        toolbarActions={<button>Copy</button>}
+      />,
+    );
+    expect(screen.getByText('Streaming')).toBeInTheDocument();
+    expect(screen.getByText('Copy')).toBeInTheDocument();
+  });
+
+  it('translates its mode-tab labels through I18nProvider', () => {
+    render(
+      <I18nProvider dictionaries={{ fr: { Source: 'Source (fr)', Split: 'Partagé', Preview: 'Aperçu' } }} initialLocale="fr">
+        <MarkdownSplitPane mode="split" onModeChange={() => {}} sourceText="hi" onSourceChange={() => {}} previewHtml="<p>hi</p>" />
+      </I18nProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Partagé' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Aperçu' })).toBeInTheDocument();
+  });
+});
