@@ -44,6 +44,16 @@ describe('createBrowserHistoryStorage', () => {
     window.localStorage.setItem('test:ns:scope-1', 'not json');
     expect(storage.loadHistory('scope-1')).toEqual([]);
   });
+
+  it('returns [] rather than throwing when localStorage.getItem itself throws (e.g. private-mode access restrictions)', () => {
+    const storage = createBrowserHistoryStorage();
+    const getItemSpy = vi.spyOn(window.localStorage.__proto__, 'getItem').mockImplementation(() => {
+      throw new Error('SecurityError');
+    });
+    expect(() => storage.loadHistory('scope-1')).not.toThrow();
+    expect(storage.loadHistory('scope-1')).toEqual([]);
+    getItemSpy.mockRestore();
+  });
 });
 
 describe('createBrowserHistoryStorage — SSR guard', () => {

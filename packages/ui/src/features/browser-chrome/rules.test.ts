@@ -270,6 +270,86 @@ describe('navigation stack', () => {
     expect(result.navigationIndex).toBe(0);
   });
 
+  it('recordNavigation rejoins the previous-index entry when its url matches, without going through resolveNavigationHistoryDelta first', () => {
+    // Full 3-entry stack, current pointer sitting on the last entry (as if the
+    // host's webview already rendered B) — a navigation event now reports a
+    // url matching the entry one BEHIND the pointer (A), which should move the
+    // pointer back onto A in place, not push a 4th stack entry.
+    const state: BrowserNavigationState = {
+      navigationStack: [
+        { title: 'Home', url: EMPTY_URL },
+        { title: 'A', url: 'https://a.com' },
+        { title: 'B', url: 'https://b.com' },
+      ],
+      navigationIndex: 2,
+    };
+    const result = recordNavigation(state, 'https://a.com', 'A renamed');
+    expect(result.navigationStack).toHaveLength(3);
+    expect(result.navigationIndex).toBe(1);
+    expect(result.navigationStack[1]).toEqual({ title: 'A renamed', url: 'https://a.com' });
+    // B (the entry that was current before this rejoin) survives untouched —
+    // this is an in-place pointer move, not a truncation.
+    expect(result.navigationStack[2]).toEqual({ title: 'B', url: 'https://b.com' });
+  });
+
+  it('recordNavigation rejoins the next-index entry when its url matches (e.g. navigating forward again after an out-of-band back)', () => {
+    // Pointer sitting on Home (index 0) with the forward stack still intact —
+    // as if the host went back once — and a navigation event now reports a
+    // url matching the entry one AHEAD of the pointer (A). This should move
+    // the pointer forward onto that same entry in place, not truncate B off
+    // the stack the way a brand-new navigation to A would.
+    const state: BrowserNavigationState = {
+      navigationStack: [
+        { title: 'Home', url: EMPTY_URL },
+        { title: 'A', url: 'https://a.com' },
+        { title: 'B', url: 'https://b.com' },
+      ],
+      navigationIndex: 0,
+    };
+    const result = recordNavigation(state, 'https://a.com', 'A renamed');
+    expect(result.navigationStack).toHaveLength(3);
+    expect(result.navigationIndex).toBe(1);
+    expect(result.navigationStack[1]).toEqual({ title: 'A renamed', url: 'https://a.com' });
+    expect(result.navigationStack[2]).toEqual({ title: 'B', url: 'https://b.com' });
+  });
+
+  it('recordNavigation replaces the current entry in place when replacePendingTarget matches an optimistic pending url, even though the settled url differs', () => {
+    // Mirrors the origin's navigateTo -> webview onNavigate flow: an
+    // address-bar submit optimistically pushes a new stack entry for the
+    // typed url (the "pending target"), then the real webview navigation
+    // event reports back with the actual (redirected) url and asks to settle
+    // into the SAME entry rather than push a second one. The settled url here
+    // deliberately does NOT equal the current entry's url, so this only
+    // passes through the `shouldReplacePending` branch, not the plain
+    // same-url branch.
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: 'Home', url: EMPTY_URL }, { title: 'example.com', url: 'https://example.com' }],
+      navigationIndex: 1,
+    };
+    const result = recordNavigation(state, 'https://example.com/home', 'Example Domain', {
+      replacePendingTarget: true,
+      pendingTarget: 'https://example.com',
+    });
+    expect(result.navigationStack).toHaveLength(2);
+    expect(result.navigationIndex).toBe(1);
+    expect(result.navigationStack[1]).toEqual({ title: 'Example Domain', url: 'https://example.com/home' });
+  });
+
+  it('recordNavigation ignores replacePendingTarget when pendingTarget does not match the current entry', () => {
+    const state: BrowserNavigationState = {
+      navigationStack: [{ title: 'Home', url: EMPTY_URL }, { title: 'A', url: 'https://a.com' }],
+      navigationIndex: 1,
+    };
+    // pendingTarget points somewhere other than the current entry, so this
+    // should fall through to a normal append rather than an in-place update.
+    const result = recordNavigation(state, 'https://c.com', 'C', {
+      replacePendingTarget: true,
+      pendingTarget: 'https://b.com',
+    });
+    expect(result.navigationStack).toHaveLength(3);
+    expect(result.navigationIndex).toBe(2);
+  });
+
   it('resolveNavigationHistoryDelta returns null at either end of the stack', () => {
     const state: BrowserNavigationState = { navigationStack: [{ title: 'A', url: 'https://a.com' }], navigationIndex: 0 };
     expect(resolveNavigationHistoryDelta(state, -1)).toBeNull();
