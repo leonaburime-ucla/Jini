@@ -88,8 +88,17 @@ function hasFunction(record: Record<string, unknown>, key: string): boolean {
   return typeof record[key] === 'function';
 }
 
-function failure(reason: string, details?: unknown): JiniHostFailure {
-  return { ok: false, reason, ...(details === undefined ? {} : { details }) };
+// OD's original `failure(reason, details?)` accepts an optional `details`
+// carried over from `packages/host/src/actions.ts`, but every call site in
+// that file (and every call site here) only ever supplies `reason` — the
+// `details` plumbing is exercised solely by OD's `normalize.ts` (a
+// project-import-result normalizer, an explicitly out-of-scope OD product
+// concept per source-map.md). With no caller in this file ever passing
+// `details`, keeping the parameter here would be untestable dead code, so
+// it's dropped; `JiniHostFailure.details` remains part of the public type
+// for any external implementer that wants to populate it directly.
+function failure(reason: string): JiniHostFailure {
+  return { ok: false, reason };
 }
 
 export function isJiniHostBridge(value: unknown): value is JiniHostBridge {

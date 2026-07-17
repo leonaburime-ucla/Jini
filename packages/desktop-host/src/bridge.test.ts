@@ -48,6 +48,23 @@ describe('isJiniHostBridge', () => {
     expect(isJiniHostBridge(null)).toBe(false);
     expect(isJiniHostBridge('nope')).toBe(false);
   });
+
+  it('rejects a bridge whose client is not a record', () => {
+    const host = createMockJiniHost();
+    expect(isJiniHostBridge({ ...host, client: 'electron' })).toBe(false);
+    expect(isJiniHostBridge({ ...host, client: null })).toBe(false);
+  });
+
+  it('rejects a non-string client.platform', () => {
+    const host = createMockJiniHost();
+    expect(isJiniHostBridge({ ...host, client: { ...host.client, platform: 123 } })).toBe(false);
+  });
+
+  it('accepts a string client.osLocale and rejects a non-string one', () => {
+    const host = createMockJiniHost();
+    expect(isJiniHostBridge({ ...host, client: { ...host.client, osLocale: 'en-US' } })).toBe(true);
+    expect(isJiniHostBridge({ ...host, client: { ...host.client, osLocale: 42 } })).toBe(false);
+  });
 });
 
 describe('getJiniHost / isJiniHostAvailable / detectJiniHostClientType', () => {
@@ -91,6 +108,32 @@ describe('installMockJiniHost', () => {
     expect(isJiniHostAvailable()).toBe(false);
   });
 
+  it('the default mock shell.openPath resolves ok without an override', async () => {
+    const uninstall = installMockJiniHost();
+    expect(await openHostPath('/tmp/default-open-path')).toEqual({ ok: true });
+    uninstall();
+  });
+
+  it('installs on both a custom scope and a distinct nested scope.window', () => {
+    const windowObject: Record<string, unknown> = {};
+    const scope = { window: windowObject } as JiniHostGlobalScope;
+    const uninstall = installMockJiniHost({ scope });
+    expect(Object.prototype.hasOwnProperty.call(scope, JINI_HOST_GLOBAL)).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(windowObject, JINI_HOST_GLOBAL)).toBe(true);
+    uninstall();
+    expect(Object.prototype.hasOwnProperty.call(scope, JINI_HOST_GLOBAL)).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(windowObject, JINI_HOST_GLOBAL)).toBe(false);
+  });
+
+  it('uninstall restores a value that existed on the target before install, rather than deleting it', () => {
+    const previousHost = { marker: 'pre-existing' };
+    (globalThis as Record<string, unknown>)[JINI_HOST_GLOBAL] = previousHost;
+    const uninstall = installMockJiniHost();
+    expect(isJiniHostAvailable()).toBe(true);
+    uninstall();
+    expect((globalThis as Record<string, unknown>)[JINI_HOST_GLOBAL]).toBe(previousHost);
+  });
+
   it('action wrappers report unavailable when no host is installed', async () => {
     expect(await openHostExternalUrl('https://example.test')).toMatchObject({ ok: false });
     expect(await openHostPath('/tmp/x')).toMatchObject({ ok: false });
@@ -103,5 +146,98 @@ describe('installMockJiniHost', () => {
     });
     expect(await checkJiniHostUpdaterAvailability()).toEqual({ available: true });
     uninstall();
+  });
+
+  it('openHostPath succeeds against an installed host and reports unavailable when the bridge throws', async () => {
+    const uninstall = installMockJiniHost({
+      host: { shell: { openPath: async () => ({ ok: true }) } },
+    });
+    expect(await openHostPath('/tmp/x')).toEqual({ ok: true });
+    uninstall();
+
+    const uninstallThrowingError = installMockJiniHost({
+      host: {
+        shell: {
+          openPath: async () => {
+            throw new Error('path does not exist');
+          },
+        },
+      },
+    });
+    expect(await openHostPath('/tmp/missing')).toEqual({ ok: false, reason: 'path does not exist' });
+    uninstallThrowingError();
+
+    const uninstallThrowingNonError = installMockJiniHost({
+      host: {
+        shell: {
+          openPath: async () => {
+            throw 'permission denied';
+          },
+        },
+      },
+    });
+    expect(await openHostPath('/root/x')).toEqual({ ok: false, reason: 'permission denied' });
+    uninstallThrowingNonError();
+  });
+
+  it('openHostExternalUrl reports unavailable when the bridge throws (Error and non-Error)', async () => {
+    const uninstallError = installMockJiniHost({
+      host: {
+        shell: {
+          openExternal: async () => {
+            throw new Error('no default browser configured');
+          },
+        },
+      },
+    });
+    expect(await openHostExternalUrl('https://example.test')).toEqual({ ok: false, reason: 'no default browser configured' });
+    uninstallError();
+
+    const uninstallNonError = installMockJiniHost({
+      host: {
+        shell: {
+          openExternal: async () => {
+            throw 'not a URL';
+          },
+        },
+      },
+    });
+    expect(await openHostExternalUrl('not-a-url')).toEqual({ ok: false, reason: 'not a URL' });
+    uninstallNonError();
+  });
+
+  it('checkJiniHostUpdaterAvailability reports unavailable when the host build has no updater extension point', async () => {
+    const uninstall = installMockJiniHost();
+    expect(await checkJiniHostUpdaterAvailability()).toEqual({
+      ok: false,
+      reason: 'host build does not support the updater extension point',
+    });
+    uninstall();
+  });
+
+  it('checkJiniHostUpdaterAvailability reports unavailable when the bridge throws (Error and non-Error)', async () => {
+    const uninstallError = installMockJiniHost({
+      host: {
+        updater: {
+          checkAvailability: async () => {
+            throw new Error('updater channel unreachable');
+          },
+        },
+      },
+    });
+    expect(await checkJiniHostUpdaterAvailability()).toEqual({ ok: false, reason: 'updater channel unreachable' });
+    uninstallError();
+
+    const uninstallNonError = installMockJiniHost({
+      host: {
+        updater: {
+          checkAvailability: async () => {
+            throw 'updater unreachable';
+          },
+        },
+      },
+    });
+    expect(await checkJiniHostUpdaterAvailability()).toEqual({ ok: false, reason: 'updater unreachable' });
+    uninstallNonError();
   });
 });
