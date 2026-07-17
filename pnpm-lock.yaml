@@ -61,6 +61,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/desktop-host:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/http: {}
 
   packages/node-host: {}
