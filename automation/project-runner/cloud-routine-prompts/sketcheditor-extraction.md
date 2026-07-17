@@ -1,8 +1,9 @@
 # Cloud prompt — `SketchEditor.tsx` extraction (filled in from the template)
 
 Filled in from `god-component-extraction-template.md` for the next item after the two canaries
-already in flight/landed (`ConnectorsBrowser.tsx` done, `DesignSystemFlow.tsx` progress-card in
-PR #1, `PreviewDrawOverlay.tsx` still in flight via Codex Cloud). Per the consolidation map in
+already landed (`ConnectorsBrowser.tsx` done, `DesignSystemFlow.tsx` progress-card in PR #1;
+`PreviewDrawOverlay.tsx` was reverted after an independent review found undisclosed gaps and is
+open again — see `god-component-extraction.md`). Per the consolidation map in
 `docs/jini-port/god-components-extraction-plan.md`, `SketchEditor.tsx` is an **own feature** —
 standalone, no known duplicate elsewhere in the 23-file sweep, no cluster dependency to resolve
 first. Paste the block below into Codex Cloud (or a Claude Code routine) as-is.
