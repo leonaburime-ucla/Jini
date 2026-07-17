@@ -277,3 +277,142 @@ None beyond the TypeScript standard library + DOM lib types
 `lib` list). No `@open-design/*` specifier, no `Open Design`/`OD_`/
 `--od-stamp`/`/tmp/open-design` product-identity string — verified by grep
 across `packages/ui/src/**`.
+
+---
+
+## Section: ui-extraction-plan.md §A — flat-group items (2026-07-17)
+
+Scope: `docs/jini-port/ui-extraction-plan.md` section A only (13 components,
+1 hook, 3 utils). Run via a cloud routine, testing whether frontend/component
+porting (as opposed to prior backend-milestone cloud runs) works through this
+mechanism — see the honesty note at the end of this section for what that
+surfaced.
+
+This is the **first real content in `packages/ui/src/components/` and
+`src/hooks/`**, and the first task to add `react`/`react-dom` as real
+dependencies of this package (`peerDependencies` + `devDependencies` for
+building/testing within the package itself; `@types/react`, `@types/react-dom`,
+`@testing-library/react`, `@testing-library/user-event`, and `jsdom` were
+added as devDependencies for component tests). `packages/ui/tsconfig.json`
+gained `"jsx": "react-jsx"`. A new `src/utils/` slot was added per the plan
+(components/ and hooks/ already existed from the prior utility-layer task).
+
+### Ported verbatim (or near-verbatim, cosmetic only)
+
+| Jini file | Origin | Transform |
+|---|---|---|
+| `src/components/Icon.tsx` | `Icon.tsx` | Verbatim. 849-line pure `name -> <svg>` switch, zero deps, zero OD references — the pattern-setter for this bucket per the plan. |
+| `src/components/RemixIcon.tsx` | `RemixIcon.tsx` | Verbatim. |
+| `src/components/AgentIcon.tsx` | `AgentIcon.tsx` | Verified generic per the plan's flag: the `ICON_EXT`/`MONO_ICONS` tables are coding-agent-CLI brand ids (claude, codex, gemini, aider, devin, …), not an OD product list. Added an optional `basePath` prop (default `/agent-icons`, matching the origin's hardcoded path) so a host can serve assets from elsewhere — the one behavioral addition in this row. |
+| `src/components/Loading.tsx` | `Loading.tsx` | Verbatim logic. `DesignCardSkeleton`'s doc comment dropped its "DesignsTab grid" framing (an OD feature name) since the shape itself — thumbnail over meta lines — is a generic card-loading pattern; CSS class names (`design-card`, `skeleton-block`, …) are left as-is since they read as generic content-shape names, not product identity. |
+| `src/components/PaletteTweaks.tsx` | `PaletteTweaks.tsx` | **Verified dead code**: re-ran the plan's zero-fan-in check with a fresh grep across `components-original/` — still zero real consumers. Shipped anyway per the routine's instruction (small, self-contained, correct); flagged explicitly with an inline `NOTE` comment rather than silently presented as a normal port. |
+| `src/utils/auto-open-file.ts` | `auto-open-file.ts` | Verbatim logic. Comment wording lightly reworded to drop OD-specific framing (dropped a reference to a specific internal source file path). |
+| `src/hooks/useInView.ts` | `plugins-home/useInView.ts` | Verbatim. |
+
+### Ported with generification beyond the plan's own notes
+
+The plan flagged `CustomSelect`/`PaletteTweaks` (dead-code) and named the
+KitErrorBoundary/LanguageMenu adjustments explicitly; everything else in its
+table was implicitly "mechanical move." Reading each file surfaced more OD
+coupling than the plan's one-line "Verify before porting" column called out —
+consistent with the plan's own warning elsewhere to keep checking real
+consumers/content, not just trust the classification. Recorded here in full
+rather than glossed over:
+
+| Jini file | Origin | What was OD-specific, and what changed |
+|---|---|---|
+| `src/components/Toast.tsx` | `Toast.tsx` | Logic verbatim. CSS class hooks renamed `od-toast*` → `jini-toast*` — not on the AGENTS.md banned-string list (that's `OD_`/`Open Design` literal, not lowercase `od-`), but `od-` unmistakably reads as an Open-Design-branded class prefix in a package whose whole mandate is product-neutral, so renamed for genuine (not just regex-clean) neutrality. |
+| `src/components/TooltipLayer.tsx` | `TooltipLayer.tsx` | Same `od-tooltip*` → `jini-tooltip*` rename (trigger class, layer class, the suppressed-native-title data attribute). This component reads a cross-component contract (`.jini-tooltip[data-tooltip]`), so `AppChromeHeader.tsx` below was updated to emit the new class name to keep the contract intact. |
+| `src/components/CustomSelect.tsx` | `CustomSelect.tsx` | **Verified dead code** (see above) — shipped anyway, flagged with an inline `NOTE` comment. Same `od-select*` → `jini-select*` rename as Toast/TooltipLayer. |
+| `src/components/KitErrorBoundary.tsx` | `KitErrorBoundary.tsx` + `.module.css` | Per the routine's explicit instruction: swapped the concrete `reportHandledException` analytics import for an injected `onError` callback prop, defaulting to a no-op. Also dropped: the `useT()` i18n hook (this package has no i18n system; `title`/`retryLabel` are now plain-English string props with defaults) and the `.module.css` import (this package has no CSS-module-aware build step yet — flattened to plain `jini-kit-error*` class names, same as every other component in this batch; the underlying visual CSS itself was not ported, consistent with Toast/CustomSelect/TooltipLayer not shipping CSS either). |
+| `src/components/LanguageMenu.tsx` | `LanguageMenu.tsx` | Per the routine's explicit instruction: `LOCALES`/`LOCALE_LABEL` are now a `locales: LocaleOption[]` prop instead of a hardcoded import. Also dropped: OD's `useI18n()` context (replaced with `locale`/`onLocaleChange` props — the component is now fully controlled) and the `motion/react` (Framer Motion) animation — the origin's `popoverIn`/`staggerContainer`/`listItem` variants live in OD's own `../motion` module and pulling in a whole animation library as a transitive dependency for one menu's open/close felt like scope creep for a single flat-group item; replaced with a plain conditional-render (open/close is instant, no exit animation) and left animation as something a host's own CSS can add via the popover's className. |
+| `src/components/WorkingDirPicker.tsx` | `WorkingDirPicker.tsx` + `.module.css` | Dropped `useT()` (replaced with a `labels` prop, spread over English defaults) and the `.module.css` import (flattened to plain `jini-working-dir-*` class names, same rationale as KitErrorBoundary — no CSS-module build step in this package yet, and no CSS shipped). Doc comments' references to "the Home composer" / "the in-project composer" (OD's specific two call sites) reworded to describe the shape generically. |
+| `src/components/AppChromeHeader.tsx` | `AppChromeHeader.tsx` | Dropped `useT()` — `backLabel` already existed as an overridable prop in the origin, just widened its default from a translated string to a plain-English literal (`'Back'`). Updated its `od-tooltip` trigger class to `jini-tooltip`, matching the `TooltipLayer.tsx` rename above so the two still work together. |
+| `src/components/ExportDiagnosticsButton.tsx` | `ExportDiagnosticsButton.tsx` | The largest single deviation in this batch. The origin declared a **global `Window.openDesignDesktop`** API (an Electron contextBridge binding) and hardcoded `DIAGNOSTICS_FILENAME_PREFIX = 'open-design-diagnostics'` — both unmistakably product identity, even though neither string matches the AGENTS.md banned-list regex literally (`openDesignDesktop` isn't `OD_`; `open-design-diagnostics` isn't `Open Design` with a space). Read closely, this file is exactly the kind of component the plan's own footnote warns about — "these turn out narrower than they look on a closer read" — just not one the plan's per-file table had flagged. Generified: the global was replaced with an injected `desktopBridge?: DesktopExportBridge` prop (same shape, now caller-supplied instead of read off `window`); `filenamePrefix` and `exportPath` (was hardcoded `/api/diagnostics/export`) are now props with generic defaults (`'diagnostics'`, same path kept as the default since it's a reasonable convention, not a product name). Dropped `useT()` for a `labels` prop. Renamed the exported component from `ExportDiagnosticsRow` to `ExportDiagnosticsButton` to match the plan's target filename. |
+| `src/utils/localized-url.ts` | `enterpriseUrl.ts` | **Not a mechanical move — the biggest finding of this task.** The origin hardcoded OD's actual marketing domain (`https://open-design.ai`, plus a `127.0.0.1:17574` local-dev-server special case) and OD's own locale-to-landing-page-segment table. That's not reusable logic sitting next to OD-only consumers (which is what the plan's footnote anticipated for this file) — it's OD's own marketing URL, full stop, and doesn't belong in a product-neutral engine package even unported-but-dormant. What's actually generic is the *algorithm* (resolve locale → URL segment, falling back to the base's default language), so that's what was kept: `buildLocalizedUrl(locale, { baseUrl, localeSegments })` takes both the base URL and the segment table as caller-supplied arguments. Renamed the file since `enterpriseUrl` names an OD feature ("the enterprise landing page") that no longer exists in this version. |
+| `src/utils/markdown-scroll-sync.ts` | `markdown-scroll-sync.ts` | Logic verbatim (this was already generic — no OD coupling found). Added `micromark`/`micromark-extension-gfm` as real (non-dev) dependencies since `extractMarkdownBlockLines` needs them at runtime. One small generification: `measurePreviewBlockOffsets` took a hardcoded `.markdown-rendered` selector for the preview root; added it as an optional `previewSelector` parameter (same default) so a host isn't forced into that exact class name. |
+
+### Component tests
+
+Every component and the hook got real interaction tests via
+`@testing-library/react` + `@testing-library/user-event` (jsdom), not just
+render smoke tests, for anything with actual state/logic: `CustomSelect`
+(open/select/disabled/grouped/Escape), `Toast` (TTL auto-dismiss, code pins
+open, stale-closure re-arm bug regression test), `KitErrorBoundary` (catch +
+onError + retry), `LanguageMenu` (open/select/Escape), `WorkingDirPicker`
+(pick/recent/clear/labels), `TooltipLayer` (show/hide/Escape/class-gating),
+`PaletteTweaks` (select/deselect/hover-preview/Escape),
+`ExportDiagnosticsButton` (desktop-bridge success/failure/cancel, HTTP
+fallback with a mocked `fetch`), `AgentIcon` (known/mono/fallback paths),
+`useInView` (mocked `IntersectionObserver`, once vs. continuous tracking, no-IO
+fallback). `Icon`/`RemixIcon`/`AppChromeHeader`/`Loading` (purely
+presentational) got lighter smoke-level tests. `auto-open-file.ts` and
+`markdown-scroll-sync.ts`'s pure functions got thorough unit tests;
+`localized-url.ts` got a handful of cases. `measureEditorBlockOffsets`/
+`measurePreviewBlockOffsets` (DOM-measurement-heavy, need real layout) were
+left untested — jsdom doesn't compute real box metrics, so a test would only
+assert against jsdom's fixed zero-size stand-ins, not the actual algorithm.
+
+Component tests need a jsdom DOM. This package's `vitest.config.ts` (shared
+with the parallel i18n/observability porting task — see that section above)
+sets `environment: 'jsdom'` package-wide since most of this package's tests
+touch the DOM; the two tests that assert real *no*-DOM behavior
+(`dom-subscriptions` SSR-safety, `zip`'s native-`Blob` reliance) opt back out
+per-file via `// @vitest-environment node`. This task's own new test files
+carry a redundant `// @vitest-environment jsdom` pragma (harmless alongside
+the package default — they were written before the jsdom-vs-node reconciliation
+above landed on `main`) rather than being cleaned up, to avoid re-touching 14
+files for a no-op.
+
+### Neutrality check
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` across
+every file in this section: clean (no matches). A second, stricter self-imposed
+pass — `grep -rn "od-\|open-design\.ai\|openDesignDesktop"` (catching
+lowercase-prefix and non-regex-exact product identity the literal banned list
+wouldn't catch) — is also clean, after the `od-*` → `jini-*` class renames and
+the `ExportDiagnosticsButton`/`localized-url` generification described above.
+
+### Honesty note — running this kind of task as a cloud routine
+
+Requested explicitly by the routine prompt, since this is the first cloud run
+doing frontend/component porting rather than a backend milestone:
+
+- The plan document's per-file "Verify before porting" column was accurate
+  where it existed, but several files it marked with a bare `—` (implying
+  "just move it") turned out to need real generification once actually read
+  in full — `ExportDiagnosticsButton.tsx`'s global `window.openDesignDesktop`
+  and `enterpriseUrl.ts`'s hardcoded `open-design.ai` domain being the two
+  clearest examples. A plan written from a file-list + grep sweep (`r5`) is a
+  good triage pass but is not a substitute for reading each file before
+  porting it — this task budgeted time to do that and it paid off twice.
+- Porting 13 React components pulled in `react`/`react-dom` as this package's
+  first-ever framework dependency, plus a testing stack
+  (`@testing-library/react`, `@testing-library/user-event`, `jsdom`) and a
+  markdown-parsing dependency (`micromark`). None of that was flagged as
+  necessary in the plan doc itself — it only becomes obvious once you look at
+  what these specific files actually import. A cloud-routine prompt for
+  component-porting work should expect to make (and should explicitly budget
+  time for) real dependency/build-config decisions, not just file moves.
+- jsdom-specific test failures were the main time sink, not the porting
+  itself: (1) this task originally defaulted the package to Node and opted
+  new component tests into jsdom per-file — reasonable in isolation, but a
+  rebase onto `main` found the parallel i18n/observability task had landed
+  the *opposite* choice first (package-wide `environment: 'jsdom'`, with the
+  two SSR-safety tests opted back out via `// @vitest-environment node`, see
+  its own `fix(ui): reconcile test-environment conflict` commit) — reconciled
+  by adopting theirs, since more of this package's tests need jsdom than need
+  raw Node, and it was already the precedent on `main`; (2)
+  `@testing-library/react` needs an explicit `afterEach(cleanup)` wired
+  through a setup file in this repo's vitest setup (no auto-detection without
+  `test.globals: true`), or renders silently accumulate across tests in the
+  same file; (3) jsdom's lack of real layout (`getBoundingClientRect` always
+  zero) makes hover-dependent interaction tests (the working-directory
+  picker's hover-opens-submenu behavior) behave differently than a real
+  browser — `userEvent.click`'s simulated pointer travel can spuriously fire
+  `mouseleave` on a hover-tracked ancestor. None of these are React-vs-Node
+  issues, they're specifically about mixing DOM-dependent and DOM-free tests
+  in one package and about component *interaction* testing (not just
+  rendering) — worth calling out explicitly for whoever runs the next
+  component-porting routine, since none of it was visible from the plan doc
+  or from the prior (Node-only) utils-porting task's precedent.

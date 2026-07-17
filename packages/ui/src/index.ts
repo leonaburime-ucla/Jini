@@ -1,9 +1,7 @@
 // @jini/ui — generic, product-neutral UI primitives.
 // See packages/ui/README.md for scope and packages/ui/source-map.md for
 // provenance (multiple porting tasks land content here in parallel; see
-// that file's per-section breakdown). Real component/feature-slice content
-// is still blocked on the components-sweep tasks in
-// docs/jini-port/ui-extraction-plan.md.
+// that file's per-section breakdown).
 
 export * from './features/i18n/index.js';
 export * from './features/observability/index.js';
@@ -13,3 +11,22 @@ export * from './utils/sse.js';
 export * from './utils/copy-to-clipboard.js';
 export * from './utils/appearance.js';
 export * from './utils/dom-subscriptions.js';
+export * from './utils/auto-open-file.js';
+export * from './utils/localized-url.js';
+export * from './utils/markdown-scroll-sync.js';
+
+export * from './hooks/useInView.js';
+
+export * from './components/Icon.js';
+export * from './components/RemixIcon.js';
+export * from './components/AgentIcon.js';
+export * from './components/Toast.js';
+export * from './components/Loading.js';
+export * from './components/TooltipLayer.js';
+export * from './components/CustomSelect.js';
+export * from './components/KitErrorBoundary.js';
+export * from './components/LanguageMenu.js';
+export * from './components/WorkingDirPicker.js';
+export * from './components/AppChromeHeader.js';
+export * from './components/ExportDiagnosticsButton.js';
+export * from './components/PaletteTweaks.js';

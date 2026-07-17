@@ -39,16 +39,24 @@ separate deliberately — see the chat-core/chat-react split discussion in
   specifically (feature-local hooks live inside their own `features/<domain>/`
   instead).
 - `src/utils/` — non-component pure helpers and small stateful browser-API
-  wrappers that don't need the full ports+dependencies ceremony (bucket A of
-  `docs/jini-port/ui-extraction-plan.md`). Added in the i18n/observability/utils
-  porting task; see `packages/ui/source-map.md`.
+  wrappers that don't need the full ports+dependencies ceremony. Added in the
+  i18n/observability/utils porting task (2026-07-16); see
+  `packages/ui/source-map.md`.
 
 ## Status
 
-`src/features/i18n/` and `src/features/observability/` plus 7 `src/utils/`
-files are populated — see `packages/ui/source-map.md` for full provenance.
-`src/components/` (the flat-group bucket from
-`docs/jini-port/ui-extraction-plan.md` §A) and the vertical-slice features
-(`byok-config`, `mcp-config`, `rich-text-input`, `workspace-tabs`) are still
-pending, blocked on the same cbm-mcp/graphify import-coupling sweep of OD's
-`apps/web/src/components/` (217 files) described in `recon/r5-components-sweep.md`.
+Real content has landed in several parallel passes — see
+`packages/ui/source-map.md` for full per-section provenance:
+
+- `src/utils/` — a framework-free DOM/pure-function layer (2026-07-16), plus
+  a second batch (i18n/observability-adjacent utils: notifications, uuid,
+  platform, etc., also 2026-07-16).
+- `src/features/i18n/` and `src/features/observability/` (2026-07-16).
+- `src/components/` and `src/hooks/` — `docs/jini-port/ui-extraction-plan.md`
+  section A's flat-group components and the `useInView` hook (2026-07-17) —
+  the first content in these two directories, and the first task to pull in
+  `react`/`react-dom` as real dependencies of this package.
+
+Section B (vertical-slice `features/<domain>/` work: `byok-config`,
+`mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
+(cross-package routing) of the extraction plan are not started.
