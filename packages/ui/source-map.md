@@ -1,15 +1,29 @@
 # `@jini/ui` — provenance
 
-Origin: vendored snapshot at
-`integrations/open-design/reference/web-src-directories/{i18n,observability,utils}/`
-(read-only source for this task; real consumer check done against
-`integrations/open-design/reference/components-original/`, falling back to
-`integrations/open-design/reference/od-web-src.orig/` where a consumer wasn't
-in the smaller snapshot). Covers the i18n/observability/utils porting task
-only — see `docs/jini-port/ui-extraction-plan.md` for the separate
-components/features-bucket work (not touched here).
+Origin: `integrations/open-design/reference/web-src-directories/` (vendored
+snapshot of OD's `apps/web/src/{runtime,providers,state,lib,media,analytics,
+styles,i18n,observability,utils}`), per `docs/jini-port/ui-extraction-plan.md`
+and `docs/jini-port/recon/r4-webui.md`.
 
-## i18n (`src/features/i18n/`)
+If you are adding a new section to this file, append it below rather than
+rewriting the whole document — multiple tasks land content here in parallel
+and a merge conflict on this file is expected and fine (the Coordinator
+reconciles it).
+
+---
+
+## Section: i18n/observability/utils sweep (2026-07-16)
+
+Scope: `web-src-directories/{i18n,observability,utils}/` per the Programmer
+dispatch for this task (read-only source; real consumer check done against
+`integrations/open-design/reference/components-original/`, falling back to
+`integrations/open-design/reference/od-web-src.orig/` where a consumer
+wasn't in the smaller snapshot). Covers this porting task only — see
+`docs/jini-port/ui-extraction-plan.md` for the separate components/
+features-bucket work (not touched here), and the next section below for the
+parallel runtime/providers/state/lib/media/analytics/styles sweep.
+
+### i18n (`src/features/i18n/`)
 
 Ported the *mechanism*, not OD's translated copy. `i18n/content.<locale>.ts`
 (19 files) and `i18n/content.ts`/`plugin-content.ts`/`runErrors.ts` were
@@ -32,7 +46,7 @@ package's existing "ports for injectable behavior" spirit than inventing a
 | `src/features/i18n/context.tsx` | `i18n/index.tsx` (`I18nProvider`, `useI18n`, `useT`) | `DICTS` (the 19 imported locale modules) replaced by a `dictionaries` prop — the host passes its own `Record<Locale, D>`. `LS_KEY`/`LS_SOURCE_KEY`/`MANUAL_LOCALE_SOURCE` (OD's `'open-design:locale'` localStorage keys — product-identity strings) replaced by an injected `LocalePersistencePort` (`getStoredLocale`/`setStoredLocale`); omitting it means session-only locale state, no persistence at all. `readDesktopHostOsLocale()` (imported `getOpenDesignHost` from OD's desktop-host bridge package) dropped entirely — replaced by an optional `detectSystemLocale` prop a host supplies for the same "read the real OS locale on a packaged desktop shell" need; default detector is a plain `navigator.languages` check. `RTL_LOCALES` (hard-coded `['ar', 'fa']`) is now `rtlLocales` with a slightly larger built-in default (`['ar', 'fa', 'he', 'ur']`) and is host-overridable. `useI18n()`'s no-provider fallback and `I18nProvider` with no `dictionaries` at all now behave identically (both fall through every lookup to the raw key) via one shared `interpolate()` helper, rather than duplicating the interpolation regex in two places as the origin did. |
 | `src/features/i18n/index.ts` | *(new — barrel)* | Re-exports `types`/`locale`/`context`. |
 
-### Dropped: manual-vs-auto-detected locale tagging
+#### Dropped: manual-vs-auto-detected locale tagging
 
 Origin's `detectInitialLocale` tagged every `localStorage` write with a
 `'manual'` source marker so only a deliberate "change language" action could
@@ -43,7 +57,7 @@ implements it inside its own `LocalePersistencePort` (e.g. only call
 `setStoredLocale` from an explicit user action, never from the initial
 detection path).
 
-## Observability (`src/features/observability/`)
+### Observability (`src/features/observability/`)
 
 All 8 origin files were checked for actual imports before assuming
 genericity, per the task brief. Every one of them imports exactly one
@@ -73,7 +87,7 @@ required by the brief:
 | `install.ts` | `observability/install.ts` | `installWebObservability` now takes a `WebObservabilityOptions` bag (`reporter` applied to every sub-observer, plus per-observer nested option overrides) instead of taking no arguments. Still wires exactly the same 5 observers the origin did (boot timing, long task, resource error, visibility, white screen) and still deliberately excludes `iframe.ts`/`stuck-run.ts` — both need a call site (an iframe mount, a run lifecycle), matching the origin module's own boundary; this was not changed. |
 | `index.ts` | *(new — barrel)* | Re-exports every module above. |
 
-## Utils (`src/utils/`)
+### Utils (`src/utils/`)
 
 New slot on this package (README.md updated), per
 `docs/jini-port/ui-extraction-plan.md`'s bucket-A note that this directory
@@ -85,7 +99,7 @@ import-count — the same method the extraction plan used to catch
 `composer-detail-position.ts` belonging to chat-composer rather than
 generic UI.
 
-### Ported (7)
+#### Ported (7)
 
 | Jini file | Origin file | Consumers checked | What changed |
 |---|---|---|---|
@@ -97,7 +111,7 @@ generic UI.
 | `uuid.ts` | `utils/uuid.ts` | `DesignSystemFlow.tsx`, `ProjectView.tsx`, `workspace/useConversationChat.ts` (OD-product + chat domain; but the generator itself has zero type/domain coupling — same "ship reusable logic early" reasoning as `smooth-scroll-to-top.ts`) | Verbatim logic; doc comment's product-identity example reworded generically. |
 | `visual-stability.ts` | `utils/visualStability.ts` | `DesignFilesPanel.tsx`, `SettingsDialog.tsx`, `plugins-home/cards/{DesignSystemSurface,HtmlSurface}.tsx` | Genericized the hard-coded product-identity storage key (`'open-design:visual-stability'`) into a configurable `storageKey` parameter, defaulting to `'jini:visual-stability'`. |
 
-### Not ported — belongs elsewhere (10)
+#### Not ported — belongs elsewhere (10)
 
 Real consumers are chat/composer/agent-runtime/BYOK domain, or the file is
 itself an OD-product feature — per the task brief, these do **not** belong
@@ -117,7 +131,7 @@ in `@jini/ui` even though several read as "pure" in isolation.
 | `utils/promptTemplateDsCategories.ts` | none found in either vendored snapshot | OD-product (maps a design-system's metadata to prompt-template gallery categories; imports OD's `DesignSystemSummary`). |
 | `utils/visibleAgents.ts` | `McpClientSection.tsx`, `AgentPicker.tsx`, `InlineModelSwitcher.tsx`, `SettingsDialog.tsx`, `AvatarMenu.tsx` | agent-runtime/chat-react (agent-list filtering); imports OD's `AgentInfo` and hard-codes the `'byok-opencode'` agent id. |
 
-### Not ported — OD-specific / forbidden import (1, overlapping the table above)
+#### Not ported — OD-specific / forbidden import (1, overlapping the table above)
 
 | Origin file | Reason |
 |---|---|
@@ -125,33 +139,141 @@ in `@jini/ui` even though several read as "pure" in isolation.
 
 (`utils/pluginRequiredInputs.ts` above also has a forbidden `@open-design/contracts` import, in addition to being OD-plugin-specific.)
 
-## Dependencies
+### Dependencies added by this section
 
 `@jini/ui` now depends on `react` (the i18n feature is a React context +
-hooks). `react-dom`, `@testing-library/react`, `@types/react`,
-`@types/react-dom`, and `jsdom` are dev-only, for tests. No `@jini/*`
-package dependency, no OD product import — verified by grep across
-`packages/ui/src/**` for `@open-design/*` specifiers and the
+hooks) — the first `@jini/*` package to do so; the parallel
+runtime/providers/state/lib/media/analytics/styles sweep below explicitly
+deferred adding React for exactly this reason, so this section's i18n work
+is what actually adds the toolchain. `react-dom`, `@testing-library/react`,
+`@types/react`, `@types/react-dom`, and `jsdom` are dev-only, for tests. No
+`@jini/*` package dependency, no OD product import — verified by grep
+across `packages/ui/src/**` for `@open-design/*` specifiers and the
 `Open Design`/`OD_`/`--od-stamp`/`/tmp/open-design` product-identity strings
 (both clean; see Programmer handoff report for the exact commands run).
 
-## Package scaffolding added
+### Package scaffolding added by this section
 
-- `packages/ui/tsconfig.json` (didn't exist yet) — same `tsconfig.base.json`
-  extension pattern as `packages/protocol/tsconfig.json`, plus `"jsx":
-  "react-jsx"` and `"lib": ["ES2023", "DOM", "DOM.Iterable"]` (this package's
-  code touches `window`/`document`/`localStorage`/`PerformanceObserver`/etc.,
-  unlike the framework-free packages built so far).
+- `packages/ui/tsconfig.json` — merged with the parallel sweep's version of
+  this same new file: kept `"lib": ["ES2023", "DOM", "DOM.Iterable"]` from
+  that section and added `"jsx": "react-jsx"` for this section's React
+  content.
 - `packages/ui/vitest.config.ts` + `packages/ui/vitest.setup.ts` (new) — jsdom
   test environment and a global `@testing-library/react` `cleanup()` after
-  each test (needed once real component tests existed in this package; no
-  prior `@jini/*` package needed a DOM test environment).
+  each test (needed once real component tests existed in this package).
 - `packages/ui/package.json` — added `react` as a runtime dependency and the
   test-only React/DOM/testing-library dev dependencies described above.
 
-## Not ported — out of task scope (unchanged from before this task)
+### Not ported — out of task scope (unchanged from before this task)
 
 `src/features/byok-config/`, `mcp-config/`, `rich-text-input/`,
 `workspace-tabs/`, and the flat-group `src/components/` bucket (Icon.tsx,
 Toast.tsx, etc.) from `docs/jini-port/ui-extraction-plan.md` are untouched —
 explicitly out of scope per this task's brief.
+
+---
+
+## Section: runtime/providers/state/lib/media/analytics/styles sweep (2026-07-16)
+
+Scope: fast reusability triage of the 7 directories above (~118 files) per
+the Programmer dispatch for this task. Full per-file verdict table is in the
+Programmer's handoff report, not duplicated here; this section only covers
+what was actually ported.
+
+### Ported
+
+| Jini file | Origin | Transform |
+|---|---|---|
+| `src/utils/zip.ts` | `runtime/zip.ts` | Verbatim (already zero-dependency, zero OD refs) — minimal stored-mode ZIP encoder. Comment wording lightly reworded (dropped the OD-specific "Download as ZIP button" framing). |
+| `src/utils/sse.ts` | `providers/sse.ts` | Verbatim logic (`parseSseFrame`) — already confirmed generic by `docs/jini-port/recon/r4-webui.md` §1c. Comment reworded to describe the generic transport-agnostic use (not OD's specific daemon SSE contract). |
+| `src/utils/copy-to-clipboard.ts` | `lib/copy-to-clipboard.ts` | Verbatim. Dropped the comment's reference to OD's `FileViewer.tsx`/issue #451 provenance. |
+| `src/utils/appearance.ts` | `state/appearance.ts` | Generified: dropped the `AppTheme` import from OD's `../types` (replaced with a local `AppearanceTheme = 'light' \| 'dark'` union — same two values the function actually branches on). `DEFAULT_ACCENT_COLOR` changed from OD's brand accent (`#c96442`) to a neutral default (`#2563eb`, previously the second swatch) since a shared package should not ship one consumer's brand color as the default; `#c96442` kept as a swatch option. Everything else (CSS custom-property names, `color-mix` formula, `normalizeAccentColor`/`resolveAccentColor`/`applyAppearanceToDocument` logic) is verbatim. |
+| `src/utils/dom-subscriptions.ts` | `providers/dom/chat-pane.dom.ts` (`subscribeOutsideClickOrEscape`, `subscribeWindowEvent`, `subscribeVisibleFocusOrVisibilityChange`, `scheduleInterval`, `scheduleTimeout`, `openExternalUrl`, `getDocumentBody`) + `providers/dom/chat-composer.dom.ts` (`getViewportSize`) | Verbatim logic. These two origin files were headed "DOM bridges owned exclusively by the chat-pane/chat-composer slice," but the specific functions ported have zero chat/composer/pane-specific logic in their bodies (pure window/document event-subscription primitives) — re-verified against real usage before lifting, same check `docs/jini-port/ui-extraction-plan.md`'s §A footnotes call out for `composer-detail-position.ts` etc. Functions left behind in the origin files (`readComposerDraft`/`writeComposerDraft`, `openDesignSystemPickerTrigger`, `subscribeComposerPortalRect`, `subscribeComposerLayerHeight`) are domain-specific (composer draft persistence, a composer-specific trigger selector, composer/pane rect-tracking tied to layout assumptions) and were left for `@jini/chat-react`. |
+
+All five files have real unit tests (`*.test.ts` alongside each). None of
+`copyToClipboard`/`applyAppearanceToDocument`/`dom-subscriptions.ts` had a
+jsdom/happy-dom test environment available in this repo yet (no `jsdom` or
+`happy-dom` package installed, no `vitest.config.ts` at the repo root or in
+this package) — tests stub the specific `window`/`document`/`navigator`
+surface each function touches by hand via `vi.stubGlobal` rather than adding
+a new devDependency mid-task. `packages/ui/tsconfig.json` was created
+(previously missing) with `lib: ["ES2023", "DOM", "DOM.Iterable"]` added on
+top of the repo's `tsconfig.base.json` so these DOM-touching utilities
+typecheck.
+
+### Explicitly not ported (belongs elsewhere or not reusable)
+
+See the Programmer handoff report's full per-file table for the complete
+list (~110 files). Summary of the routing decisions:
+
+- **`@jini/chat-react` / `@jini/agent-runtime` territory** (chat/tool/model
+  domain, not generic UI): `runtime/{markdown.tsx, shiki.ts, file-ops.ts,
+  chat-events.ts (already resolved as not-portable in
+  `packages/chat-core/source-map.md`), resume.ts, in-project-link.ts,
+  browser-action-executor.ts, design-toolbox.ts}`, `providers/{daemon.ts
+  (already known — see r4), anthropic*.ts, *-compatible.ts, api-proxy.ts,
+  connection-test.ts, provider-models.ts, elevenlabs-voices.ts}`,
+  `providers/dom/{chat-composer.dom.ts, chat-pane.dom.ts}`'s remaining
+  domain-specific functions (see table above).
+- **`@jini/renderers-react` territory** (artifact/preview rendering):
+  `runtime/{srcdoc.ts (deferred, confirmed still present at 2,881 lines —
+  not touched), react-component.ts, exports.ts, jsx-module-refs.ts}`,
+  `lib/use-deck-preview-scale.ts`.
+- **`features/byok-config` territory** (out of scope this task, owned by
+  another task per the dispatch brief): `state/apiProtocols.ts` is the exact
+  OD-specific data (`SUGGESTED_MODELS_BY_PROTOCOL`, `API_KEY_PLACEHOLDERS`,
+  etc.) `docs/jini-port/ui-extraction-plan.md` §B already flags as the
+  residue a `ProviderCatalogPort` needs to abstract away; `lib/
+  resolve-finalize-request.ts` and `providers/connection-test.ts`/
+  `provider-models.ts` are the BYOK finalize/connection-test transport this
+  feature's `dependencies.ts` would bind to.
+- **`features/mcp-config` territory** (out of scope this task, owned by
+  another task): `state/mcp.ts` is the daemon transport (`fetchMcpServers`,
+  `saveMcpServers`, MCP OAuth flow) that feature's `dependencies.ts` should
+  bind to once that slice is built. Not ported here per the dispatch brief's
+  explicit instruction to only note this, not build the slice.
+- **Not reusable — OD product-specific** (brand kit, decks/presenter, AMR
+  billing, plugins, onboarding, media-provider catalogs, analytics/PostHog
+  wiring, project/workspace state): the remainder of `runtime/`
+  (amr-*, brand-*, deck-thumbnail-parser.ts, design-kit.ts,
+  design-md-parse.ts, design-system-package-audit.ts, kit-*.ts,
+  plugin-source.ts, powered-preview.ts, slide-nav.ts, speaker-notes.ts,
+  useBrand*.ts), `providers/{registry.ts, project-events.ts}` (already
+  flagged OD-specific by r4), all of `state/` except `appearance.ts`
+  (`apiProtocols.ts` routed above; `config.ts`, `libraryHandoff.ts`,
+  `maxTokens.ts`, `onboarding-profile.ts`, `project-locations.ts`,
+  `projects.ts`, `workspace.ts`, `litellm-models.json`), all of `media/`
+  (OD's media-generation model registry, daemon-paired), all of `analytics/`
+  (every file couples to `@open-design/contracts/analytics` and/or
+  `posthog-js`; the host-supplied-tracker *pattern* is a design decision for
+  a future `@jini/chat-react` analytics context, not a file to port), and
+  the rest of `lib/` (`whats-new.ts`, `build-continue-in-cli-toast.ts`,
+  `build-clipboard-prompt.ts`, `parse-provenance.ts`, `pod-members.ts`,
+  `updater.ts`).
+- **Deferred, not a rejection**: `lib/use-stable-handler.ts`
+  (`useStableHandler`) is a genuinely generic React hook (zero OD imports)
+  but this package had no React dependency wired up yet at the time of this
+  section's work (`packages/ui/package.json` had none before this task, and
+  no other `@jini/*` package in this repo depended on `react` yet either) —
+  porting one hook was not enough justification to add the first React/JSX
+  toolchain wiring as a side effect of a file-triage task. The parallel
+  i18n/observability/utils section above did add that wiring for its own
+  context+hooks work; `use-stable-handler.ts` itself is still not ported —
+  left for whichever task next needs it for real.
+- **`styles/` — human decision needed, not touched**: this task only ports
+  `.ts`/`.tsx`. `styles/tokens.css`, `styles/primitives.css`, and
+  `styles/base.css` read as genuinely generic design tokens/resets (color
+  vars, button/form primitives, box-sizing reset) worth a human look for a
+  future design-tokens package; everything else (`chat.css`,
+  `design-system-flow.css`, `shell.css`, `entrance.css`,
+  `social-share.css`, `modal-window-drag.css`, `plan-badge.css`, and the
+  `home/`, `viewer/`, `workspace/`, `remixicon/` subdirectories) is
+  OD-product-specific by name and content.
+
+### Dependencies
+
+None beyond the TypeScript standard library + DOM lib types
+(`packages/ui/tsconfig.json` adds `"DOM"`/`"DOM.Iterable"` to the base
+`lib` list). No `@open-design/*` specifier, no `Open Design`/`OD_`/
+`--od-stamp`/`/tmp/open-design` product-identity string — verified by grep
+across `packages/ui/src/**`.

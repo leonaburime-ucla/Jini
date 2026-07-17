@@ -1,0 +1,86 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyToClipboard } from './copy-to-clipboard.js';
+
+// This package has no jsdom/happy-dom test environment wired up yet (see
+// packages/ui/source-map.md), so DOM globals are stubbed by hand here with
+// the minimum surface `copyToClipboard` actually touches, rather than
+// pulling in a full DOM test environment for one function.
+
+class FakeElement {
+  style: Record<string, string> = {};
+  value = '';
+  focus(_options?: { preventScroll?: boolean }): void {}
+  select(): void {}
+  get isConnected(): boolean {
+    return true;
+  }
+}
+
+function installFakeDom(options: { execCommandResult: boolean | 'throw' }) {
+  const appendChild = vi.fn();
+  const removeChild = vi.fn();
+  const execCommand = vi.fn(() => {
+    if (options.execCommandResult === 'throw') throw new Error('execCommand unsupported');
+    return options.execCommandResult;
+  });
+  const priorFocusElement = new FakeElement();
+  const focusSpy = vi.spyOn(priorFocusElement, 'focus');
+
+  vi.stubGlobal('HTMLElement', FakeElement);
+  vi.stubGlobal('document', {
+    activeElement: priorFocusElement,
+    createElement: () => new FakeElement(),
+    execCommand,
+    body: { appendChild, removeChild },
+  });
+
+  return { appendChild, removeChild, execCommand, priorFocusElement, focusSpy };
+}
+
+describe('copyToClipboard', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns true via the Clipboard API without touching the DOM fallback', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const { appendChild } = installFakeDom({ execCommandResult: true });
+
+    await expect(copyToClipboard('hello')).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith('hello');
+    expect(appendChild).not.toHaveBeenCalled();
+  });
+
+  describe('when the Clipboard API rejects', () => {
+    beforeEach(() => {
+      vi.stubGlobal('navigator', {
+        clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      });
+    });
+
+    it('falls back to execCommand(copy) and restores prior focus', async () => {
+      const { appendChild, removeChild, execCommand, focusSpy } = installFakeDom({
+        execCommandResult: true,
+      });
+
+      await expect(copyToClipboard('fallback text')).resolves.toBe(true);
+      expect(appendChild).toHaveBeenCalledTimes(1);
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(removeChild).toHaveBeenCalledTimes(1);
+      expect(focusSpy).toHaveBeenCalled();
+    });
+
+    it('returns false when execCommand reports failure', async () => {
+      installFakeDom({ execCommandResult: false });
+      await expect(copyToClipboard('x')).resolves.toBe(false);
+    });
+
+    it('returns false when execCommand throws', async () => {
+      const { removeChild } = installFakeDom({ execCommandResult: 'throw' });
+      await expect(copyToClipboard('x')).resolves.toBe(false);
+      // Cleanup still runs even when execCommand throws.
+      expect(removeChild).toHaveBeenCalledTimes(1);
+    });
+  });
+});
