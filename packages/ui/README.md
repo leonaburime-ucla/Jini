@@ -38,11 +38,17 @@ separate deliberately — see the chat-core/chat-react split discussion in
 - `src/hooks/` — generic hooks that don't belong to one feature domain
   specifically (feature-local hooks live inside their own `features/<domain>/`
   instead).
+- `src/utils/` — non-component pure helpers and small stateful browser-API
+  wrappers that don't need the full ports+dependencies ceremony (bucket A of
+  `docs/jini-port/ui-extraction-plan.md`). Added in the i18n/observability/utils
+  porting task; see `packages/ui/source-map.md`.
 
 ## Status
 
-Empty stub as of 2026-07-16. Real content is blocked on a cbm-mcp/graphify
-import-coupling sweep of OD's `apps/web/src/components/` (217 files) to
-classify generic vs. OD-product vs. mixed — the same kind of analysis
-`recon/r1-daemon.md` did for the daemon and `recon/r4-webui.md` did for the
-chat/artifact surface, not yet done for the broader component zone.
+`src/features/i18n/` and `src/features/observability/` plus 7 `src/utils/`
+files are populated — see `packages/ui/source-map.md` for full provenance.
+`src/components/` (the flat-group bucket from
+`docs/jini-port/ui-extraction-plan.md` §A) and the vertical-slice features
+(`byok-config`, `mcp-config`, `rich-text-input`, `workspace-tabs`) are still
+pending, blocked on the same cbm-mcp/graphify import-coupling sweep of OD's
+`apps/web/src/components/` (217 files) described in `recon/r5-components-sweep.md`.
