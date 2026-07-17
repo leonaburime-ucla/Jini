@@ -1,3 +1,4 @@
+import { useT } from '../../i18n/index.js';
 import type { ProviderTab } from '../types.js';
 
 export interface ProviderTabBarProps {
@@ -8,9 +9,11 @@ export interface ProviderTabBarProps {
 }
 
 /** Config-driven provider-tab bar. A single-provider host still renders one tab. */
-export function ProviderTabBar({ tabs, selectedId, onSelect, ariaLabel = 'Connector provider' }: ProviderTabBarProps) {
+export function ProviderTabBar({ tabs, selectedId, onSelect, ariaLabel }: ProviderTabBarProps) {
+  const t = useT();
+  const resolvedAriaLabel = ariaLabel ?? t('Connector provider');
   return (
-    <div className="connectors-provider-tabs" role="tablist" aria-label={ariaLabel}>
+    <div className="connectors-provider-tabs" role="tablist" aria-label={resolvedAriaLabel}>
       {tabs.map((tab) => {
         const active = tab.id === selectedId;
         return (
@@ -23,7 +26,7 @@ export function ProviderTabBar({ tabs, selectedId, onSelect, ariaLabel = 'Connec
             onClick={() => onSelect(tab.id)}
             data-testid={`connectors-provider-tab-${tab.id}`}
           >
-            {tab.label}
+            {t(tab.label)}
           </button>
         );
       })}

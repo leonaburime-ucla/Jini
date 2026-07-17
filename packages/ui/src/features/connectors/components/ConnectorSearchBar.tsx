@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useT } from '../../i18n/index.js';
 import { Icon } from '../../../components/Icon.js';
 
 export interface ConnectorSearchBarProps {
@@ -17,10 +18,14 @@ export function ConnectorSearchBar({
   onChange,
   disabled = false,
   onFocus,
-  placeholder = 'Search connectors',
-  ariaLabel = 'Search connectors',
-  clearAriaLabel = 'Clear search',
+  placeholder,
+  ariaLabel,
+  clearAriaLabel,
 }: ConnectorSearchBarProps) {
+  const t = useT();
+  const resolvedPlaceholder = placeholder ?? t('Search connectors');
+  const resolvedAriaLabel = ariaLabel ?? t('Search connectors');
+  const resolvedClearAriaLabel = clearAriaLabel ?? t('Clear search');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const hasQuery = value.trim().length > 0;
 
@@ -44,8 +49,8 @@ export function ConnectorSearchBar({
         onFocus={onFocus}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
+        placeholder={resolvedPlaceholder}
+        aria-label={resolvedAriaLabel}
         disabled={disabled}
         data-testid="connectors-search-input"
       />
@@ -53,7 +58,7 @@ export function ConnectorSearchBar({
         <button
           type="button"
           className="toolbar-search-clear"
-          aria-label={clearAriaLabel}
+          aria-label={resolvedClearAriaLabel}
           onClick={() => {
             onChange('');
             inputRef.current?.focus();

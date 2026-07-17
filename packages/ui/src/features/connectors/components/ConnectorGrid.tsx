@@ -1,3 +1,4 @@
+import { useT } from '../../i18n/index.js';
 import type { Connector, ConnectorAction, ConnectorAuthorizationPendingState } from '../types.js';
 import { ConnectorCard } from './ConnectorCard.js';
 import { ConnectorGate, type ConnectorGateProps } from './ConnectorGate.js';
@@ -42,18 +43,23 @@ export function ConnectorGrid({
   getCategoryLabel,
   onClearSearch,
   gate,
-  emptyNoMatchTitle = (query) => `No connectors match "${query}"`,
-  emptyNoMatchBody = 'Try a different search term.',
-  emptyNoMatchAction = 'Clear search',
+  emptyNoMatchTitle,
+  emptyNoMatchBody,
+  emptyNoMatchAction,
 }: ConnectorGridProps) {
+  const t = useT();
+  const resolvedEmptyNoMatchTitle =
+    emptyNoMatchTitle ?? ((query: string) => t('No connectors match "{query}"', { query }));
+  const resolvedEmptyNoMatchBody = emptyNoMatchBody ?? t('Try a different search term.');
+  const resolvedEmptyNoMatchAction = emptyNoMatchAction ?? t('Clear search');
   return (
     <div className={`connector-grid-wrap${locked ? ' is-masked' : ''}`} data-testid="connector-grid-wrap">
       {hasNoResults && !locked ? (
         <div className="tab-empty connectors-empty" role="status" aria-live="polite" data-testid="connectors-empty">
-          <p className="connectors-empty-title">{emptyNoMatchTitle(searchQuery.trim())}</p>
-          <p className="connectors-empty-body">{emptyNoMatchBody}</p>
+          <p className="connectors-empty-title">{resolvedEmptyNoMatchTitle(searchQuery.trim())}</p>
+          <p className="connectors-empty-body">{resolvedEmptyNoMatchBody}</p>
           <button type="button" className="ghost connectors-empty-action" onClick={onClearSearch}>
-            {emptyNoMatchAction}
+            {resolvedEmptyNoMatchAction}
           </button>
         </div>
       ) : (

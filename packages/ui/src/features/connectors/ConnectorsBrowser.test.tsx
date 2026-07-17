@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../i18n/index.js';
 import { ConnectorsBrowser } from './ConnectorsBrowser.js';
 import { createFakeConnectorsDependencies } from './dependencies.js';
 import type { Connector } from './types.js';
@@ -87,5 +88,16 @@ describe('ConnectorsBrowser', () => {
 
     await userEvent.click(screen.getByTestId('connector-drawer-close'));
     expect(screen.queryByTestId('connector-drawer')).toBeNull();
+  });
+
+  it('renders translated copy when mounted under an I18nProvider with a matching dictionary', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    render(
+      <I18nProvider dictionaries={{ fr: { Connectors: 'Connecteurs', Connect: 'Connecter' } }} initialLocale="fr">
+        <ConnectorsBrowser unlocked dependencies={dependencies} />
+      </I18nProvider>,
+    );
+    expect(screen.getByText('Connecteurs')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Connecter' })).toBeTruthy());
   });
 });

@@ -1,8 +1,8 @@
 /**
- * Generic OAuth-integration-marketplace domain types. Ported from OD's
- * ConnectorsBrowser.tsx (`integrations/open-design/reference/components-original/`),
- * stripped of Composio/OD wire-shape specifics — see
- * `packages/ui/source-map.md` for the full provenance note.
+ * Generic OAuth-integration-marketplace domain types. Ported from the origin
+ * product's ConnectorsBrowser.tsx (see the vendored reference tree cited in
+ * `packages/ui/source-map.md`), stripped of Composio/product-specific
+ * wire-shape specifics — see that file for the full provenance note.
  */
 
 export type ConnectorStatus = 'available' | 'connected' | 'error' | 'disabled';

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { useT } from '../i18n/index.js';
 import type { ConnectorsDependencies } from './ports.js';
 import type { ConnectorAuthResultEvent, ProviderTab } from './types.js';
 import { createFakeConnectorsDependencies } from './dependencies.js';
@@ -47,6 +48,7 @@ export function ConnectorsBrowser({
   onConnectorAuthResult,
   onConnectorsChanged,
 }: ConnectorsBrowserProps) {
+  const t = useT();
   const deps = useMemo(() => dependencies ?? createFakeConnectorsDependencies(), [dependencies]);
   const [filter, setFilter] = useState('');
   const [selectedProvider, setSelectedProvider] = useState<string>(providerTabs[0]?.id ?? DEFAULT_PROVIDER_TAB_ID);
@@ -86,9 +88,9 @@ export function ConnectorsBrowser({
         detail.detailConnectorId,
         authorization.authError,
         authorization.cancelFailed,
-        AUTHORIZATION_CANCEL_FAILED_MESSAGE,
+        t(AUTHORIZATION_CANCEL_FAILED_MESSAGE),
       ),
-    [catalog.connectors, detail.detailConnectorId, authorization.authError, authorization.cancelFailed],
+    [catalog.connectors, detail.detailConnectorId, authorization.authError, authorization.cancelFailed, t],
   );
 
   const handleProviderTabSelect = useCallback(
@@ -109,8 +111,8 @@ export function ConnectorsBrowser({
       <div className="tab-panel-toolbar">
         <div className="toolbar-left connectors-heading">
           <div>
-            <h2>Connectors</h2>
-            <p>Connect third-party tools and services.</p>
+            <h2>{t('Connectors')}</h2>
+            <p>{t('Connect third-party tools and services.')}</p>
           </div>
         </div>
         <div className="toolbar-right">
@@ -131,7 +133,7 @@ export function ConnectorsBrowser({
       <ConnectorAlertList alerts={alerts} onOpenDetails={detail.openDetails} />
 
       {catalog.loading ? (
-        <CenteredLoader label="Loading…" />
+        <CenteredLoader label={t('Loading…')} />
       ) : (
         <ConnectorGrid
           connectors={filteredConnectors}

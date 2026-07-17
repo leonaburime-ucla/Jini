@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { SyntheticEvent } from 'react';
+import { useT } from '../../i18n/index.js';
 import type { Connector, ConnectorAction, ConnectorAuthorizationPending } from '../types.js';
 import {
   formatToolsBadge,
@@ -54,9 +55,12 @@ export function ConnectorDetailDrawer({
   onLoadMoreTools,
   onOpenExternalUrl,
   getCategoryLabel = (category) => category,
-  cancelFailedMessage = "Couldn't cancel authorization. Try again.",
-  continueInBrowserLabel = 'Continue in browser',
+  cancelFailedMessage,
+  continueInBrowserLabel,
 }: ConnectorDetailDrawerProps) {
+  const t = useT();
+  const resolvedCancelFailedMessage = cancelFailedMessage ?? t("Couldn't cancel authorization. Try again.");
+  const resolvedContinueInBrowserLabel = continueInBrowserLabel ?? t('Continue in browser');
   const isConnected = connector.status === 'connected';
   const isConnecting = pendingAction === 'connect';
   const isDisconnecting = pendingAction === 'disconnect';
@@ -129,7 +133,7 @@ export function ConnectorDetailDrawer({
             <div className="connector-drawer-status">
               <span className={`connector-status-pill status-${statusTone}`}>
                 <span className="connector-status-dot" aria-hidden />
-                {isAuthorizationPending ? 'Authorization pending' : statusLabel(connector.status)}
+                {isAuthorizationPending ? t('Authorization pending') : t(statusLabel(connector.status))}
               </span>
               {showToolsBadge ? (
                 <span className="connector-drawer-tool-count-chip" title={toolsBadgeLabel}>
@@ -143,7 +147,7 @@ export function ConnectorDetailDrawer({
             type="button"
             className="ghost connector-drawer-close"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('Close')}
             data-testid="connector-drawer-close"
           >
             <Icon name="close" size={14} />
@@ -153,14 +157,14 @@ export function ConnectorDetailDrawer({
         <div className="connector-drawer-body">
           {connector.description ? (
             <section className="connector-drawer-section">
-              <h3 className="connector-drawer-section-title">About</h3>
+              <h3 className="connector-drawer-section-title">{t('About')}</h3>
               <p className="connector-drawer-description">{connector.description}</p>
               {isAuthorizationPending ? (
                 <div className="connector-authorization-block" role="status">
-                  <p className="connector-authorization-hint">Authorization in progress. It should finish shortly.</p>
+                  <p className="connector-authorization-hint">{t('Authorization in progress. It should finish shortly.')}</p>
                   {authorizationPending.redirectUrl ? (
                     <button type="button" className="connector-authorization-link" onClick={continueAuthorization}>
-                      {continueInBrowserLabel}
+                      {resolvedContinueInBrowserLabel}
                     </button>
                   ) : null}
                 </div>
@@ -174,13 +178,13 @@ export function ConnectorDetailDrawer({
           ) : null}
           {authorizationCancelFailed ? (
             <p className="connector-authorization-hint connector-authorization-error" role="alert">
-              {cancelFailedMessage}
+              {resolvedCancelFailedMessage}
             </p>
           ) : null}
 
           <section className="connector-drawer-section">
             <div className="connector-drawer-section-head">
-              <h3 className="connector-drawer-section-title">Details</h3>
+              <h3 className="connector-drawer-section-title">{t('Details')}</h3>
               {isConnected ? (
                 <button
                   type="button"
@@ -190,32 +194,32 @@ export function ConnectorDetailDrawer({
                   onClick={() => onDisconnect(connector.id)}
                 >
                   {isDisconnecting ? <Icon name="spinner" size={12} /> : null}
-                  <span>Disconnect</span>
+                  <span>{t('Disconnect')}</span>
                 </button>
               ) : null}
             </div>
             <dl className="connector-drawer-details">
               <div>
-                <dt>Status</dt>
-                <dd>{statusLabel(connector.status)}</dd>
+                <dt>{t('Status')}</dt>
+                <dd>{t(statusLabel(connector.status))}</dd>
               </div>
               <div>
-                <dt>Category</dt>
+                <dt>{t('Category')}</dt>
                 <dd>{categoryLabel}</dd>
               </div>
               <div>
-                <dt>Provider</dt>
+                <dt>{t('Provider')}</dt>
                 <dd>{connector.provider}</dd>
               </div>
               {accountLabel ? (
                 <div>
-                  <dt>Account</dt>
+                  <dt>{t('Account')}</dt>
                   <dd>{accountLabel}</dd>
                 </div>
               ) : null}
               {connector.lastError ? (
                 <div className="connector-drawer-details-error">
-                  <dt>Error</dt>
+                  <dt>{t('Error')}</dt>
                   <dd>{connector.lastError}</dd>
                 </div>
               ) : null}
@@ -224,16 +228,16 @@ export function ConnectorDetailDrawer({
 
           <section className="connector-drawer-section">
             <h3 className="connector-drawer-section-title">
-              Tools <span className="connector-drawer-count">{toolCount}</span>
+              {t('Tools')} <span className="connector-drawer-count">{toolCount}</span>
             </h3>
             {isLoadingTools ? (
               <p className="connector-drawer-empty">
-                <Icon name="spinner" size={12} /> Loading tools…
+                <Icon name="spinner" size={12} /> {t('Loading tools…')}
               </p>
             ) : toolDetailsUnavailable ? (
-              <p className="connector-drawer-empty">Tool details unavailable ({toolCount})</p>
+              <p className="connector-drawer-empty">{t('Tool details unavailable ({count})', { count: toolCount })}</p>
             ) : actualToolCount === 0 ? (
-              <p className="connector-drawer-empty">No tools available</p>
+              <p className="connector-drawer-empty">{t('No tools available')}</p>
             ) : (
               <>
                 <ul className="connector-drawer-tools">
@@ -258,7 +262,7 @@ export function ConnectorDetailDrawer({
                     onClick={() => onLoadMoreTools(connector.id, connector.toolsNextCursor!)}
                   >
                     {toolsPreviewLoading ? <Icon name="spinner" size={12} /> : null}
-                    <span>Load more tools</span>
+                    <span>{t('Load more tools')}</span>
                   </button>
                 ) : null}
               </>
@@ -276,11 +280,11 @@ export function ConnectorDetailDrawer({
               onClick={() => onConnect(connector.id)}
             >
               {isConnecting || isAuthorizationPending ? <Icon name="spinner" size={12} /> : null}
-              <span>{isAuthorizationPending ? 'Authorization pending' : 'Connect'}</span>
+              <span>{isAuthorizationPending ? t('Authorization pending') : t('Connect')}</span>
             </button>
             {isAuthorizationPending ? (
               <button type="button" className="ghost connector-action is-cancel-authorization" onClick={() => onCancelAuthorization(connector.id)}>
-                <span>Cancel authorization</span>
+                <span>{t('Cancel authorization')}</span>
               </button>
             ) : null}
           </footer>

@@ -1,4 +1,5 @@
 import type { KeyboardEvent as ReactKeyboardEvent, SyntheticEvent } from 'react';
+import { useT } from '../../i18n/index.js';
 import type { Connector, ConnectorAction, ConnectorAuthorizationPending } from '../types.js';
 import { formatToolsBadge, getConnectorDisplayToolCount, statusLabel } from '../rules.js';
 import { Icon } from '../../../components/Icon.js';
@@ -33,10 +34,13 @@ export function ConnectorCard({
   onCancelAuthorization,
   onOpenDetails,
   getCategoryLabel = (category) => category,
-  cancelFailedMessage = "Couldn't cancel authorization. Try again.",
-  continueInBrowserLabel = 'Continue in browser',
+  cancelFailedMessage,
+  continueInBrowserLabel,
   onOpenExternalUrl,
 }: ConnectorCardProps) {
+  const t = useT();
+  const resolvedCancelFailedMessage = cancelFailedMessage ?? t("Couldn't cancel authorization. Try again.");
+  const resolvedContinueInBrowserLabel = continueInBrowserLabel ?? t('Continue in browser');
   const isConnecting = pendingAction === 'connect';
   const isDisconnecting = pendingAction === 'disconnect';
   const isConnected = connector.status === 'connected';
@@ -78,7 +82,7 @@ export function ConnectorCard({
       role="button"
       tabIndex={disabled ? -1 : 0}
       aria-disabled={disabled || undefined}
-      aria-label={`Open details for ${connector.name}`}
+      aria-label={t('Open details for {name}', { name: connector.name })}
       onClick={openDetails}
       onKeyDown={onKeyActivate}
     >
@@ -90,15 +94,15 @@ export function ConnectorCard({
             {isConnected ? (
               <span
                 className={`connector-status-dot connector-card-title-dot status-${connector.status}`}
-                aria-label={statusLabel(connector.status)}
-                title={statusLabel(connector.status)}
+                aria-label={t(statusLabel(connector.status))}
+                title={t(statusLabel(connector.status))}
                 role="img"
               />
             ) : isAuthorizationPending ? (
               <span
                 className="connector-status-dot connector-card-title-dot status-pending"
-                aria-label="Authorization pending"
-                title="Authorization pending"
+                aria-label={t('Authorization pending')}
+                title={t('Authorization pending')}
                 role="img"
               />
             ) : null}
@@ -123,8 +127,8 @@ export function ConnectorCard({
               className={`icon-only connector-action is-disconnect${isDisconnecting ? ' is-loading' : ''}`}
               disabled={!canDisconnect}
               aria-busy={isDisconnecting || undefined}
-              aria-label="Disconnect"
-              title="Disconnect"
+              aria-label={t('Disconnect')}
+              title={t('Disconnect')}
               tabIndex={disabled ? -1 : undefined}
               onMouseDown={stop}
               onKeyDown={stop}
@@ -141,8 +145,8 @@ export function ConnectorCard({
               className={`icon-only connector-action is-connect${isConnecting || isAuthorizationPending ? ' is-loading' : ''}`}
               disabled={!canConnect}
               aria-busy={isConnecting || isAuthorizationPending || undefined}
-              aria-label={isAuthorizationPending ? 'Authorization pending' : 'Connect'}
-              title={isAuthorizationPending ? 'Authorization in progress' : 'Connect'}
+              aria-label={isAuthorizationPending ? t('Authorization pending') : t('Connect')}
+              title={isAuthorizationPending ? t('Authorization in progress') : t('Connect')}
               tabIndex={disabled ? -1 : undefined}
               onMouseDown={stop}
               onKeyDown={stop}
@@ -158,8 +162,8 @@ export function ConnectorCard({
             <button
               type="button"
               className="icon-only connector-action is-cancel-authorization"
-              aria-label="Cancel authorization"
-              title="Cancel authorization"
+              aria-label={t('Cancel authorization')}
+              title={t('Cancel authorization')}
               onMouseDown={stop}
               onKeyDown={stop}
               onClick={(e) => {
@@ -171,18 +175,18 @@ export function ConnectorCard({
             </button>
           ) : null}
           {connector.status === 'error' || connector.status === 'disabled' ? (
-            <span className={`connector-status-pill status-${connector.status}`}>{statusLabel(connector.status)}</span>
+            <span className={`connector-status-pill status-${connector.status}`}>{t(statusLabel(connector.status))}</span>
           ) : null}
         </div>
       </div>
       {authorizationCancelFailed ? (
         <p className="connector-authorization-hint connector-authorization-error" role="alert">
-          {cancelFailedMessage}
+          {resolvedCancelFailedMessage}
         </p>
       ) : null}
       {isAuthorizationPending && authorizationPending.redirectUrl ? (
-        <button type="button" className="connector-authorization-link" title="Authorization in progress" onClick={continueAuthorization}>
-          {continueInBrowserLabel}
+        <button type="button" className="connector-authorization-link" title={t('Authorization in progress')} onClick={continueAuthorization}>
+          {resolvedContinueInBrowserLabel}
         </button>
       ) : null}
     </article>

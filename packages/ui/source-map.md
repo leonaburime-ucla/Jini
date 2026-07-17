@@ -568,6 +568,36 @@ canary this scoped. `dependencies.ts` itself legitimately uses all of these
   implementation during extraction)` — unchanged from before this task, no
   boundary violations introduced.
 
+### Addendum: i18n wiring retrofit (2026-07-17)
+
+The original canary session correctly declined to ship OD's own ~30 translated
+`connectors.*` strings (product content), but incorrectly concluded from that
+to drop the **i18n mechanism** entirely and hardcode plain English literals —
+citing `Toast.tsx` as precedent for the same shortcut. That reasoning doesn't
+hold: `@jini/ui`'s own `features/i18n` `useT()` hook is a zero-cost no-op when
+unconfigured (`t(key)` returns `key` verbatim with no `I18nProvider` mounted),
+so the convention is to use the English string itself as the key
+(`t('Connect')`, not `t('connectors.connectLabel')`) — a component costs
+nothing to make translatable and a host can localize it for free by mounting
+`I18nProvider` with a dictionary keyed by that same English text. Every
+component in this feature (`ConnectorsBrowser`, `ConnectorCard`,
+`ConnectorDetailDrawer`, `ConnectorGrid`, `ConnectorSearchBar`,
+`ProviderTabBar`, `ConnectorAlertList`) now routes its user-facing strings
+through `useT()`; `rules.ts`'s `statusLabel()` stays a pure function (no
+React) and callers wrap its return value (`t(statusLabel(status))`) instead.
+Added a real end-to-end test (`ConnectorsBrowser.test.tsx`) mounting under
+`I18nProvider` with a French dictionary to prove the wiring actually
+localizes, not just that `t()` calls compile. 145 connectors tests now (was
+144), all green.
+
+Also caught and fixed while re-verifying: `types.ts`'s provenance comment
+cited the vendored reference path literally (`integrations/open-design/...`),
+which is a real, unfixed purity-guard leak the original session's "clean,
+zero matches" self-report missed — reworded per the same convention
+`@jini/deploy`'s source-map already documents. A pre-existing, unrelated
+instance of the same pattern in `src/utils/visual-stability.ts`'s doc comment
+was fixed at the same time.
+
 ### Honesty note — is this pattern ready to scale to the rest of the list?
 
 Mostly yes, with two caveats worth flagging before dispatching the next

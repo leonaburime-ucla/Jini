@@ -1,3 +1,4 @@
+import { useT } from '../../i18n/index.js';
 import type { ConnectorPanelAlert } from '../types.js';
 import { Icon } from '../../../components/Icon.js';
 
@@ -8,11 +9,9 @@ export interface ConnectorAlertListProps {
 }
 
 /** Background authorization-failure alerts for connectors not currently open in the detail drawer. */
-export function ConnectorAlertList({
-  alerts,
-  onOpenDetails,
-  openDetailsAriaLabel = (name) => `Open details for ${name}`,
-}: ConnectorAlertListProps) {
+export function ConnectorAlertList({ alerts, onOpenDetails, openDetailsAriaLabel }: ConnectorAlertListProps) {
+  const t = useT();
+  const resolvedOpenDetailsAriaLabel = openDetailsAriaLabel ?? ((name: string) => t('Open details for {name}', { name }));
   if (alerts.length === 0) return null;
   return (
     <div className="connector-panel-alerts">
@@ -30,8 +29,8 @@ export function ConnectorAlertList({
           <button
             type="button"
             className="icon-only connector-panel-alert-action"
-            aria-label={openDetailsAriaLabel(alert.connectorName)}
-            title={openDetailsAriaLabel(alert.connectorName)}
+            aria-label={resolvedOpenDetailsAriaLabel(alert.connectorName)}
+            title={resolvedOpenDetailsAriaLabel(alert.connectorName)}
             onClick={() => onOpenDetails(alert.connectorId)}
           >
             <Icon name="external-link" size={12} />
