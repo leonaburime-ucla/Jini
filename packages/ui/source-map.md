@@ -1224,3 +1224,359 @@ its own canvas primitives):
    peer range, unmet by this package's `react@^19.2.0` — a peer-dependency
    warning only, install and every test above succeeded regardless, but worth
    flagging for whoever next upgrades React in this package.
+
+---
+
+## Section: `features/asset-grid/` — LibrarySection.tsx redo (2026-07-17)
+
+Source: `integrations/open-design/reference/components-original/LibrarySection.tsx`
+(1,401 lines), read in full. Per `docs/jini-port/god-components-extraction-plan.md`'s
+Consolidation map (section B, "Own feature"): `features/asset-grid/` (generic
+`AssetGrid<TAsset>`) ← `LibrarySection.tsx` — "rubber-band multi-select (the
+single cleanest generic core in the whole sweep, per §1.16), facets,
+debounced search, SSE live-merge, day-bucketed grouping, kind-dispatch
+thumbnails." Per r6 §1.16, this is "the second-strongest candidate after
+`ConnectorsBrowser.tsx`."
+
+**This is a from-scratch redo, not a continuation.** A prior attempt at this
+target was never merged: its own draft source-map.md said "product actions
+(delete/…) were host-owned via callbacks" but then shipped no
+`onDeleteSelected` callback prop at all, and it silently dropped the
+grid/timeline view-mode toggle without disclosing the gap. Neither of the
+prior attempt's files exist in this checkout — there was nothing to diff
+against or build on; this section describes a clean-room port.
+
+This is also the first `features/<domain>/` slice built under the **new**
+layout decided 2026-07-17 (see `packages/ui/README.md`): `types.ts`/
+`constants.ts`/`rules.ts`/`ports.ts`/`dependencies.ts`/`index.ts` at the
+feature's top level; `react/hooks/` and `react/components/` hold every file
+that imports React. `features/connectors/` (the only other shipped feature
+at the time) still uses the old flat layout and was read only for its
+internal ports+dependencies+hooks+components+barrel discipline, not its
+exact paths. `features/progress-card/`, named as a second structural
+reference in this task's own dispatch prompt, **does not exist in this
+checkout** — despite `docs/jini-port/god-components-extraction-plan.md` and
+`packages/ui/README.md` both describing it as "✅ landed, PR #1." Flagging
+this discrepancy rather than silently working around it; `features/connectors/`
+alone was sufficient as the structural precedent.
+
+### What shipped — `packages/ui/src/features/asset-grid/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `AssetGridItem` (`{id: string}` constraint), `AssetGridFacetOption`, `AssetGridQuery`, `AssetGridViewMode`, `AssetGridSelectors<TAsset>` (the host-injectable field-reader seam: `getKind`/`getSource`/`getTimestamp`/`getDayKey`/`getTitle`/`getSubtitle`/`matchesKindFilter`/`mapKindToQuery`), plus the 100%-generic `CardRect`/`Band`/`AssetGridDayGroup<TAsset>` shapes ported verbatim from the original's own `CardRect`/`Band` interfaces. |
+| `constants.ts` | `ASSET_ID_ATTR`/`ASSET_ID_SELECTOR` (the rubber-band hit-tester's DOM attribute, generified from the original's two-attribute `data-asset-card`/`data-asset-id` scheme into one `data-asset-grid-id` attribute that both selects and identifies a card), debounce/coalesce defaults, `ALL_FACET_VALUE`. |
+| `rules.ts` | All pure logic, ported 1:1 in behavior: `localDayKey`/`dayKeyFromTimestamp`/`dayHeadingResult`/`dayHeading`/`groupByDay` (day bucketing — `dayHeadingResult` added beyond the original to separate the translatable "Today"/"Yesterday" labels from a locale-formatted date string, which isn't a sensible i18n key); `snapshotCardRects`/`cardIdsInBand` (the rubber-band core, verbatim geometry); `toggleSelection`/`rangeSelection`/`selectAllIds`/`pruneMissingSelection`; `mergeIngestedAssets`/`parseLiveUpdateAssetId` (the SSE merge core, verbatim reconciliation logic, generified id-field name); `buildAssetGridQuery`/`defaultMatchesKindFilter`/`filterByKind` (the query-building + client-side kind-narrowing pair, generified — see the "element vs image" note below); `resolvePreviewClickAction`/`resolveCheckboxClickAction` (new — extracted from what would otherwise be branching inline JSX handlers, per the Phase 8.5 audit); `buildFacetLabelMap`/`resolveFacetLabel` (new — same audit, extracted from an inline `Map` construction in a `useMemo`); `isTypingTarget` (keyboard-shortcut typing-target gate). |
+| `ports.ts` | `AssetGridDataPort<TAsset>` (`fetchAssets`/`fetchAssetById`), `AssetGridLiveUpdatesPort` (`subscribe` with ingest/delete/full-reload handlers), `AssetGridDependencies<TAsset>`. Deliberately **no delete method on any port** — see the bulk-delete manifest row (g) below for why. |
+| `dependencies.ts` | `createFakeAssetGridDataPort` — an in-memory test/demo double (the data transport is genuinely host-specific, matching the canary's own "ship a fake, not a real transport" precedent). `createBrowserSseLiveUpdatesPort` — a **real**, SSR-guarded `EventSource`-backed implementation, shipped for real (not faked) because `EventSource` is a generic browser API with no backend-specific shape beyond a URL and two event names — same reasoning the connectors canary used to justify shipping real `sessionStorage`/`postMessage` bridges instead of fakes. |
+| `react/hooks/useAssetGridData.ts` | Fetch-on-`{active, query}`-change + client-side kind-narrowing pass. Selector functions (`getKind`/`matchesKindFilter`/`mapKindToQuery`) are ref-bridged rather than direct `useCallback` deps, since a host is not guaranteed to pass referentially-stable selectors — an early version of this hook without the ref bridge produced a real "Maximum update depth exceeded" render loop in its own test suite, caught and fixed before this landed (see the hook's own doc comment). |
+| `react/hooks/useAssetGridLiveUpdates.ts` | The SSE reconciliation core, ported behavior-for-behavior from the original's coalescing `flush()`/`schedule()` effect: deletes apply for free, filtered views or ids-with-no-cheap-fetch fall back to a full reload, a burst of ingest events is coalesced over one window and resolved via `Promise.all` + `mergeIngestedAssets`. Kept as one cohesive hook (not split further) per the Phase 6 "one natural owning cluster" guidance the connectors canary also followed for its OAuth-handshake hook. |
+| `react/hooks/useAssetGridSelection.ts` | `selectedIds` state + shift-range anchor + toggle/range/selectAll/clear + the "prune ids that disappeared after a reload" effect. |
+| `react/hooks/useRubberBandDrag.ts` | The rubber-band mouse-drag effect itself (rAF-throttled apply, scroll re-snapshot, empty-click-clears-selection, additive-drag-preserves-base-selection) — wired around the pure `snapshotCardRects`/`cardIdsInBand` core in `rules.ts`. This split (pure geometry in `rules.ts`, DOM/event wiring in its own hook) is what "the cleanest generic core in the whole sweep" (r6 §1.16) actually looks like ported: the core itself needed zero changes beyond a rename, only the wiring around it needed a home. |
+| `react/hooks/useAssetGridKeyboardShortcuts.ts` | Cmd/Ctrl+A / Escape / Delete-Backspace, gated by `enabled` (a host-owned modal/menu), `hasAssets`, `hasSelection`, `isPreviewOpen`, and `isTypingTarget`. |
+| `react/components/AssetCard.tsx` | The generic card: lazy-mounted thumbnail (via the existing `useInView` hook — a direct reuse of the port this package already shipped, not a new lazy-mount implementation), select checkbox, preview button (meta/ctrl→toggle, shift→range, plain→preview, via `resolvePreviewClickAction`), kind/source badges, title/subtitle, a generic "Remove" button wired to an optional `onDeleteAsset` callback, and a `renderCardExtra` slot for the OD-specific origin-navigation row. |
+| `react/components/AssetGridToolbar.tsx` | Search box, kind/source `<select>` facets (hidden entirely when a host supplies no facet options), Grid/Timeline view toggle, a built-in Refresh button (generic — the original's Sync/Upload buttons are OD-specific and left to the `toolbarActions` slot instead). |
+| `react/components/AssetGridBody.tsx` | Grid mode (one flat `assets.map`) vs. timeline mode (`groupByDay` sections, each with a heading + count) — both call the same `renderCard` with the same flat `index`, matching the original's "range/box selection stays consistent across both views" invariant exactly. |
+| `react/components/SelectionActionBar.tsx` | Selected count, Select-all/Clear, a `renderBulkActions` slot for OD-specific bulk actions, and the generic bulk-delete-request button. |
+| `react/components/DeleteConfirmDialog.tsx` | The confirm-UI for bulk delete — count-aware singular/plural copy, Escape-to-close, backdrop-click-to-close, focus-the-confirm-button-on-mount, body-scroll-lock. |
+| `react/components/SelectionBand.tsx` | The rubber-band visual rectangle (`position: fixed` inline, since that's structural to the coordinate space `snapshotCardRects` uses — everything else about its look is left to host CSS). |
+| `react/components/AssetGrid.tsx` | The orchestrator — composes all 5 hooks + `rules.ts` derivations, wires the bulk-delete confirm flow and the per-card delete callback, defaults `dependencies` to the fake data port. |
+| `index.ts` | Public barrel. |
+
+Also added, not asset-grid-specific: `src/hooks/useDebouncedValue.ts` — a
+small generic trailing-debounce hook, promoted out of `useAssetGridData` into
+the package's shared `src/hooks/` bucket (mirrors `useInView`'s placement)
+since debouncing a fast-changing value is not an asset-grid concept.
+
+### The "element vs image" client-side narrowing seam
+
+The original's kind filter has one piece of real OD-specific nuance:
+`element` is a *badge* identity (clipper element-pick captures), not a raw
+storage kind — those captures are stored as `image` and narrowed out
+client-side after a server-side `kind=image` query
+(`matchesKindFilter(a, kind)` in the original). This is exactly the kind of
+per-asset badge-vs-storage-kind split a generic component can't hardcode, so
+it's now two host-injectable seams on `AssetGridSelectors`: `mapKindToQuery`
+(what to actually send the server — OD would map `'element' → 'image'`) and
+`matchesKindFilter` (the client-side narrowing predicate — OD would check
+its own badge-derivation logic). Both default to identity/equality when a
+host doesn't need the split.
+
+### Dropped (OD-specific, non-separable — per r6 and this task's own step 6)
+
+- **`LibraryCard`'s "origin" action row** (design-system/project/edit-as-page
+  navigation — `originDesignSystemId`/`originProjectId`/`navigate`/
+  `onEditAsPage`). Exposed as a `renderCardExtra` slot on `AssetCard`; the
+  generic component renders nothing there unless a host supplies it.
+- **"Multi-select → add to design system"** (the whole `dsMenu*` cluster:
+  `createDesignSystemFromSelection`/`optimizeExistingDesignSystem`/
+  `chatToDesignFromSelection`, `fetchDesignSystems`, the design-system
+  picker menu). Exposed as a `renderBulkActions` slot on
+  `SelectionActionBar`; same "renders nothing unless supplied" default.
+- **Kind-aware thumbnail rendering itself** (`MediaThumb`/`Thumb`/
+  `LibraryThumb`'s image/video/html/font/color switch) — OD-specific in
+  which kinds exist and how each renders, not portable as logic. Exposed as
+  a required `renderThumbnail` prop; only the *lazy-mount-on-scroll*
+  wrapping (via `useInView`) is generic and built in.
+- File upload (`LibraryUploadModal`, the drag-anywhere-to-upload overlay,
+  `openUpload`/`onSectionDrop` family) and the preview modal
+  (`LibraryPreviewModal`, prev/next navigation) — neither is in the required
+  a–i list (see manifest below); both are OD-specific surfaces a host
+  builds itself. `AssetGrid` exposes `onPreview(asset)` as a plain callback
+  (fired with the same meta/ctrl/shift precedence as the original) and
+  otherwise stays out of the preview-modal business entirely.
+- The `Sync` button (`runSync`/`syncLibrary`) — an OD-specific daemon
+  reconciliation action, left to the `toolbarActions` slot alongside Upload.
+- The Composio-style `~90-entry` category label map pattern doesn't apply
+  here (this file never had one), but the same host-supplies-its-own-labels
+  principle applies to kind/source facet `label`s — the generic component
+  only stores/reads `value`s, a host supplies its own display labels via
+  `kindFacets`/`sourceFacets`.
+
+### Retained generic behavior manifest (required a–i)
+
+Every item from this task's own required list, with where it landed and what proves it:
+
+**a. Rubber-band multi-select** (`snapshotCardRects`/`cardIdsInBand`) — ported
+verbatim into `rules.ts`, unchanged geometry/hit-testing logic. Wired by
+`react/hooks/useRubberBandDrag.ts` (rAF-throttled drag, scroll re-snapshot,
+additive/plain-click semantics). Proven by `rules.test.ts`'s
+`snapshotCardRects`/`cardIdsInBand` suites (jsdom-rect fixtures) and
+`useRubberBandDrag.test.ts`'s 4 tests (drag-selects-intersecting-cards,
+mousedown-on-a-card-is-ignored, empty-click-clears-selection,
+shift-held-drag-keeps-prior-selection-as-base) plus
+`AssetGrid.test.tsx`'s end-to-end selection-bar assertions.
+
+**b. Day-bucketed timeline grouping** — `dayHeadingResult`/`dayHeading`/
+`groupByDay` in `rules.ts` (newest-day-first, flat-index-preserved, same
+Today/Yesterday/formatted-date logic as the original's `dayHeading`).
+Rendered by `AssetGridBody.tsx`'s timeline branch. Proven by `rules.test.ts`
+(`dayHeading`/`dayHeadingResult`/`groupByDay` suites, including the
+non-contiguous-same-day-collapse case) and `AssetGridBody.test.tsx` (groups
+by day, newest first, heading + count, flat index preserved) and
+`AssetGrid.test.tsx`'s "Grid/Timeline toggle switches rendering mode" test.
+
+**c. Kind/source facet filtering** — `AssetGridToolbar`'s `<select>`s (hidden
+entirely when a host supplies no facets, vs. the original's always-present
+`KIND_FILTERS`/`SOURCE_FILTERS`), `buildAssetGridQuery`/
+`defaultMatchesKindFilter`/`filterByKind` in `rules.ts` for the query +
+client-narrowing split. Proven by `rules.test.ts`'s query/filter suites,
+`AssetGridToolbar.test.tsx`'s facet-select tests, and `AssetGrid.test.tsx`'s
+"filters by the kind facet" end-to-end test.
+
+**d. Debounced search** — `useDebouncedValue` (250ms default, matching the
+original's trailing debounce), wired in `AssetGrid.tsx`. Proven by
+`useDebouncedValue.test.ts` (2 tests, fake-timer-driven: only the last
+rapid-fire value lands) and `AssetGrid.test.tsx`'s "filters by a debounced
+search" end-to-end test (real timers, short override).
+
+**e. SSE live-merge reconciliation** — `useAssetGridLiveUpdates.ts`, ported
+behavior-for-behavior from the original's coalescing `flush()` (deletes
+free, filtered-view/no-cheap-fetch/ambiguous-null-fetch all fall back to a
+full reload, a burst coalesces into one flush), `mergeIngestedAssets`/
+`parseLiveUpdateAssetId` in `rules.ts` for the actual merge. The real
+transport (`createBrowserSseLiveUpdatesPort`, `EventSource`-backed) lives in
+`dependencies.ts`. Proven by `rules.test.ts`'s merge/parse suites,
+`useAssetGridLiveUpdates.test.ts`'s 9 tests (delete-applies-free,
+ingest-resolves-via-fetchAssetById, filters-active-forces-full-reload,
+onFullReload-forces-reload, no-fetchAssetById-forces-reload,
+null-fetch-forces-reload, burst-coalesces-into-one-flush,
+unsubscribe-on-unmount), and `dependencies.test.ts`'s
+`createBrowserSseLiveUpdatesPort` suite (routes ingest/delete by resolvable
+id, falls back to full-reload for an unparseable payload, closes the
+`EventSource` on unsubscribe).
+
+**f. Grid/Timeline view toggle** — a real, distinct UI mode switch, NOT
+dropped (this is exactly the gap the prior unmerged attempt left
+undisclosed). Confirmed from the original source what each mode actually
+renders (line-referenced in this task's own Reference Preflight): grid is
+one flat `assets.map`; timeline groups the *same* cards into day-bucketed
+`<section>`s, each with a heading + count, sharing the same flat `index`.
+Ported as `viewMode` state in `AssetGrid.tsx` + `AssetGridToolbar`'s
+Grid/Timeline buttons (`aria-pressed`, `data-active`) + `AssetGridBody`'s
+mode switch. Proven by `AssetGridToolbar.test.tsx`'s "view toggle switches
+modes and reflects the active one" test and `AssetGrid.test.tsx`'s
+"Grid/Timeline toggle switches rendering mode" end-to-end test.
+
+**g. Bulk-delete-with-confirm** — a real `onDeleteSelected` callback prop
+(the actual gap the prior attempt left, per this task's own brief) plus a
+real confirm-dialog affordance, both present and tested. `AssetGrid.tsx`'s
+`requestDeleteSelected`/`confirmDelete` wire `SelectionActionBar`'s Delete
+button → `DeleteConfirmDialog` → `onDeleteSelected(ids)` (awaited) → local
+removal from `assets` + cleared selection. `onDeleteAsset` is the equivalent
+single-card callback wired to `AssetCard`'s generic "Remove" button. Proven
+by `DeleteConfirmDialog.test.tsx` (6 tests: singular/plural copy, Cancel,
+confirm, Escape, backdrop-click, focus-on-mount + scroll-lock) and
+`AssetGrid.test.tsx`'s "bulk delete: request → confirm dialog → confirm
+calls onDeleteSelected and removes the items", "bulk delete: cancel closes
+the dialog without calling onDeleteSelected", and "per-card Remove calls
+onDeleteAsset" end-to-end tests.
+
+**h. Keyboard shortcuts** — Cmd/Ctrl+A / Escape / Delete-Backspace, grepped
+directly from the original source (lines 1014–1038 of
+`LibrarySection.tsx`), not assumed from memory. Ported as
+`useAssetGridKeyboardShortcuts.ts`, gated by `enabled` (a host-owned
+modal/menu — mirrors the original's `uploadOpen || confirmDeleteOpen ||
+dsMenuOpen` gate, generified since this package doesn't know about a host's
+own modals), `hasAssets`, `hasSelection`, `isPreviewOpen`, and
+`isTypingTarget` (also ported from the original's inline
+`INPUT`/`TEXTAREA`/`SELECT`/`isContentEditable` check). Proven by
+`useAssetGridKeyboardShortcuts.test.ts`'s 9 tests and `AssetGrid.test.tsx`'s
+"Cmd/Ctrl+A selects all, Escape clears the selection" and "the Delete key
+opens the bulk-delete confirm dialog" end-to-end tests.
+
+**i. Kind-aware thumbnail dispatch** — a required `renderThumbnail` prop on
+`AssetCard`/`AssetGrid` (the dispatch logic itself — image/video/html/font/
+color — is OD-specific in which kinds exist, per r6, so it's host-supplied,
+not ported). What IS generic and built in: the lazy-mount-on-scroll wrapper
+around whatever the host renders, reusing this package's existing
+`useInView` hook rather than reimplementing the original's bespoke
+`LAZY_THUMB_KINDS`/`LibraryThumb` gate. Proven by `AssetCard.test.tsx`'s
+render/interaction tests (the thumbnail slot renders via `renderThumbnail`,
+verified through `useInView`'s existing `IntersectionObserver`-unavailable
+fallback, already covered by `useInView.test.ts`) and `AssetGrid.test.tsx`'s
+end-to-end tests confirming cards render with host-supplied thumbnails.
+
+### i18n wiring
+
+Every user-facing string in every new component (`AssetCard`,
+`AssetGridToolbar`, `SelectionActionBar`, `DeleteConfirmDialog`,
+`AssetGridBody`'s Today/Yesterday headings) is routed through `useT()`, English
+string as the key — no hardcoded literals, no repeat of the original
+connectors-canary mistake of shipping a first pass without the i18n
+mechanism. `dayHeadingResult` in `rules.ts` (pure, no React) returns a
+`{label, translatable}` pair rather than a bare string specifically so the
+component can decide whether to wrap it in `t()` — a locale-formatted date
+string (`toLocaleDateString`) is not a sensible translation key (it varies
+per bucket), only the fixed "Today"/"Yesterday" labels are, mirroring the
+`toolsBadgeTranslation` pattern the connectors canary's independent review
+added for the same "don't wrap a value that bakes dynamic content into the
+key" reason. Verified end-to-end (not just that `t()` calls compile) by
+`AssetCard.test.tsx`'s and `AssetGrid.test.tsx`'s
+mount-under-`I18nProvider`-with-a-French-dictionary tests, asserting the
+translated text actually renders (`Sélectionner`, `Actualiser`, `Tout
+sélectionner`, `Supprimer {count}`, `Supprimer`).
+
+### Phase 8.5 audit — what it caught
+
+Ran the mandated audit (not just the "zero top-level functions" grep)
+across every new file, per the same three blind spots the connectors canary's
+own audit checked:
+
+1. **Inline JSX callbacks with real branching**: found two, both in
+   `AssetCard.tsx` — the preview button's `onClick` (3-way branch on
+   meta/ctrl/shift) and the select-checkbox's `onClick` (2-way branch on
+   shift, plus `stopPropagation`). Extracted the branching *logic* into pure
+   `rules.ts` functions (`resolvePreviewClickAction`/
+   `resolveCheckboxClickAction`, now unit-tested in isolation) and wrapped
+   each call site in a named `useCallback` (`handlePreviewClick`/
+   `handleCheckboxClick`) that just dispatches on the result — matching the
+   connectors canary's own "extract the LOGIC, the registration/dispatch can
+   stay" resolution for its `ProviderTabBar`/gate `onClick` handlers.
+   `DeleteConfirmDialog.tsx`'s backdrop `onMouseDown={(e) => { if
+   (e.target === e.currentTarget) onCancel(); }}` was left inline — the same
+   single-line "click outside" DOM comparison `ConnectorDetailDrawer.tsx`
+   already establishes as acceptable inline, not business logic.
+2. **`useMemo` bodies with multi-line/inline-construction derivations**:
+   found one — `AssetGrid.tsx`'s `kindFacetLabels`/`sourceFacetLabels`
+   memos were building a `Map` inline. Extracted to `rules.ts` as
+   `buildFacetLabelMap` (+ `resolveFacetLabel` for the lookup-with-fallback
+   read side, itself replacing an inline `?? kindValue`/ternary at the
+   `renderCard` call site), both now unit-tested. Every remaining `useMemo`
+   in the new files is a one-line call into an already-pure `rules.ts`
+   function or a plain default-selection expression, the target end state.
+3. **Orphaned `useState`/`useRef`**: enumerated every one across all 21 new
+   source files (listed by hand): `AssetGrid.tsx`'s `kind`/`source`/
+   `search`/`viewMode`/`confirmDeleteOpen`/`containerRef`,
+   `DeleteConfirmDialog.tsx`'s `confirmBtnRef`, `useAssetGridData.ts`'s
+   `assets`/`loading` state + 3 selector-bridging refs,
+   `useAssetGridLiveUpdates.ts`'s 3 latest-value-bridging refs,
+   `useAssetGridSelection.ts`'s `selectedIds`/`anchorRef`,
+   `useRubberBandDrag.ts`'s `band`/`dragging`/`dragRef` — every one traced
+   to a real read site, none unassigned.
+
+`pnpm --filter @jini/ui run typecheck` was re-run clean after each fix.
+
+### Purity grep — reported explicitly per this task's own instructions
+
+**Product-identity strings** (`Open Design`, `OD_`, `--od-stamp`,
+`/tmp/open-design`, `@open-design/`) across every new file under
+`features/asset-grid/` plus `src/hooks/useDebouncedValue.ts`: **clean, zero
+matches.** A second, stricter self-imposed pass (`od-`/`open-design\.ai`/
+`openDesignDesktop`, catching lowercase-prefix and non-regex-exact product
+identity) is also clean. Two doc comments cite the bare original filename
+`LibrarySection.tsx` by name (in `AssetGrid.tsx` and
+`useRubberBandDrag.ts`) — this is provenance, not a vendored-path leak (the
+connectors canary's own caught mistake was citing the full
+`integrations/open-design/...` path literally; neither of these comments
+does that, and citing a bare source filename matches the connectors
+package's own shipped precedent, e.g. `rules.ts`'s "Pure logic ported from
+OD's `ConnectorsBrowser.tsx`" docblock).
+
+**`window`/`document`/`EventSource`/`localStorage`/`sessionStorage` used
+outside `dependencies.ts`**: three files, all disclosed, deliberate
+deviations from the strict ADR-0002 "no DOM outside dependencies.ts" rule —
+the same class of exception `ConnectorDetailDrawer.tsx` already establishes
+as acceptable:
+- `DeleteConfirmDialog.tsx` — `document.addEventListener` (Escape-to-close)
+  and `document.body.style.overflow` (scroll lock), the same standard modal
+  idiom as `ConnectorDetailDrawer.tsx`.
+- `useRubberBandDrag.ts` — `window.addEventListener('mousemove'/'mouseup'/
+  'scroll')` and `document.body.style.userSelect`, required for the drag
+  gesture to track the pointer outside the grid's own DOM node; this is the
+  mechanism, not a business-logic smuggle.
+- `useAssetGridKeyboardShortcuts.ts` — `window.addEventListener('keydown')`
+  and `document.activeElement`, required for a global keyboard-shortcut
+  listener (matches the original's own `window.addEventListener('keydown',
+  onKey)`).
+`dependencies.ts` itself legitimately uses `EventSource` (that's its job).
+No other file in the feature touches any of these.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: **green, zero errors.**
+- `pnpm --filter @jini/ui exec vitest run src/features/asset-grid src/hooks`:
+  **131 tests, 16 files, all green** — `rules.test.ts` (41), `dependencies.test.ts`
+  (9), `useAssetGridData.test.ts` (4), `useAssetGridLiveUpdates.test.ts` (9),
+  `useAssetGridSelection.test.ts` (4), `useRubberBandDrag.test.ts` (4),
+  `useAssetGridKeyboardShortcuts.test.ts` (9), `useDebouncedValue.test.ts`
+  (2), `AssetCard.test.tsx` (11), `AssetGridToolbar.test.tsx` (7),
+  `AssetGridBody.test.tsx` (3), `SelectionActionBar.test.tsx` (2),
+  `SelectionBand.test.tsx` (2), `DeleteConfirmDialog.test.tsx` (6),
+  `AssetGrid.test.tsx` (14, end-to-end against the fake dependencies:
+  load, empty-state, kind-facet filter, debounced search, preview callback,
+  selection bar, bulk-delete confirm/cancel, per-card delete, Cmd+A/Escape/
+  Delete shortcuts, view toggle, host-supplied `renderCardExtra`/
+  `renderBulkActions` slots, and the i18n end-to-end dictionary test).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **502 tests, 68
+  files, all green** (no regressions in `features/connectors`,
+  `features/i18n`, `features/observability`, `components/`, `utils/`,
+  `hooks/`).
+- Full monorepo `pnpm -r --no-bail run typecheck`: `packages/ui typecheck:
+  Done` (clean). The 9 failures elsewhere are pre-existing and unrelated:
+  `agent-runtime`/`chat-react`/`cli`/`http`/`node-host`/`renderers-react`/
+  `sqlite` are stub packages genuinely missing a `tsconfig.json` (confirmed
+  by directory listing — not touched by this task, same class of
+  pre-existing gap the connectors canary's own report already flagged for
+  two of these packages); `daemon`/`deploy` fail on unbuilt workspace
+  dependencies (`@jini/protocol`/`@jini/core` have no `dist/` yet in this
+  fresh checkout) — a build-order issue, not a type error, and also not
+  touched by this task.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged, no boundary violations
+  introduced.
+
+### Added devDependency: `@testing-library/jest-dom`
+
+This package had `@testing-library/react` but not `@testing-library/jest-dom`
+— every existing test in the package (including the connectors canary) wrote
+DOM assertions by hand (`.toBeTruthy()`, manual attribute reads) rather than
+using matchers like `toBeInTheDocument()`/`toHaveAttribute()`. This task adds
+`@testing-library/jest-dom` as a devDependency and wires it into
+`vitest.setup.ts` (`import '@testing-library/jest-dom/vitest'`) rather than
+hand-rolling ~40 raw DOM assertions across the new test files. A new
+`src/vitest-env.d.ts` ambient-reference file was also needed: `tsc -p
+tsconfig.json` only includes `src/` per this package's `tsconfig.json`, so
+the type augmentation `vitest.setup.ts` pulls in at runtime (outside `src/`)
+was invisible to typecheck without a matching `/// <reference types="@testing-library/jest-dom/vitest" />`
+placed inside `src/`. Dev-only; no runtime dependency added.

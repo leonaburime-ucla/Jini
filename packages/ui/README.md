@@ -90,9 +90,17 @@ Real content has landed in several parallel passes — see
   the **new** `react/{hooks,components}/` layout described above, and the
   first to take a real third-party UI-library dependency (not just
   browser/DOM primitives).
+- `src/features/asset-grid/` — a generic `AssetGrid<TAsset>` ported from
+  `LibrarySection.tsx` (2026-07-17), per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map:
+  rubber-band multi-select, day-bucketed timeline grouping, kind/source
+  facets, debounced search, SSE live-merge, grid/timeline view toggle,
+  bulk-delete-with-confirm, keyboard shortcuts, kind-aware thumbnail
+  dispatch. The first feature built under the **new**
+  `react/{hooks,components}/` layout described above.
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
 (cross-package routing) of the extraction plan are not started. The
-god-components-extraction-plan.md list beyond the connectors canary and the
-browser-chrome partial slice is also not started.
+god-components-extraction-plan.md list beyond the features enumerated above
+is also not started.
