@@ -17,6 +17,10 @@ export * from './utils/localized-url.js';
 export * from './utils/markdown-scroll-sync.js';
 
 export * from './hooks/useInView.js';
+export * from './hooks/useCoalescedCallback.js';
+export * from './hooks/useStableHandler.js';
+
+export * from './browser/useModalWindowDragGuard.js';
 
 export * from './components/Icon.js';
 export * from './components/RemixIcon.js';

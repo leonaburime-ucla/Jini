@@ -674,3 +674,49 @@ and testing state transitions directly rather than chasing a coverage
 percentage — held up cleanly against a genuinely non-trivial 1,573-line
 source file. The pattern is ready to scale; the two caveats above are
 process reminders for the next session, not blockers.
+
+---
+
+## Section: three reusable hooks — useCoalescedCallback / useStableHandler /
+useModalWindowDragGuard (2026-07-17)
+
+Three files verified reusable (by direct reading) in
+`integrations/open-design/reference/od-web-src.orig/`:
+
+| Jini file | Origin | What changed |
+|---|---|---|
+| `src/hooks/useCoalescedCallback.ts` | `hooks/useCoalescedCallback.ts` | Near-verbatim (zero OD imports to begin with). Only the doc comment's specific provenance framing ("absorb chokidar write-then-rename... during an agent rewrite... See #2195") was reworded to describe the coalescing mechanism generically (e.g. absorbing a paired remove+add filesystem-watcher signal into one update) — logic and `CoalesceOptions`/timer semantics unchanged. |
+| `src/hooks/useStableHandler.ts` | `lib/use-stable-handler.ts` | Verbatim. This is the hook `source-map.md`'s prior "Deferred, not a rejection" note (see the runtime/providers/state/lib/… sweep section above) flagged as generic but unported because this package had no React dependency wired up at the time — React is now a real dependency (added by the i18n/observability/utils and flat-group sections above), so it ships now with no further change needed. |
+| `src/browser/useModalWindowDragGuard.ts` | `hooks/useModalWindowDragGuard.ts` | **Genericized.** The origin hardcoded `MODAL_WINDOW_DRAG_BACKDROP_SELECTOR`, a 13-entry OD-specific CSS selector list (`.new-project-modal-backdrop`, `.automation-modal-backdrop`, etc.), and `useModalWindowDragGuard()` took no arguments. Ported the mechanism only: `eventHitsModalWindowDragStrip(event, backdropSelector)` now takes the selector as a parameter instead of closing over the hardcoded list, and `useModalWindowDragGuard(options)` takes a required `backdropSelector` (string, comma-joinable for multiple classes) plus an optional `enabled` flag — no OD selector list shipped. `MODAL_WINDOW_DRAG_STRIP_HEIGHT` (56px) kept as-is, it's a generic constant, not OD-specific data. Filed in a new `src/browser/` directory (DOM-interaction helper category, alongside `utils/dom-subscriptions.ts`'s browser-event primitives) rather than `src/hooks/`, since it isn't a React-state hook so much as a document-level event-guard effect — consistent with how `dom-subscriptions.ts` already separates framework-free DOM wiring from stateful hooks in this package. |
+
+### Tests
+
+All three got real interaction/behavior tests (not smoke-only):
+`useCoalescedCallback.test.ts` (fake timers: burst-coalescing into one
+trailing call, quiet-window reset, `maxWait` forcing a mid-burst flush,
+cleanup-on-unmount not calling a stale callback, always calling the latest
+callback identity); `useStableHandler.test.ts` (stable identity across
+re-renders, delegating to the latest committed handler rather than a stale
+closure, argument/return-value forwarding); `useModalWindowDragGuard.test.ts`
+(jsdom, real dispatched `MouseEvent`s: `eventHitsModalWindowDragStrip`'s
+selector/height matching in isolation, a capture-phase `stopPropagation()`
+on a drag-strip click on a matching backdrop actually prevents a
+document-level bubble listener from firing, no `stopPropagation()` for a
+click below the strip or on a non-matching element, `enabled: false`
+disabling the guard, and listener cleanup on unmount).
+
+### Neutrality check
+
+`grep -rn "Open Design\|OD_\|od-\|open-design:\|data-od-"` across all three
+new source files + their tests: clean, zero matches.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run test`: 391 tests, 56 files, all green (16 new
+  tests across the three new files).
+- `pnpm --filter @jini/ui run typecheck`: green.
+- `pnpm guard` (repo root): `[guard] ok` — unchanged, no boundary violations.
+- `pnpm -r run typecheck` (full monorepo): only the same pre-existing,
+  unrelated failures in `packages/agent-runtime` and `packages/chat-react`
+  (stub packages missing a `tsconfig.json` entirely) already noted by the
+  connectors-canary section above — not touched by this task.
