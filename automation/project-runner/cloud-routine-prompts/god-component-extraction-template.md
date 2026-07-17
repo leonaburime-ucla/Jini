@@ -85,7 +85,12 @@ Implementation rules:
 - Follow the MemorySection vertical-slice shape: ports, a single dependencies
   binding seam, feature-local hooks, presentational components, a public
   barrel, and tests outside source directories (or colocated `.test.ts(x)`
-  files, matching this repo's existing convention).
+  files, matching this repo's existing convention). **Within the feature
+  folder (decided 2026-07-17, see `packages/ui/README.md`):** anything with
+  zero React import (`types.ts`, `constants.ts`, `rules.ts`, `ports.ts`,
+  `dependencies.ts`, the barrel `index.ts`) stays at the feature's top level;
+  `hooks/` and `components/` (anything importing React) move under a
+  `react/` subfolder — `features/<domain>/react/{hooks,components}/`.
 - Keep public @jini surfaces product-neutral. Do not add Open Design names,
   imports, or string identities to packages/@jini — including in comments
   that cite the vendored reference path literally (a real mistake that

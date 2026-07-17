@@ -30,7 +30,20 @@ separate deliberately — see the chat-core/chat-react split discussion in
   dumb-components + barrel because it's a cohesive concern, not a single atom
   (mirrors the ports+dependencies+barrel discipline already proven by OD's
   `features/memory`, `features/chat-pane`, `features/chat-composer` slices —
-  see `docs/jini-port/od-reference-branches.md`).
+  see `docs/jini-port/od-reference-branches.md`). **Within each feature
+  (decided 2026-07-17):** files with zero React import (`types.ts`,
+  `constants.ts`, `rules.ts`, `ports.ts`, `dependencies.ts`, the barrel
+  `index.ts`) stay at the feature's top level; anything that imports React
+  (`hooks/`, `components/`) moves under a `react/` subfolder —
+  `features/<domain>/react/{hooks,components}/`. This is a deliberately
+  *lighter* motivation than the `@jini/chat-core`/`@jini/chat-react` package
+  split: not "prepare for a Vue consumer" (no such consumer exists or is
+  planned), just keeping the pure layer visibly and mechanically separate
+  from the React layer within one package, at effectively zero cost. See
+  `packages/ui/source-map.md`'s `features/connectors/` section for the
+  worked example. **Not yet retrofitted onto the flat `src/components/`/
+  `src/hooks/` buckets below** — those still sit at the top level; revisit if
+  this pattern proves worth extending there too.
 - `src/providers/` — the *only* place allowed to import a concrete
   transport/DOM adapter and bind it to a `features/<domain>/ports.ts`
   interface. Everything else in this package depends on the port, never a

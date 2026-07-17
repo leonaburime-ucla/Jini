@@ -31,6 +31,19 @@ component under `I18nProvider` with a dictionary and asserts the translated text
 suite that only exercises the unconfigured/passthrough case cannot catch a hardcoded literal that
 was never wrapped in the first place.
 
+**React-layout policy (decided 2026-07-17, see `packages/ui/README.md`):** within every
+`features/<domain>/` folder — new or being re-touched — files with zero React import (`types.ts`,
+`constants.ts`, `rules.ts`, `ports.ts`, `dependencies.ts`, the barrel `index.ts`) stay at the
+feature's top level; `hooks/` and `components/` (anything importing React) move under a `react/`
+subfolder: `features/<domain>/react/{hooks,components}/`. This is deliberately a lighter
+motivation than the `@jini/chat-core`/`@jini/chat-react` package split — there is no named non-React
+consumer of `@jini/ui` driving it, so it stops at "keep the pure and React layers visibly separate
+within one package" rather than a full package split with peer-dependency/export-map machinery.
+`features/connectors/` and `features/progress-card/` (already shipped) still use the old flat
+layout (`hooks/`, `components/` directly under the feature) — not yet retrofitted; new work should
+use the new layout, and don't take their exact paths as the template, just their internal
+discipline.
+
 ---
 
 ## Required cloud-dispatch preflight

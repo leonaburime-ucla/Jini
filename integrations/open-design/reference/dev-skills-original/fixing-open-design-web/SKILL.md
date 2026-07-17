@@ -60,7 +60,11 @@ source config" shape shows up in at least 6 places, for example) — that map
 exists specifically so each one lands in a shared destination instead of a
 new near-duplicate every time. If the target isn't in that map, or its row is
 marked "blocked" or "not yet actionable," stop and report the gap rather than
-inventing a destination.
+inventing a destination. Also apply Jini's React-layout policy (same doc,
+"React-layout policy" note): within the destination feature folder, anything
+importing React (`hooks/`, `components/`) goes under a `react/` subfolder;
+everything else (`types.ts`/`rules.ts`/`ports.ts`/`dependencies.ts`) stays at
+the feature's top level.
 
 ### Retained-behavior manifest (blocking)
 

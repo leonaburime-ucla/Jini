@@ -51,7 +51,11 @@ Before editing any file, complete and print this exact Reference Preflight:
    packages/ui/src/features/progress-card/ (the DesignSystemFlow canary,
    currently in draft PR #1 on this repo) as the two most recent, most
    scrutinized examples of the ports+dependencies+hooks+components+barrel
-   shape and the i18n/Phase-8.5/purity discipline expected here.
+   shape and the i18n/Phase-8.5/purity discipline expected here -- NOTE: both
+   of those still use the OLD flat layout (hooks/, components/ directly under
+   the feature folder); this task should use the NEW layout instead (see
+   rule below), so match their internal discipline, not their exact folder
+   paths.
 6. Name what stays OD-specific (the four items in step 3's second half) and
    why -- this matches the consolidation map's own framing for this row.
 7. Record the exact green-baseline commands you'll re-run at the end.
@@ -69,7 +73,11 @@ Implementation rules:
 - Follow the MemorySection vertical-slice shape: ports (onSave/onExportImage/
   scene persistence), a single dependencies binding seam, feature-local
   hooks, presentational components, a public barrel, and colocated
-  .test.ts(x) files.
+  .test.ts(x) files. Use the NEW layout (decided 2026-07-17, see
+  packages/ui/README.md): types.ts/constants.ts/rules.ts/ports.ts/
+  dependencies.ts/index.ts stay at the feature's top level; hooks/ and
+  components/ (anything importing React) move under a react/ subfolder --
+  features/sketch-editor/react/{hooks,components}/.
 - Keep public @jini surfaces product-neutral. Do not add Open Design names,
   imports, or string identities to packages/@jini -- including in comments
   that cite the vendored reference path literally (a real mistake that

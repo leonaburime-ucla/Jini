@@ -87,7 +87,14 @@ Implementation rules:
   remain in the OD adapter.
 - Follow the MemorySection vertical-slice shape: ports, a single dependencies
   binding seam, feature-local hooks, presentational components, a public barrel,
-  and tests outside source directories.
+  and tests outside source directories. **Within the feature folder (decided
+  2026-07-17, see `packages/ui/README.md`):** anything with zero React import
+  stays at the top level; `hooks/`/`components/` move under a `react/`
+  subfolder. The existing `annotation-canvas/` code is currently flat (no
+  `hooks/`/`components/` split at all) — while fixing the 2 gaps above, also
+  apply this convention (`react/components/AnnotationCanvas.tsx`,
+  `react/hooks/useAnnotationCanvas.ts`, keeping `types.ts`/`rules.ts`/
+  `drawing.ts` at the top level).
 - Keep public @jini surfaces product-neutral. Do not add Open Design names,
   imports, or string identities to packages/@jini.
 - Follow the i18n policy in god-components-extraction-plan.md and write the
