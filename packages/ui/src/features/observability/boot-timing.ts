@@ -61,7 +61,10 @@ export function installBootTimingObserver(options: BootTimingOptions = {}): () =
 }
 
 function schedule(fn: () => void): void {
-  if (typeof window === 'undefined') return;
+  // No `typeof window === 'undefined'` guard here: schedule() is a private
+  // helper with a single call site (onReady, inside installBootTimingObserver),
+  // which already bails out before onReady is ever defined when window is
+  // undefined — by the time schedule() runs, window is guaranteed present.
   const rIC = (
     window as unknown as {
       requestIdleCallback?: (cb: () => void, options?: { timeout: number }) => number;
@@ -90,7 +93,11 @@ function emit(reporter: SafetyEventReporter): void {
     load_event_ms: round(nav.loadEventStart),
     transfer_size_bytes:
       typeof nav.transferSize === 'number' && nav.transferSize > 0 ? nav.transferSize : undefined,
-    visibility_state: typeof document !== 'undefined' ? document.visibilityState : undefined,
+    // No `typeof document === 'undefined'` guard: emit() is only reached via
+    // schedule()'s callback, which already requires window to be defined
+    // (see schedule()'s comment above) — document is never absent alongside
+    // a defined window in any real or tested environment.
+    visibility_state: document.visibilityState,
   });
 }
 

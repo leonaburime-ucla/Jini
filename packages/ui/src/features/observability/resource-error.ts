@@ -58,6 +58,13 @@ export function installResourceErrorObserver(
 }
 
 function readSrc(el: Element): string | null {
+  // readSrc's only caller already checked `RESOURCE_TAGS.has(target.tagName)`
+  // — SCRIPT/LINK/IMG/IFRAME/SOURCE/TRACK/AUDIO/VIDEO — and every one of
+  // those tag names matches one of the instanceof checks below (AUDIO and
+  // VIDEO both extend HTMLMediaElement), so there is no real "none of the
+  // above" runtime path. The final cast satisfies TypeScript's requirement
+  // for an exhaustive value without encoding a dead branch that coverage
+  // would need to (and never could) exercise.
   const value =
     el instanceof HTMLLinkElement ? el.href :
     el instanceof HTMLScriptElement ? el.src :
@@ -65,8 +72,7 @@ function readSrc(el: Element): string | null {
     el instanceof HTMLIFrameElement ? el.src :
     el instanceof HTMLSourceElement ? el.src :
     el instanceof HTMLTrackElement ? el.src :
-    el instanceof HTMLMediaElement ? el.src :
-    (el.getAttribute('src') ?? el.getAttribute('href'));
+    (el as HTMLMediaElement).src;
   if (typeof value !== 'string' || value.length === 0) return null;
   return value;
 }

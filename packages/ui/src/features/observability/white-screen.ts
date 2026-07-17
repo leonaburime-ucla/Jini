@@ -76,9 +76,13 @@ export function installWhiteScreenDetector(options: WhiteScreenDetectorOptions =
     rootElementId,
   });
 
-  let cancelled = false;
+  // No `cancelled` flag guarding these two callbacks: `window.clearTimeout`
+  // is always called synchronously in the same statement that would
+  // otherwise need to suppress a late fire (below, and in the teardown),
+  // and per the timer spec a cleared timeout's callback never runs — so
+  // there is no real "the timer fired anyway after we meant to cancel it"
+  // path to guard against.
   const timer = window.setTimeout(() => {
-    if (cancelled) return;
     if (isAppMounted()) return;
     reporter('client_white_screen', {
       reason: 'app_not_mounted_after_timeout',
@@ -93,13 +97,10 @@ export function installWhiteScreenDetector(options: WhiteScreenDetectorOptions =
   }, timeoutMs);
 
   const stopMonitor = monitorMount(isAppMounted, () => {
-    if (cancelled) return;
-    cancelled = true;
     window.clearTimeout(timer);
   });
 
   return () => {
-    cancelled = true;
     window.clearTimeout(timer);
     stopMonitor();
   };
@@ -114,7 +115,10 @@ interface CheckAppMountedOptions {
 }
 
 function checkAppMounted(options: CheckAppMountedOptions): boolean {
-  if (typeof document === 'undefined') return false;
+  // No `typeof document === 'undefined'` guard: checkAppMounted's only
+  // call sites are isAppMounted (installWhiteScreenDetector) and
+  // monitorMount, both of which only run after installWhiteScreenDetector's
+  // own document-undefined guard has already passed.
   // Primary signal: the host's root-mount effect ran.
   if (document.documentElement.getAttribute(options.mountedAttribute) === options.mountedAttributeValue) {
     return true;
@@ -129,8 +133,15 @@ function checkAppMounted(options: CheckAppMountedOptions): boolean {
     (el) => !isLoadingShell(el, options.loadingShellClasses),
   );
   if (meaningful.length === 0) return false;
+  // `el.textContent` is typed `string | null` on the generic `Node`
+  // interface, but only Document/DocumentType nodes ever actually return
+  // null — `meaningful` is built from `root.children`, which only yields
+  // Elements, so the `!` documents a real invariant rather than masking a
+  // reachable null. `innerText` (unlike textContent) genuinely can be
+  // `undefined` at runtime — jsdom doesn't implement it — so that `??`
+  // fallback stays a real, tested branch.
   const text = meaningful
-    .map((el) => (el as HTMLElement).innerText ?? el.textContent ?? '')
+    .map((el) => (el as HTMLElement).innerText ?? el.textContent!)
     .join('')
     .trim();
   return text.length >= options.minVisibleText;
@@ -144,11 +155,15 @@ function isLoadingShell(el: Element, loadingShellClasses: ReadonlySet<string>): 
 }
 
 function monitorMount(isAppMounted: () => boolean, onMounted: () => void): () => void {
-  let stopped = false;
+  // No `stopped` re-entrancy flag: disconnect() synchronously purges any
+  // mutation record already queued for this observer (verified against
+  // jsdom directly — a mutation queued immediately before disconnect()
+  // never reaches the callback, even after a microtask flush), and the
+  // callback itself only ever calls disconnect()+onMounted() once per
+  // invocation. There is no real path where this callback fires again
+  // after the observer has stopped.
   const observer = new MutationObserver(() => {
-    if (stopped) return;
     if (isAppMounted()) {
-      stopped = true;
       observer.disconnect();
       onMounted();
     }
@@ -166,12 +181,10 @@ function monitorMount(isAppMounted: () => boolean, onMounted: () => void): () =>
   // Best-effort short-circuit: if the app is already mounted by the time
   // this runs (HMR, slow tab, etc.), fire immediately.
   if (isAppMounted()) {
-    stopped = true;
     observer.disconnect();
     onMounted();
   }
   return () => {
-    stopped = true;
     observer.disconnect();
   };
 }

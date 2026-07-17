@@ -128,4 +128,79 @@ describe('installWhiteScreenDetector', () => {
 
     expect(reporter).not.toHaveBeenCalled();
   });
+
+  it('ignores a mutation record already queued when teardown disconnects the observer', async () => {
+    const { installWhiteScreenDetector } = await freshModule();
+    const reporter = vi.fn();
+    const teardown = installWhiteScreenDetector({ reporter, timeoutMs: 1000, minVisibleText: 5 });
+
+    const child = document.createElement('div');
+    child.textContent = 'Mounted right before teardown';
+    document.body.appendChild(child); // queues a MutationObserver microtask, not yet delivered
+    teardown(); // disconnects synchronously, before that microtask runs
+    await Promise.resolve();
+
+    vi.advanceTimersByTime(1000);
+    expect(reporter).not.toHaveBeenCalled();
+  });
+
+  it('defaults reporter, timeoutMs, and minVisibleText when none are supplied', async () => {
+    const { installWhiteScreenDetector } = await freshModule();
+    expect(() => {
+      installWhiteScreenDetector();
+      vi.advanceTimersByTime(5000); // DEFAULT_TIMEOUT_MS
+    }).not.toThrow();
+  });
+
+  it('scans a custom rootElementId instead of document.body when supplied', async () => {
+    const customRoot = document.createElement('div');
+    customRoot.id = 'custom-root';
+    const child = document.createElement('div');
+    child.textContent = 'Real rendered content here';
+    customRoot.appendChild(child);
+    document.body.appendChild(customRoot);
+
+    const { installWhiteScreenDetector } = await freshModule();
+    const reporter = vi.fn();
+    installWhiteScreenDetector({
+      reporter,
+      timeoutMs: 1000,
+      minVisibleText: 5,
+      rootElementId: 'custom-root',
+    });
+
+    vi.advanceTimersByTime(1000);
+
+    expect(reporter).not.toHaveBeenCalled();
+  });
+
+  it('returns an inert teardown when document is unavailable', async () => {
+    vi.stubGlobal('document', undefined);
+    try {
+      const { installWhiteScreenDetector } = await freshModule();
+      const teardown = installWhiteScreenDetector();
+      expect(() => teardown()).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports with a zero body_child_count when document.body is unavailable at report time', async () => {
+    const { installWhiteScreenDetector } = await freshModule();
+    const reporter = vi.fn();
+    installWhiteScreenDetector({ reporter, timeoutMs: 1000, rootElementId: 'missing-root' });
+
+    const originalBody = document.body;
+    Object.defineProperty(document, 'body', { value: null, configurable: true });
+    try {
+      vi.advanceTimersByTime(1000);
+    } finally {
+      Object.defineProperty(document, 'body', { value: originalBody, configurable: true });
+    }
+
+    expect(reporter).toHaveBeenCalledWith(
+      'client_white_screen',
+      expect.objectContaining({ body_child_count: 0 }),
+    );
+  });
 });

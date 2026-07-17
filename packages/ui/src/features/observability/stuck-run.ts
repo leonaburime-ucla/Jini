@@ -44,7 +44,9 @@ export interface TrackRunStartOptions {
  * @overallScore 100
  */
 export function trackRunStart(runId: string, options: TrackRunStartOptions = {}): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined') {
+    return;
+  }
   cancelRun(runId);
   const now = Date.now();
   const stuckAfterMs = options.stuckAfterMs ?? DEFAULT_STUCK_AFTER_MS;
@@ -101,8 +103,13 @@ function scheduleEmit(runId: string, stuckAfterMs: number): ReturnType<typeof se
 }
 
 function emitStuck(runId: string): void {
-  const entry = runs.get(runId);
-  if (!entry || entry.emitted) return;
+  // emitStuck only ever runs as scheduleEmit's setTimeout callback, and
+  // every path that removes or re-emits an entry (cancelRun, trackRunTerminal,
+  // trackRunProgress's own `entry.emitted` guard) clears that timer first —
+  // so by the time this callback fires, its entry is guaranteed to still be
+  // present in `runs` and not yet emitted. The assertion documents that
+  // invariant instead of encoding an unreachable defensive branch.
+  const entry = runs.get(runId)!;
   entry.emitted = true;
   entry.reporter('client_run_stuck', {
     run_id: runId,

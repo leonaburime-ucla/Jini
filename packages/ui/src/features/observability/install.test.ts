@@ -50,9 +50,10 @@ describe('installWebObservability', () => {
   it('is idempotent: a second call installs nothing further', async () => {
     const { installWebObservability } = await freshModule();
     installWebObservability();
-    installWebObservability();
+    const secondTeardown = installWebObservability();
 
     expect(installLongTaskObserver).toHaveBeenCalledTimes(1);
+    expect(() => secondTeardown()).not.toThrow();
   });
 
   it('tears down every observer even when one teardown throws', async () => {

@@ -76,4 +76,22 @@ describe('trackIframeLoad', () => {
 
     expect(reporter).not.toHaveBeenCalled();
   });
+
+  it('only settles once — a second error event does not double-report', () => {
+    const reporter = vi.fn();
+    trackIframeLoad({ iframe, surface: 'preview', reporter, timeoutMs: 1000 });
+
+    iframe.dispatchEvent(new Event('error'));
+    iframe.dispatchEvent(new Event('error'));
+    vi.advanceTimersByTime(1000);
+
+    expect(reporter).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults reporter and timeoutMs when neither is supplied', () => {
+    expect(() => {
+      trackIframeLoad({ iframe, surface: 'preview' });
+      vi.advanceTimersByTime(15_000); // DEFAULT_LOAD_TIMEOUT_MS
+    }).not.toThrow();
+  });
 });

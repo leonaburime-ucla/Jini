@@ -93,4 +93,11 @@ describe('stuck-run watchdog', () => {
   it('terminal on an untracked runId is a no-op', () => {
     expect(() => trackRunTerminal('never-started', 'failed')).not.toThrow();
   });
+
+  it('defaults reporter and stuckAfterMs when neither is supplied', () => {
+    expect(() => {
+      trackRunStart('run-default');
+      vi.advanceTimersByTime(5 * 60 * 1000); // DEFAULT_STUCK_AFTER_MS
+    }).not.toThrow();
+  });
 });

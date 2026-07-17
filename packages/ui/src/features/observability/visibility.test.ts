@@ -73,4 +73,26 @@ describe('installVisibilityObserver', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     expect(reporter).not.toHaveBeenCalled();
   });
+
+  it('defaults to a no-op reporter when none is supplied', async () => {
+    const { installVisibilityObserver } = await freshModule();
+    expect(() => {
+      installVisibilityObserver();
+      document.dispatchEvent(new Event('visibilitychange'));
+    }).not.toThrow();
+  });
+
+  it('is idempotent per install: a second install call is a no-op teardown', async () => {
+    const { installVisibilityObserver } = await freshModule();
+    const reporterA = vi.fn();
+    const reporterB = vi.fn();
+    installVisibilityObserver({ reporter: reporterA });
+    const secondTeardown = installVisibilityObserver({ reporter: reporterB });
+
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(reporterA).toHaveBeenCalled();
+    expect(reporterB).not.toHaveBeenCalled();
+    expect(() => secondTeardown()).not.toThrow();
+  });
 });
