@@ -27,8 +27,11 @@ function normalizeError(error: unknown): unknown {
   return error;
 }
 
-function normalizeMeta(meta: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (meta == null) return undefined;
+// `meta` is always defined at this call site (see `serializeMessage`'s
+// `meta == null` guard below) — that guard is the single source of truth
+// for the null check, so this helper takes a required parameter rather
+// than duplicating a defensive (and therefore untestable/dead) check.
+function normalizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(meta).map(([key, value]) => [key, key === 'error' || key === 'reason' ? normalizeError(value) : value]),
   );

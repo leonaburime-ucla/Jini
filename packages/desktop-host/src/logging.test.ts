@@ -2,7 +2,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createFileLogger, installFatalExceptionHandlers, isHarmlessSocketOptionError } from './logging.js';
+import {
+  appendLogLine,
+  createFileLogger,
+  installFatalExceptionHandlers,
+  isHarmlessSocketOptionError,
+} from './logging.js';
 
 describe('isHarmlessSocketOptionError', () => {
   it('matches the setTypeOfService EINVAL shape with an authoritative code', () => {
@@ -22,6 +27,25 @@ describe('isHarmlessSocketOptionError', () => {
 
   it('returns false for non-Error values', () => {
     expect(isHarmlessSocketOptionError('boom')).toBe(false);
+  });
+
+  it('returns false when an Error-like value has a non-string message', () => {
+    // Bypass the `Error` constructor's string coercion so `message` is
+    // genuinely not a string, exercising the `typeof value.message ===
+    // 'string'` ternary's fallback-to-empty-string branch.
+    const weird = Object.create(Error.prototype) as { message: unknown };
+    weird.message = 123;
+    expect(isHarmlessSocketOptionError(weird)).toBe(false);
+  });
+});
+
+describe('appendLogLine', () => {
+  it('returns false when the append function throws instead of propagating', () => {
+    const append = vi.fn(() => {
+      throw Object.assign(new Error('too many files'), { code: 'EMFILE' });
+    });
+    expect(appendLogLine('/tmp/should-not-be-created.log', '{"level":"error"}\n', append)).toBe(false);
+    expect(append).toHaveBeenCalledWith('/tmp/should-not-be-created.log', '{"level":"error"}\n', 'utf8');
   });
 });
 
@@ -44,6 +68,79 @@ describe('createFileLogger', () => {
     expect(lines[0]).toMatchObject({ level: 'info', message: 'starting up', meta: { pid: 123 } });
     expect(lines[1]).toMatchObject({ level: 'error', message: 'boom' });
     expect(lines[1].meta.error).toMatchObject({ message: 'bad' });
+  });
+
+  it('omits the meta field entirely when no meta is provided', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-log-'));
+    const logPath = join(dir, 'host-no-meta.log');
+    const logger = createFileLogger(logPath, { echoToConsole: false });
+    logger.info('no meta here');
+    const contents = await readFile(logPath, 'utf8');
+    const line = JSON.parse(contents.trim());
+    expect(line).toMatchObject({ level: 'info', message: 'no meta here' });
+    expect(line.meta).toBeUndefined();
+  });
+
+  it('passes non-Error values assigned to error/reason meta keys through unchanged', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-log-'));
+    const logPath = join(dir, 'host-non-error-reason.log');
+    const logger = createFileLogger(logPath, { echoToConsole: false });
+    logger.warn('plain reason', { reason: 'just a string, not an Error' });
+    const contents = await readFile(logPath, 'utf8');
+    const line = JSON.parse(contents.trim());
+    expect(line.meta.reason).toBe('just a string, not an Error');
+  });
+
+  it('falls back to a serializationError entry when the meta cannot be JSON-serialized', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-log-'));
+    const logPath = join(dir, 'host-circular.log');
+    const logger = createFileLogger(logPath, { echoToConsole: false });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    logger.warn('circular meta', { detail: circular });
+    const contents = await readFile(logPath, 'utf8');
+    const line = JSON.parse(contents.trim());
+    expect(line.level).toBe('warn');
+    expect(typeof line.meta.serializationError).toBe('string');
+  });
+
+  it('stringifies a non-Error thrown value in the serializationError fallback', async () => {
+    // JSON.stringify can throw a non-Error value when a nested `toJSON`
+    // implementation itself throws a primitive, exercising the
+    // `error instanceof Error ? ... : String(error)` ternary's fallback arm.
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-log-'));
+    const logPath = join(dir, 'host-non-error-throw.log');
+    const logger = createFileLogger(logPath, { echoToConsole: false });
+    const poisoned = {
+      toJSON() {
+        throw 'not an Error instance';
+      },
+    };
+    logger.warn('poisoned meta', { detail: poisoned });
+    const contents = await readFile(logPath, 'utf8');
+    const line = JSON.parse(contents.trim());
+    expect(line.meta.serializationError).toBe('not an Error instance');
+  });
+
+  it('echoes to the matching console method for every level when echoToConsole defaults to true', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-log-'));
+    const logPath = join(dir, 'host-echo.log');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const logger = createFileLogger(logPath);
+      logger.error('e');
+      logger.info('i');
+      logger.warn('w');
+      expect(errorSpy).toHaveBeenCalledWith('e', '');
+      expect(infoSpy).toHaveBeenCalledWith('i', '');
+      expect(warnSpy).toHaveBeenCalledWith('w', '');
+    } finally {
+      errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 });
 
@@ -68,5 +165,68 @@ describe('installFatalExceptionHandlers', () => {
     uninstall();
     expect(process.listenerCount('uncaughtException')).toBe(before.unc);
     expect(process.listenerCount('unhandledRejection')).toBe(before.rej);
+  });
+
+  it('swallows a harmless unhandledRejection and does not remove itself', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const uninstall = installFatalExceptionHandlers(logger);
+    const listenersBefore = process.listenerCount('unhandledRejection');
+    const harmless = Object.assign(new Error('setTypeOfService EINVAL'), { code: 'EINVAL' });
+    process.emit('unhandledRejection', harmless, Promise.resolve());
+    expect(logger.warn).toHaveBeenCalledWith('swallowed harmless unhandled rejection', { reason: harmless });
+    expect(process.listenerCount('unhandledRejection')).toBe(listenersBefore);
+    uninstall();
+  });
+
+  // Mirrors the OD original's #906 regression coverage
+  // (apps/packaged/tests/logging.test.ts): the non-harmless branch must
+  // log at error level, detach itself from the emitter BEFORE scheduling
+  // the rethrow (otherwise the rethrow re-enters the same listener and
+  // loops forever instead of letting Node's default crash path take
+  // over), and the rethrow must carry the original error. `setImmediate`
+  // is stubbed so the captured callback can be invoked manually inside
+  // `expect(...).toThrow()` instead of crashing the test worker.
+  it('logs and rethrows a non-harmless uncaughtException after detaching the listener', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const scheduled: Array<() => void> = [];
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate').mockImplementation(((fn: () => void) => {
+      scheduled.push(fn);
+      return 0 as unknown as NodeJS.Immediate;
+    }) as typeof setImmediate);
+    const uninstall = installFatalExceptionHandlers(logger);
+    try {
+      const before = process.listenerCount('uncaughtException');
+      const real = new Error('real bug');
+      process.emit('uncaughtException', real);
+      expect(logger.error).toHaveBeenCalledWith('fatal uncaught exception', { error: real });
+      expect(process.listenerCount('uncaughtException')).toBe(before - 1);
+      expect(scheduled).toHaveLength(1);
+      expect(() => scheduled[0]!()).toThrow(real);
+    } finally {
+      setImmediateSpy.mockRestore();
+      uninstall();
+    }
+  });
+
+  it('logs and rethrows a non-harmless unhandledRejection after detaching the listener', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const scheduled: Array<() => void> = [];
+    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate').mockImplementation(((fn: () => void) => {
+      scheduled.push(fn);
+      return 0 as unknown as NodeJS.Immediate;
+    }) as typeof setImmediate);
+    const uninstall = installFatalExceptionHandlers(logger);
+    try {
+      const before = process.listenerCount('unhandledRejection');
+      const real = new Error('rejected for real');
+      process.emit('unhandledRejection', real, Promise.resolve());
+      expect(logger.error).toHaveBeenCalledWith('fatal unhandled rejection', { reason: real });
+      expect(process.listenerCount('unhandledRejection')).toBe(before - 1);
+      expect(scheduled).toHaveLength(1);
+      expect(() => scheduled[0]!()).toThrow(real);
+    } finally {
+      setImmediateSpy.mockRestore();
+      uninstall();
+    }
   });
 });
