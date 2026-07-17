@@ -720,3 +720,348 @@ new source files + their tests: clean, zero matches.
   unrelated failures in `packages/agent-runtime` and `packages/chat-react`
   (stub packages missing a `tsconfig.json` entirely) already noted by the
   connectors-canary section above — not touched by this task.
+
+---
+
+## Section: `features/browser-chrome/` — DesignBrowserPanel.tsx partial slice (2026-07-17)
+
+Source: `integrations/open-design/reference/components-original/DesignBrowserPanel.tsx`
+(3,654 lines). Per `docs/jini-port/god-components-extraction-plan.md`'s Section B row —
+`features/browser-chrome/` (embeddable webview/iframe browser tab) — and r6 §1.12
+("PARTIAL, larger yield than expected"): unlike the connectors canary, this is
+explicitly **not** a full-file slice. Only the navigation-stack/address/history/
+favicon primitives and the viewport switcher ship; the webview/iframe embedding
+itself, brand-extraction, comment annotation, the AI browser-use tool catalog, and
+the reference-board bookmark content all stay in OD.
+
+### New layout (first feature in this package to use it)
+
+Uses the 2026-07-17 `react/{hooks,components}/` layout decided in
+`packages/ui/README.md` — `types.ts`/`constants.ts`/`rules.ts`/`ports.ts`/
+`dependencies.ts`/`index.ts` at the feature root, `react/hooks/` and
+`react/components/` for anything importing React. `features/connectors/` (the
+structural reference this task read) still uses the old flat layout; this is the
+first feature to adopt the new one.
+
+### Viewport-controls overlap check (blocking preflight item)
+
+`packages/ui/src/features/viewer-shell/` does not exist in this repo yet (only
+`connectors`/`i18n`/`observability` were shipped at the time of this task), so per
+the task's own fallback instruction the overlap was checked directly against
+`FileViewer.tsx`'s `PreviewViewportControls` instead of a shipped `viewer-shell`
+primitive. **Confirmed duplicate**, not just a suspected one: identical 3-preset
+model (`desktop` null/null width/height, `tablet` 820×1180, `mobile` 390×844),
+identical i18n keys in the origin (`fileViewer.viewport{Desktop,Tablet,Mobile}[Title]`
+on both `BrowserViewportControls` and `PreviewViewportControls`), and an identical
+dropdown-trigger + listbox interaction (pointerdown-outside/Escape-to-close, a
+`role="listbox"`/`role="option"` menu, an active-check indicator). `FileVersionViewportControls`
+(also in `FileViewer.tsx`) is a genuinely different UI shape (an inline toggle-button
+group, not a dropdown) over the same preset data — not the same component, not folded
+in here.
+
+**Decision:** ship `BrowserViewportControls` here (this feature's consolidation-map
+row explicitly names it), built generic (plain-English `label`/`title` strings wrapped
+in `useT()` at render time, not baked-in `fileViewer.*` i18n keys, and an overridable
+`presets` prop). **Whoever does `FileViewer.tsx`'s `PreviewViewportControls` next
+should import `BrowserViewportControls` from this feature's barrel instead of building
+a second copy** — the component and its `BROWSER_VIEWPORT_PRESETS` constant are
+already fully generic and carry no OD-specific naming. If `FileViewer.tsx`'s dropdown
+trigger turns out to need markup/behavior this component doesn't have once actually
+read in full, that's a real signal to extend this one (add a prop), not to fork it.
+
+### What shipped — `packages/ui/src/features/browser-chrome/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `BrowserViewportId`/`BrowserViewportPreset`, `BrowserHistoryEntry`, `BrowserNavigationEntry`/`BrowserNavigationState`, `AddressDisplayParts`, `BrowserTabHandle` (generic bridge-handle shape — see below). |
+| `constants.ts` | `EMPTY_URL`, `HISTORY_LIMIT` (80, verbatim), `HISTORY_SAVE_DEBOUNCE_MS` (140ms, verbatim), `DEFAULT_HISTORY_STORAGE_NAMESPACE`, `BROWSER_VIEWPORT_PRESETS` (plain-English labels, not i18n keys — see overlap section above), `DEFAULT_HOME_NAVIGATION_ENTRY`. |
+| `rules.ts` | All pure logic, generified where noted below: `normalizeBrowserAddress`, `labelFromUrl`, `formatAddressDisplay(Parts)`, `hostnameFromUrl`, `faviconUrl`, `isHistoryUrl`, `sameUrl`, `isHistoryEntry`, `historyStorageKey`, `parseHistoryPayload`/`serializeHistoryPayload` (the JSON (de)serialization half of `loadHistory`/`saveHistory`, split from the `localStorage` access itself — see `dependencies.ts`), `mergeHistoryEntry` (the pure merge core of `commitHistory`), and the navigation-stack state machine: `initialNavigationState`, `recordNavigation`, `updateCurrentNavigationTitle`, `resolveNavigationHistoryDelta`, `canGoBack`/`canGoForward`. |
+| `ports.ts` | `BrowserHistoryStoragePort` (`loadHistory`/`saveHistory`, keyed by a host-supplied scope key), `BrowserBridgeRegistrationPort` (`registerBrowserHandle` — the generic registration *mechanism* the task asked for; see below). |
+| `dependencies.ts` | `createBrowserHistoryStorage` — a **real**, SSR-guarded `localStorage`-backed implementation (same reasoning as connectors' browser-only bridges: this only touches generic browser APIs, no backend-specific shape, so it ships real rather than faked). `createNoopBrowserBridgeRegistration` — the default no-op for the bridge-registration port. `createDefaultBrowserChromeDependencies` composes both. |
+| `react/hooks/useBrowserHistory.ts` | Loads a scope's history on mount, debounce-persists on change (mirrors the origin's 140ms-debounced save effect verbatim), exposes `commitVisit`/`clearHistory`. |
+| `react/hooks/useBrowserNavigationStack.ts` | Owns `navigationStack`/`navigationIndex`/`addressValue` state via the `rules.ts` state machine; exposes `recordNavigation`/`goBack`/`goForward`/`updateCurrentTitle`/`reset`. Fires the host's `onNavigate` port callback whenever the current entry actually changes (deduped against the last-notified entry, not on every render) — this is the "ports for `onNavigate`" piece of the consolidation-map row, implemented as a hook option rather than a `ports.ts` entry since it's a single plain callback, not a transport adapter (same judgment call the i18n feature's port-vs-callback section already documents). |
+| `react/hooks/useBrowserBridgeRegistration.ts` | Registers/unregisters a `BrowserTabHandle` with the host's `BrowserBridgeRegistrationPort` keyed by a scope key, mirroring the origin's `registerBrandBrowser` effect's mount/unmount/dependency-change lifecycle exactly — this is the "ports for... brand-bridge registration" piece. |
+| `react/components/BrowserViewportControls.tsx` | The viewport-preset switcher — see the overlap section above. |
+| `index.ts` | Public barrel. |
+
+### Genericized beyond a mechanical move
+
+- **`registerBrandBrowser` → `BrowserBridgeRegistrationPort`**: the origin hardcodes
+  a call to OD's own `registerBrandBrowser(projectId, browserTabId, handle)` (brand-
+  extraction bridge). Per the task brief, only the registration *mechanism* is
+  in scope — the port lets a host wire in whatever registration callback it wants;
+  what a host registers the handle for is entirely its own business. The origin's
+  handle shape (`BrandBrowserHandle`: `isDesktopWebview`, `getURL`,
+  `executeJavaScript`, `downloadPageSnapshot`) is **not** ported verbatim —
+  `downloadPageSnapshot` is OD's page-archive/brief-capture feature (explicitly
+  out of scope), so `BrowserTabHandle` here only carries the three genuinely
+  generic capabilities (`isEmbeddedSurfaceAvailable`, `getURL`,
+  `executeJavaScript`), renamed from `isDesktopWebview` since "desktop webview
+  vs. iframe" is an OD-specific distinction — the generic concept is just
+  "is a live, script-executable surface available."
+- **`normalizeBrowserAddress`'s absolute-path branch**: the origin has a hardcoded
+  OD-specific route-prefix check (`/^\/(api|artifacts|frames)(\/|$)/`) that resolves
+  matching paths against `window.location.origin` before falling back to a
+  `file://` URL for any other absolute path. Both the prefix list and the
+  `window.location.origin` read are OD-specific/DOM residue — genericized into an
+  optional `{ appRoutePrefixes, appOrigin }` options bag a host supplies; omitted,
+  the function always falls back to `file://` for absolute paths (a behavior
+  change from the origin only for hosts that don't pass these options — flagged
+  explicitly rather than silently dropped, per the task's own instruction on
+  undisclosed gaps).
+- **`historyStorageKey`**: the origin hardcodes `` `od:design-browser:${projectId}:history:v1` ``
+  (an OD-branded prefix). Genericized to `historyStorageKey(namespace, scopeKey)`,
+  with `DEFAULT_HISTORY_STORAGE_NAMESPACE = 'jini:browser-chrome:history'` as the
+  default namespace and the scope key host-supplied (a project id, a tab id,
+  whatever scope makes sense to the host) — this is the "renameable storage-key
+  string" the consolidation map's row already called out as the only real residue.
+- **Home-tab title**: the origin hardcodes `'Reference Board'` as the home
+  navigation entry's title (tied to the out-of-scope `REFERENCE_GROUPS` bookmark
+  content). Replaced with a generic, overridable `DEFAULT_HOME_NAVIGATION_ENTRY =
+  { title: 'New Tab', url: EMPTY_URL }` (a `homeEntry` option on
+  `useBrowserNavigationStack`/`initialNavigationState` lets a host supply its own).
+
+### Explicitly out of scope (per the task brief) — not touched, not ported
+
+- **`registerBrandBrowser`'s actual brand-extraction logic** — only the
+  registration mechanism (the port above) ships; what OD does with a registered
+  handle (re-reading the rendered DOM to re-extract a brand after an anti-bot
+  wall) stays entirely in OD.
+- **`BrowserCommentMarkers`/`BrowserCommentComposer`** (board-comment annotation
+  overlaid on the live page) — OD-specific, not read in depth beyond confirming
+  their line ranges (2646-2799) sit outside every in-scope piece.
+- **The AI "browser-use" tool-action catalog** (`BROWSER_USE_CATEGORIES`,
+  `BrowserUseMenu`, `browserUsePrompt`, the `PAGE_BRIEF_SCRIPT` page-archive/brief
+  capture machinery) — OD's own AI-agent tooling, not touched.
+- **`REFERENCE_GROUPS`** — the hardcoded design-inspiration bookmark catalog and
+  `DesignBrowserStart`, the component that renders it — OD marketing/curation
+  content, not touched.
+- **Everything webview/iframe-embedding itself**: `WebviewElement`, the desktop-
+  host `<webview>` vs. cross-origin `<iframe>` branching, `loadWebviewUrl`,
+  `warmBrowserOrigin`'s `dns-prefetch`/`preconnect` resource hints,
+  `canUseNativeHistoryNavigation`, the full `DesignBrowserPanel` orchestrator
+  component itself — none of this is generic; a host renders its own webview/
+  iframe surface and calls into this feature's hooks/rules to drive its address
+  bar, history, and viewport chrome around that surface. The task's title says
+  "embeddable webview/iframe browser tab **primitive**" deliberately, not a
+  drop-in full browser-tab component — the consolidation-map row's own listed
+  contents (nav stack, address normalization, history/favicon utilities, ports,
+  the viewport switcher) confirm this narrower scope, and r6 §1.12 explicitly
+  recommends "a real vertical slice for the browser-chrome core... not the
+  full-file treatment."
+
+### Deferred, not shipped this pass (judgment call, per the task's own "use judgment" instruction)
+
+`BrowserUseMenu` and `BrowserInspectPanel` — the "ALSO NOTE" pair the task flagged
+as shape-generic/OD-data (same class as the `byok/*` precedent: a searchable
+grouped-action-menu shape and a color-picker/range-slider quick-CSS-editor shape,
+both wrapping OD-specific catalog/snapshot data). Not included in this pass:
+
+- `BrowserUseMenu`'s shape is only meaningful bound to *some* action catalog, and
+  the one real catalog in the origin (`BROWSER_USE_CATEGORIES`) is the AI
+  browser-use tooling explicitly out of scope above — shipping the shape alone
+  with no real second consumer to validate the generic-catalog-prop design
+  against risks guessing at an abstraction rather than deriving it from a second
+  real use.
+- `BrowserInspectPanel` is entangled with `BrowserStyleDraft`/`BrowserElementSnapshot`
+  (OD's element-snapshot/quick-CSS-edit data model, defined in `FileViewer.tsx`'s
+  `../types` and reused across both files) and the page-side `PAGE_BRIEF_SCRIPT`
+  DOM-measurement machinery — pulling just the shape out cleanly would need a
+  closer read of that cross-file type coupling than this task's primary scope
+  (nav/address/history/viewport) budgeted for.
+
+Left here rather than silently dropped: a follow-up task extracting either should
+re-read r6 §1.12's full description of both before starting, since this session
+did not do the closer read needed to generify them.
+
+### Test/typecheck/guard/purity results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, zero errors.
+- `pnpm --filter @jini/ui exec vitest run src/features/browser-chrome`: **73 tests,
+  6 files, all green** — `rules.test.ts` (41, pure-function coverage of address
+  normalization including the new `appRoutePrefixes`/`appOrigin` options, history
+  merge/parse/serialize, and every navigation-stack transition: append, in-place
+  update, adjacent back/forward rejoin, forward-history truncation, delta
+  resolution at both stack ends), `dependencies.test.ts` (8, including the SSR
+  guard with `window` deleted and a `localStorage.setItem` quota-failure
+  simulation), `useBrowserHistory.test.ts` (5), `useBrowserNavigationStack.test.ts`
+  (8, including the dedup-against-last-notified-entry behavior of the `onNavigate`
+  callback), `useBrowserBridgeRegistration.test.ts` (4, register-on-mount/
+  unregister-on-unmount/re-register-on-handle-or-scope-change), and
+  `BrowserViewportControls.test.tsx` (7, including a French-dictionary
+  `I18nProvider` mount proving the i18n wiring actually localizes, per the i18n
+  policy).
+- Full package suite (`pnpm --filter @jini/ui exec vitest run`): 448 tests, 59
+  files, all green (was 375 before this task).
+- Full monorepo `pnpm -r --no-bail run typecheck`: `packages/ui` reports `Done`
+  (clean). 9 pre-existing, unrelated failures elsewhere (`packages/agent-runtime`,
+  `packages/chat-react`, `packages/cli`, `packages/http`, `packages/node-host`,
+  `packages/renderers-react`, `packages/sqlite`, `packages/daemon`,
+  `packages/deploy`) — all missing a `tsconfig.json` entirely or importing
+  `@jini/protocol`/`@jini/core` before those packages have a build output, none
+  touched by this task. The connectors canary's own report only surfaced 2 of
+  these (its `pnpm -r run typecheck` bailed at the first failure); this task's
+  `--no-bail` run is a more complete picture of the same pre-existing gap, not a
+  regression introduced here.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation
+  during extraction)` — unchanged, no boundary violations introduced.
+- Purity grep (`Open Design|OD_|--od-stamp|open-design\.ai|openDesignDesktop|@open-design/`)
+  across every new file under `features/browser-chrome/`: clean, zero matches. A
+  second, stricter pass for lowercase `od-` class prefixes and the vendored
+  reference path cited literally in a comment (the two leaks the connectors
+  canary's own retrospective flagged) is also clean.
+- DOM-outside-`dependencies.ts` check: one disclosed, deliberate deviation —
+  `react/components/BrowserViewportControls.tsx` uses `document.addEventListener`/
+  `removeEventListener` directly inside a `useEffect` for outside-pointerdown/
+  Escape-to-close. Same standard modal/menu a11y idiom already disclosed for
+  `ConnectorDetailDrawer.tsx` in the connectors section above — not business/
+  transport logic, not routed through a port.
+
+### Cross-check against r6 §1.12's full description (per the task's explicit instruction)
+
+r6 §1.12 lists, verbatim: "navigation stack, address-bar normalization,
+history/favicon utilities (`loadHistory`/`saveHistory`/`normalizeBrowserAddress`/
+`faviconUrl`, all pure string/URL/localStorage functions, only residue a
+renameable storage-key string)" — all shipped, storage key genericized as
+described above. "a responsive viewport-preset switcher (`BrowserViewportControls`)"
+— shipped. Everything r6 names as staying OD-specific (brand-extraction bridge
+registration's actual logic, `BrowserCommentMarkers`/`BrowserCommentComposer`,
+the AI browser-use tool-action catalog, `REFERENCE_GROUPS`) is confirmed not
+ported above. No gap between r6's description and what shipped was found on this
+cross-check — the two deferred "ALSO NOTE" components are called out explicitly
+above as a judgment-call deferral, not a silent drop.
+
+### Post-merge audit pass (2026-07-17): a real bug fix, a dead-code removal, and 100% coverage
+
+A follow-up audit re-diffed every in-scope piece above against the vendored
+original function-by-function and found the port faithful — every
+generification already listed in this section checked out against the
+original's actual behavior. The audit did surface two real issues once
+branch-coverage was wired up (`@vitest/coverage-v8`, run via a scoped CLI
+include/exclude filter — `--coverage.include='src/features/browser-chrome/**'`
+— rather than a shared `vitest.config.ts` change, so the rest of the package's
+test config is untouched):
+
+- **Real bug, fixed** — `rules.ts`'s `recordNavigation` hardcoded
+  `DEFAULT_HOME_NAVIGATION_ENTRY.title` ("New Tab") for a navigation to
+  `EMPTY_URL`, ignoring a caller-supplied `options.homeLabel`. Since
+  `useBrowserNavigationStack` passes `homeLabel: homeEntry.title` on every
+  call, a host configuring a custom `homeEntry` would see any navigation back
+  to the home url silently retitle itself to the generic default instead of
+  the host's own label — a regression relative to `initialNavigationState`/
+  `labelFromUrl`, which both already honored a custom home label correctly.
+  Fixed to `options.homeLabel ?? DEFAULT_HOME_NAVIGATION_ENTRY.title`; covered
+  by new `rules.test.ts`/`useBrowserNavigationStack.test.ts` cases.
+- **Dead code, removed** — `MergeHistoryEntryOptions.homeLabel` (threaded
+  through `mergeHistoryEntry` → `useBrowserHistory`'s `commitVisit`) could
+  never actually affect anything: `mergeHistoryEntry` only calls
+  `labelFromUrl` after its own `isHistoryUrl(url)` guard has already excluded
+  `EMPTY_URL`, and `homeLabel` only changes `labelFromUrl`'s output on the
+  `url === EMPTY_URL` branch. Removed the field from `MergeHistoryEntryOptions`
+  and `UseBrowserHistoryOptions` rather than leaving a permanently-uncovered,
+  inert option in the public API.
+- **One line excluded from coverage, not faked** —
+  `useBrowserNavigationStack.ts`'s `if (!currentEntry) return;` guard inside
+  the `onNavigate`-firing effect was unreachable through the hook's public
+  API: every state transition it performs (`initialNavigationState`/
+  `recordNavigation`/`resolveNavigationHistoryDelta`/
+  `updateCurrentNavigationTitle`, all in `rules.ts`) preserves
+  `0 <= navigationIndex < navigationStack.length`, so `currentEntry` is always
+  defined in practice — the guard existed only because
+  `noUncheckedIndexedAccess` types the array-index read as possibly-undefined.
+  **Correction (2026-07-17, per the vendored `fixing-open-design-web` SKILL.md's
+  Phase 9.5 classification #4 — "TS-required fallback with no real runtime
+  path"):** an initial pass marked this with `/* v8 ignore next */`, which
+  that skill's rule explicitly forbids ("never a valid outcome... under any
+  classification"). Fixed to the classification's actual prescription: the
+  `if` branch is deleted and the index read is a non-null assertion
+  (`state.navigationStack[state.navigationIndex]!`) with a one-line comment
+  explaining the invariant — no suppression comment anywhere in this feature.
+- **`ports.ts`/`types.ts` excluded from coverage** — both are
+  `export interface`/`export type` only; verified via the package's own
+  esbuild transform that they compile to zero emitted statements, so
+  v8/istanbul has no executable line to measure (reports 0/0 as 0%, not N/A).
+  Excluded via `--coverage.exclude`, documented inline at the top of each
+  file. `index.ts` (the barrel) is NOT excluded — it has real re-export
+  statements that execute on import, and nothing else in the suite imported
+  the barrel directly, so a small `index.test.ts` smoke test was added instead
+  (also catches a typo'd/missing re-export a concrete-module test wouldn't).
+
+Also closed several genuine (non-dead) branch-coverage gaps with targeted
+tests rather than exclusions: `recordNavigation`'s adjacent-entry rejoin and
+`replacePendingTarget` branches (the back/forward state-machine logic
+faithfully ported from the origin, previously untested); `recordNavigation`/
+`updateCurrentNavigationTitle` given an out-of-bounds `navigationIndex` (both
+are exported pure functions, so a malformed `BrowserNavigationState` is a
+legitimately reachable input, not hook-internal dead code); `faviconUrl`'s
+catch branch (`https://` with no host); `labelFromUrl`'s empty-hostname
+fallback (`file://` urls); `cleanIconUrl`'s `data:image/` branch; the
+`onNavigate` dedup-by-content check (a re-recorded identical url+title still
+produces a new object reference via `updateEntry`, so the effect re-runs and
+must dedupe on content, not just skip via unchanged reference);
+`BrowserViewportControls`'s custom-`presets`-with-no-match and empty-`presets`
+branches; and `createDefaultBrowserChromeDependencies`'s `historyLimit`-only
+option combination.
+
+**Result**: feature-aggregate coverage on the executable-code portion (i.e.
+excluding `ports.ts`/`types.ts` per above) is **100% Lines, 100% Branches,
+100% Functions, 100% Statements** — up from 99.15% / 87.77% / 97.56% / 99.15%
+before this pass. Full suite: 101 tests across 7 files for this feature (up
+from 78), 476 tests across 60 files package-wide (up from 453).
+`pnpm --filter @jini/ui run typecheck` and `pnpm guard` both remain clean.
+
+### Second follow-up pass (2026-07-17): `useX`/`useWiredX` wiring pairs, toolbox merge
+
+Two retrofits landed on this branch after the audit pass above:
+
+**`useWiredX` wirers.** Per the now-required `useX(port)` / zero-arg
+`useWiredX()` pattern (see `apps/web/src/features/memory/hooks/
+useMemoryConfig.hooks.ts` on the OD repo's `refactor/web-memory-slice` for
+the reference shape), audited every hook in this feature against
+`ports.ts`/`dependencies.ts` to see which actually take an injected port:
+
+- `useBrowserHistory` (takes `{ historyStorage: BrowserHistoryStoragePort }`)
+  — got `useWiredBrowserHistory(scopeKey, options?)`, binding a module-level
+  `createBrowserHistoryStorage()` singleton (the real, SSR-guarded
+  `localStorage`-backed implementation — a meaningful production default).
+- `useBrowserBridgeRegistration` (takes `{ bridgeRegistration:
+  BrowserBridgeRegistrationPort }`) — got `useWiredBrowserBridgeRegistration
+  (scopeKey, handle)`, binding `createNoopBrowserBridgeRegistration()`.
+  Unlike the history port, there's no generic "real" default here by design
+  (see `ports.ts`'s doc comment) — registering a handle only means something
+  in the context of a host's own external bridge. A host that wants real
+  bridge registration keeps calling `useBrowserBridgeRegistration` directly
+  with its own port, same carve-out as a swappable test port, just for a
+  real host implementation instead of a fake.
+- `useBrowserNavigationStack` — **no wirer added.** Its `options` (`initialUrl`/
+  `initialTitle`/`homeEntry`/`onNavigate`) are all plain local config, not a
+  `ports.ts` port; the hook owns its state entirely via `rules.ts`'s pure
+  functions. Nothing to wire.
+
+Both wirers exported from `index.ts`; no internal call sites needed updating
+— this feature has no top-level assembling component (that lives in the
+consuming host, out of scope per this feature's own "OUT OF SCOPE" section
+above), so `useBrowserHistory`/`useBrowserBridgeRegistration` had zero
+in-package callers before or after.
+
+**Toolbox merge.** Merged local branch `feat/ui-browser-toolbox` (commit
+`c3e7f21`, not pushed to origin) — a clean merge, no conflicts (it branched
+off a commit before `features/browser-chrome/` existed, so it never touched
+this feature's files). It adds `packages/ui/src/browser/` (`useDismissOnOutsideOrEscape`,
+`useGlobalKeydown`) as a thin wrapper over `utils/dom-subscriptions.ts`'s
+`subscribeOutsideClickOrEscape`. `BrowserViewportControls.tsx`'s hand-rolled
+`document.addEventListener('pointerdown'/'keydown', ...)` pair (the one
+disclosed DOM-outside-`dependencies.ts` deviation noted earlier in this
+section) is now `useDismissOnOutsideOrEscape(() => setOpen(false), { enabled:
+open, containerRef: menuRef })` — same `pointerdown`-outside-or-Escape
+behavior, dead local listener code removed. All of `BrowserViewportControls.test.tsx`'s
+existing outside-click/Escape assertions pass unchanged against the shared
+hook, confirming no behavior change.
+
+**Result**: still 100% Lines/Branches/Functions/Statements on the
+executable-code portion after both retrofits (wirers came with their own
+tests; the toolbox swap needed none new since it's a drop-in behind the same
+public component API). 103 tests across 7 files for this feature; 494 tests
+across 62 files package-wide (the toolbox branch's own `useDismissOnOutsideOrEscape.test.ts`/
+`useGlobalKeydown.test.ts` account for the rest of the file-count jump).
+`pnpm --filter @jini/ui run typecheck` and `pnpm guard` both remain clean.
