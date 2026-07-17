@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { McpIntegrationsPort } from '../../ports.js';
 import type { McpInstallInfo } from '../../types.js';
+import { createFakeMcpIntegrationsPort } from '../../dependencies.js';
 
 export interface McpInstallInfoController {
   info: McpInstallInfo | null;
@@ -45,4 +46,19 @@ export function useMcpInstallInfo(port: Pick<McpIntegrationsPort, 'fetchInstallI
   }, []);
 
   return { info, error, loading };
+}
+
+/**
+ * Zero-arg wirer: `useMcpInstallInfo` bound to this feature's own
+ * `dependencies.ts` concrete port. Per this repo's `useX`/`useWiredX`
+ * convention, this is the only export in this file allowed to import
+ * `dependencies.ts` — a host with its own daemon should call `useMcpInstallInfo`
+ * directly with its own `McpIntegrationsPort` instead. Since this feature
+ * ships no real transport (the origin's `/api/mcp/install-info` endpoint is
+ * genuinely host-specific — see `ports.ts`), the "concrete" port wired here
+ * is the in-memory fake also used for this package's own tests/demos.
+ */
+export function useWiredMcpInstallInfo(): McpInstallInfoController {
+  const port = useMemo(() => createFakeMcpIntegrationsPort(), []);
+  return useMcpInstallInfo(port);
 }

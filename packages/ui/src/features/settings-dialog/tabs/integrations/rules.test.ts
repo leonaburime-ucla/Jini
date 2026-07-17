@@ -10,11 +10,12 @@ import {
   buildZedSnippet,
   commandPaletteShortcut,
   homeConfigPath,
+  methodLabelForClient,
   settingsShortcut,
   snippetForClient,
   utf8Btoa,
 } from './rules.js';
-import type { McpInstallInfo } from './types.js';
+import type { McpClientId, McpInstallInfo } from './types.js';
 
 const info: McpInstallInfo = {
   command: 'node',
@@ -141,5 +142,32 @@ describe('snippetForClient', () => {
     const winInfo: McpInstallInfo = { ...info, platform: 'win32' };
     const codex = snippetForClient('codex', 'my-server', winInfo);
     expect(codex.instructionVars.path).toBe('%USERPROFILE%\\.codex\\config.toml');
+  });
+
+  it('includes the method label matching methodLabelForClient for every client', () => {
+    const clients: McpClientId[] = ['claude', 'codex', 'cursor', 'vscode', 'antigravity', 'zed', 'windsurf'];
+    for (const clientId of clients) {
+      expect(snippetForClient(clientId, 'my-server', info).method).toBe(methodLabelForClient(clientId));
+    }
+  });
+
+  it('throws on an unknown client id', () => {
+    expect(() => snippetForClient('bogus' as McpClientId, 'my-server', info)).toThrow('Unknown MCP client id: bogus');
+  });
+});
+
+describe('methodLabelForClient', () => {
+  it('maps each client to its origin install-method label', () => {
+    expect(methodLabelForClient('claude')).toBe('CLI command');
+    expect(methodLabelForClient('codex')).toBe('TOML config');
+    expect(methodLabelForClient('cursor')).toBe('One-click install');
+    expect(methodLabelForClient('vscode')).toBe('JSON config');
+    expect(methodLabelForClient('antigravity')).toBe('JSON config');
+    expect(methodLabelForClient('zed')).toBe('JSON config');
+    expect(methodLabelForClient('windsurf')).toBe('JSON config');
+  });
+
+  it('throws on an unknown client id', () => {
+    expect(() => methodLabelForClient('bogus' as McpClientId)).toThrow('Unknown MCP client id: bogus');
   });
 });

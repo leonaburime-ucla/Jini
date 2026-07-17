@@ -14,7 +14,7 @@ export interface CodexInstallToggleButtonProps {
  */
 export function CodexInstallToggleButton({ port }: CodexInstallToggleButtonProps) {
   const t = useT();
-  const { available, installed, busy, error, toggle } = useCodexInstallToggle(port);
+  const { available, installed, busy, error, successKind, toggle } = useCodexInstallToggle(port);
 
   if (available === null) return null;
 
@@ -37,6 +37,8 @@ export function CodexInstallToggleButton({ port }: CodexInstallToggleButtonProps
         {busy ? t('Working…') : label}
       </button>
       {error ? <span className="jini-hint jini-hint-error">{t('Install failed: {error}', { error })}</span> : null}
+      {!error && successKind === 'installed' ? <span className="jini-hint">{t('MCP server installed.')}</span> : null}
+      {!error && successKind === 'uninstalled' ? <span className="jini-hint">{t('MCP server uninstalled.')}</span> : null}
     </div>
   );
 }

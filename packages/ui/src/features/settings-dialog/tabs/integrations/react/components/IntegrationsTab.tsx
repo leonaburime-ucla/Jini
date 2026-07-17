@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useT } from '../../../../../../features/i18n/index.js';
 import { DEFAULT_MCP_CLIENT_ID, DEFAULT_MCP_SERVER_NAME, MCP_CLIENTS } from '../../constants.js';
-import { snippetForClient } from '../../rules.js';
+import { methodLabelForClient, snippetForClient } from '../../rules.js';
 import type { McpClientDescriptor, McpClientId } from '../../types.js';
 import type { McpIntegrationsPort } from '../../ports.js';
 import { createFakeMcpIntegrationsPort } from '../../dependencies.js';
@@ -12,9 +12,9 @@ import { CodexInstallToggleButton } from './CodexInstallToggleButton.js';
 
 export interface IntegrationsTabProps {
   /** The MCP server name every generated snippet installs under — the
-   *  parameter that replaces the origin's hardcoded `'open-design'`
-   *  literal. Required: this is the one thing that makes the generated
-   *  snippets actually correct for a given host. */
+   *  parameter that replaces the origin's hardcoded product-name literal.
+   *  Required: this is the one thing that makes the generated snippets
+   *  actually correct for a given host. */
   serverName?: string;
   clients?: readonly McpClientDescriptor[];
   initialClientId?: McpClientId;
@@ -30,7 +30,7 @@ export interface IntegrationsTabProps {
  * `IntegrationsSection` in `SettingsDialog.tsx` — r6 §1.3: "Generic
  * mechanism, 100% branded content." Every snippet builder in `rules.ts` now
  * takes `serverName` as an explicit parameter instead of the origin's
- * hardcoded `'open-design'` literal, and the daemon transport
+ * hardcoded product-name literal, and the daemon transport
  * (`/api/mcp/install-info`, `/api/mcp/install/codex*`) is routed through the
  * injected `McpIntegrationsPort` instead of a hardcoded `fetch()` call.
  */
@@ -49,6 +49,15 @@ export function IntegrationsTab({
 
   const resolved = info ? snippetForClient(clientId, serverName, info) : null;
   const client = clients.find((c) => c.id === clientId) ?? clients[0];
+
+  // Origin gates every `buildMethod(info)` call on `info` being loaded
+  // (`info ? client.buildMethod(info) : ''` for the trigger subtitle, same
+  // guard for each dropdown row) — replicated here so the method labels
+  // stay blank rather than flashing in before the rest of the install info.
+  const methodLabel = resolved ? t(resolved.method) : undefined;
+  const methodLabels = info
+    ? (Object.fromEntries(clients.map((c) => [c.id, t(methodLabelForClient(c.id))])) as Partial<Record<McpClientId, string>>)
+    : undefined;
 
   const resolvedCapabilitiesTitle = capabilitiesTitle ?? t('What this server can do');
   const resolvedCapabilities = capabilities ?? [
@@ -71,7 +80,13 @@ export function IntegrationsTab({
       </div>
 
       <div className="jini-mcp-setup-card">
-        <ClientPicker clients={clients} selectedClientId={clientId} onSelect={setClientId} />
+        <ClientPicker
+          clients={clients}
+          selectedClientId={clientId}
+          onSelect={setClientId}
+          methodLabel={methodLabel}
+          methodLabels={methodLabels}
+        />
 
         {resolved ? <p className="jini-mcp-instruction">{t(resolved.instructionTemplate, resolved.instructionVars)}</p> : null}
 
@@ -80,8 +95,19 @@ export function IntegrationsTab({
         {resolved?.deeplink && info ? (
           <div className="jini-mcp-deeplink-row">
             <a
-              className="jini-button jini-button-primary"
-              href={resolved.deeplink}
+              className={`jini-button jini-button-primary${!info.cliExists || !info.nodeExists ? ' jini-button-disabled' : ''}`}
+              // Origin disables this button via `disabled={!info.cliExists ||
+              // !info.nodeExists}` — one-click install can't work until the
+              // daemon/CLI prerequisite is actually built. An `<a>` has no
+              // native `disabled`, so drop `href` (making it inert/
+              // unfocusable-as-a-link) and mark `aria-disabled` instead of
+              // silently letting the click through to a config that won't
+              // work.
+              href={!info.cliExists || !info.nodeExists ? undefined : resolved.deeplink}
+              aria-disabled={!info.cliExists || !info.nodeExists || undefined}
+              onClick={(event) => {
+                if (!info.cliExists || !info.nodeExists) event.preventDefault();
+              }}
               rel="noopener noreferrer"
             >
               {t('One-click install')}

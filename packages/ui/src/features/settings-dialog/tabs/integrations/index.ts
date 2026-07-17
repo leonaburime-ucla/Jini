@@ -22,6 +22,7 @@ export {
   buildZedSnippet,
   commandPaletteShortcut,
   homeConfigPath,
+  methodLabelForClient,
   settingsShortcut,
   snippetForClient,
   utf8Btoa,
@@ -31,9 +32,9 @@ export type { McpIntegrationsPort } from './ports.js';
 export { createFakeMcpIntegrationsPort } from './dependencies.js';
 export type { FakeMcpIntegrationsPortOptions } from './dependencies.js';
 
-export { useMcpInstallInfo } from './react/hooks/useMcpInstallInfo.js';
+export { useMcpInstallInfo, useWiredMcpInstallInfo } from './react/hooks/useMcpInstallInfo.js';
 export type { McpInstallInfoController } from './react/hooks/useMcpInstallInfo.js';
-export { useCodexInstallToggle } from './react/hooks/useCodexInstallToggle.js';
+export { useCodexInstallToggle, useWiredCodexInstallToggle } from './react/hooks/useCodexInstallToggle.js';
 export type { CodexInstallToggleController } from './react/hooks/useCodexInstallToggle.js';
 
 export { ClientPicker } from './react/components/ClientPicker.js';

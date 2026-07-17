@@ -28,6 +28,18 @@ describe('PrivacyTab', () => {
     expect(screen.queryByLabelText('Installation ID')).not.toBeInTheDocument();
   });
 
+  it('marks "Don\'t share" as active once a decision was made to share nothing', () => {
+    render(
+      <PrivacyTab
+        state={decidedState({ telemetry: { metrics: false, content: false } })}
+        onChange={() => {}}
+        now={() => NOW}
+      />,
+    );
+    expect(screen.getByRole('button', { name: "Don't share" })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Share usage' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('shows the toggles and installation id once a decision has been made', () => {
     render(<PrivacyTab state={decidedState()} onChange={() => {}} now={() => NOW} />);
     expect(screen.getByLabelText('Installation ID')).toHaveValue('abc-123');
@@ -54,12 +66,20 @@ describe('PrivacyTab', () => {
     expect(next.installationId).toBeNull();
   });
 
-  it('toggling a category calls onChange with the patched telemetry', async () => {
+  it('toggling the content category calls onChange with the patched telemetry', async () => {
     const onChange = vi.fn();
     render(<PrivacyTab state={decidedState()} onChange={onChange} now={() => NOW} />);
     await userEvent.click(screen.getByRole('button', { name: /Conversation and tool content/ }));
     const next = onChange.mock.calls[0]![0] as PrivacyConsentState;
     expect(next.telemetry.content).toBe(true);
+  });
+
+  it('toggling the metrics category calls onChange with the patched telemetry', async () => {
+    const onChange = vi.fn();
+    render(<PrivacyTab state={decidedState()} onChange={onChange} now={() => NOW} />);
+    await userEvent.click(screen.getByRole('button', { name: /Anonymous metrics/ }));
+    const next = onChange.mock.calls[0]![0] as PrivacyConsentState;
+    expect(next.telemetry.metrics).toBe(false);
   });
 
   it('"Delete my data" rotates the installation id', async () => {
@@ -74,6 +94,55 @@ describe('PrivacyTab', () => {
   it('shows the opted-out label instead of a raw id when installationId is null', () => {
     render(<PrivacyTab state={decidedState({ installationId: null })} onChange={() => {}} now={() => NOW} />);
     expect(screen.getByLabelText('Installation ID')).toHaveValue('Not sharing');
+  });
+
+  it('renders host-supplied labels instead of the built-in defaults', () => {
+    render(
+      <PrivacyTab
+        state={decidedState()}
+        onChange={() => {}}
+        now={() => NOW}
+        labels={{
+          consentKicker: 'Custom kicker',
+          consentLead: 'Custom lead',
+          consentFooter: 'Custom footer',
+          declineLabel: 'Custom decline',
+          shareLabel: 'Custom share',
+          metricsLabel: 'Custom metrics',
+          metricsHint: 'Custom metrics hint',
+          contentLabel: 'Custom content',
+          contentHint: 'Custom content hint',
+          installationIdLabel: 'Custom id label',
+          installationIdHint: 'Custom id hint',
+          optedOutLabel: 'Custom opted out',
+          deleteMyDataLabel: 'Custom delete',
+        }}
+      />,
+    );
+    expect(screen.getByText('Custom kicker')).toBeInTheDocument();
+    expect(screen.getByText('Custom lead')).toBeInTheDocument();
+    expect(screen.getByText('Custom footer')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Custom decline' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Custom share' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Custom metrics/ })).toBeInTheDocument();
+    expect(screen.getAllByText('Custom metrics hint').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Custom content/ })).toBeInTheDocument();
+    expect(screen.getAllByText('Custom content hint').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Custom id label')).toBeInTheDocument();
+    expect(screen.getByText('Custom id hint')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Custom delete/ })).toBeInTheDocument();
+  });
+
+  it('uses the custom opted-out label from host-supplied labels when installationId is null', () => {
+    render(
+      <PrivacyTab
+        state={decidedState({ installationId: null })}
+        onChange={() => {}}
+        now={() => NOW}
+        labels={{ optedOutLabel: 'Custom opted out' }}
+      />,
+    );
+    expect(screen.getByLabelText('Installation ID')).toHaveValue('Custom opted out');
   });
 
   it('renders translated copy when mounted under an I18nProvider with a matching dictionary', () => {

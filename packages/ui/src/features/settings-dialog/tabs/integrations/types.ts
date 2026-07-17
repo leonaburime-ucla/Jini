@@ -3,9 +3,10 @@
  * "install me as an MCP server" snippet generator (Claude Code / Codex /
  * Cursor / VS Code / Antigravity / Zed / Windsurf). Per
  * `docs/jini-port/recon/r6-god-component-internals.md` §1.3: "Generic
- * mechanism, 100% branded content" — every snippet hardcoded the literal
- * MCP server name `'open-design'`. Parameterized here as `serverName`
- * (a `McpIntegrationsPort`-agnostic caller argument, not a config value) —
+ * mechanism, 100% branded content" — every snippet hardcoded the origin
+ * product's own MCP server name as a literal. Parameterized here as
+ * `serverName` (a `McpIntegrationsPort`-agnostic caller argument, not a
+ * config value) —
  * see `packages/ui/source-map.md` for the full provenance note and the
  * purity-grep result confirming zero hardcoded product-identity strings
  * remain.
@@ -45,6 +46,12 @@ export interface McpClientDescriptor {
 export interface McpClientSnippet {
   snippet: string;
   language: McpSnippetLanguage;
+  /** Short install-method label ("CLI command" / "TOML config" / "One-click
+   *  install" / "JSON config") — shown as the picker trigger's subtitle and
+   *  next to every client in the dropdown list, origin `buildMethod` per
+   *  entry in `IntegrationsSection`'s `MCP_CLIENTS`. A plain i18n key (no
+   *  vars): pass to `t(method)`. */
+  method: string;
   /** i18n template with `{path}`/`{shortcut}` placeholders — pass to
    *  `t(instructionTemplate, instructionVars)`. */
   instructionTemplate: string;

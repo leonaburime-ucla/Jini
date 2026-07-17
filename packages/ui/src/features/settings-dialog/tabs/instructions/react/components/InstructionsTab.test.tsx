@@ -14,6 +14,14 @@ describe('InstructionsTab', () => {
     expect(onChange).toHaveBeenCalledWith('i');
   });
 
+  it('reports undefined (not an empty string) when the textarea is cleared', async () => {
+    const onChange = vi.fn();
+    render(<InstructionsTab value="a" onChange={onChange} />);
+    const textarea = screen.getByRole('textbox');
+    await userEvent.clear(textarea);
+    expect(onChange).toHaveBeenLastCalledWith(undefined);
+  });
+
   it('reflects the current value', () => {
     render(<InstructionsTab value="Be concise." onChange={() => {}} />);
     expect(screen.getByRole('textbox')).toHaveValue('Be concise.');

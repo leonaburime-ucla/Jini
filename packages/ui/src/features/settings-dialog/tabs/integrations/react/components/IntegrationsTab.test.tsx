@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { I18nProvider } from '../../../../../../features/i18n/index.js';
+import { MCP_CLIENTS } from '../../constants.js';
 import { createFakeMcpIntegrationsPort } from '../../dependencies.js';
 import { IntegrationsTab } from './IntegrationsTab.js';
 
@@ -18,7 +19,7 @@ describe('IntegrationsTab', () => {
     render(<IntegrationsTab serverName="acme-mcp" port={port} />);
     await waitFor(() => expect(screen.getByText('Run this command in your terminal.')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: /Claude Code/ }));
-    await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
+    await userEvent.click(screen.getByRole('option', { name: /Codex/ }));
     await waitFor(() => expect(screen.getByText('Paste this into ~/.codex/config.toml.')).toBeInTheDocument());
   });
 
@@ -28,7 +29,7 @@ describe('IntegrationsTab', () => {
     await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'One-click install' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Claude Code/ }));
-    await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
+    await userEvent.click(screen.getByRole('option', { name: /Codex/ }));
     expect(await screen.findByRole('button', { name: 'One-click install' })).toBeInTheDocument();
   });
 
@@ -47,6 +48,86 @@ describe('IntegrationsTab', () => {
     render(<IntegrationsTab serverName="acme-mcp" port={port} />);
     expect(await screen.findByText('Run `pnpm build` first.')).toBeInTheDocument();
     expect(screen.getByText('Build the server first.')).toBeInTheDocument();
+  });
+
+  it('shows the Node-missing warning (not the CLI-missing one) when only Node is missing', async () => {
+    const port = createFakeMcpIntegrationsPort({
+      info: {
+        command: 'node',
+        args: [],
+        daemonUrl: '',
+        platform: 'darwin',
+        cliExists: true,
+        nodeExists: false,
+        buildHint: null,
+      },
+    });
+    render(<IntegrationsTab serverName="acme-mcp" port={port} />);
+    expect(await screen.findByText('Node.js was not found.')).toBeInTheDocument();
+    expect(screen.queryByText('Build the server first.')).not.toBeInTheDocument();
+  });
+
+  it('defaults to an in-memory fake port when none is supplied', async () => {
+    render(<IntegrationsTab serverName="acme-mcp" />);
+    await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
+  });
+
+  it('falls back to the first entry in clients when the active clientId is not one of them (still valid — just excluded from this host\'s list)', async () => {
+    const port = createFakeMcpIntegrationsPort();
+    const clientsWithoutClaude = MCP_CLIENTS.filter((c) => c.id !== 'claude');
+    render(<IntegrationsTab serverName="acme-mcp" port={port} clients={clientsWithoutClaude} />);
+    await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
+    // clientId state defaults to 'claude' (DEFAULT_MCP_CLIENT_ID), which
+    // isn't in the host-supplied `clients` list — `client` falls back to
+    // `clients[0]` (Codex here), gating the Codex-only install toggle on.
+    expect(await screen.findByRole('button', { name: 'One-click install' })).toBeInTheDocument();
+  });
+
+  it('disables the one-click deeplink install button when the CLI/Node prerequisite is missing', async () => {
+    const port = createFakeMcpIntegrationsPort({
+      info: {
+        command: 'node',
+        args: [],
+        daemonUrl: '',
+        platform: 'darwin',
+        cliExists: false,
+        nodeExists: true,
+        buildHint: null,
+      },
+    });
+    render(<IntegrationsTab serverName="acme-mcp" port={port} />);
+    await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /Claude Code/ }));
+    await userEvent.click(screen.getByRole('option', { name: /Cursor/ }));
+    // An <a> with no `href` has no accessible "link" role, which is itself
+    // part of what's under test here — find it by text instead.
+    const install = await screen.findByText('One-click install', { selector: 'a' });
+    expect(install).toHaveAttribute('aria-disabled', 'true');
+    expect(install).not.toHaveAttribute('href');
+    // fireEvent.click returns false when the handler called preventDefault().
+    expect(fireEvent.click(install)).toBe(false);
+  });
+
+  it('leaves the one-click deeplink install button enabled once the prerequisites are met', async () => {
+    const port = createFakeMcpIntegrationsPort();
+    render(<IntegrationsTab serverName="acme-mcp" port={port} />);
+    await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /Claude Code/ }));
+    await userEvent.click(screen.getByRole('option', { name: /Cursor/ }));
+    const install = await screen.findByRole('link', { name: 'One-click install' });
+    expect(install).not.toHaveAttribute('aria-disabled');
+    expect(install).toHaveAttribute('href', expect.stringContaining('cursor://'));
+    // fireEvent.click returns true when nothing called preventDefault().
+    expect(fireEvent.click(install)).toBe(true);
+  });
+
+  it('shows a method sub-label for the trigger and every dropdown item once install info has loaded', async () => {
+    const port = createFakeMcpIntegrationsPort();
+    render(<IntegrationsTab serverName="acme-mcp" port={port} />);
+    await waitFor(() => expect(screen.getByText(/acme-mcp/)).toBeInTheDocument());
+    expect(screen.getByText('CLI command')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Claude Code/ }));
+    expect(screen.getByRole('option', { name: /Codex/ })).toHaveTextContent('TOML config');
   });
 
   it('surfaces a daemon fetch error inline', async () => {

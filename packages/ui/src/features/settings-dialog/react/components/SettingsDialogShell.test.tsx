@@ -99,6 +99,49 @@ describe('SettingsDialogShell', () => {
     expect(screen.getByTestId('autosave-pill')).toBeInTheDocument();
   });
 
+  it('uses the header title when a tab supplies one distinct from its label', () => {
+    const tabs: SettingsDialogTab[] = [
+      { id: 'appearance', label: 'Appearance', title: 'Look & feel', panel: <div>panel</div> },
+    ];
+    render(<SettingsDialogShell tabs={tabs} initialActiveTabId="appearance" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'Look & feel' })).toBeInTheDocument();
+  });
+
+  it('renders an empty header title when there are no tabs at all', () => {
+    render(<SettingsDialogShell tabs={[]} />);
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent('');
+  });
+
+  it('renders host-supplied labels instead of the built-in defaults', () => {
+    render(
+      <SettingsDialogShell
+        tabs={makeTabs()}
+        onClose={() => {}}
+        welcome
+        labels={{
+          kicker: 'Custom kicker',
+          welcomeKicker: 'Custom welcome kicker',
+          welcomeTitle: 'Custom welcome title',
+          welcomeSubtitle: 'Custom welcome subtitle',
+          closeLabel: 'Dismiss',
+          fullscreenLabel: 'Go big',
+          exitFullscreenLabel: 'Go small',
+          collapseSidebarLabel: 'Hide sections',
+          expandSidebarLabel: 'Show sections',
+          sidebarAriaLabel: 'Sections nav',
+        }}
+      />,
+    );
+    expect(screen.getByText('Custom welcome kicker')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Custom welcome title' })).toBeInTheDocument();
+    expect(screen.getByText('Custom welcome subtitle')).toBeInTheDocument();
+    expect(screen.getByLabelText('Dismiss')).toBeInTheDocument();
+    expect(screen.getByLabelText('Go big')).toBeInTheDocument();
+    expect(screen.getByLabelText('Hide sections')).toBeInTheDocument();
+    expect(screen.getByLabelText('Sections nav')).toBeInTheDocument();
+  });
+
   it('renders translated chrome copy when mounted under an I18nProvider with a matching dictionary', () => {
     render(
       <I18nProvider dictionaries={{ fr: { Settings: 'Paramètres', Close: 'Fermer' } }} initialLocale="fr">

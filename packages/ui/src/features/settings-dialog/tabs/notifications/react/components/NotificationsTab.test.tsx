@@ -36,6 +36,64 @@ describe('NotificationsTab', () => {
     expect(onChange).toHaveBeenCalledWith({ successSoundId: 'chime' });
   });
 
+  it('toggles the completion-sound switch off without playing a sound', async () => {
+    const onChange = vi.fn();
+    render(
+      <NotificationsTab preferences={{ ...DEFAULT_NOTIFICATIONS_PREFERENCES, soundEnabled: true }} onChange={onChange} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Completion sound/ }));
+    expect(onChange).toHaveBeenCalledWith({ soundEnabled: false });
+  });
+
+  it('picks a failure sound', async () => {
+    const onChange = vi.fn();
+    render(
+      <NotificationsTab preferences={{ ...DEFAULT_NOTIFICATIONS_PREFERENCES, soundEnabled: true }} onChange={onChange} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'notifications.sound.thud' }));
+    expect(onChange).toHaveBeenCalledWith({ failureSoundId: 'thud' });
+  });
+
+  it('shows a "blocked" hint when desktop notification permission was already denied', () => {
+    vi.stubGlobal('Notification', { permission: 'denied', requestPermission: vi.fn() });
+    render(<NotificationsTab preferences={DEFAULT_NOTIFICATIONS_PREFERENCES} onChange={() => {}} />);
+    expect(screen.getByText(/blocked/)).toBeInTheDocument();
+  });
+
+  it('renders host-supplied labels instead of the built-in defaults', () => {
+    vi.stubGlobal('Notification', undefined);
+    render(
+      <NotificationsTab
+        preferences={{ ...DEFAULT_NOTIFICATIONS_PREFERENCES, soundEnabled: true }}
+        onChange={() => {}}
+        labels={{
+          completionSoundTitle: 'Custom completion title',
+          completionSoundHint: 'Custom completion hint',
+          successSoundLabel: 'Custom success label',
+          failureSoundLabel: 'Custom failure label',
+          desktopTitle: 'Custom desktop title',
+          desktopHint: 'Custom desktop hint',
+          desktopUnsupported: 'Custom unsupported hint',
+          desktopBlocked: 'Custom blocked hint',
+          sendTestLabel: 'Custom send test',
+          testSentLabel: 'Custom sent',
+          testFailedLabel: 'Custom failed',
+          activeLabel: 'Custom on',
+          offLabel: 'Custom off',
+        }}
+      />,
+    );
+    expect(screen.getByText('Custom completion title')).toBeInTheDocument();
+    expect(screen.getByText('Custom completion hint')).toBeInTheDocument();
+    expect(screen.getByLabelText('Custom success label')).toBeInTheDocument();
+    expect(screen.getByLabelText('Custom failure label')).toBeInTheDocument();
+    expect(screen.getByText('Custom desktop title')).toBeInTheDocument();
+    expect(screen.getByText('Custom desktop hint')).toBeInTheDocument();
+    expect(screen.getByText('Custom unsupported hint')).toBeInTheDocument();
+    expect(screen.getByText('Custom on')).toBeInTheDocument();
+    expect(screen.getByText('Custom off')).toBeInTheDocument();
+  });
+
   it('disables the desktop toggle when Notification is unsupported', () => {
     vi.stubGlobal('Notification', undefined);
     render(<NotificationsTab preferences={DEFAULT_NOTIFICATIONS_PREFERENCES} onChange={() => {}} />);
@@ -80,6 +138,23 @@ describe('NotificationsTab', () => {
     const testButton = screen.getByRole('button', { name: 'Send test notification' });
     await userEvent.click(testButton);
     expect(await screen.findByRole('status')).toHaveTextContent('Test notification sent.');
+  });
+
+
+  it('shows "failed" status text when the Notification constructor throws', async () => {
+    class ThrowingNotification {
+      static permission = 'granted';
+      constructor() {
+        throw new Error('boom');
+      }
+    }
+    vi.stubGlobal('Notification', ThrowingNotification);
+    render(
+      <NotificationsTab preferences={{ ...DEFAULT_NOTIFICATIONS_PREFERENCES, desktopEnabled: true }} onChange={() => {}} />,
+    );
+    const testButton = screen.getByRole('button', { name: 'Send test notification' });
+    await userEvent.click(testButton);
+    expect(await screen.findByRole('status')).toHaveTextContent('Could not send a test notification.');
   });
 
   it('renders translated copy when mounted under an I18nProvider with a matching dictionary', () => {

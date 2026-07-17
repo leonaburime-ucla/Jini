@@ -1,44 +1,48 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useT } from '../../../../../../features/i18n/index.js';
 import { Icon } from '../../../../../../components/Icon.js';
+import { useDismissOnOutsideOrEscape } from '../../../../../../browser/useDismissOnOutsideOrEscape.js';
 import type { McpClientDescriptor, McpClientId } from '../../types.js';
 
 export interface ClientPickerProps {
   clients: readonly McpClientDescriptor[];
   selectedClientId: McpClientId;
   onSelect: (clientId: McpClientId) => void;
-  /** Method sub-label shown under the selected client's name (e.g. "Run a
-   *  command" / "Edit a JSON file") — purely presentational, host-supplied
-   *  so it can vary by fetched install info. */
+  /** Method sub-label shown under the selected client's name (e.g. "CLI
+   *  command" / "JSON config") — purely presentational, host-supplied so it
+   *  can vary by fetched install info. */
   methodLabel?: string | undefined;
+  /**
+   * Per-client method sub-label shown next to every entry in the dropdown
+   * list (not just the selected one) — origin: `info ? c.buildMethod(info)
+   * : ''` rendered for each `MCP_CLIENTS` row in `IntegrationsSection`'s
+   * `ds-picker-popover`. Keyed by client id, pre-resolved text (same
+   * contract as `methodLabel` — this component does not call `t()` on it).
+   * A client with no entry (e.g. `methodLabels` omitted entirely, or `info`
+   * not loaded yet) renders no sub-label for that row, matching the
+   * original's blank-until-loaded gate.
+   */
+  methodLabels?: Readonly<Partial<Record<McpClientId, string>>> | undefined;
 }
 
 /**
  * Dropdown client picker. Origin: the `ds-picker` markup inline in
  * `IntegrationsSection` — closes on outside click or Escape.
  */
-export function ClientPicker({ clients, selectedClientId, onSelect, methodLabel }: ClientPickerProps) {
+export function ClientPicker({ clients, selectedClientId, onSelect, methodLabel, methodLabels }: ClientPickerProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selected = clients.find((c) => c.id === selectedClientId) ?? clients[0];
 
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(event: MouseEvent) {
-      if (!rootRef.current) return;
-      if (!rootRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
-    }
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  // Close on outside click or Escape — routed through the shared
+  // `useDismissOnOutsideOrEscape` toolbox hook (packages/ui/src/browser/)
+  // instead of a hand-rolled listener pair; the origin used `mousedown`,
+  // the shared hook uses `pointerdown` (matching every other real
+  // popover/dropdown call site — see that hook's own doc comment), a
+  // behaviorally-equivalent upgrade for this same dismiss-on-outside-click
+  // pattern.
+  useDismissOnOutsideOrEscape(() => setOpen(false), { enabled: open, containerRef: rootRef });
 
   return (
     <div className="jini-picker" ref={rootRef}>
@@ -73,6 +77,9 @@ export function ClientPicker({ clients, selectedClientId, onSelect, methodLabel 
                   }}
                 >
                   <span className="jini-picker-item-title">{t(client.label)}</span>
+                  {methodLabels?.[client.id] ? (
+                    <span className="jini-picker-item-sub">{methodLabels[client.id]}</span>
+                  ) : null}
                 </button>
               );
             })}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { SettingsDialogTabMeta } from '../../types.js';
 import { resolveInitialActiveTabId } from '../../rules.js';
+import { useDismissOnOutsideOrEscape } from '../../../../browser/useDismissOnOutsideOrEscape.js';
 
 export interface UseSettingsDialogShellParams<T extends SettingsDialogTabMeta> {
   tabs: readonly T[];
@@ -77,21 +78,12 @@ export function useSettingsDialogShell<T extends SettingsDialogTabMeta>({
   }, [activeTabId]);
 
   // Global Escape closes the dialog — standard modal affordance alongside
-  // the backdrop click and the close button. Disclosed direct `document`
-  // use in a hook (not routed through a port): this feature has no
-  // transport/ports.ts at all, so there is no DI seam to route it through,
-  // and it's a standard, unavoidable modal-a11y idiom (same disclosed
-  // deviation `features/connectors`' `ConnectorDetailDrawer` documents).
-  useEffect(() => {
-    if (!onClose) return;
-    if (typeof document === 'undefined') return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      onClose?.();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  // the backdrop click and the close button. Routed through the shared
+  // `useDismissOnOutsideOrEscape` toolbox hook (packages/ui/src/browser/)
+  // in its Escape-only shape (no `containerRef` — the backdrop click is
+  // already handled separately by the host), matching the call site that
+  // hook's own doc comment names for this exact hook.
+  useDismissOnOutsideOrEscape(() => onClose?.(), { enabled: Boolean(onClose) });
 
   return {
     activeTabId,

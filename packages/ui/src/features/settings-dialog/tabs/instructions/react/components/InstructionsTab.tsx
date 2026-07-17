@@ -2,7 +2,15 @@ import { useT } from '../../../../../../features/i18n/index.js';
 
 export interface InstructionsTabProps {
   value: string;
-  onChange: (value: string) => void;
+  /**
+   * Fires on every keystroke with the raw textarea value, except an
+   * all-empty textarea reports `undefined` rather than `''` — matching the
+   * origin's `event.target.value || undefined` collapse (`SettingsDialog.tsx`
+   * `customInstructions: event.target.value || undefined`), so a host
+   * persisting straight through to a nullable `customInstructions?: string`
+   * field never stores a distinguishable "empty string" state.
+   */
+  onChange: (value: string | undefined) => void;
   title?: string;
   description?: string;
   placeholder?: string;
@@ -47,7 +55,7 @@ export function InstructionsTab({
           placeholder={resolvedPlaceholder}
           aria-label={resolvedTitle}
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => onChange(event.target.value || undefined)}
         />
       </div>
     </section>

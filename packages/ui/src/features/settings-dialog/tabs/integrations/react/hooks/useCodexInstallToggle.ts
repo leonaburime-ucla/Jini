@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { McpIntegrationsPort } from '../../ports.js';
+import { createFakeMcpIntegrationsPort } from '../../dependencies.js';
 
 export interface CodexInstallToggleController {
   /** `null` while the initial status fetch is in flight; `false` once
@@ -8,6 +9,14 @@ export interface CodexInstallToggleController {
   installed: boolean;
   busy: boolean;
   error: string | null;
+  /**
+   * Set once, right after a successful install/uninstall — origin:
+   * `CodexInstallToggle`'s `message` state (`{ kind: 'success', text:
+   * t('settings.mcpCodex{Install,Uninstall}Success') }`), shown next to the
+   * button until the next toggle. Cleared at the start of every `toggle()`
+   * call, same as `error`.
+   */
+  successKind: 'installed' | 'uninstalled' | null;
   toggle: () => void;
 }
 
@@ -26,6 +35,7 @@ export function useCodexInstallToggle(
   const [installed, setInstalled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successKind, setSuccessKind] = useState<'installed' | 'uninstalled' | null>(null);
 
   const refresh = useCallback(async () => {
     if (!port.fetchCodexInstallStatus) {
@@ -56,13 +66,16 @@ export function useCodexInstallToggle(
     void (async () => {
       setBusy(true);
       setError(null);
+      setSuccessKind(null);
+      const wasInstalled = installed;
       try {
-        if (installed) {
+        if (wasInstalled) {
           await port.uninstallCodexMcp?.();
         } else {
           await port.installCodexMcp?.();
         }
         await refresh();
+        setSuccessKind(wasInstalled ? 'uninstalled' : 'installed');
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -72,5 +85,20 @@ export function useCodexInstallToggle(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installed, refresh]);
 
-  return { available, installed, busy, error, toggle };
+  return { available, installed, busy, error, successKind, toggle };
+}
+
+/**
+ * Zero-arg wirer: `useCodexInstallToggle` bound to this feature's own
+ * `dependencies.ts` concrete port. Per this repo's `useX`/`useWiredX`
+ * convention, this is the only export in this file allowed to import
+ * `dependencies.ts` — a host with its own daemon should call
+ * `useCodexInstallToggle` directly with its own `McpIntegrationsPort`
+ * instead. Since this feature ships no real transport (see `ports.ts`), the
+ * "concrete" port wired here is the same in-memory fake `useWiredMcpInstallInfo`
+ * wires in.
+ */
+export function useWiredCodexInstallToggle(): CodexInstallToggleController {
+  const port = useMemo(() => createFakeMcpIntegrationsPort(), []);
+  return useCodexInstallToggle(port);
 }

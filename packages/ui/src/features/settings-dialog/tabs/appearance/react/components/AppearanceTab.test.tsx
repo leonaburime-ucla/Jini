@@ -22,6 +22,20 @@ describe('AppearanceTab', () => {
     expect(onAccentColorChange).toHaveBeenCalledWith(DEFAULT_ACCENT_COLOR);
   });
 
+  it('passes a host-supplied swatch through raw when it does not normalize to a valid #rrggbb', async () => {
+    const onAccentColorChange = vi.fn();
+    render(
+      <AppearanceTab
+        theme="light"
+        onThemeChange={() => {}}
+        onAccentColorChange={onAccentColorChange}
+        accentSwatches={['not-a-color']}
+      />,
+    );
+    await userEvent.click(screen.getByRole('radio', { name: 'not-a-color' }));
+    expect(onAccentColorChange).toHaveBeenCalledWith('not-a-color');
+  });
+
   it('falls back to the default accent color when accentColor is invalid/missing', () => {
     render(<AppearanceTab theme="light" onThemeChange={() => {}} onAccentColorChange={() => {}} />);
     expect(screen.getByRole('radio', { name: 'Default accent color' })).toHaveAttribute('aria-checked', 'true');

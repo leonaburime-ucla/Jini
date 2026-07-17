@@ -82,18 +82,49 @@ export function buildCursorDeeplink(serverName: string, info: McpInstallInfo): s
 }
 
 /**
- * Resolves the full install snippet + language + (templated) instruction
- * copy + optional deeplink for one client. The instruction is returned as
- * an i18n template (`{path}`/`{shortcut}` placeholders) + its resolved
- * vars, not a final string — the component wraps it with `t()` so a host
- * can localize it, same convention as every other tab's copy.
+ * Short install-method label per client ("CLI command" / "TOML config" /
+ * "One-click install" / "JSON config") — origin: each `MCP_CLIENTS` entry's
+ * `buildMethod` in `IntegrationsSection`. Every original `buildMethod`
+ * implementation ignores its `info` argument (the label depends only on the
+ * client, not the fetched install info), so this is a pure clientId lookup
+ * rather than needing `McpInstallInfo` — callers that want the original's
+ * "blank until install info has loaded" presentation gate this themselves.
+ */
+export function methodLabelForClient(clientId: McpClientId): string {
+  switch (clientId) {
+    case 'claude':
+      return 'CLI command';
+    case 'codex':
+      return 'TOML config';
+    case 'cursor':
+      return 'One-click install';
+    case 'vscode':
+    case 'antigravity':
+    case 'zed':
+    case 'windsurf':
+      return 'JSON config';
+    default: {
+      const exhaustive: never = clientId;
+      throw new Error(`Unknown MCP client id: ${String(exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * Resolves the full install snippet + language + method label + (templated)
+ * instruction copy + optional deeplink for one client. The instruction is
+ * returned as an i18n template (`{path}`/`{shortcut}` placeholders) + its
+ * resolved vars, not a final string — the component wraps it with `t()` so a
+ * host can localize it, same convention as every other tab's copy.
  */
 export function snippetForClient(clientId: McpClientId, serverName: string, info: McpInstallInfo): McpClientSnippet {
+  const method = methodLabelForClient(clientId);
   switch (clientId) {
     case 'claude':
       return {
         snippet: buildClaudeCliSnippet(serverName, info),
         language: 'bash',
+        method,
         instructionTemplate: 'Run this command in your terminal.',
         instructionVars: {},
       };
@@ -101,6 +132,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildCodexTomlSnippet(serverName, info),
         language: 'toml',
+        method,
         instructionTemplate: 'Paste this into {path}.',
         instructionVars: { path: homeConfigPath(info.platform, '~/.codex/config.toml', '%USERPROFILE%\\.codex\\config.toml') },
       };
@@ -108,6 +140,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildSharedMcpJson(serverName, info),
         language: 'json',
+        method,
         instructionTemplate: 'Paste this into {path}, or use one-click install below.',
         instructionVars: { path: homeConfigPath(info.platform, '~/.cursor/mcp.json', '%USERPROFILE%\\.cursor\\mcp.json') },
         deeplink: buildCursorDeeplink(serverName, info),
@@ -116,6 +149,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildVsCodeSnippet(serverName, info),
         language: 'json',
+        method,
         instructionTemplate: 'Open the command palette ({shortcut}), run "MCP: Add Server", and paste this.',
         instructionVars: { shortcut: commandPaletteShortcut(info.platform) },
       };
@@ -123,6 +157,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildSharedMcpJson(serverName, info),
         language: 'json',
+        method,
         instructionTemplate: 'Add this to your MCP server configuration.',
         instructionVars: {},
       };
@@ -130,6 +165,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildZedSnippet(serverName, info),
         language: 'json',
+        method,
         instructionTemplate: 'Open settings ({shortcut}) and paste this into your context servers.',
         instructionVars: { shortcut: settingsShortcut(info.platform) },
       };
@@ -137,6 +173,7 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
       return {
         snippet: buildSharedMcpJson(serverName, info),
         language: 'json',
+        method,
         instructionTemplate: 'Paste this into {path}.',
         instructionVars: {
           path: homeConfigPath(
@@ -146,9 +183,16 @@ export function snippetForClient(clientId: McpClientId, serverName: string, info
           ),
         },
       };
+    /* v8 ignore start -- truly unreachable: `methodLabelForClient(clientId)`
+     * above already throws for any value outside the `McpClientId` union
+     * (its own exhaustiveness check runs first), so this switch's own
+     * default arm can never execute at runtime — kept only so `tsc` still
+     * flags a missing case here too if `McpClientId` grows a member and
+     * only one of the two switches gets updated. */
     default: {
       const exhaustive: never = clientId;
       throw new Error(`Unknown MCP client id: ${String(exhaustive)}`);
     }
+    /* v8 ignore stop */
   }
 }
