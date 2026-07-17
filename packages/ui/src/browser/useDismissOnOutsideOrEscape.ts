@@ -10,14 +10,19 @@
 // both shapes — pass `containerRef` for the full dropdown/menu behavior, omit
 // it for Escape-only modal behavior.
 //
-// Distinct from `utils/dom-subscriptions.ts`'s `subscribeOutsideClickOrEscape`:
-// that one is a framework-free `mousedown`-based subscribe function with no
-// "outside click disabled" mode. This hook matches what every feature above
-// actually implemented (`pointerdown`, optional container) and is meant to be
-// imported straight into a component/hook, not adapted.
+// The listener logic itself is NOT reimplemented here: it's a thin
+// `useEffect` wrapper around `subscribeOutsideClickOrEscape` in
+// `../utils/dom-subscriptions.js`, which is the one place that logic lives
+// (framework-free, SSR-safe, already unit-tested there). `subscribeOutsideClickOrEscape`
+// was updated alongside this hook to use `pointerdown` (matching every real
+// call site above) and to accept an omitted container for the Escape-only
+// case — see that file's doc comment. This hook only adds the
+// React-lifecycle plumbing: `enabled` gating and a latest-callback
+// indirection so callers don't have to memoize `onDismiss`.
 
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
+import { subscribeOutsideClickOrEscape } from '../utils/dom-subscriptions.js';
 
 export interface UseDismissOnOutsideOrEscapeOptions {
   /** Skip attaching any listeners while `false` (e.g. only while a menu is open). Defaults to `true`. */
@@ -42,7 +47,7 @@ export function useDismissOnOutsideOrEscape(
   const { enabled = true, containerRef } = options;
 
   // Latest-ref indirection so callers don't need to memoize `onDismiss` for
-  // the listener effect below to stay attached with fresh behavior.
+  // the subscription effect below to stay attached with fresh behavior.
   const onDismissRef = useRef(onDismiss);
   useEffect(() => {
     onDismissRef.current = onDismiss;
@@ -50,24 +55,6 @@ export function useDismissOnOutsideOrEscape(
 
   useEffect(() => {
     if (!enabled) return;
-    if (typeof document === 'undefined') return;
-
-    function onPointerDown(event: PointerEvent) {
-      const container = containerRef?.current;
-      if (!container) return;
-      if (container.contains(event.target as Node)) return;
-      onDismissRef.current();
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      onDismissRef.current();
-    }
-
-    if (containerRef) document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      if (containerRef) document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
+    return subscribeOutsideClickOrEscape(containerRef, () => onDismissRef.current());
   }, [enabled, containerRef]);
 }
