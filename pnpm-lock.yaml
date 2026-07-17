@@ -52,6 +52,12 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  packages/deploy:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/http: {}
 
   packages/node-host: {}
