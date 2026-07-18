@@ -10,6 +10,7 @@ export * from './features/browser-chrome/index.js';
 export * from './features/sketch-editor/index.js';
 export * from './features/asset-grid/index.js';
 export * from './features/viewer-shell/index.js';
+export * from './features/version-manager/index.js';
 export * from './features/settings-dialog/index.js';
 export * from './features/settings-dialog/tabs/appearance/index.js';
 export * from './features/settings-dialog/tabs/notifications/index.js';
@@ -26,6 +27,7 @@ export * from './utils/dom-subscriptions.js';
 export * from './utils/auto-open-file.js';
 export * from './utils/localized-url.js';
 export * from './utils/markdown-scroll-sync.js';
+export * from './utils/polygon-selection.js';
 
 export * from './hooks/useInView.js';
 export * from './hooks/useCoalescedCallback.js';
