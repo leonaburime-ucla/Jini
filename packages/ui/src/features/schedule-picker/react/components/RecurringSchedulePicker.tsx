@@ -1,6 +1,6 @@
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
-import { PillButton } from '../../../../components/PillButton.js';
+import { Icon } from '../../../../react/components/Icon.js';
+import { PillButton } from '../../../../react/components/PillButton.js';
 import { DEFAULT_SCHEDULE_KINDS, DEFAULT_WEEKDAYS } from '../../constants.js';
 import { showsWeekdayGrid } from '../../rules.js';
 import { useRecurringSchedulePicker } from '../hooks/useRecurringSchedulePicker.js';

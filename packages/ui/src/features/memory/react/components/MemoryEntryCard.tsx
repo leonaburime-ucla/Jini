@@ -5,7 +5,7 @@
 // lines, chat/artifact-rendering territory, explicitly deferred to
 // `@jini/chat-react`/`@jini/renderers-react` — see `packages/ui/source-map.md`)
 // — just enough to render a saved memory's plain-text/Markdown body safely.
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import { renderMarkdown } from '../render-markdown.js';
 import type { MemoryEntrySummary } from '../../types.js';

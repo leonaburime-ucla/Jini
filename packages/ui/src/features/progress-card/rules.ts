@@ -1,4 +1,4 @@
-import type { IconName } from '../../components/Icon.js';
+import type { IconName } from '../../react/components/Icon.js';
 import type { ProgressStatus } from './types.js';
 
 /** Icon for the card's own overall status. `pending`/`running` share an icon

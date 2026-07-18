@@ -20,7 +20,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { useT } from '../features/i18n/index.js';
+import { useT } from '../../features/i18n/index.js';
 import { Icon } from './Icon.js';
 
 const ONBOARDING_DROPDOWN_OPEN_EVENT = 'jini-ui:onboarding-dropdown-open';

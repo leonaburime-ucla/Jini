@@ -7,7 +7,7 @@
 // goes through `useT()` — the origin hardcoded "Install log" and the
 // warning-count pluralization. See packages/ui/source-map.md.
 
-import { useT } from '../features/i18n/index.js';
+import { useT } from '../../features/i18n/index.js';
 
 export interface NoticeOutcome {
   ok: boolean;

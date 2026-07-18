@@ -8,7 +8,7 @@ import {
   progressCardItemIcon,
   progressCardStatusIcon,
 } from '../rules.js';
-import { Icon } from '../../../components/Icon.js';
+import { Icon } from '../../../react/components/Icon.js';
 
 export interface ProgressCardProps {
   data: ProgressCardData;

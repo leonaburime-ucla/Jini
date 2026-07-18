@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { I18nProvider } from '../features/i18n/index.js';
+import { I18nProvider } from '../../features/i18n/index.js';
 import { Notice } from './Notice.js';
 
 describe('Notice', () => {

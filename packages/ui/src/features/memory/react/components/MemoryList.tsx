@@ -3,7 +3,7 @@
 // visible extraction rows). Rendering only — every list, count, and handler is
 // supplied by a host's entries/extractions hooks.
 import { useMemo, type MutableRefObject } from 'react';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import { TYPES } from '../../constants.js';
 import { memoryTypeLabels } from '../../formatters.js';

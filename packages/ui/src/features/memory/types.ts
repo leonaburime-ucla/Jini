@@ -11,7 +11,7 @@
  * separate near-duplicate — see the source-map note on the
  * connector-reconciliation-reducer decision.
  */
-import type { IconName } from '../../components/Icon.js';
+import type { IconName } from '../../react/components/Icon.js';
 
 // ─── Memory entries / tree ──────────────────────────────────────────────────
 

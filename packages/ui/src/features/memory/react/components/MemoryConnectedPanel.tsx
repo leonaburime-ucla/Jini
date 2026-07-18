@@ -9,7 +9,7 @@
 // resolving theme-swapped logo URLs does so before handing `logoUrl` in).
 import { useMemo } from 'react';
 import { ConnectorLogo, type Connector, type ConnectorStatusMap } from '../../../connectors/index.js';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import type { ConnectorMemoryAttempt, MemoryExtractionRecord, MemorySuggestion } from '../../types.js';
 import { connectorAttemptDetail, connectorAttemptTitle, formatConnectorContextBytes, memoryTypeLabels } from '../../formatters.js';
