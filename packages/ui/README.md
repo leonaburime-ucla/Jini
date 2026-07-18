@@ -119,6 +119,22 @@ Real content has landed in several parallel passes — see
   `react/{hooks,components}` layout (this is the first feature built with it
   from scratch). See `packages/ui/source-map.md`.
 
+- `src/features/schedule-picker/` — `RecurringSchedulePicker`, a generic
+  "cron-lite" recurring-schedule editor (2026-07-18), ported from
+  `NewAutomationModal.tsx`'s `SchedulePopover` per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map.
+  Also added flat `src/components/{PillButton,PopoverMenu,PopoverItem}.tsx`
+  and `src/utils/timezone.ts`, both from the same source file. See
+  `packages/ui/source-map.md`.
+- `src/features/mention-autocomplete/` — `MentionAutocomplete`, a generic
+  "type a trigger character, get a filtered picker" mention/capability
+  autocomplete (2026-07-18), also ported from `NewAutomationModal.tsx`, per
+  the same Consolidation map row. Checked against `QuickSwitcher.tsx` and
+  the `composer/*` Lexical `@mention` system for a possible 3-way overlap —
+  concluded they're three distinct shapes, not one primitive done three
+  times; see `packages/ui/source-map.md` for the full comparison (read that
+  section before extracting either of those two).
+
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
 (cross-package routing) of the extraction plan are not started. The
