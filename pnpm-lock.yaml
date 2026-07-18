@@ -38,6 +38,12 @@ importers:
 
   packages/agent-runtime: {}
 
+  packages/capability-providers:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/chat-core: {}
 
   packages/chat-react: {}
