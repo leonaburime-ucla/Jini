@@ -132,6 +132,52 @@ describe('SourceConfigList — MCP-server-shaped source', () => {
     await waitFor(() => expect(screen.queryByText('https://mcp.example/a')).toBeNull());
     expect(screen.getByText('No sources configured yet.')).toBeInTheDocument();
   });
+
+  /**
+   * Regression, end-to-end through the real orchestrator: the audit's exact
+   * finding was that `types.ts` declares `SourceConfigItem.enabled`, but
+   * nothing in the shipped port/UI ever rendered or mutated it, and the
+   * expanded card was entirely read-only — real OD `McpClientSection.tsx`'s
+   * `McpRow` supports both an always-visible enable/disable toggle and
+   * expand-to-edit label/field inputs. This drives the real always-visible
+   * checkbox and the real expanded Edit/Save flow against an injected port,
+   * and asserts the persisted source actually changed (via `fetchSources()`
+   * after the round trip), not just that a callback fired.
+   */
+  it('toggles enabled and edits the label/fields of a real MCP-shaped server end-to-end', async () => {
+    const dependencies = mcpDependencies([
+      { id: 'a', label: 'Old label', fields: { url: 'https://mcp.example/a' }, enabled: true },
+    ]);
+    render(
+      <SourceConfigList<McpServerSource> dependencies={dependencies} fieldSpecs={MCP_FIELD_SPECS} trustOptions={MCP_TRUST_OPTIONS} />,
+    );
+    await screen.findByText('Old label');
+
+    // Enable/disable toggle: always visible, no need to expand first.
+    const checkbox = screen.getByRole('checkbox', { name: /Enable/ });
+    expect(checkbox).toBeChecked();
+    await userEvent.click(checkbox);
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    let persisted = await dependencies.port.fetchSources();
+    expect(persisted[0]?.enabled).toBe(false);
+
+    // Expand-to-edit: label + field.
+    const card = screen.getByTestId('source-config-item-card');
+    await userEvent.click(within(card).getByRole('button', { name: 'Old label' }));
+    await userEvent.click(within(card).getByRole('button', { name: 'Edit' }));
+    const labelInput = within(card).getByLabelText('Label');
+    await userEvent.clear(labelInput);
+    await userEvent.type(labelInput, 'New label');
+    const urlInput = within(card).getByLabelText('URL', { exact: false });
+    await userEvent.clear(urlInput);
+    await userEvent.type(urlInput, 'https://mcp.example/renamed');
+    await userEvent.click(within(card).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New label' })).toBeInTheDocument());
+    persisted = await dependencies.port.fetchSources();
+    expect(persisted[0]?.label).toBe('New label');
+    expect(persisted[0]?.fields.url).toBe('https://mcp.example/renamed');
+  });
 });
 
 describe('SourceConfigList — BYOK-key-shaped source (same component, different fields/adapter)', () => {

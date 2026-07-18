@@ -2068,6 +2068,70 @@ draft values, click its own "Test" button BEFORE any submit, and assert the inje
 no item card ever created (nothing was persisted). Full package after this fix: 171 source-config-list
 tests, all green (up from 162 after the i18n fix, 152 at the pinned audit head).
 
+### MCP enable/edit fix (2026-07-18 audit)
+
+A 2026-07-18 audit found that `types.ts` already declared `SourceConfigItem.enabled`, but nothing in
+the shipped port or UI ever rendered or mutated it, and the expanded item card was an entirely
+read-only `<dl>` — no way to edit a source's `label`/fields after creation at all. Real OD
+`McpClientSection.tsx`'s `McpRow` (lines 779-794, 908-960) supports both: an always-visible
+enable/disable checkbox in the collapsed summary row (`onChange({ enabled: e.target.checked })`,
+never gated behind expanding the row), and, once expanded, an editable label input plus editable
+transport/config fields. The audit also found the existing "MCP-server-shaped source" test describe
+block actually proved a *BYOK/marketplace-style trust* interaction (`MCP_TRUST_OPTIONS`), not MCP's
+own real shape — `ports.ts`'s own `SourceTrustOption` doc comment states "the origin MCP-server shape
+has none" (no trust concept at all), so that test, however useful as the two-shape ABSTRACTION proof
+(see below), was never actually representative MCP behavior on its own.
+
+Fixed for real (not narrowed/disclosed-as-dropped):
+
+- `types.ts` gained `SourceUpdateInput` (`{ label?; enabled?; fields? }`) and added `'update'` to
+  `SourceActionKind`.
+- `ports.ts` gained an optional `updateSource?(id, patch: SourceUpdateInput): Promise<TSource | null>`
+  — ONE generic partial-patch method rather than one method per editable property (`setEnabled`,
+  `setLabel`, `setFields`, ...), matching the primitive's existing "one capability = one optional
+  port method" convention (`refreshSource`/`setTrust`/`testSource`). A host with nothing editable
+  after creation simply omits it, same as any other optional capability here.
+- `useSourceConfigList.ts` gained `update(id, patch)` (pending-tracked under the new `'update'` kind,
+  mirroring `setTrust`) and `capabilities.canUpdate` (derived from `Boolean(port.updateSource)`).
+- `SourceConfigItemCard.tsx`: an always-visible enable/disable checkbox in the summary row (rendered
+  whenever `source.enabled !== undefined && capabilities.canUpdate` — never gated behind expanding,
+  matching the origin exactly), and, once expanded, an "Edit" toggle that swaps the read-only field
+  list for editable `SourceConfigField`s (reusing the SAME component the add form uses) plus an
+  editable label input, with Save/Cancel committing or discarding the local draft. Deliberately
+  immediate-commit-on-Save per source (NOT the cross-row batch-save-with-dirty-signature pattern
+  `source-map.md` already documents as dropped from `McpClientSection.tsx` — that pattern tracks
+  dirty state across an entire LIST of rows behind one shared Save button; a single card's own
+  Save/Cancel is a different, smaller, already-namespaced-as-generic concern).
+- `SourceConfigField.tsx` gained an `idPrefix` prop (defaulting to the unchanged
+  `'source-config-field'`) — a real bug was caught while writing the end-to-end test for this fix:
+  the add form and an item card's new expand-to-edit fields render the SAME `fieldSpecs`
+  simultaneously once a card is in edit mode, and the component's DOM id was derived from `spec.key`
+  alone with no scoping, producing duplicate ids (and `getByLabelText` ambiguity — an accessibility
+  bug, not just a test artifact) whenever both were mounted at once. `SourceConfigItemCard.tsx` now
+  passes a per-source `idPrefix` when rendering its edit-mode fields.
+- `createFakeSourceConfigPort` gained a `updateSource`/`onUpdate` fake option (defaulting to a plain
+  shallow merge — `fields` merged key-by-key, `label`/`enabled` replaced when present in the patch).
+
+Verified with real tests, not just re-reading the source: `useSourceConfigList.test.ts` gained an
+`update` describe block (no-op with no port method, patches and persists on success, leaves the
+source in place when the port returns `null`, pending-state isolation). `SourceConfigItemCard.test.tsx`
+gained two describe blocks: enable/disable (checkbox presence tied to BOTH `source.enabled !==
+undefined` AND `capabilities.canUpdate`, calls `onUpdate({ enabled })` without needing to expand
+first, disabled while updating) and expand-to-edit (read-only-by-default, Edit reveals editable
+inputs seeded with CURRENT values, Save calls `onUpdate` with the edited patch and closes edit mode,
+Cancel discards without calling `onUpdate`, Save/Cancel disabled while updating).
+`SourceConfigField.test.tsx` gained a regression proving two instances for the same field key never
+collide when given different `idPrefix`es. `SourceConfigList.test.tsx` gained a full end-to-end
+regression against a real MCP-shaped source with `enabled: true`: click the real always-visible
+checkbox (asserts the persisted source's `enabled` actually flipped via a `fetchSources()` round
+trip), then expand, click the real "Edit" button, change the label and the URL field, click "Save",
+and assert BOTH persisted via another `fetchSources()` call — not just that a callback fired. This is
+the "representative MCP interaction proof" the audit asked for, alongside (not replacing) the
+existing trust-vocabulary two-shape abstraction test, which is left in place and re-labeled nowhere
+— it remains a real, useful proof of the generic trust capability, it is simply not itself proof of
+MCP-specific behavior; the new enable/edit test now supplies that. Full package after this fix: 186
+source-config-list tests, all green.
+
 ### i18n
 
 **Correction (2026-07-18 audit + fix-up):** this section previously claimed "every user-facing

@@ -15,6 +15,20 @@ describe('SourceConfigField', () => {
     expect(onChange).toHaveBeenCalledWith('x');
   });
 
+  it('scopes the generated DOM id by idPrefix, so two instances for the same field key never collide (e.g. the add form + an item card editing the same fieldSpecs at once)', () => {
+    const spec: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url' };
+    render(
+      <>
+        <SourceConfigField spec={spec} value="a" onChange={vi.fn()} />
+        <SourceConfigField spec={spec} value="b" idPrefix="source-config-item-card-x-field" onChange={vi.fn()} />
+      </>,
+    );
+    const inputs = screen.getAllByDisplayValue(/^[ab]$/);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toHaveAttribute('id', 'source-config-field-url');
+    expect(inputs[1]).toHaveAttribute('id', 'source-config-item-card-x-field-url');
+  });
+
   it('renders a url-kind field as type="url"', () => {
     const spec: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url' };
     render(<SourceConfigField spec={spec} value="https://a.example" onChange={vi.fn()} />);

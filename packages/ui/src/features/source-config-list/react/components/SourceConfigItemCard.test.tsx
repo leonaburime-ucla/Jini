@@ -13,8 +13,8 @@ const TRUST_OPTIONS: SourceTrustOption[] = [
   { value: 'restricted', label: 'Restricted' },
   { value: 'trusted', label: 'Trusted' },
 ];
-const FULL_CAPS: SourceConfigListCapabilities = { canRefresh: true, canSetTrust: true, canTest: true };
-const NO_CAPS: SourceConfigListCapabilities = { canRefresh: false, canSetTrust: false, canTest: false };
+const FULL_CAPS: SourceConfigListCapabilities = { canRefresh: true, canSetTrust: true, canTest: true, canUpdate: true };
+const NO_CAPS: SourceConfigListCapabilities = { canRefresh: false, canSetTrust: false, canTest: false, canUpdate: false };
 
 function baseProps(overrides: Partial<ComponentProps<typeof SourceConfigItemCard>> = {}) {
   const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' } };
@@ -26,10 +26,12 @@ function baseProps(overrides: Partial<ComponentProps<typeof SourceConfigItemCard
     refreshing: false,
     settingTrust: false,
     testing: false,
+    updating: false,
     onRefresh: vi.fn(),
     onRemove: vi.fn(),
     onTrustChange: vi.fn(),
     onTest: vi.fn(),
+    onUpdate: vi.fn(),
     ...overrides,
   };
 }
@@ -171,6 +173,100 @@ describe('SourceConfigItemCard', () => {
     render(<SourceConfigItemCard {...baseProps({ testResult: { ok: true, message: 'All good.' } })} />);
     await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
     expect(screen.getByRole('status')).toHaveTextContent('All good.');
+  });
+
+  describe('enable/disable toggle (MCP-shaped enable/edit regression)', () => {
+    it('renders an always-visible enabled checkbox when the source declares `enabled` and capabilities.canUpdate is true', () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' }, enabled: true };
+      render(<SourceConfigItemCard {...baseProps({ source })} />);
+      const checkbox = screen.getByRole('checkbox', { name: /Enable/ });
+      expect(checkbox).toBeChecked();
+    });
+
+    it('calls onUpdate with the new enabled value when toggled, without needing to expand first', async () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' }, enabled: true };
+      const onUpdate = vi.fn();
+      render(<SourceConfigItemCard {...baseProps({ source, onUpdate })} />);
+      await userEvent.click(screen.getByRole('checkbox', { name: /Enable/ }));
+      expect(onUpdate).toHaveBeenCalledWith({ enabled: false });
+    });
+
+    it('omits the checkbox entirely when the source does not declare `enabled` at all', () => {
+      render(<SourceConfigItemCard {...baseProps()} />);
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
+
+    it('omits the checkbox when capabilities.canUpdate is false, even if the source declares `enabled`', () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' }, enabled: true };
+      render(<SourceConfigItemCard {...baseProps({ source, capabilities: NO_CAPS })} />);
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
+
+    it('disables the checkbox while updating', () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' }, enabled: true };
+      render(<SourceConfigItemCard {...baseProps({ source, updating: true })} />);
+      expect(screen.getByRole('checkbox', { name: /Enable/ })).toBeDisabled();
+    });
+  });
+
+  describe('expand-to-edit (MCP-shaped enable/edit regression)', () => {
+    it('does not render an Edit control when capabilities.canUpdate is false', async () => {
+      render(<SourceConfigItemCard {...baseProps({ capabilities: NO_CAPS })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    });
+
+    it('switches the expanded field list from read-only to editable inputs seeded with current values, and saves a patch', async () => {
+      const source: SourceConfigItem = { id: 's1', label: 'My server', fields: { url: 'https://a.example' } };
+      const onUpdate = vi.fn();
+      render(<SourceConfigItemCard {...baseProps({ source, onUpdate })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'My server' }));
+      // Read-only before editing.
+      expect(screen.getByText('https://a.example')).toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: /URL/ })).toBeNull();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const urlInput = screen.getByLabelText('URL', { exact: false });
+      expect(urlInput).toHaveValue('https://a.example');
+      const labelInput = screen.getByLabelText('Label');
+      expect(labelInput).toHaveValue('My server');
+
+      await userEvent.clear(urlInput);
+      await userEvent.type(urlInput, 'https://b.example');
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(onUpdate).toHaveBeenCalledWith({ label: 'My server', fields: { url: 'https://b.example' } });
+      // Editing mode closes after save.
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    });
+
+    it('discards edits when Cancel is clicked, without calling onUpdate', async () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' } };
+      const onUpdate = vi.fn();
+      render(<SourceConfigItemCard {...baseProps({ source, onUpdate })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const urlInput = screen.getByLabelText('URL', { exact: false });
+      await userEvent.clear(urlInput);
+      await userEvent.type(urlInput, 'https://discarded.example');
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      expect(onUpdate).not.toHaveBeenCalled();
+      // Back to read-only, showing the ORIGINAL (unsaved edit discarded) value.
+      const fieldValue = document.querySelector('.source-config-item-card-fields dd');
+      expect(fieldValue?.textContent).toBe('https://a.example');
+      expect(screen.queryByText('https://discarded.example')).toBeNull();
+    });
+
+    it('disables Save/Cancel while updating', async () => {
+      const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' } };
+      const { rerender } = render(<SourceConfigItemCard {...baseProps({ source })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      rerender(<SourceConfigItemCard {...baseProps({ source, updating: true })} />);
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    });
   });
 
   describe('i18n — trust badge/select and expanded field labels', () => {

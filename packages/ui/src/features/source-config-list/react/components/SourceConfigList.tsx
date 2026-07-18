@@ -78,6 +78,7 @@ export function SourceConfigList<TSource extends SourceConfigItem>({
       onRemove={(id) => void list.remove(id)}
       onTrustChange={(id, trust) => void list.setTrust(id, trust)}
       onTest={(id) => void list.test(id)}
+      onUpdate={(id, patch) => void list.update(id, patch)}
       {...(trustOptions ? { trustOptions } : {})}
       {...(title ? { title } : {})}
       {...(subtitle ? { subtitle } : {})}

@@ -9,12 +9,13 @@ import {
   withPendingAction,
 } from '../../rules.js';
 import type { SourceConfigDependencies, SourceConfigPort } from '../../ports.js';
-import type { SourceActionKind, SourceConfigItem, SourceFieldValues, SourceTestResult } from '../../types.js';
+import type { SourceActionKind, SourceConfigItem, SourceFieldValues, SourceTestResult, SourceUpdateInput } from '../../types.js';
 
 export interface SourceConfigListCapabilities {
   canRefresh: boolean;
   canSetTrust: boolean;
   canTest: boolean;
+  canUpdate: boolean;
 }
 
 export interface UseSourceConfigListParams<TSource extends SourceConfigItem> {
@@ -41,6 +42,8 @@ export interface SourceConfigListController<TSource extends SourceConfigItem> {
    * {@link DRAFT_TEST_SCOPE} instead of a real item id.
    */
   test: (id: string | undefined, draft?: SourceFieldValues) => Promise<void>;
+  /** Patches an existing source's `label`/`enabled`/`fields` (see `ports.ts`'s `updateSource` doc comment). No-op when the port has no `updateSource`. */
+  update: (id: string, patch: SourceUpdateInput) => Promise<void>;
 }
 
 const LOAD_FAILED_MESSAGE = 'Failed to load sources.';
@@ -146,11 +149,26 @@ export function useSourceConfigList<TSource extends SourceConfigItem>(
     [port],
   );
 
+  const update = useCallback(
+    async (id: string, patch: SourceUpdateInput) => {
+      if (!port.updateSource) return;
+      setPendingKeys((current) => withPendingAction(current, id, 'update'));
+      try {
+        const updated = await port.updateSource(id, patch);
+        if (updated) setSources((current) => updateSourceById(current, id, updated));
+      } finally {
+        setPendingKeys((current) => withoutPendingAction(current, id, 'update'));
+      }
+    },
+    [port],
+  );
+
   const capabilities = useMemo<SourceConfigListCapabilities>(
     () => ({
       canRefresh: Boolean(port.refreshSource),
       canSetTrust: Boolean(port.setTrust),
       canTest: Boolean(port.testSource),
+      canUpdate: Boolean(port.updateSource),
     }),
     [port],
   );
@@ -171,6 +189,7 @@ export function useSourceConfigList<TSource extends SourceConfigItem>(
     refresh,
     setTrust,
     test,
+    update,
   };
 }
 

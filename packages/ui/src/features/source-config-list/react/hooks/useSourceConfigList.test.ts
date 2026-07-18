@@ -46,15 +46,15 @@ describe('useSourceConfigList', () => {
   });
 
   it('derives capabilities from which optional port methods are present', async () => {
-    const fullPort = fakePort({ refreshSource: vi.fn(), setTrust: vi.fn(), testSource: vi.fn() });
+    const fullPort = fakePort({ refreshSource: vi.fn(), setTrust: vi.fn(), testSource: vi.fn(), updateSource: vi.fn() });
     const { result: full } = renderHook(() => useSourceConfigList({ port: fullPort }));
     await waitFor(() => expect(full.current.loading).toBe(false));
-    expect(full.current.capabilities).toEqual({ canRefresh: true, canSetTrust: true, canTest: true });
+    expect(full.current.capabilities).toEqual({ canRefresh: true, canSetTrust: true, canTest: true, canUpdate: true });
 
     const minimalPort = fakePort();
     const { result: minimal } = renderHook(() => useSourceConfigList({ port: minimalPort }));
     await waitFor(() => expect(minimal.current.loading).toBe(false));
-    expect(minimal.current.capabilities).toEqual({ canRefresh: false, canSetTrust: false, canTest: false });
+    expect(minimal.current.capabilities).toEqual({ canRefresh: false, canSetTrust: false, canTest: false, canUpdate: false });
   });
 
   it('addSourceToList upserts a source into the in-memory list without a reload', async () => {
@@ -166,6 +166,67 @@ describe('useSourceConfigList', () => {
         await result.current.setTrust('a', 'official');
       });
       expect(result.current.sources[0]?.trust).toBe('official');
+    });
+  });
+
+  describe('update', () => {
+    /**
+     * Regression for the audit finding that MCP-shaped enable/edit behavior
+     * (real OD `McpClientSection.tsx`'s `McpRow` enable toggle and
+     * expand-to-edit label/field inputs) was declared in `types.ts`
+     * (`SourceConfigItem.enabled`) but never actually mutable anywhere —
+     * `ports.ts` had no general update operation at all.
+     */
+    it('is a no-op when the port has no updateSource', async () => {
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([SEED]) });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toEqual([SEED]));
+      await act(async () => {
+        await result.current.update('a', { enabled: false });
+      });
+      expect(result.current.sources[0]).toEqual(SEED);
+    });
+
+    it('patches the source (e.g. enabled) on success', async () => {
+      const updated: SourceConfigItem = { ...SEED, enabled: false };
+      const updateSource = vi.fn().mockResolvedValue(updated);
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([{ ...SEED, enabled: true }]), updateSource });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toHaveLength(1));
+      await act(async () => {
+        await result.current.update('a', { enabled: false });
+      });
+      expect(updateSource).toHaveBeenCalledWith('a', { enabled: false });
+      expect(result.current.sources[0]?.enabled).toBe(false);
+    });
+
+    it('leaves the source in place when the port returns null', async () => {
+      const updateSource = vi.fn().mockResolvedValue(null);
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([SEED]), updateSource });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toEqual([SEED]));
+      await act(async () => {
+        await result.current.update('a', { label: 'Renamed' });
+      });
+      expect(result.current.sources[0]).toEqual(SEED);
+    });
+
+    it('tracks pending state for exactly the id being updated, for the duration of the call', async () => {
+      let resolveUpdate!: (source: SourceConfigItem | null) => void;
+      const updateSource = vi.fn().mockReturnValue(new Promise((resolve) => (resolveUpdate = resolve)));
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([SEED]), updateSource });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toEqual([SEED]));
+      let updatePromise!: Promise<void>;
+      act(() => {
+        updatePromise = result.current.update('a', { enabled: false });
+      });
+      expect(result.current.isPending('a', 'update')).toBe(true);
+      await act(async () => {
+        resolveUpdate({ ...SEED, enabled: false });
+        await updatePromise;
+      });
+      expect(result.current.isPending('a', 'update')).toBe(false);
     });
   });
 

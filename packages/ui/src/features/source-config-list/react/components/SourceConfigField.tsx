@@ -8,20 +8,30 @@ export interface SourceConfigFieldProps {
   error?: string;
   disabled?: boolean;
   onChange: (value: string) => void;
+  /**
+   * Disambiguates the generated DOM id when more than one `SourceConfigField`
+   * for the SAME `spec.key` can be mounted at once (e.g. the add form's URL
+   * field and an item card's expand-to-edit URL field for the same
+   * `fieldSpecs` — both render simultaneously once a card is in edit mode).
+   * Defaults to `'source-config-field'` (the add form's own usage, unchanged
+   * from before this prop existed).
+   */
+  idPrefix?: string;
 }
 
 /**
  * Renders one host-described field (`text`/`url`/`password`/`select`/
- * `textarea`) in the add-source form. Dumb/presentational — the draft value
- * and validation live in `useSourceConfigAddForm`. The `password` kind's
- * show/hide toggle is small local disclosure state (per the vertical-slice
- * guardrail allowing that in a leaf component), ported in spirit from the
- * origin `byok/ByokKeyField.tsx`.
+ * `textarea`) in the add-source form (or an item card's expand-to-edit
+ * fields). Dumb/presentational — the draft value and validation live in
+ * `useSourceConfigAddForm`/the caller. The `password` kind's show/hide
+ * toggle is small local disclosure state (per the vertical-slice guardrail
+ * allowing that in a leaf component), ported in spirit from the origin
+ * `byok/ByokKeyField.tsx`.
  */
-export function SourceConfigField({ spec, value, error, disabled = false, onChange }: SourceConfigFieldProps) {
+export function SourceConfigField({ spec, value, error, disabled = false, idPrefix = 'source-config-field', onChange }: SourceConfigFieldProps) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
-  const inputId = `source-config-field-${spec.key}`;
+  const inputId = `${idPrefix}-${spec.key}`;
   const errorId = error ? `${inputId}-error` : undefined;
   const placeholder = spec.placeholder ? t(spec.placeholder) : undefined;
 

@@ -3,7 +3,7 @@ import { isActionPending } from '../../rules.js';
 import { SourceConfigAddForm, type SourceConfigAddFormProps } from './SourceConfigAddForm.js';
 import { SourceConfigItemCard } from './SourceConfigItemCard.js';
 import type { SourceConfigListCapabilities } from '../hooks/useSourceConfigList.js';
-import type { SourceConfigItem, SourceFieldSpec, SourceTestResult, SourceTrustOption } from '../../types.js';
+import type { SourceConfigItem, SourceFieldSpec, SourceTestResult, SourceTrustOption, SourceUpdateInput } from '../../types.js';
 
 export interface SourceConfigListViewProps<TSource extends SourceConfigItem> {
   title?: string;
@@ -22,6 +22,7 @@ export interface SourceConfigListViewProps<TSource extends SourceConfigItem> {
   onRemove: (id: string) => void;
   onTrustChange: (id: string, trust: string) => void;
   onTest: (id: string) => void;
+  onUpdate: (id: string, patch: SourceUpdateInput) => void;
 }
 
 /**
@@ -47,6 +48,7 @@ export function SourceConfigListView<TSource extends SourceConfigItem>({
   onRemove,
   onTrustChange,
   onTest,
+  onUpdate,
 }: SourceConfigListViewProps<TSource>) {
   const t = useT();
 
@@ -85,10 +87,12 @@ export function SourceConfigListView<TSource extends SourceConfigItem>({
               refreshing={isActionPending(pendingKeys, source.id, 'refresh')}
               settingTrust={isActionPending(pendingKeys, source.id, 'trust')}
               testing={isActionPending(pendingKeys, source.id, 'test')}
+              updating={isActionPending(pendingKeys, source.id, 'update')}
               onRefresh={() => onRefresh(source.id)}
               onRemove={() => onRemove(source.id)}
               onTrustChange={(trust) => onTrustChange(source.id, trust)}
               onTest={() => onTest(source.id)}
+              onUpdate={(patch) => onUpdate(source.id, patch)}
               {...(trustOptions ? { trustOptions } : {})}
               {...(testResults[source.id] ? { testResult: testResults[source.id] } : {})}
             />

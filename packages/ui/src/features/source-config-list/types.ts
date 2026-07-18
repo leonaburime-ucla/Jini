@@ -76,7 +76,21 @@ export interface SourceConfigItem {
   statusMessage?: string;
 }
 
-export type SourceActionKind = 'add' | 'remove' | 'refresh' | 'trust' | 'test';
+export type SourceActionKind = 'add' | 'remove' | 'refresh' | 'trust' | 'test' | 'update';
+
+/**
+ * Patch for an existing, already-persisted source's editable state —
+ * `enabled` (on/off) and/or `label`/`fields` (expand-to-edit), ported in
+ * spirit from `McpClientSection.tsx`'s `McpRow` (see `ports.ts`'s
+ * `updateSource` doc comment). Every key is optional so a host UI can send
+ * only what actually changed (e.g. just `{ enabled }` from the summary-row
+ * toggle, without touching `label`/`fields`).
+ */
+export interface SourceUpdateInput {
+  label?: string;
+  enabled?: boolean;
+  fields?: SourceFieldValues;
+}
 
 export interface SourceDraftIssue {
   field: string;

@@ -19,6 +19,7 @@ import type {
   SourceConfigItem,
   SourceFieldValues,
   SourceTestResult,
+  SourceUpdateInput,
 } from './types.js';
 
 export interface SourceConfigPort<TSource extends SourceConfigItem = SourceConfigItem> {
@@ -29,6 +30,20 @@ export interface SourceConfigPort<TSource extends SourceConfigItem = SourceConfi
   refreshSource?(id: string): Promise<TSource | null>;
   /** Optional: omit for a source shape with no trust/authorization-level concept. */
   setTrust?(id: string, trust: string): Promise<TSource | null>;
+  /**
+   * Optional: omit for a source shape with nothing editable after creation
+   * (e.g. a static BYOK key entry). Ported in spirit from
+   * `McpClientSection.tsx`'s `McpRow` — the origin's own enable/disable
+   * toggle (`onChange({ enabled })`) and expand-to-edit label/field inputs
+   * (`onChange({ label })`, per-field `onChange`), generalized as a single
+   * partial-patch method rather than one method per editable property, so a
+   * host with more than `label`/`enabled`/`fields` to patch doesn't need a
+   * growing list of port methods. The React layer derives whether to render
+   * ANY enable-toggle/edit affordance from whether this method exists at
+   * all (`capabilities.canUpdate`), same "capability from port method
+   * presence" pattern as `refreshSource`/`setTrust`/`testSource`.
+   */
+  updateSource?(id: string, patch: SourceUpdateInput): Promise<TSource | null>;
   /**
    * Optional: omit for a source shape with no connection-test concept.
    * `id` is `undefined` for the one case that has no persisted item yet at

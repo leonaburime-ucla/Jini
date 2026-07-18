@@ -9,7 +9,7 @@ import type { SourceConfigListCapabilities } from '../hooks/useSourceConfigList.
 import type { SourceConfigItem, SourceFieldSpec } from '../../types.js';
 
 const URL_FIELD: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url', required: true };
-const FULL_CAPS: SourceConfigListCapabilities = { canRefresh: true, canSetTrust: true, canTest: true };
+const FULL_CAPS: SourceConfigListCapabilities = { canRefresh: true, canSetTrust: true, canTest: true, canUpdate: true };
 
 function baseProps(overrides: Partial<ComponentProps<typeof SourceConfigListView>> = {}) {
   const values = { url: '' };
@@ -34,6 +34,7 @@ function baseProps(overrides: Partial<ComponentProps<typeof SourceConfigListView
     onRemove: vi.fn(),
     onTrustChange: vi.fn(),
     onTest: vi.fn(),
+    onUpdate: vi.fn(),
     ...overrides,
   };
 }
