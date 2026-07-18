@@ -26,7 +26,13 @@ audience: contributor
 > 2. The `/* v8 ignore */`-is-never-valid rule (already in the original,
 >    Phase 9.5 point 3) is called out explicitly up front because a dispatch
 >    violated it once already before this copy existed.
-> 3. Everything else below is unchanged from the original — the four-homes
+> 3. (2026-07-18) Added "Phase 9.6 — Async/network test-category gate" —
+>    coverage percentage alone doesn't catch this bug class. OD PR #5228's
+>    `MemorySection.tsx` decomposition attempt found the original had
+>    passing, 100%-happy-path tests that hid real, pre-existing async/state
+>    bugs (malformed-response trust, a concurrency race, no error handling,
+>    stale state on retry) — none of them caught by coverage numbers alone.
+> 4. Everything else below is unchanged from the original — the four-homes
 >    architecture, the guard rules, the `useX`/`useWiredX` wiring pair (Phase
 >    6), and the phase sequence all already matched what Jini needed; this
 >    copy only tightens the coverage bar and makes it load-bearing instead of
@@ -218,6 +224,17 @@ Coverage is a floor, not a target to game. Run with `json-summary`+`json` report
 3. **Never fake the number. `/* v8 ignore */` (or any coverage-suppression comment) is NEVER a valid outcome of this loop, under any classification above, no exceptions.** If a branch truly cannot be justified by any of the four classifications, that's a signal the branch shouldn't exist — refactor it out. A dispatch violated this once before this bar was made explicit up front; it isn't a suggestion.
 4. Re-run coverage after each batch of fixes; repeat from step 1 until every metric clears 99% aggregate and per file (and ideally 100%). Record the final numbers (aggregate + any file that needed a specific call-out) in the handoff/PR body.
 
+### Phase 9.6 — Async/network test-category gate (Jini addition, 2026-07-18)
+
+Phase 9.5's coverage percentage does not by itself catch this class of bug. OD PR #5228's `MemorySection.tsx` decomposition attempt surfaced real, pre-existing async/state-correctness bugs in the original — malformed-response trust, a concurrency race, missing error handling, and stale state on retry — none of them caught, because the original's tests were 100% happy-path. For any slice cluster this refactor touches that makes a network request or holds async state, write explicit tests for all 4 of the following before treating Phase 9.5 as satisfied:
+
+1. **Malformed-but-technically-successful response** — a 2xx response missing an expected field must fail/throw, not get silently treated as empty/not-found.
+2. **Racing async operations** — a stale request that completes after a newer one must not clobber the newer state.
+3. **Rejected promise with no handler** — must surface visibly to the caller/UI/logs, never become an unhandled rejection.
+4. **Stale state after retry** — a retry's success handler must not clear/overwrite state without checking whether the world moved on during the async call.
+
+A cluster with no network/async surface is exempt — say so explicitly rather than skipping silently.
+
 ### Phase 10 — Validate (nothing is done until green)
 Run and record real numbers:
 1. `pnpm --filter @open-design/web typecheck`
@@ -248,6 +265,7 @@ task saying `READY` is not delivery evidence.
 - [ ] Retained-behavior manifest complete; every generic row has a passing
   targeted test or an explicit host-owned seam/scope decision.
 - [ ] **Coverage ≥99% on all 4 metrics (statements/branches/functions/lines), aggregate and per file, 100% as the actual goal**, reached via the Phase 9.5 classify-then-fix loop (test the reachable, refactor away the dead/tangled, node-companion the SSR guards, non-null-assert the type-required fallbacks) — **never `/* v8 ignore */`, no exceptions.**
+- [ ] **Phase 9.6: every touched cluster with a network/async surface has explicit tests for all 4 bug categories (malformed 2xx response, racing async ops, unhandled rejection, stale state after retry) — see the OD PR #5228 postmortem.**
 - [ ] Every hook has a mounted `renderHook` test against a fake port; every component has a `@testing-library/react` mount test; interactive behavior has a real-DOM-event test — pure-function tests alone don't satisfy this.
 - [ ] `pnpm --filter @open-design/web typecheck`, new slice tests, existing component tests, and `pnpm guard` (vertical-slice boundary check) all green — numbers recorded.
 - [ ] Committed with no co-author trailer; PR (if any) pushed to the fork with the full body.

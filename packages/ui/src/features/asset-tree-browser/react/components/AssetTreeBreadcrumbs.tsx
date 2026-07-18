@@ -1,0 +1,42 @@
+import { useT } from '../../../i18n/index.js';
+import { buildBreadcrumbSegments } from '../../rules.js';
+
+export interface AssetTreeBreadcrumbsProps {
+  currentDir: string;
+  /** The root segment's label (host-owned — e.g. a project/working-dir name, or a generic "Files" fallback). */
+  rootLabel: string;
+  onNavigate: (dir: string) => void;
+}
+
+/** Directory breadcrumb trail: the root label plus one clickable segment per path component, the last always non-interactive (the current directory). */
+export function AssetTreeBreadcrumbs({ currentDir, rootLabel, onNavigate }: AssetTreeBreadcrumbsProps) {
+  const t = useT();
+  const segments = buildBreadcrumbSegments(currentDir);
+  const atRoot = currentDir === '';
+
+  return (
+    <nav className="asset-tree-breadcrumbs" aria-label={t('Breadcrumbs')}>
+      {atRoot ? (
+        <span className="asset-tree-breadcrumb-current">{rootLabel}</span>
+      ) : (
+        <button type="button" className="asset-tree-breadcrumb-btn" onClick={() => onNavigate('')}>
+          {rootLabel}
+        </button>
+      )}
+      {segments.map((segment) => (
+        <span key={segment.path} className="asset-tree-breadcrumb-segment">
+          <span className="asset-tree-breadcrumb-sep" aria-hidden>
+            /
+          </span>
+          {segment.isLast ? (
+            <span className="asset-tree-breadcrumb-current">{segment.label}</span>
+          ) : (
+            <button type="button" className="asset-tree-breadcrumb-btn" onClick={() => onNavigate(segment.path)}>
+              {segment.label}
+            </button>
+          )}
+        </span>
+      ))}
+    </nav>
+  );
+}
