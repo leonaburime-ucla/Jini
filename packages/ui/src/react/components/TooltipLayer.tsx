@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
 
-type TooltipPlacement = 'top' | 'bottom' | 'left' | 'right';
-type InputModality = 'keyboard' | 'pointer';
+export type TooltipPlacement = 'top' | 'bottom' | 'left' | 'right';
+export type InputModality = 'keyboard' | 'pointer';
 
-interface TooltipState {
+export interface TooltipState {
   target: HTMLElement;
   text: string;
   placement: TooltipPlacement;
@@ -15,36 +22,36 @@ interface TooltipState {
   };
 }
 
-const TOOLTIP_MARGIN = 8;
-const TOOLTIP_GAP = 7;
+export const TOOLTIP_MARGIN = 8;
+export const TOOLTIP_GAP = 7;
 
 // Contract: any element with class `jini-tooltip` and a non-empty
 // `data-tooltip` attribute is a tooltip trigger. `aria-expanded="true"`
 // suppresses the tooltip (the element already has an open popover/menu of
 // its own, so a hover tooltip on top of it would be redundant).
-function isTooltipTarget(el: Element | null): el is HTMLElement {
+export function isTooltipTarget(el: Element | null): el is HTMLElement {
   return el instanceof HTMLElement
     && el.classList.contains('jini-tooltip')
     && Boolean(el.dataset.tooltip?.trim())
     && el.getAttribute('aria-expanded') !== 'true';
 }
 
-function readTooltipTarget(start: EventTarget | null): HTMLElement | null {
+export function readTooltipTarget(start: EventTarget | null): HTMLElement | null {
   if (!(start instanceof Element)) return null;
   const candidate = start.closest('.jini-tooltip[data-tooltip]');
   return isTooltipTarget(candidate) ? candidate : null;
 }
 
-function tooltipPlacement(target: HTMLElement): TooltipPlacement {
+export function tooltipPlacement(target: HTMLElement): TooltipPlacement {
   const raw = target.dataset.tooltipPlacement;
   return raw === 'bottom' || raw === 'left' || raw === 'right' ? raw : 'top';
 }
 
-function clamp(value: number, min: number, max: number): number {
+export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function positionTooltip(
+export function positionTooltip(
   target: HTMLElement,
   tooltip: HTMLElement,
   placement: TooltipPlacement,
@@ -76,7 +83,7 @@ function positionTooltip(
   };
 }
 
-function sameStyle(
+export function sameStyle(
   left: TooltipState['style'],
   right: TooltipState['style'],
 ): boolean {
@@ -85,14 +92,26 @@ function sameStyle(
     && left.visibility === right.visibility;
 }
 
+export interface UseTooltipLayerResult {
+  /** The tooltip to render, or `null` when nothing is shown. */
+  state: TooltipState | null;
+  /** Attach to the rendered tooltip node; the hook measures it to position itself. */
+  tooltipRef: MutableRefObject<HTMLDivElement | null>;
+  /** Imperatively show the tooltip for a target (no-ops if it has no tooltip text). */
+  showTooltip: (target: HTMLElement) => void;
+  /** Imperatively hide the tooltip. */
+  hideTooltip: (options?: { restoreTitle?: boolean }) => void;
+}
+
 /**
- * Single global tooltip layer. Delegates pointer/focus/keyboard events on
- * `document` to find `.jini-tooltip[data-tooltip]` elements and renders one
- * positioned tooltip via a portal. Mount once near the app root; any element
- * anywhere in the tree can opt in just by adding the `jini-tooltip` class and
- * a `data-tooltip` attribute (optionally `data-tooltip-placement`).
+ * All of the tooltip layer's behavior — state, refs, the show/hide/position
+ * callbacks, and the `document`/`window` event delegation — with no rendering.
+ * Delegates pointer/focus/keyboard events on `document` to find
+ * `.jini-tooltip[data-tooltip]` elements and computes one positioned tooltip.
+ * Exported (with the pure helpers above) so the logic is testable and mockable
+ * in isolation from the DOM render; `TooltipLayer` is the dumb consumer.
  */
-export function TooltipLayer() {
+export function useTooltipLayer(): UseTooltipLayerResult {
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastInputRef = useRef<InputModality>('pointer');
@@ -298,6 +317,19 @@ export function TooltipLayer() {
       window.removeEventListener('scroll', scheduleUpdatePosition, true);
     };
   }, [hideTooltip, hideTooltipForActivation, scheduleUpdatePosition, showTooltip, suppressNativeTitle]);
+
+  return { state, tooltipRef, showTooltip, hideTooltip };
+}
+
+/**
+ * Single global tooltip layer. Mount once near the app root; any element
+ * anywhere in the tree can opt in just by adding the `jini-tooltip` class and
+ * a `data-tooltip` attribute (optionally `data-tooltip-placement`). All logic
+ * lives in {@link useTooltipLayer}; this component only renders the positioned
+ * tooltip via a portal.
+ */
+export function TooltipLayer() {
+  const { state, tooltipRef } = useTooltipLayer();
 
   if (!state || typeof document === 'undefined') return null;
 
