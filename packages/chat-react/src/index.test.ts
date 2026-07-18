@@ -60,4 +60,20 @@ describe('index barrel', () => {
     expect(typeof barrel.RendererRegistry).toBe('function');
     expect(new barrel.RendererRegistry().list()).toEqual([]);
   });
+
+  it('re-exports the model-picker feature', () => {
+    expect(typeof barrel.useModelPicker).toBe('function');
+    expect(typeof barrel.ModelPicker).toBe('function');
+    expect(typeof barrel.CredentialStatusBadge).toBe('function');
+    expect(typeof barrel.groupModelsByProvider).toBe('function');
+    expect(typeof barrel.filterModelGroups).toBe('function');
+    expect(typeof barrel.findSelectedModel).toBe('function');
+    expect(typeof barrel.isCustomModelId).toBe('function');
+    expect(typeof barrel.firstAvailableModelId).toBe('function');
+    expect(typeof barrel.modelSubtitle).toBe('function');
+    expect(typeof barrel.matchesModelQuery).toBe('function');
+    expect(barrel.defaultModelPickerPort).toEqual({});
+    expect(barrel.DEFAULT_MIN_SEARCHABLE_OPTIONS).toBe(8);
+    expect(barrel.CREDENTIAL_STATUS_SORT_PRIORITY).toEqual({ configured: 0, available: 1, unconfigured: 2 });
+  });
 });

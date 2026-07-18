@@ -142,16 +142,104 @@ target API surface this package implements.
   `integrations/open-design/` (see Reference Preflight §4) — none of them
   were ported, by design.
 
+## `features/model-picker/` (2026-07-18)
+
+A generic, provider-grouped, credential-status-badged, searchable model/agent
+picker — an **independent feature slice** depending only on
+`@jini/agent-runtime`'s registry vocabulary (`ModelProvider`, `ModelOption`,
+`AgentDefinition`, `CredentialStatus`, ...), never on this package's own
+conversation/message state. Lands here rather than `@jini/ui` per the project
+owner's explicit boundary call — `@jini/ui`'s README excludes chat/model-picker
+UI by design (see `packages/ui/README.md`).
+
+**Reference preflight**: source cloned fresh from
+`leonaburime-ucla/open-design` at commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34` (2026-07-18, `main`) — not the
+frozen `integrations/open-design/reference/` snapshot. Read in full:
+`apps/web/src/components/InlineModelSwitcher.tsx` (1,105 lines) and its
+siblings `modelOptions.tsx` (310), `providerModelsCache.ts` (43),
+`agentModelSelection.ts` (29), `AgentDiagnosticRow.tsx` (133),
+`AgentPicker.tsx` (74); `NewProjectPanel.tsx`'s `MediaModelCards` (3,059-line
+file, function at line 2525). Confirmed by direct read (not just citing
+`docs/jini-port/recon/r6-god-component-internals.md` §1.13/§3 and
+`r5-components-sweep.md` §4) that both files independently implement the same
+"group models by provider, badge each provider's credential/integration
+status, search-filter, click to select" shape — `r6`'s cross-cutting pattern
+table already named this recurrence; this task verified it firsthand.
+
+**A real gap, flagged and closed rather than worked around**: the task brief
+assumed `@jini/agent-runtime` already had the registry/types this feature
+should depend on. At the time this task started, that package had zero
+TypeScript source beyond a placeholder `index.ts` (only `craft/`+`skills/`
+markdown content — see `packages/agent-runtime/README.md`/`source-map.md`).
+Rather than either (a) silently inventing a parallel model/agent vocabulary
+inside this feature — which the same instruction explicitly forbade — or (b)
+blocking the whole task on a Coordinator ruling, this task added the missing
+registry module to `@jini/agent-runtime` itself
+(`packages/agent-runtime/src/registry.ts`, ported from the same OD read
+above), then built this feature on top of it. See that package's
+`source-map.md` for the full symbol-by-symbol provenance, including one
+deliberate, documented behavior change (`normalizeAgentModelChoice` applies
+to every agent, not just OD's hardcoded `amr` carve-out).
+
+| Jini file | Origin | Transform |
+|---|---|---|
+| `types.ts` | *(new, re-exports `@jini/agent-runtime`)* | `ModelPickerGroup`/`ModelPickerSelection`/`FetchProviderModelsInput`/`FetchProviderModelsResult` — feature-local composites over the agent-runtime vocabulary. |
+| `constants.ts` | `modelOptions.tsx`'s `minSearchableOptions = 8` default | `DEFAULT_MIN_SEARCHABLE_OPTIONS`; `CREDENTIAL_STATUS_SORT_PRIORITY` factored out of `MediaModelCards`'s inline `sortPriority` ternary. |
+| `rules.ts` | `MediaModelCards`'s `groups`/`filteredGroups` `useMemo` bodies + `modelOptions.tsx`'s `matchesModelSearch`/`isCustomModel` | Same grouping/sort/search/custom-value logic, made pure and React-free (no `useMemo` — callers memoize). `triggerSub`'s prefix-avoidance ternary ported as `modelSubtitle`. |
+| `ports.ts` / `dependencies.ts` | *(new, mirrors OD's `fetchProviderModels`/`providerModelsCache` pair)* | `ModelPickerPort.fetchProviderModels` is optional — a static-model-list host needs no port at all. `dependencies.ts` ships only the no-op default, never a concrete transport call (same discipline as `@jini/ui`'s `features/connectors/` canary). |
+| `react/hooks/useModelPicker.hooks.ts` | `InlineModelSwitcher.tsx`'s outside-click/Escape `useEffect` pair + `SearchableModelSelect`'s open/query state | Headless controller: open/query state, derived groups/selection via `rules.ts`, the dismissal effect. **Not ported**: the `document.body`-portaled fixed-positioning (`modelOptions.tsx`'s `useLayoutEffect` popover placement) — this feature's popover renders inline; see `ModelPicker.tsx`'s header for why. Adds an `autoSelectFirst` option (default `false`) generalizing `MediaModelCards`'s always-on "no selection → pick the first available model" effect, since forcing a selection isn't universally wanted (e.g. an agent-model picker that should show "no agent" rather than force-picking one). |
+| `react/components/ModelPicker.tsx` | `MediaModelCards` (trigger + provider-grouped popover) | De-branded, generic over `ModelOption`/`ModelProvider`/`CredentialStatus`; every string wrapped in `useT()`. |
+| `react/components/CredentialStatusBadge.tsx` | `MediaModelCards`'s inline `newproj-provider-badge` span | Extracted as its own small presentational atom (own `configured`/`available`/`unconfigured` labels), reused by `ModelPicker.tsx`. |
+
+**Not ported** (host-owned or out of scope for this pass, not silently
+dropped): OD's AMR/Vela billing login+balance UI, the daemon-mode/BYOK
+execution-mode toggle, the agent-install grid (`AgentIcon`-keyed cards +
+rescan/install/docs diagnostic buttons — `AgentDiagnosticRow.tsx`'s fix-intent
+ladder), analytics tracking calls, and the `document.body`-portaled popover
+positioning. `AgentDiagnostic`/`AgentFixIntent` are ported into
+`@jini/agent-runtime`'s registry (a future pass can build an
+`AgentDiagnosticRow`-equivalent component on top of them) but this pass ships
+only the model-picker half, not an agent-diagnostics UI.
+
+**i18n**: every user-facing string (`label`, search placeholder, empty-state
+copy, "Recommended" badge, credential-status labels) is wrapped in `useT()`,
+using this package's own `I18nContext` (cross-cutting adapter, not
+conversation/message state — consistent with every other component in this
+package; see `context.ts`). Verified with a real test per component
+(`ModelPicker.test.tsx`, `CredentialStatusBadge.test.tsx`) that mounts under
+`I18nContext.Provider` with a real dictionary and asserts translated text
+renders, not just the unconfigured-passthrough case.
+
+**Coverage-driven refactor loop note**: one uncovered branch surfaced during
+this pass turned out to be `noUncheckedIndexedAccess` type-checker noise, not
+reachable code (`agent-runtime/src/registry.ts`'s `normalizeAgentModelChoice`)
+— resolved with a one-line-commented non-null assertion per the
+classify-then-fix loop, not a test padding it out or a suppression comment.
+
 ## Dependencies
 
-`react`, `react-dom` (peer, no direct runtime use beyond JSX), `@jini/chat-core`
-(workspace). No `@jini/ui`, no `@jini/renderers-react` (see Deferred above),
-no `@open-design/*`, no direct `fetch`/`EventSource`/`localStorage`/`window`
-reads outside test-only files — every I/O reaches the host through
-`ChatTransport`, `ProjectContextValue`, or an injected persistence port.
-Verified by grep across `packages/chat-react/src/**` for
-`window`/`document`/`fetch`/`EventSource`/`localStorage`/`sessionStorage`/
-`XMLHttpRequest`/`WebSocket` (bare and `globalThis.`-qualified) and any
-`@open-design/*` specifier or `Open Design`/`OD_`/`--od-stamp`/
-`/tmp/open-design` product-identity string — all clean (see the parent
-task's final report for the exact commands run).
+`react`, `react-dom` (peer, no direct runtime use beyond JSX), `@jini/chat-core`,
+`@jini/agent-runtime` (both workspace — the latter added 2026-07-18 for
+`features/model-picker/`, see above). No `@jini/ui`, no `@jini/renderers-react`
+(see Deferred above), no `@open-design/*`.
+
+**DOM/transport note (updated 2026-07-18)**: every I/O outside
+`features/model-picker/` still reaches the host through `ChatTransport`,
+`ProjectContextValue`, or an injected persistence port, with zero direct
+`fetch`/`EventSource`/`localStorage`/`window` reads outside test-only files.
+`features/model-picker/react/hooks/useModelPicker.hooks.ts` is the one
+exception: it calls `document.addEventListener`/`removeEventListener`
+directly for its outside-click/Escape dismissal (ported from
+`InlineModelSwitcher.tsx`'s equivalent `useEffect`), matching this package's
+existing convention of hooks calling browser APIs directly inside
+`useEffect`-guarded code (there is no `providers/`-adapter layer in this
+package the way `@jini/ui` has one — see that package's vertical-slice guard
+rules, which do not apply here). Verified by grep across
+`packages/chat-react/src/**` for `window`/`document`/`fetch`/`EventSource`/
+`localStorage`/`sessionStorage`/`XMLHttpRequest`/`WebSocket` (bare and
+`globalThis.`-qualified) and any `@open-design/*` specifier or `Open
+Design`/`OD_`/`--od-stamp`/`/tmp/open-design` product-identity string — clean
+except the one `document.addEventListener` site named above, which is a
+generic browser API call, not a product-identity string or OD-specific
+transport.
