@@ -18,6 +18,8 @@
  * - `terminal` — in-memory interactive terminal (PTY) session manager.
  * - `download`    — managed-download engine (atomic resume, checksum, lock,
  *   manifest, retention pruning).
+ * - `shell`       — buffered command execution that re-enters the login
+ *   shell so profile-only `PATH` entries are visible.
  * - `aws-sigv4`   — AWS Signature V4 request signing (no `@aws-sdk/*` dependency).
  * - `blob-storage` — a backend-agnostic blob storage port + local-disk and
  *   S3-compatible implementations.
@@ -75,6 +77,9 @@ export { waitForHttpOk } from "./http.js";
 
 export type { WellKnownUserToolchainOptions } from "./toolchain.js";
 export { wellKnownUserToolchainBins } from "./toolchain.js";
+
+export type { BufferedCommandResult } from "./shell.js";
+export { execCommandViaLoginShell, execFileBuffered } from "./shell.js";
 
 export type { AssetCache, AssetCacheOptions, AssetCacheResult } from "./asset-cache.js";
 export {

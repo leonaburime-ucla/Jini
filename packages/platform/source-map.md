@@ -174,6 +174,26 @@ No new dependency — `download.ts` uses only `node:crypto`/`node:fs`/
 `node:fs/promises`/`node:path`/`node:stream`/`node:stream/promises` builtins
 plus this package's own `fs.ts`/`process.ts` exports.
 
+## Addendum: `shell.ts` (2026-07-18)
+
+Sourced from `leonaburime-ucla/open-design`'s `refactor/web-memory-slice`
+branch (cloned fresh to `/tmp/od-source`), `apps/daemon/src/services/
+login-shell.ts` (72 LOC). Per `docs/jini-port/recon/r1-daemon.md` TASK 1's
+`services/` row: `login-shell.ts` was called out as the one generic file in
+that directory (the sibling `plugin-installation`/`plugin-share-tasks`/
+`whats-new`/`open-design-public-metadata` files are OD-product and were not
+ported). Confirmed on read: the file has zero OD imports/nouns — it is a
+pure `child_process.execFile` buffering helper plus a login-shell PATH
+re-entry wrapper, with `gh` (GitHub CLI) as its only domain-flavored mention,
+and `gh` is a generic third-party tool name, not an OD product noun.
+
+| Jini file | Origin | Transform |
+|---|---|---|
+| `src/shell.ts` | `apps/daemon/src/services/login-shell.ts` | `execFileBuffered` and `execCommandViaLoginShell` ported near-verbatim (renamed `execCommandViaLoginShell`'s field order/style to match this package's conventions; no behavior change). **Not ported:** `execGhBuffered` — it was a 3-line specialization (`execCommandViaLoginShell('gh', args, opts)`); folding it into the generic function removes a redundant single-callsite wrapper rather than hardcoding a specific CLI name into the engine. Callers that need the old behavior call `execCommandViaLoginShell('gh', args, opts)` directly. **Default shell changed:** the origin hardcoded `/bin/zsh` as the fallback when `$SHELL` is unset/blank (a macOS-specific assumption — zsh is the default login shell on macOS since Catalina). A product-neutral engine can't assume a macOS host, and `/bin/zsh` is not guaranteed to exist on Linux; `/bin/sh` is POSIX-guaranteed present on any POSIX host, so the fallback was changed to `/bin/sh`. This is a deliberate, documented behavior change (not a byte-identical move) — the common case (`$SHELL` set) is unaffected. |
+
+## Dependencies
+
+No new dependency — `shell.ts` uses only the `node:child_process` builtin.
 ## 2026-07-18 addition — `aws-sigv4.ts` + `blob-storage.ts`
 
 Task brief: port `apps/daemon/src/storage/aws-sigv4.ts` (per

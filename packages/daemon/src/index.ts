@@ -11,3 +11,4 @@ export * from './close-status.js';
 export * from './run-lifecycle.js';
 export * from './tool-executor.js';
 export * from './tokens.js';
+export * from './legacy-data-migration.js';
