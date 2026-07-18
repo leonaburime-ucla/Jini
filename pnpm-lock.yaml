@@ -36,7 +36,11 @@ importers:
 
   integrations/open-design: {}
 
-  packages/agent-runtime: {}
+  packages/agent-runtime:
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/chat-core: {}
 
