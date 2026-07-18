@@ -1916,3 +1916,145 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+---
+
+## Section: flat atoms — `DesignKitView.tsx` + `home-hero/EdgeAutoScroll.tsx` (2026-07-18)
+
+Scope: `docs/jini-port/god-components-extraction-plan.md`'s Section C (bucket-A
+flat atoms, not `features/` folders) for the two items listed for this batch:
+`DesignKitView.tsx`'s `BrandLogo`/`HeaderActionsMenu`/`useBrandFonts`/
+`designMd*` utilities, and `HomeHero.tsx`'s already-isolated
+`home-hero/EdgeAutoScroll.tsx`. Source: a fresh clone of the real
+`leonaburime-ucla/open-design` fork (commit `0b88ef56144b5a42dc427c1292ae22676d698a34`,
+`main`, 2026-07-02), per the cloud-dispatch preflight — not the vendored
+`integrations/open-design/reference/` snapshot. Both source files were read
+in full before extracting anything, per the batch instruction.
+
+### What shipped
+
+| Jini file | Origin | Contents |
+|---|---|---|
+| `src/components/BrandLogo.tsx` | `DesignKitView.tsx`'s `BrandLogo` (exported as `KitLogoProps`/`BrandLogo`) | The 4-stage logo fallback chain: brand-service image → explicit `logoSrc` → favicon lookup → monogram-letter fallback, advancing on each stage's `onError`. |
+| `src/components/HeaderActionsMenu.tsx` | `DesignKitView.tsx`'s `HeaderActionsMenu` + its co-located `HeaderMenuAction` type | The sticky-header "More" overflow menu: grouped popover, outside-click/Escape-to-close, checkbox-semantics for toggle items. |
+| `src/hooks/useBrandFonts.ts` | `DesignKitView.tsx`'s `useBrandFonts` | Google Fonts `<link>` injection + self-hosted `@font-face` injection from a project's font manifest. |
+| `src/utils/design-md.ts` | `DesignKitView.tsx`'s module-private `designMdModuleSlice`/`replaceDesignMdModule`/`designMdHeadings`/`designMdHeadingMatches`/`designMdDefaultModuleText`/`normalizeDesignMdModuleDraft` | Pure markdown-heading-slice/replace helpers for pulling a single "module" section out of (and back into) a DESIGN.md-shaped document. |
+| `src/hooks/useEdgeAutoScroll.ts` | `home-hero/EdgeAutoScroll.tsx`'s `useEdgeAutoScroll` | Edge hover/click auto-scroll controller for a horizontally-overflowing rail (rAF-driven glide, click-to-nudge, `ResizeObserver`-refreshed reachable-edge state). |
+| `src/components/EdgeScrollZones.tsx` | `home-hero/EdgeAutoScroll.tsx`'s `EdgeScrollZones` | The paired left/right overlay zones that drive the hook above. |
+
+All six are re-exported from `src/index.ts`.
+
+### Genericized / what changed
+
+- **`BrandLogo`**: the origin hardcoded an OD API endpoint
+  (`` `/api/brands/${bid}/logo` ``) for the brand-service stage. Replaced with
+  an injected `resolveBrandLogoUrl?: (brandId: string) => string` — omitting
+  it skips the brand-service stage entirely (falls through to `logoSrc` /
+  favicon / letter) rather than ever constructing an OD-specific URL. The
+  Google-favicon-service call (`https://www.google.com/s2/favicons?...`) was
+  kept as the default (a genuinely generic third-party API, not OD-specific —
+  same reasoning `useBrandFonts`'s Google Fonts `<link>` injection already
+  uses) but is now also overridable via `resolveFaviconUrl`. Dropped the
+  origin's legacy `id?: string` alias for `brandId` (an OD call-site quirk —
+  "Brands list rows pass `id`" — not a generic concern for a standalone
+  component).
+- **`useBrandFonts`**: the origin's self-hosted-font-manifest fetch called
+  `projectRawUrl(projectId, path)`, an OD-specific import from
+  `../providers/registry`. Replaced with an injected
+  `options.resolveProjectAssetUrl?: (projectId, path) => string` — per the
+  batch instruction, omitting it skips the manifest fetch entirely rather
+  than hardcoding any font-service URL. The Google Fonts `<link>`-injection
+  half needed no change (already generic).
+- **`HeaderActionsMenu`**: no OD coupling beyond a `styles.*` CSS-module
+  import (`./BrandPreviewCard.module.css`) — this package has no
+  CSS-module build step (same situation every prior flat-group component
+  hit, e.g. `KitErrorBoundary`/`WorkingDirPicker`), so class names were
+  flattened to plain `jini-header-actions-menu*` names. The
+  `data-testid="design-kit-more-actions"` (naming the menu after its one
+  origin call site) was renamed to `header-actions-menu-trigger` since this
+  is now a standalone, non-"design-kit"-specific component.
+- **`design-md.ts`**: `DesignMdModuleSpec`'s original `id` field was a fixed
+  6-value OD union (`'identity' | 'typography' | 'palette' | 'voice' |
+  'imageryLayout' | 'designSystem'`, the brand-kit's own module list) and
+  `label` was a translated UI-display string — neither is read by the pure
+  slice/replace/heading-match logic itself (only `heading`/`keywords`/
+  `includePreamble` are). Both fields were dropped from the ported
+  `DesignMdModule` type; a host building a real module picker UI supplies
+  its own id/label alongside a `DesignMdModule` when calling into this
+  utility, rather than this pure-logic file carrying UI-display fields it
+  never reads.
+- **`EdgeScrollZones`**: only OD-specific artifact was the `home-hero__rail-edge*`
+  CSS class family (named after the one OD component that used it). Renamed
+  to `jini-edge-scroll-zone*`. Logic is otherwise byte-identical to the
+  origin — r6's "already isolated, ship as-is" verdict held up on a full
+  read; the only change was the class-name neutrality pass.
+
+### i18n
+
+None of the six atoms render a hardcoded user-facing string that needed
+`useT()` wrapping: `HeaderActionsMenu` takes every label (`label`, each
+`HeaderMenuAction.label`) as a caller-supplied prop with no default value
+(the "translatable for free" pattern already holds without any wrapping —
+there is nothing in this component's own source to translate); `BrandLogo`
+renders no text beyond a derived monogram initial and an intentionally-empty
+`alt=""`; `EdgeScrollZones` is `aria-hidden` on both zones with no visible
+text or `aria-label` (decorative overlays, matching the origin exactly —
+verified this wasn't an accessibility gap introduced by porting, it was
+already `aria-hidden` in the origin); `useBrandFonts`/`useEdgeAutoScroll`
+render nothing; `design-md.ts` is pure logic with no React import (exempt
+per the i18n policy) and its `heading`/markdown output is document content
+written by the module, not UI chrome to translate. Flagged explicitly per
+the policy's own "no silent gaps" instruction rather than left unstated.
+
+### Coverage
+
+Ran the Phase 9.5 classify-then-fix loop once per atom; every uncovered
+branch on the first pass classified as either "genuinely reachable, just
+untested" (all `BrandLogo` fallback-chain permutations; `useBrandFonts`'s
+resolver-present/absent × projectId-present/absent × fetch-ok/fetch-fail/
+fetch-throw/manifest-empty/unmount-mid-fetch matrix; every `useEdgeAutoScroll`
+glide/nudge/stop/restart/ResizeObserver-present-or-absent/ref-unattached
+path) or "TS-required fallback with no real runtime path" (two `??`
+fallbacks in `design-md.ts`'s `designMdHeadings` — `match.index`/`match[1]`
+are typed possibly-`undefined` by the JS regex API even though this
+pattern's mandatory capture group and `matchAll` result always define them;
+converted to non-null assertions with an explaining comment, not tested
+around) or a genuine **dead branch** refactored away rather than tested
+around: `design-md.ts`'s `designMdModuleSlice`/`replaceDesignMdModule` both
+defensively wrote `body ?? ''` for a parameter already typed `string` (not
+optional) — the `??` fallback was unreachable under the function's own type
+contract, so it was deleted (using `body` directly) instead of adding a
+type-defeating cast just to hit it; `HeaderActionsMenu`'s
+`Fragment key={group[0]?.id ?? groupIndex}` — `group` is always drawn from
+`visibleGroups = groups.filter((g) => g.length > 0)`, so `group[0]` is
+always defined at that call site and the `?.`/`??` fallback could never
+fire — replaced with `group[0]!.id` plus a one-line comment recording the
+invariant. No `/* v8 ignore */` or other suppression was used anywhere.
+Final numbers, all six atoms, statements/branches/functions/lines:
+
+| File | Statements | Branches | Functions | Lines |
+|---|---|---|---|---|
+| `BrandLogo.tsx` | 100 | 100 | 100 | 100 |
+| `HeaderActionsMenu.tsx` | 100 | 100 | 100 | 100 |
+| `EdgeScrollZones.tsx` | 100 | 100 | 100 | 100 |
+| `useBrandFonts.ts` | 100 | 100 | 100 | 100 |
+| `useEdgeAutoScroll.ts` | 100 | 100 | 100 | 100 |
+| `design-md.ts` | 100 | 100 | 100 | 100 |
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` and
+the stricter `grep -rn "od-\|open-design\.ai\|openDesignDesktop"` pass, both
+run across every new/changed file in this batch (the six source files, their
+six test files, and the `src/index.ts` barrel diff): **clean, zero matches**
+in both passes.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui typecheck`: green (zero errors).
+- New atom tests in isolation: **94 tests across 6 files, all green**, 100%
+  statements/branches/functions/lines on all six atoms (table above).
+- `pnpm --filter @jini/ui exec vitest run` (full package): **1306 tests,
+  146 files, all green** — no regression in any pre-existing test.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — no boundary violations introduced.
