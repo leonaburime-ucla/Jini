@@ -151,6 +151,16 @@ Real content has landed in several parallel passes — see
   times; see `packages/ui/source-map.md` for the full comparison (read that
   section before extracting either of those two).
 
+- `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
+  (2026-07-18) — two flat bucket-A atoms from
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:
+  a generic wheel-to-horizontal-scroll handler for an overflowing tab strip
+  (from `FileWorkspace.tsx`'s `scrollWorkspaceTabsWithWheel`) and hex/RGB/
+  luminance/mix color-math primitives (from `DesignSystemFlow.tsx`). See
+  `packages/ui/source-map.md` for the full writeup, including what was
+  deliberately left behind (the OD-specific color-selection heuristic that
+  consumes the math, not the math itself).
+
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
 (cross-package routing) of the extraction plan are not started. The

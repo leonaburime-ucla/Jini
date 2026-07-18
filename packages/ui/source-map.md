@@ -1917,6 +1917,91 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
 
+---
+
+## Section: flat atoms — `scrollWorkspaceTabsWithWheel` + `DesignSystemFlow` color math (2026-07-18)
+
+Scope: two small, independent bucket-A atoms from `docs/jini-port/god-components-extraction-plan.md`'s
+Consolidation map §C ("Flat `components/`/`hooks/`/`utils/`"), dispatched narrower than the task's
+original scope — `FileViewer.tsx`'s `CodeWithLines`/`JsonPanel` were pulled out to a future
+`FileViewer.tsx` full-read session (per `todo.md`) rather than done here.
+
+Source: fresh clone of `leonaburime-ucla/open-design` at commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
+(2026-07-02), not the vendored `integrations/open-design/reference/` snapshot. Both source files
+(`apps/web/src/components/FileWorkspace.tsx`, 5,709 lines; `apps/web/src/components/DesignSystemFlow.tsx`,
+5,439 lines) were read in full around their target regions, not sampled, to confirm the exact
+generic/OD-specific boundary before extracting.
+
+### `src/utils/scroll-tabs-with-wheel.ts` ← `FileWorkspace.tsx`'s `scrollWorkspaceTabsWithWheel`
+
+Ported near-verbatim (logic unchanged) from `FileWorkspace.tsx:5536-5558` (`scrollWorkspaceTabsWithWheel`
++ its private `wheelDeltaToPixels` helper). Already fully generic in the origin — it took only
+`Pick<HTMLDivElement, ...>`/`Pick<WheelEvent, ...>` shapes, zero OD types, zero product strings.
+Renamed `scrollWorkspaceTabsWithWheel` → `scrollTabsWithWheel`: "Workspace" named OD's specific
+`FileWorkspace` tab strip, not a generic concept — the function itself works for any horizontal,
+overflowing tab strip (this is also the shape `docs/jini-port/god-components-extraction-plan.md`'s
+still-open `features/tab-strip/` consolidation target would want, per the Consolidation map §A). Shipped
+as a plain exported function in `src/utils/` (matching `dom-subscriptions.ts`'s precedent for DOM-event
+utilities that aren't themselves React hooks), not `src/hooks/` — despite the plan doc's own §C listing
+it under "Hooks," it calls no React hook internally and the origin only ever invoked it manually inside a
+caller's own `useEffect`/`addEventListener`, so a `src/hooks/useX` shape would be a fabricated wrapper
+around a function that is already correctly hook-free.
+
+No i18n: zero user-facing strings (pure DOM-math event handler).
+
+### `src/utils/color-math.ts` ← `DesignSystemFlow.tsx`'s hex/luminance/mix helpers
+
+Ported `normalizePreviewHex`/`previewRgb`/`previewLuminance`/`mixPreviewHex`/`toHexByte`/`readableTextColor`
+(`DesignSystemFlow.tsx:4547-4616`) → `normalizeHex`/`hexToRgb`/`luminance`/`mixHex`/`toHexByte`/
+`readableTextColor`. Logic verbatim; only the `preview`-prefixed names were dropped (that prefix named
+the file's specific "design-markdown preview" call site, not anything about the math itself).
+
+**Deliberately NOT ported** (per the plan's own note — this atom is scoped to "the math," not the
+higher-level color-selection heuristic that consumes it): `findPreviewColor`/`firstNonNeutralColor`
+and the enclosing `buildDesignMdPreviewModel` (`DesignSystemFlow.tsx:4476-4545`). Both take
+`DesignMdPreviewColor[]` (a type shaped by OD's own design-markdown color-extraction parser) and encode
+OD-specific product judgment ("search a parsed design system's colors for one whose label/role/usage text
+matches `/background|canvas|page|paper/i` and treat it as light/dark background") — that's domain logic
+riding on top of the generic math, not the math itself, and the plan doc's own phrasing ("travels with
+whichever token-chip feature ends up consuming it") anticipated exactly this split. No token-chip feature
+exists in this repo yet, so per the task brief this ships as a standalone `src/utils/` module (pure
+functions, zero feature coupling) rather than being pre-homed under a speculative `features/token-chip/`
+— flagged here so it's not missed: **this module may want to move under a future token-chip/design-tokens
+feature folder once a real consumer exists**, the same way `appearance.ts` and `visual-stability.ts`
+already sit in `src/utils/` as pre-consumer-agnostic primitives.
+
+One naming clarification beyond a literal rename: `previewLuminance` → `luminance`, documented explicitly
+as the ITU-R BT.709 luma formula (weights applied directly to gamma-encoded sRGB channels) and NOT true
+WCAG 2.x relative luminance (which requires linearizing each channel through the sRGB gamma curve first).
+The origin's implementation was already this luma approximation, not the WCAG formula — preserved exactly
+as ported (behavior-preserving), with the doc comment added so a future reader doesn't assume WCAG
+contrast-ratio compliance that was never actually there.
+
+No i18n: zero user-facing strings (pure color math).
+
+### Purity grep
+
+`grep -rnE "Open Design|OD_|--od-stamp|/tmp/open-design|@open-design/|open-design\.ai|openDesignDesktop"`
+across both new source files and both new test files: **clean, zero matches.**
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui typecheck`: green, zero errors.
+- `npx vitest run --coverage` (package-wide, `json-summary`+`json`+`text` reporters per this repo's
+  `vitest.config.ts`): **142 test files, 1,249 tests, all green.** Both new files hit **100% on all 4
+  metrics** (statements/branches/functions/lines) per `coverage/coverage-summary.json`:
+  `src/utils/scroll-tabs-with-wheel.ts` — 19/19 statements, 14/14 branches, 2/2 functions, 19/19 lines;
+  `src/utils/color-math.ts` — 41/41 statements, 21/21 branches, 6/6 functions, 41/41 lines. Real edge-case
+  tests, not just happy-path: `scroll-tabs-with-wheel.test.ts` covers ctrlKey pinch-zoom, horizontal-swipe
+  dominance (including the exact-tie boundary), non-overflowing strips, all three `deltaMode` values
+  (pixel/line/page) plus an unrecognized-mode fallback, and the at-scroll-boundary no-op-preventDefault
+  case (via a clamping `scrollLeft` setter double); `color-math.test.ts` covers 3/6/8-digit hex parsing
+  (including alpha-channel drop and an embedded-substring match), an invalid-length-4 rejection, decode
+  failure fallbacks on both sides of `mixHex`, out-of-range weight clamping in both directions,
+  `toHexByte`'s negative/overflow clamping, and the `readableTextColor` threshold boundary on both sides
+  of 0.56 luminance.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` —
+  unchanged, no boundary violations introduced.
 ## Section: bucket-A flat atoms — NewProjectPanel / PluginsView / EntryShell (2026-07-18)
 
 Scope: `docs/jini-port/god-components-extraction-plan.md` Section C's flat-atom
