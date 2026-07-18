@@ -3874,3 +3874,130 @@ and asserts the translated placeholder and all three footer hints render
   One jsdom gap needed a small polyfill (`Element.prototype.scrollIntoView`,
   unimplemented in jsdom — same gap already polyfilled elsewhere in this
   package's `useResizableSplitPane.test.tsx`), not a source change.
+
+## Section: `features/tab-launcher-menu/` (`TabLauncherMenu`) (2026-07-18)
+
+Source: `apps/web/src/components/workspace/TabLauncherMenu.tsx` (461 lines) +
+`apps/web/src/components/workspace/tab-launcher.ts` (137 lines), real clone
+at `leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`.
+An anchored, portal-rendered command-palette dropdown for a tab strip's "+"
+button: viewport-clamped fixed positioning off an anchor element, outside-
+click/Escape dismiss, text search + kind-filter over file results, a
+separate always-searchable-unless-filtered tab-result list, and a "create
+new" action list, all folded into one flat keyboard-navigable selection.
+
+**`features/tab-strip/` does not exist on this branch — a documented
+discrepancy, not silently assumed away.** The task brief for this item said
+to "read [`features/tab-strip/`] first to confirm this is a distinct
+concern" before building this feature, on the premise that it was already
+shipped from `WorkspaceTabsBar.tsx`/`FileWorkspace.tsx` per the
+Consolidation map's `features/tab-strip/` row. Checked directly: `ls
+packages/ui/src/features/` on this branch (`feature/jini-ui-small-atoms-
+batch`, based on `origin/main`) lists `asset-grid, asset-tree-browser,
+browser-chrome, connectors, html-viewer, i18n, list-detail-panel, memory,
+mention-autocomplete, observability, progress-card, schedule-picker,
+settings-dialog, sketch-editor, version-manager, viewer-shell` — no
+`tab-strip` and no other `tab-*` feature. This mirrors the exact shape of
+the already-recorded `features/progress-card/` discrepancy earlier in this
+file (a plan doc claiming something shipped that isn't actually present in
+this checkout) — flagged here per that same precedent rather than either
+blocking on it or silently proceeding as if the comparison had happened.
+Since there was nothing to compare against, this task built
+`TabLauncherMenu` as its own self-contained primitive per the task brief's
+own fallback description ("the anchored launcher dropdown, not the tab strip
+itself" — a real, distinct interaction regardless of whether `tab-strip`
+exists yet: an anchored positioned dropdown+search+actions widget is not a
+horizontal tab-strip-with-drag-reorder widget under any reading). A future
+task landing `features/tab-strip/` should re-check this pairing once both
+exist side by side.
+
+**Genericized:** the origin's `Props` (`files: ProjectFile[]`,
+`workspaceContexts?: WorkspaceContextItem[]`, `actions: LauncherAction[]`,
+`launcherContext: LauncherContext`, `onTrack?: (input:
+TabLauncherTrackInput) => void` off the OD analytics contract
+`TabLauncherClickProps`) collapses into: one generic `TabLauncherResultItem`
+(`id`, `name`, `kind: string`, optional `meta`/`isOpen`/`iconName`) shared by
+both the file list and the tab list — the host pre-formats `meta` (the
+origin's separate `formatBytes`/`formatRelativeTime`/`kindLabel`/
+`workspaceContextKindLabel`/`workspaceContextMeta` helpers are all dropped;
+none of that OD-specific formatting logic is generic); `TabLauncherAction
+<TActionCtx>` generic over whatever context a host's actions need to run
+against (replacing the OD-specific `LauncherContext`'s `projectId`/
+`createTerminal`/`createBrowser`/`createSketch`/`createDocument`/
+`uploadDesignFiles` fields — a host now supplies its own `TActionCtx` shape
+and an `actionContext` value, and the action's `run(ctx)` receives it
+structurally, no baked-in "what a tab kind is" vocabulary); a generic
+`TabLauncherTrackEvent` discriminated union (`open`/`filter`/`select-file`/
+`select-tab`/`run-action`) replacing the OD-specific `TabLauncherClickProps`
+analytics contract (`@open-design/contracts/analytics`) — same "fire an
+event, host fills in its own product/page context" mechanism, generic event
+shape. Icons: rather than depending on this package's own `Icon` component's
+fixed `IconName` union (which doesn't have a natural mapping for arbitrary
+host-defined `kind`/action `iconName` strings), rows accept an optional
+`renderIcon?: (iconName: string | undefined) => ReactNode` slot — a host
+using `@jini/ui`'s `Icon` can trivially wire `renderIcon={(name) => <Icon
+name={name as IconName} />}`, but the feature itself stays icon-set-agnostic.
+
+**Kind-filter chips, disclosed simplification:** the origin's
+`kindLabel(kind, t)` maps each `ProjectFileKind` to a translated English
+label for its chip ("Images", "Code", …). With `kind` now a plain host-
+defined string (no fixed enum), chips just display the raw `kind` value —
+a host that wants a nicer label formats it into the value it passes as
+`kind` itself, or (a real future option, not attempted here) wraps
+`TabLauncherMenu` with its own label-mapping layer.
+
+**What shipped:** `types.ts` (`TabLauncherResultItem`, `TabLauncherAction
+<TCtx>`, `TabLauncherTrackEvent`, `TabLauncherPosition`,
+`TabLauncherAnchorRect`, `TabLauncherSelection`), `constants.ts`, `rules.ts`
+(`clampAnchoredPosition` — the origin's inline anchor-rect positioning math,
+extracted pure; `presentKinds`, `filterFiles`, `filterTabs` — the origin's
+`results`/`tabResults`/`presentKinds` `useMemo`s as pure functions;
+`clampSelection`, `nextSelected` — the origin's inline selection-clamp
+effect and modulo-wraparound arrow-key math, extracted pure;
+`resolveSelection` — the origin's inline `results[selected] ?? …` / `selected
+- results.length` split, extracted pure), `react/hooks/
+useTabLauncherMenu.ts` (owns anchored positioning recalculated on scroll/
+resize, outside-click/Escape dismissal via the shared `useDismissOnOutsideOrEscape`
+hook from `packages/ui/src/browser/` — checked for an existing equivalent
+before hand-rolling a second listener pair, per this task's own "check for
+overlap" instruction, matching the precedent already noted in this file's
+`schedule-picker` section — search/kind-filter state, and the flat
+file+tab+action keyboard-navigation handler), `react/components/
+{TabLauncherResultRow,TabLauncherActionRow,TabLauncherMenu}.tsx` (the
+orchestrator is a generic `TabLauncherMenu<TActionCtx>`, portal-rendered to
+`document.body`), `index.ts` barrel.
+
+### i18n
+
+Every user-facing string (`Search files…` placeholder default, `All files`
+chip, `Create new`/`Open file`/`Open tabs` section headers, `Open` badge,
+`No files match` empty state, the `New tab` dialog `aria-label`) routes
+through `useT()`, English string as key per this package's i18n policy —
+the origin's namespaced `workspace.*` keys are not carried over. `rules.ts`
+stays hook-free by design. A real test mounts `TabLauncherMenu` under
+`I18nProvider` with a French dictionary and asserts the translated
+placeholder and section headers render.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/tab-launcher-menu/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/tab-launcher-menu
+  --coverage`): **6 test files, 63 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`types.ts` excluded per the
+  documented zero-executable-statement carve-out, verified via the standard
+  grep and added to `vitest.config.ts`'s exclude list). One real hook bug
+  caught by the test suite itself before it shipped: an early draft of
+  `useTabLauncherMenu.test.ts` created a fresh anchor element *inside* the
+  `renderHook` callback for several cases — since that callback re-runs on
+  every render, a fresh anchor each time changed the positioning effect's
+  `[anchor]` dependency every render, causing "Maximum update depth
+  exceeded" (an infinite `setPosition` loop). Not a source bug — the hook's
+  own `[anchor]`-keyed effect is correct — but recorded here since it's
+  exactly the kind of test-authoring mistake that would otherwise ship a
+  false "the component itself is unstable" signal; fixed by hoisting the anchor
+  element outside the `renderHook` callback in every affected case.

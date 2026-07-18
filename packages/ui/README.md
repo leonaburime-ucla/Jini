@@ -186,6 +186,15 @@ Real content has landed in several parallel passes — see
   `features/mention-autocomplete/` (already checked in that feature's
   source-map section) rather than re-litigated. See
   `packages/ui/source-map.md`.
+- `src/features/tab-launcher-menu/` — `TabLauncherMenu`, an anchored,
+  portal-rendered "+"-button command-palette dropdown (2026-07-18), ported
+  from `TabLauncherMenu.tsx`. Generic `TabLauncherResultItem` shared by both
+  the file list and the tab list; `TabLauncherAction<TActionCtx>` generic
+  over whatever context a host's actions run against, replacing the origin's
+  OD-specific `LauncherContext`. `features/tab-strip/` does not exist on
+  this branch despite the extraction plan describing it as already shipped
+  — documented as a discrepancy, matching the same pattern already recorded
+  for `features/progress-card/`. See `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

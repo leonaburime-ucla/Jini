@@ -27,6 +27,7 @@ export * from './features/mention-autocomplete/index.js';
 export * from './features/memory/index.js';
 export * from './features/iframe-pool/index.js';
 export * from './features/command-palette/index.js';
+export * from './features/tab-launcher-menu/index.js';
 export * from './utils/index.js';
 export * from './utils/timezone.js';
 export * from './utils/zip.js';

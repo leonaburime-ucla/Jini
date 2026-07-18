@@ -61,6 +61,9 @@ export default defineConfig({
         // declarations, zero runtime statements (same verification grep).
         'src/features/command-palette/types.ts',
         'src/features/command-palette/ports.ts',
+        // tab-launcher-menu/types.ts is likewise pure `interface`/`type`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/tab-launcher-menu/types.ts',
       ],
     },
   },

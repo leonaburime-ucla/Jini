@@ -9,7 +9,7 @@ import type { CommandPaletteItem } from '../../types.js';
 // jsdom doesn't implement scrollIntoView (matches the same gap already
 // polyfilled in this package's useResizableSplitPane.test.tsx).
 beforeAll(() => {
-  if (!('scrollIntoView' in Element.prototype)) {
+  if (typeof Element.prototype.scrollIntoView !== 'function') {
     Element.prototype.scrollIntoView = () => {};
   }
 });
