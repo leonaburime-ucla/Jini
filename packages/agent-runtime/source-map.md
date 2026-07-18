@@ -450,6 +450,61 @@ package's 99.9% branch/function threshold in the full merged run; all were confi
 the same `git stash` before/after comparison) to already sit there before this task's changes
 — untouched, out of scope, not a regression introduced by this pass.
 
+#### Independent re-verification pass (2026-07-18, follow-up dispatch)
+
+A follow-up dispatch re-ran the full package's `typecheck` and `vitest run --coverage` from a
+clean `pnpm install` to produce one authoritative, from-scratch merged number (the prior
+entries above were validated individually/in sub-batches). Two things surfaced that the
+sub-batch runs had missed:
+
+1. **Typecheck**: `pnpm --filter @jini/agent-runtime typecheck` failed with ~35 errors, none
+   in the three stream-parser files. All were test-only type errors introduced by the earlier
+   `f378baa` coverage-fix pass and never caught because that pass validated defs/ in sub-batches
+   rather than one `tsc` invocation over the whole `src/` tree:
+   - Nine ACP-style `defs/*.test.ts` files (`kilo`, `kimi`, `kiro`, `hermes`, `vibe`,
+     `trae-cli`, `reasonix`, `amr`, `devin`) call `xAgentDef.buildArgs(...)` with the full
+     5-argument `RuntimeAgentDef['buildArgs']` signature to prove the def ignores extra
+     params, but each def's own `buildArgs` is declared as a zero-arg function (e.g.
+     `() => ['acp']`) and typed via `satisfies RuntimeAgentDef`, which preserves the narrower
+     literal arity instead of widening it — a real arity mismatch only visible to `tsc`, not to
+     `vitest` (which doesn't type-check). Fixed by binding each call through an explicitly
+     `RuntimeAgentDef['buildArgs']`-typed local before invoking it with the full argument list
+     — same function reference, no behavior change, just enough of a type annotation to stop
+     `tsc` from narrowing the call signature.
+   - `auth.test.ts` and `detection.test.ts` typed mocked errno-style errors as
+     `Error & Record<string, unknown>`, which `Object.assign(new Error(...), { code, signal })`
+     results don't structurally satisfy (TS requires an explicit index signature on the source
+     type when the target has one, and `Object.assign`'s inferred intersection type has none).
+     Narrowed both to the concrete fields the tests actually set (`code?: string | number`,
+     `signal?: string | null`, `stdout?`, `stderr?`) instead of a generic index signature.
+   - `mcp.test.ts` and `devin.test.ts` passed an explicit `undefined` for an optional property
+     typed without `| undefined` (`mcpDiscovery?: string`, `timeoutMs?: number`), which
+     `exactOptionalPropertyTypes` (on in this package's `tsconfig.base.json`) rejects. Fixed by
+     omitting the property in `mcp.test.ts` and widening the local array's field type to
+     `number | undefined` in `devin.test.ts`.
+   All twelve fixes are test-file-only, verified against the pre-`f378baa` tree (`git log -p
+   --follow`) to confirm every failing line was introduced by that pass and not present before
+   it. After the fixes, `pnpm --filter @jini/agent-runtime typecheck` is clean (0 errors).
+2. **Coverage report generation**: a from-scratch `vitest run --coverage` produces **no**
+   coverage output at all when any test fails, because Vitest's V8 provider defaults
+   `coverage.reportOnFailure` to `false` — the pre-existing `launch.test.ts` sandbox-root
+   failure documented above was silently suppressing the merged coverage report entirely. Not
+   a config change to the committed `vitest.config.ts` (would mask real regressions in normal
+   CI runs) — for local reproduction only, re-run with the CLI flag:
+   `pnpm exec vitest run --coverage --coverage.reportOnFailure=true`.
+
+**Authoritative merged numbers** (`coverage-summary.json` `total`, from-scratch `pnpm install`
++ `pnpm exec vitest run --coverage --coverage.reportOnFailure=true`, 973/974 tests passing —
+the 1 failure is the documented pre-existing sandbox-root issue):
+statements 99.23%, branches 98.35%, functions 98.91%, lines 99.23%. Per-file, the only metrics
+below 99% are the same 13 files listed above (`amr-model-cache.ts`, `defs/amr.ts`,
+`defs/antigravity.ts`, `detection.ts`, `env.ts`, `index.ts` barrel, `json-event-stream.ts`,
+`launch.ts`, `models.ts`, `opencode-log.ts`, `pi-models.ts`, `prompt-budget.ts`,
+`terminal-launch.ts`) — confirming the three target files (`claude-stream.ts`,
+`qoder-stream.ts`, `copilot-stream.ts`) do **not** appear in the below-99% list, i.e. all three
+verify at 100%/100%/100%/100% in the full merged run, not just in isolation. `pnpm guard`
+(repo root) passes.
+
 ### Not ported / explicitly out of scope
 
 - `runtimes/registry/local-profiles.ts` (design decision 4).
