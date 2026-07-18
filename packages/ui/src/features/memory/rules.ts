@@ -6,7 +6,7 @@
 // re-derived here. `@jini/ui`'s `features/connectors/rules.ts` already ships
 // `mergeConnectors`/`applyConnectorStatuses`/`hasConnectorStatusChanges`/
 // `connectorAuthSnapshotChanged` — generified ports of the exact same
-// reconciliation reducers Open Design's `connectors-state.ts` module has on
+// reconciliation reducers OD's `connectors-state.ts` module has on
 // its current `main` (confirmed by direct comparison; see
 // `packages/ui/source-map.md`'s provenance note for this feature). This slice
 // imports and reuses those instead of shipping a third near-duplicate copy,

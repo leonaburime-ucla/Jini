@@ -1,6 +1,6 @@
 /**
  * Wire + UI-view-model types for the memory slice. Ported from the pinned
- * source's `@open-design/contracts` imports (`MemoryEntry`, `MemoryListResponse`,
+ * source's OD contracts-package imports (`MemoryEntry`, `MemoryListResponse`,
  * `MemoryExtractionRecord`, `ConnectorMemorySuggestionResponse`, etc.) — that
  * package is not available here, so this file defines the same shapes
  * locally, scoped to exactly what this slice's ported hooks/components/rules
@@ -80,7 +80,7 @@ export type UpdateMemoryConfigRequest = Partial<{
 
 /** A memory entry being created or edited in the manual editor form. */
 export interface DraftEntry {
-  id?: string;
+  id?: string | undefined;
   name: string;
   description: string;
   type: MemoryType;
@@ -182,4 +182,11 @@ export interface MemorySourceTab {
   label: string;
   caption: string;
   icon: IconName;
+}
+
+/** Props a host's own orchestrator wraps this slice's pieces with. */
+export interface MemorySectionProps {
+  onOpenConnectors?: () => void;
+  chatAgentId?: string | null;
+  chatModel?: string | null;
 }
