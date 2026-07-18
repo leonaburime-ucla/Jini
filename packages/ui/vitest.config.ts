@@ -45,6 +45,9 @@ export default defineConfig({
         // runtime statements (verified via the same
         // `grep -nE '^(export )?(const|function|class|let|var) '` check).
         'src/features/list-detail-panel/types.ts',
+        // file-dropzone/types.ts is likewise pure `type`/`interface`
+        // declarations, zero runtime statements (same grep check).
+        'src/features/file-dropzone/types.ts',
       ],
     },
   },

@@ -160,6 +160,19 @@ Real content has landed in several parallel passes — see
   times; see `packages/ui/source-map.md` for the full comparison (read that
   section before extracting either of those two).
 
+- `src/features/file-dropzone/` — `FileDropzone`, a consolidated file-staging
+  primitive (2026-07-18) ported from **two** independent OD file-staging
+  zones — `DesignSystemAssetDropzone.tsx` (a kind-aware thumbnail grid +
+  lightbox) and `DesignSystemFlow.tsx`'s `DropZone` (a labeled zone with a
+  file-dialog cancel-vs-still-loading detection heuristic) — read in full,
+  confirmed the same underlying interaction, and shipped as one primitive
+  instead of two. Also promoted the drag/drop directory-walk and clipboard
+  utilities the two features already duplicated a third time (from
+  `features/asset-tree-browser/rules.ts`) up to `utils/file-transfer.ts` and
+  `browser/useFileDropTarget.ts`, so this package now has exactly one copy.
+  See `packages/ui/source-map.md` for the consolidation evidence, a real
+  infinite-render-loop bug found and fixed during this port, and full
+  test/coverage numbers.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

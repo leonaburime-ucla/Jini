@@ -4,6 +4,16 @@ export {
   isFileSystemReadError,
 } from './file-system-errors.js';
 
+// `filesFromDataTransfer`/`filesFromFileSystemEntry`/`filesFromClipboardData`/
+// `normalizePastedFile`/`extensionForMimeType`/`shouldIgnoreClipboardFilePaste`
+// live in `./file-transfer.js` but are deliberately NOT re-exported here —
+// `features/asset-tree-browser/index.js` already re-exports them (its own
+// pre-existing public surface, unchanged by the 2026-07-18 promotion into
+// this file) and is itself part of this package's top-level barrel; adding a
+// second `export *` source for the same names would make them ambiguous
+// (TypeScript/Rollup silently drop a name duplicated across `export *`
+// sources) at `packages/ui/src/index.ts`.
+
 export { isImeComposing } from './ime-composing.js';
 
 export {
