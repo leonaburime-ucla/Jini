@@ -96,6 +96,14 @@ Ports are **async-only** (Promise-returning) from day one — OD's `db.ts` is sy
 ```
 All React packages are optional. `@jini/core` (pure interfaces/tokens) is split from `@jini/daemon` (stateful lifecycle) so a short-lived CLI can use the tool/registry surface without pulling the daemon runtime.
 
+**Not yet locked — pending Coordinator/Software-Architect sign-off:** `@jini/deploy` (built
+2026-07-16 off the §10 roadmap-appendix entry below; a `DeployTarget` many-token port +
+Vercel/Cloudflare Pages adapters, `deploy.publish` shaped as a plain function pending the
+task-6 `ToolExecutor`). It is a genuinely new package this list didn't originally enumerate —
+listed here for visibility, not folded into the locked set above until reviewed. See
+`packages/deploy/source-map.md` for the full design and what's deferred (GitHub Pages/Netlify
+targets, real tool-execution wiring).
+
 ## 4. OD-sync mechanism (the enforced patch lane)
 
 Requirement: keep absorbing OD's upstream GitHub fixes. `git format-patch` targets exact paths, so:
