@@ -26,6 +26,8 @@ export * from './utils/dom-subscriptions.js';
 export * from './utils/auto-open-file.js';
 export * from './utils/localized-url.js';
 export * from './utils/markdown-scroll-sync.js';
+export * from './utils/scroll-tabs-with-wheel.js';
+export * from './utils/color-math.js';
 
 export * from './hooks/useInView.js';
 export * from './hooks/useCoalescedCallback.js';
