@@ -74,7 +74,11 @@ export function ResourceBoard<TItem extends ResourceBoardItem<TBody>, TBody = un
   const kanbanColumns: ResourceKanbanColumn<TBody>[] = statusOptions.map((option) => ({
     status: option.value,
     label: t(option.label),
-    items: board.kanbanColumns.get(option.value) ?? [],
+    // Non-null: `useWiredResourceBoard` above is called with `statusOrder:
+    // statusOptions.map(option => option.value)`, and `groupItemsByStatus`
+    // (rules.ts) always seeds one Map entry per `statusOrder` value before
+    // placing any item — so every `option.value` here is guaranteed present.
+    items: board.kanbanColumns.get(option.value)!,
   }));
   const unmatched = board.kanbanColumns.get(UNMATCHED_STATUS_BUCKET);
   if (unmatched && unmatched.length > 0) {
@@ -92,8 +96,12 @@ export function ResourceBoard<TItem extends ResourceBoardItem<TBody>, TBody = un
     }
     if (kind === 'rename') {
       board.closeMenu();
-      const current = board.visibleItems.find((item) => item.id === id);
-      onRenameRequest?.(id, current?.title ?? '');
+      // Non-null: `id` only ever reaches this handler via a menu-action
+      // click closure `ResourceBoardView` builds per rendered item (from
+      // this SAME render's `board.visibleItems`), so the item is always
+      // still present in the array at lookup time.
+      const current = board.visibleItems.find((item) => item.id === id)!;
+      onRenameRequest?.(id, current.title);
       return;
     }
     board.closeMenu();

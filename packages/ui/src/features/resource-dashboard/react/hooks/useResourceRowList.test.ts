@@ -116,6 +116,28 @@ describe('useResourceRowList', () => {
       expect(result.current.historyLoadingRowId).toBeNull();
     });
 
+    it('does not clobber a newer row\'s historyLoadingRowId when an older, slower fetch for a different row finally resolves', async () => {
+      let resolveA!: (items: ResourceRunHistoryItem[]) => void;
+      const fetchRowHistory = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<ResourceRunHistoryItem[]>((resolve) => (resolveA = resolve)))
+        .mockResolvedValueOnce([]);
+      const port = fakePort({ fetchRowHistory });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+      act(() => result.current.toggleExpand('a')); // starts a slow fetch for 'a'
+      expect(result.current.historyLoadingRowId).toBe('a');
+      act(() => result.current.toggleExpand('b')); // switches to 'b', starts (and resolves) a fetch for 'b'
+      await waitFor(() => expect(result.current.historyLoadingRowId).toBeNull());
+      // 'a's slow fetch finally resolves now, well after 'b' already cleared the flag.
+      await act(async () => {
+        resolveA([RUN_1]);
+        await Promise.resolve();
+      });
+      // Must still be null (not incorrectly reset to 'a' by the late resolution).
+      expect(result.current.historyLoadingRowId).toBeNull();
+      expect(result.current.historyByRowId['a']).toEqual([RUN_1]);
+    });
+
     it('re-fetches fresh history every time the same row is re-expanded (not cached)', async () => {
       const fetchRowHistory = vi.fn().mockResolvedValueOnce([RUN_1]).mockResolvedValueOnce([]);
       const port = fakePort({ fetchRowHistory });

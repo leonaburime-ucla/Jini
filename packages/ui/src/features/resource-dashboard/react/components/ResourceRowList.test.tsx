@@ -128,6 +128,36 @@ describe('ResourceRowList', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
   });
 
+  it('renders eyebrow and lede when given', async () => {
+    render(
+      <ResourceRowList
+        dependencies={fakeDependencies()}
+        title="Automations"
+        eyebrow="Automations"
+        lede="Manage your scheduled runs."
+        statusOptions={STATUS_OPTIONS}
+        onRowAction={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Manage your scheduled runs.')).toBeInTheDocument());
+  });
+
+  it('applies a given toneMap to the row status pill', async () => {
+    const dependencies = fakeDependencies({
+      fetchRows: vi.fn().mockResolvedValue([{ id: 'r1', title: 'Nightly digest', lastRunStatus: 'failed', actions: [] }]),
+    });
+    render(<ResourceRowList dependencies={dependencies} title="Automations" statusOptions={STATUS_OPTIONS} onRowAction={() => {}} toneMap={{ failed: 'error' }} />);
+    await waitFor(() => expect(screen.getByTestId('resource-status-pill')).toHaveClass('tone-error'));
+  });
+
+  it('falls back to the raw status value as the label key for a status not in statusOptions', async () => {
+    const dependencies = fakeDependencies({
+      fetchRows: vi.fn().mockResolvedValue([{ id: 'r1', title: 'Nightly digest', lastRunStatus: 'mystery', actions: [] }]),
+    });
+    render(<ResourceRowList dependencies={dependencies} title="Automations" statusOptions={STATUS_OPTIONS} onRowAction={() => {}} />);
+    await waitFor(() => expect(screen.getByText('mystery')).toBeInTheDocument());
+  });
+
   it('renders translated copy end-to-end under I18nProvider with a real dictionary', async () => {
     const dependencies = fakeDependencies({ fetchRows: vi.fn().mockResolvedValue([]) });
     render(

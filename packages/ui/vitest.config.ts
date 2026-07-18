@@ -47,6 +47,13 @@ export default defineConfig({
         // helper) — verified with the same grep before excluding.
         'src/features/source-config-list/types.ts',
         'src/features/source-config-list/ports.ts',
+        // Same carve-out for resource-dashboard: types.ts and ports.ts are
+        // both interface-only (two separate port interfaces, ResourceBoardPort
+        // and ResourceRowListPort, but no runtime binding helper lives in
+        // ports.ts itself — that's dependencies.ts, which IS covered) —
+        // verified with the same grep before excluding.
+        'src/features/resource-dashboard/types.ts',
+        'src/features/resource-dashboard/ports.ts',
       ],
     },
   },

@@ -135,6 +135,11 @@ describe('ResourceRowListView', () => {
     expect(onHistoryItemAction).toHaveBeenCalledWith('a', 'run-1', 'open');
   });
 
+  it('passes toneMap through to each row item', () => {
+    render(<ResourceRowListView {...baseProps({ rows: [{ ...ROW_A, lastRunStatus: 'failed' }], toneMap: { failed: 'error' } })} />);
+    expect(screen.getByTestId('resource-status-pill')).toHaveClass('tone-error');
+  });
+
   it('renders nothing in the list section when rows is empty but loading is true', () => {
     render(<ResourceRowListView {...baseProps({ rows: [], loading: true })} />);
     expect(screen.queryByTestId('resource-row-list-item')).not.toBeInTheDocument();

@@ -45,6 +45,12 @@ describe('ResourceRunHistoryList', () => {
     expect(screen.getByText('boom')).toHaveClass('is-error');
   });
 
+  it('renders a plain (non-error) message when isError is absent', () => {
+    const items: ResourceRunHistoryItem[] = [{ id: 'r1', status: 'succeeded', startedAtLabel: 'Jan 1', message: 'all good' }];
+    render(<ResourceRunHistoryList items={items} loading={false} titleLabel="History" loadingLabel="Loading…" emptyLabel="No runs." statusLabel={statusLabel} />);
+    expect(screen.getByText('all good')).not.toHaveClass('is-error');
+  });
+
   it('omits the message div entirely when neither message is set', () => {
     const items: ResourceRunHistoryItem[] = [{ id: 'r1', status: 'succeeded', startedAtLabel: 'Jan 1' }];
     render(<ResourceRunHistoryList items={items} loading={false} titleLabel="History" loadingLabel="Loading…" emptyLabel="No runs." statusLabel={statusLabel} />);

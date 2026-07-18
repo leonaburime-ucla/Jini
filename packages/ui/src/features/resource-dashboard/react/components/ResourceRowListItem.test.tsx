@@ -107,6 +107,18 @@ describe('ResourceRowListItem', () => {
     expect(onHistoryItemAction).toHaveBeenCalledWith('run-1', 'open');
   });
 
+  it('applies toneMap to both the last-run pill and the expanded history sublist pill', () => {
+    const historyItems = [{ id: 'run-1', status: 'failed', startedAtLabel: 'today' }];
+    render(
+      <ResourceRowListItem
+        {...baseProps({ row: { ...ROW, lastRunStatus: 'failed' }, expanded: true, historyItems, toneMap: { failed: 'error' } })}
+      />,
+    );
+    for (const pill of screen.getAllByTestId('resource-status-pill')) {
+      expect(pill).toHaveClass('tone-error');
+    }
+  });
+
   it('applies the is-paused class when row.paused is true', () => {
     render(<ResourceRowListItem {...baseProps({ row: { ...ROW, paused: true } })} />);
     expect(screen.getByTestId('resource-row-list-item')).toHaveClass('is-paused');

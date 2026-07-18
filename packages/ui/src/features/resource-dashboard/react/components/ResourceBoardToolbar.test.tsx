@@ -131,12 +131,20 @@ describe('ResourceBoardToolbar', () => {
     expect(onExitSelectMode).toHaveBeenCalledTimes(1);
   });
 
-  it('marks the active view mode pressed and calls onViewModeChange', async () => {
+  it('marks the active view mode pressed and calls onViewModeChange for kanban', async () => {
     const onViewModeChange = vi.fn();
     render(<ResourceBoardToolbar {...baseProps({ onViewModeChange })} />);
     expect(screen.getByRole('button', { name: 'Grid' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(screen.getByRole('button', { name: 'Kanban' }));
     expect(onViewModeChange).toHaveBeenCalledWith('kanban');
+  });
+
+  it('calls onViewModeChange for grid when currently in kanban view', async () => {
+    const onViewModeChange = vi.fn();
+    render(<ResourceBoardToolbar {...baseProps({ viewMode: 'kanban', onViewModeChange })} />);
+    expect(screen.getByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(screen.getByRole('button', { name: 'Grid' }));
+    expect(onViewModeChange).toHaveBeenCalledWith('grid');
   });
 });

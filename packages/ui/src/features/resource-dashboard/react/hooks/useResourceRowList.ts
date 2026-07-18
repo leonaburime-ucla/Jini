@@ -72,12 +72,21 @@ export function useResourceRowList<TRow extends ResourceRowItem>(
 
   const fetchHistoryFor = useCallback(
     async (id: string) => {
-      if (!port.fetchRowHistory) return;
+      // Non-null: every call site (`toggleExpand` below, and
+      // `dispatchRowAction`'s post-action history refresh) only reaches this
+      // function when `port.fetchRowHistory` is known to exist —
+      // `toggleExpand` guards it directly before calling this, and
+      // `dispatchRowAction` only calls this when `id === expandedRowId`,
+      // which can only ever have been set by that same guarded `toggleExpand`.
       setHistoryLoadingRowId(id);
       try {
-        const items = await port.fetchRowHistory(id);
+        const items = await port.fetchRowHistory!(id);
         setHistoryByRowId((current) => ({ ...current, [id]: items }));
       } finally {
+        // A newer fetch for a DIFFERENT row (started after this one, e.g. the
+        // user switched which row is expanded before this call resolved)
+        // must not clobber that newer row's loading flag when this call
+        // finally settles — only clear it if we're still the most recent one.
         setHistoryLoadingRowId((current) => (current === id ? null : current));
       }
     },
