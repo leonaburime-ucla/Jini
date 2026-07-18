@@ -86,8 +86,14 @@ export function useConversation(options: UseConversationOptions): UseConversatio
         if (m.id !== assistantId) return m;
         // A plain if/else chain (not a nested ternary) — deliberately, so
         // each of the four mapped statuses is its own independently
-        // trackable branch under coverage instrumentation.
-        let runStatus: RunStatus | undefined = m.runStatus;
+        // trackable branch under coverage instrumentation. The initial
+        // value is asserted non-null: this reconciliation effect only ever
+        // runs after `sendMessage`/`retry` has called `run.start()`/
+        // `reattach` (both set the message's `runStatus: 'queued'` via
+        // `activeAssistantIdRef` first), so `m.runStatus` is always defined
+        // and `run.status` is never `'idle'` by the time this callback
+        // fires — one of the four branches below always reassigns it.
+        let runStatus: RunStatus = m.runStatus!;
         if (run.status === 'streaming') runStatus = 'running';
         else if (run.status === 'done') runStatus = 'succeeded';
         else if (run.status === 'error') runStatus = 'failed';
@@ -98,7 +104,7 @@ export function useConversation(options: UseConversationOptions): UseConversatio
           ...(nextRunId !== undefined ? { runId: nextRunId } : {}),
           events: run.events,
           content: assistantContentFromEvents(run.events),
-          ...(runStatus !== undefined ? { runStatus } : {}),
+          runStatus,
           ...(isTerminalRunStatus(runStatus) ? { endedAt: Date.now() } : {}),
         };
       }),
@@ -107,11 +113,15 @@ export function useConversation(options: UseConversationOptions): UseConversatio
   }, [run.events, run.runId, run.status]);
 
   // Reconcile the live run's events onto the streaming assistant message
-  // whenever either changes identity.
+  // whenever any of them changes identity. `run.runId` must be included:
+  // an event can arrive (and get reconciled) before `start()`'s promise
+  // resolves with the real id, and if the id then resolves with no further
+  // event/status change, omitting it here would leave the message's runId
+  // permanently unset.
   useEffect(() => {
     applyRunToAssistantMessage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run.events, run.status]);
+  }, [run.events, run.status, run.runId]);
 
   const sendMessage = useCallback(
     async (content: string, sendOptions: SendMessageOptions = {}) => {

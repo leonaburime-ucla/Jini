@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { ChatTransport, RunHandlers } from '../../transport.js';
 import { useConversation } from './useConversation.js';
 import { createFakeChatTransport } from './testing/fake-transport.js';
 
@@ -173,6 +174,79 @@ describe('useConversation', () => {
     });
     expect(result.current.messages).toEqual(seed);
     expect(transport.calls).toHaveLength(0);
+  });
+
+  it('an event arriving before start() resolves its runId leaves the brand-new assistant message without a runId until the promise settles', async () => {
+    let resolveStart!: (v: { runId: string }) => void;
+    const startPromise = new Promise<{ runId: string }>((resolve) => {
+      resolveStart = resolve;
+    });
+    let capturedHandlers: RunHandlers | undefined;
+    const transport = {
+      startRun: vi.fn((_input: unknown, handlers: RunHandlers) => {
+        capturedHandlers = handlers;
+        return startPromise;
+      }),
+      reattachRun: vi.fn(),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useConversation({ transport }));
+
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.sendMessage('hi');
+    });
+    // `run.runId` is still null (startRun hasn't resolved yet) and the
+    // freshly-created assistant message never had one either — the `runId`
+    // field must simply be omitted, not set to `undefined`.
+    act(() => capturedHandlers?.onEvent({ kind: 'text', text: 'partial' }));
+    expect(result.current.messages[1]!.runId).toBeUndefined();
+    expect(result.current.messages[1]!.content).toBe('partial');
+
+    resolveStart({ runId: 'run-1' });
+    await act(async () => {
+      await sendPromise;
+    });
+    expect(result.current.messages[1]!.runId).toBe('run-1');
+  });
+
+  it('an event arriving before retry() resolves its runId falls back to the message\'s prior runId from the failed attempt', async () => {
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useConversation({ transport }));
+
+    await act(async () => {
+      await result.current.sendMessage('first attempt');
+    });
+    act(() => transport.fail(new Error('network blip')));
+    const failedId = result.current.messages[1]!.id;
+    expect(result.current.messages[1]!.runId).toBe('run-1');
+
+    let resolveRetry!: (v: { runId: string }) => void;
+    const retryPromise = new Promise<{ runId: string }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    let capturedHandlers: RunHandlers | undefined;
+    (transport as unknown as { startRun: unknown }).startRun = vi.fn((_input: unknown, handlers: RunHandlers) => {
+      capturedHandlers = handlers;
+      return retryPromise;
+    });
+
+    let retryDone!: Promise<void>;
+    act(() => {
+      retryDone = result.current.retry(failedId);
+    });
+    // `run.runId` is still null (the new startRun hasn't resolved yet), but
+    // the retried message already carries `run-1` from the failed attempt —
+    // that prior id is kept as a fallback rather than dropped.
+    act(() => capturedHandlers?.onEvent({ kind: 'text', text: 'still going' }));
+    expect(result.current.messages[1]!.runId).toBe('run-1');
+
+    resolveRetry({ runId: 'run-2' });
+    await act(async () => {
+      await retryDone;
+    });
+    expect(result.current.messages[1]!.runId).toBe('run-2');
   });
 
   it('seeds from initialMessages and preserves them across a new turn', async () => {

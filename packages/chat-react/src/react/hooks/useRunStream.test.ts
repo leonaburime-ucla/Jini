@@ -249,6 +249,48 @@ describe('useRunStream', () => {
     expect(result.current.runId).toBe('run-2');
   });
 
+  it('onDone after onError keeps status "error" rather than overwriting it to "done"', async () => {
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useRunStream(transport));
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    act(() => transport.fail(new Error('boom')));
+    expect(result.current.status).toBe('error');
+
+    act(() => transport.finish([{ kind: 'text', text: 'late final events' }]));
+    expect(result.current.status).toBe('error');
+    expect(result.current.events).toEqual([{ kind: 'text', text: 'late final events' }]);
+  });
+
+  it('stale-generation onToolInputDelta/onError/onDone callbacks from a superseded start() are all dropped', async () => {
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useRunStream(transport));
+
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    const firstRunHandlers = transport.calls[0]!.handlers;
+
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    expect(result.current.runId).toBe('run-2');
+
+    // Straggling callbacks from the first (superseded) subscription must
+    // all be no-ops — each handler has its own `isStale()` early return.
+    act(() => firstRunHandlers.onToolInputDelta?.('t1', 'Write', '{"stale'));
+    expect(result.current.toolInputDeltas).toEqual({});
+
+    act(() => firstRunHandlers.onError(new Error('stale error')));
+    expect(result.current.status).toBe('streaming');
+    expect(result.current.error).toBeNull();
+
+    act(() => firstRunHandlers.onDone([{ kind: 'text', text: 'stale done' }]));
+    expect(result.current.status).toBe('streaming');
+    expect(result.current.events).toEqual([]);
+  });
+
   it('a superseded reattach() whose transport promise later rejects is silently dropped (stale-generation catch guard)', async () => {
     let rejectFirst!: (err: unknown) => void;
     const firstPromise = new Promise<void>((_resolve, reject) => {

@@ -80,15 +80,20 @@ export function useQuestionForms(messages: ReadonlyArray<ChatMessage> | undefine
 export function parseSubmittedAnswers(form: QuestionForm, userMessageContent: string): QuestionFormAnswers | null {
   // `String.prototype.split` always returns an array of length >= 1 (even
   // `''.split('\n')` is `['']`), so `lines` can never be empty here — no
-  // `lines.length === 0` guard is needed (removed as provably-dead).
+  // `lines.length === 0` guard is needed (removed as provably-dead). Index 0
+  // of a non-empty array is always defined; TS just can't express that for
+  // a plain numeric index, hence the assertion instead of a `?? ''` branch
+  // that would never take its fallback path.
   const lines = userMessageContent.split('\n').map((l) => l.trim());
-  const header = lines[0] ?? '';
+  const header = lines[0]!;
   if (!/^\[form answers/i.test(header)) return null;
   const answers: QuestionFormAnswers = {};
   const labelToId = new Map<string, string>();
   for (const q of form.questions) labelToId.set(q.label.toLowerCase(), q.id);
   for (let i = 1; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+    // `i < lines.length` is the loop condition, so this index is always
+    // in-bounds and defined — same reasoning as `header` above.
+    const line = lines[i]!;
     const m = /^[-*]\s*([^:]+):\s*(.*)$/.exec(line);
     if (!m) continue;
     // Both capture groups are required (non-optional) in this pattern, so
@@ -98,8 +103,11 @@ export function parseSubmittedAnswers(form: QuestionForm, userMessageContent: st
     const value = m[2]!.trim();
     const id = labelToId.get(labelKey);
     if (!id) continue;
-    const question = form.questions.find((x) => x.id === id);
-    if (!question) continue;
+    // `id` only ever comes from `labelToId`, which was populated from this
+    // same `form.questions` array immediately above, so a question with
+    // this exact `id` is always found — the `!` reflects that invariant
+    // rather than gaming an untestable defensive branch.
+    const question = form.questions.find((x) => x.id === id)!;
     answers[id] = decodeAnswerValue(question, value);
   }
   return Object.keys(answers).length > 0 ? answers : null;
@@ -119,5 +127,8 @@ function decodeAnswerValue(question: FormQuestion, value: string): string | stri
 function parseSubmittedOptionToken(raw: string): string {
   const match = /\s+\[value:\s*([^\]]+)\]\s*$/i.exec(raw);
   if (!match) return raw.trim();
-  return (match[1] ?? '').trim();
+  // The single capture group is non-optional in this pattern, so it's
+  // always defined once `match` is non-null — same regex-capture-group
+  // caveat as `parseSubmittedAnswers` above.
+  return match[1]!.trim();
 }
