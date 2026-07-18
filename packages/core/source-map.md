@@ -43,6 +43,22 @@ all in this pass — see "Deferred: `agents.ts`" below.
 | `src/api-token-auth.ts` | `apps/daemon/src/api-token-auth.ts` | Genericized: the origin hardcoded its host product's disable/token env-var names as module-level constants; both are now fields on `ApiTokenAuthEnvConfig`, threaded through every function. Pure security-gate logic (no filesystem/process I/O) — fits `@jini/core`'s "pure interfaces, Principal/Authorizer-adjacent" scope, not `@jini/platform`'s OS-primitive scope. |
 | `src/origin-validation.ts` | `apps/daemon/src/origin-validation.ts` | Genericized: the origin hardcoded its host product's allowed-origins/web-port/bind-host env-var names as module-level constants; all three are now fields on `OriginValidationEnvConfig`. One function, `isZeroConfigClipperLibraryRequest`, was **not ported** — it's a bypass for one specific product's own browser-extension-driven library-ingest route (hardcoded route paths `/library/clipper-probe` and `/library/ingest`, a specific browser-extension integration), not a generic same-origin primitive; porting it would smuggle a product feature into the engine kernel. Same category of exclusion as `library-curator` in the agent-runtime skills port (Part 1's `source-map.md`) — a product-specific capability with no portable technique underneath. Everything else (host/origin parsing, private-IP/loopback classification, the same-origin decision tree) is generic and ported with only the env-var names parameterized. |
 
+## `ToolRegistry` half of the tool-execution boundary (2026-07-18, port continuation task — Part 3)
+
+`principal.ts`, `tool-registry.ts`, `internal.ts`, `tool-tokens.ts` — the
+`@jini/core` half of `ToolExecutor` (extraction-plan.md §2.5/§8 task 6).
+**No upstream source; original design work**, per extraction-plan.md §3's
+locked package table splitting `ToolRegistry` (here) from the stateful
+`ToolExecutor` (`@jini/daemon`). Full design-decision writeup — including
+why the split, and exactly how "handlers never publicly retrievable" is
+enforced via `internal.ts`'s separate `package.json` `exports` entry — is
+in `@jini/daemon/source-map.md`'s "`ToolExecutor` — the tool-execution
+boundary" section, since that's where the more consequential half of the
+design (the audit-trail state machine, resumable confirmation) actually
+lives. This package's own three additions are deliberately small: a
+`Principal` interface, the `ToolRegistry`/`ToolDescriptor`/`ToolPolicy`
+registration types plus `createToolRegistry()`, and the DI token.
+
 ### Deferred: `agents.ts`
 
 OD's `apps/daemon/src/agents.ts` is a 26-line `@ts-nocheck` re-export barrel
