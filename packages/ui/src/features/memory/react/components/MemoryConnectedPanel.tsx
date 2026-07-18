@@ -51,7 +51,7 @@ export function MemoryConnectedPanel({
   onDeleteExtraction,
 }: {
   enabled: boolean;
-  onOpenConnectors?: () => void;
+  onOpenConnectors?: (() => void) | undefined;
   connectorStatuses: ConnectorStatusMap;
   connectorsLoading: boolean;
   connectedCount: number;
