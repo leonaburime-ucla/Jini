@@ -24,3 +24,36 @@ preset (task 9), and the startup diagnostics wording in §8 task 3 beyond what's
 diagnostics are thrown `Error`s with legible messages; a structured startup report — e.g. all
 violations collected before exit rather than fail-fast on the first — is a reasonable
 follow-up once a real host has more than one or two packs to compose).
+
+## Flat daemon primitives (2026-07-18, port continuation task — Part 2)
+
+Three of the seven top-level files identified as "not yet ported" in OD's
+`apps/daemon/src/` (`agents.ts`, `sandbox-mode.ts`, `terminals.ts`,
+`daemon-paths.ts`, `origin-validation.ts`, `api-token-auth.ts`, `redact.ts`)
+landed here — the pure, no-filesystem/no-OS-process security/auth/telemetry
+primitives. The other four (`sandbox-mode.ts`, `terminals.ts`,
+`daemon-paths.ts`, plus `home-expansion.ts`, a shared helper both of the
+latter two need) landed in `@jini/platform` instead — see that package's own
+`source-map.md` for the split rationale. `agents.ts` was **not ported** at
+all in this pass — see "Deferred: `agents.ts`" below.
+
+| Jini file | Origin file | Home rationale |
+|---|---|---|
+| `src/redact.ts` | `apps/daemon/src/redact.ts` | Verbatim port (no product-identity strings or hardcoded env vars in the origin — nothing to genericize). One deviation: `isLuhnValid`'s length (`digits.length < 13 \|\| > 19`) and per-digit (`d < 0 \|\| d > 9`) defensive guards were dropped. Both are provably dead — `isLuhnValid` is private with exactly one call site (the `CARD_CANDIDATE.replace` callbacks), `CARD_CANDIDATE`'s own regex (`\b(?:\d[ -]?){12,18}\d\b`) guarantees any string reaching it is 13-19 characters, and the preceding `match.replace(/\D/g, '')` strip guarantees every character is an ASCII digit. Classified per `docs/jini-port/skills/fixing-open-design.md` Phase 6.5's "dead branch" bucket (a defensive check the surrounding code already makes unreachable) rather than written as a coverage-gaming contrived test — same discipline the agent-protocol port (Part 1) already established for this codebase. Documented inline at the call site too. |
+| `src/api-token-auth.ts` | `apps/daemon/src/api-token-auth.ts` | Genericized: the origin hardcoded its host product's disable/token env-var names as module-level constants; both are now fields on `ApiTokenAuthEnvConfig`, threaded through every function. Pure security-gate logic (no filesystem/process I/O) — fits `@jini/core`'s "pure interfaces, Principal/Authorizer-adjacent" scope, not `@jini/platform`'s OS-primitive scope. |
+| `src/origin-validation.ts` | `apps/daemon/src/origin-validation.ts` | Genericized: the origin hardcoded its host product's allowed-origins/web-port/bind-host env-var names as module-level constants; all three are now fields on `OriginValidationEnvConfig`. One function, `isZeroConfigClipperLibraryRequest`, was **not ported** — it's a bypass for one specific product's own browser-extension-driven library-ingest route (hardcoded route paths `/library/clipper-probe` and `/library/ingest`, a specific browser-extension integration), not a generic same-origin primitive; porting it would smuggle a product feature into the engine kernel. Same category of exclusion as `library-curator` in the agent-runtime skills port (Part 1's `source-map.md`) — a product-specific capability with no portable technique underneath. Everything else (host/origin parsing, private-IP/loopback classification, the same-origin decision tree) is generic and ported with only the env-var names parameterized. |
+
+### Deferred: `agents.ts`
+
+OD's `apps/daemon/src/agents.ts` is a 26-line `@ts-nocheck` re-export barrel
+over `./runtimes/{registry,detection,executables,launch,resolution,env,mcp,
+prompt-budget,models}.js` — it has no logic of its own. None of those nine
+files exist in `@jini/agent-runtime` yet (Part 1 of this port only landed
+`agent-protocol/` — the ACP + pi-rpc transport layer; the `runtimes/`
+registry/detection/execution tree is `extraction-plan.md` §8 task 7 /
+`r1b-daemon-design.md` §1's `@jini/agent-runtime` T2 scope, a separate,
+much larger task). Porting `agents.ts` in isolation would produce a barrel
+with nine dangling imports to modules that don't exist in this repo —
+neither a real port nor a coverable unit. Left for whichever task actually
+lifts the `runtimes/` tree; noting it here so it isn't mistaken for
+"silently skipped."

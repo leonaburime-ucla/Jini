@@ -12,6 +12,10 @@
  * - `toolchain`  — user-level toolchain bin discovery.
  * - `asset-cache` — SSRF-safe same-origin cache/proxy for sandboxed content's
  *   external media references.
+ * - `home-expansion` — `~`/`$HOME` shorthand expansion for env-supplied paths.
+ * - `sandbox-env` — sandboxed agent-execution directory tree + env overlay.
+ * - `resource-paths` — daemon CLI/resource-root/data-dir path resolution.
+ * - `terminal` — in-memory interactive terminal (PTY) session manager.
  *
  * The set of names exported here is intentionally identical to the pre-split
  * public surface; importers see no change.
@@ -78,3 +82,47 @@ export {
   isCacheableExternalUrl,
   isPrivateAddress,
 } from "./asset-cache.js";
+
+export { expandHomePrefix, resolveProjectRelativePath } from "./home-expansion.js";
+
+export type { SandboxEnvConfig, SandboxRuntimeConfig, SandboxRuntimeRoots } from "./sandbox-env.js";
+export {
+  applySandboxRuntimeEnv,
+  ensureSandboxRuntimeDirs,
+  isSandboxImportedProjectRootAllowed,
+  isSandboxModeEnabled,
+  resolveSandboxRuntimeConfig,
+  resolveSandboxRuntimeConfigFromEnv,
+  sandboxAgentProfilesConfigPath,
+  sandboxImportAllowedRoots,
+  sandboxImportedProjectRootUnavailableReason,
+} from "./sandbox-env.js";
+
+export type {
+  ResolveDaemonPluginPreviewsDirOptions,
+  ResolveDaemonResourceRootOptions,
+  ResolveDataDirOptions,
+  ResourcePathsConfig,
+} from "./resource-paths.js";
+export {
+  resolveDaemonCliPath,
+  resolveDaemonPluginPreviewsDir,
+  resolveDaemonResourceDir,
+  resolveDaemonResourceRoot,
+  resolveDataDir,
+  resolveProcessResourcesPath,
+} from "./resource-paths.js";
+
+export type {
+  CreateTerminalOptions,
+  CreateTerminalServiceOptions,
+  PtyProcess,
+  PtySpawn,
+  PtySpawnOptions,
+  TerminalEventData,
+  TerminalEventRecord,
+  TerminalService,
+  TerminalSession,
+  TerminalSseSink,
+} from "./terminal.js";
+export { createTerminalService, ensureSpawnHelperExecutable, resolveShell, spawnHelperCandidatePaths } from "./terminal.js";
