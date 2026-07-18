@@ -67,7 +67,9 @@ export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
       {open ? (
         <div className="jini-header-actions-menu-popover" role="menu" aria-label={label}>
           {visibleGroups.map((group, groupIndex) => (
-            <Fragment key={group[0]?.id ?? groupIndex}>
+            // `visibleGroups` is `groups.filter((g) => g.length > 0)`, so
+            // `group[0]` is always defined here.
+            <Fragment key={group[0]!.id}>
               {groupIndex > 0 ? <div className="jini-header-actions-menu-divider" aria-hidden /> : null}
               {group.map((item) => (
                 <button

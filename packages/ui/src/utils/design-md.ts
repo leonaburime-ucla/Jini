@@ -30,10 +30,15 @@ interface DesignMdHeadingMatch {
 
 export function designMdHeadings(body: string, startOffset: number): DesignMdHeadingMatch[] {
   return [...body.slice(startOffset).matchAll(/^##\s+(.+?)\s*$/gm)].map((match) => {
-    const start = startOffset + (match.index ?? 0);
+    // `RegExpMatchArray.index` and a capture group are typed as possibly
+    // `undefined` because the JS regex API can't express "always set for a
+    // `matchAll` result" / "always set for a mandatory capture group" — for
+    // this specific pattern (an unanchored global match, one non-optional
+    // `(.+?)` group) both are always defined whenever a match exists.
+    const start = startOffset + match.index!;
     return {
       start,
-      title: match[1] ?? '',
+      title: match[1]!,
     };
   });
 }
@@ -49,12 +54,11 @@ export function designMdDefaultModuleText(module: DesignMdModule, preamble = '')
 }
 
 export function designMdModuleSlice(body: string, module: DesignMdModule): DesignMdSlice {
-  const safe = body ?? '';
-  const frontmatter = safe.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  const frontmatter = body.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
   const contentStart = frontmatter ? frontmatter[0].length : 0;
-  const headings = designMdHeadings(safe, contentStart);
-  const preambleEnd = headings[0]?.start ?? safe.length;
-  const preamble = safe.slice(contentStart, preambleEnd).trim();
+  const headings = designMdHeadings(body, contentStart);
+  const preambleEnd = headings[0]?.start ?? body.length;
+  const preamble = body.slice(contentStart, preambleEnd).trim();
   const matchedIndexes = headings
     .map((heading, index) => (designMdHeadingMatches(heading.title, module) ? index : -1))
     .filter((index) => index >= 0);
@@ -72,9 +76,9 @@ export function designMdModuleSlice(body: string, module: DesignMdModule): Desig
     const first = matchedIndexes[0]!;
     const last = matchedIndexes[matchedIndexes.length - 1]!;
     const start = headings[first]!.start;
-    const end = headings[last + 1]?.start ?? safe.length;
+    const end = headings[last + 1]?.start ?? body.length;
     return {
-      text: safe.slice(start, end).trim(),
+      text: body.slice(start, end).trim(),
       start,
       end,
       exists: true,
@@ -92,8 +96,8 @@ export function designMdModuleSlice(body: string, module: DesignMdModule): Desig
 
   return {
     text: designMdDefaultModuleText(module),
-    start: safe.length,
-    end: safe.length,
+    start: body.length,
+    end: body.length,
     exists: false,
   };
 }
@@ -106,11 +110,10 @@ export function normalizeDesignMdModuleDraft(module: DesignMdModule, draft: stri
 }
 
 export function replaceDesignMdModule(body: string, module: DesignMdModule, draft: string): string {
-  const safe = body ?? '';
-  const slice = designMdModuleSlice(safe, module);
+  const slice = designMdModuleSlice(body, module);
   const nextText = normalizeDesignMdModuleDraft(module, draft);
-  const before = safe.slice(0, slice.start).trimEnd();
-  const after = safe.slice(slice.end).trimStart();
+  const before = body.slice(0, slice.start).trimEnd();
+  const after = body.slice(slice.end).trimStart();
   return [before, nextText, after]
     .filter((part) => part.trim().length > 0)
     .join('\n\n')
