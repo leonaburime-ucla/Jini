@@ -3,6 +3,13 @@ import { createElectronSingleInstanceLockPort } from './electron-single-instance
 import { createFakeElectronApp } from './testing.js';
 
 describe('createElectronSingleInstanceLockPort', () => {
+  it('defaults the fake app to granting the lock when no options are given', () => {
+    const app = createFakeElectronApp();
+    const port = createElectronSingleInstanceLockPort(app);
+    expect(port.claim(vi.fn())).toBe(true);
+    expect(app.quitCalled).toBe(false);
+  });
+
   it('claims the lock and forwards second-instance notifications', () => {
     const app = createFakeElectronApp({ lockGranted: true });
     const port = createElectronSingleInstanceLockPort(app);

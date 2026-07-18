@@ -22,6 +22,13 @@ describe('createElectronRenderService', () => {
     expect(Buffer.from(bytes).equals(pngResult)).toBe(true);
   });
 
+  it('capture falls back to the fake\'s default PNG bytes when no pngResult script is given', async () => {
+    const { factory } = createFakeBrowserWindowFactory();
+    const service = createElectronRenderService(factory);
+    const bytes = await service.capture('<html></html>');
+    expect(Buffer.from(bytes).equals(Buffer.from('png-bytes'))).toBe(true);
+  });
+
   it('rejects with a load-failed RenderServiceError when did-fail-load fires', async () => {
     const { factory, windows } = createFakeBrowserWindowFactory({ failLoad: { errorCode: -6, errorDescription: 'ERR_FILE_NOT_FOUND' } });
     const service = createElectronRenderService(factory);

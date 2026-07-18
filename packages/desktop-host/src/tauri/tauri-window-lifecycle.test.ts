@@ -20,4 +20,40 @@ describe('createTauriWindowLifecyclePort', () => {
     await Promise.resolve();
     expect(port.getMainWindow()).toBeNull();
   });
+
+  it('passes explicit width/height through to the Tauri window factory', async () => {
+    const { factory } = createFakeTauriWindowFactory();
+    let capturedOptions: Parameters<typeof factory>[0] | undefined;
+    const spyFactory: typeof factory = (options) => {
+      capturedOptions = options;
+      return factory(options);
+    };
+    const port = createTauriWindowLifecyclePort(spyFactory);
+    await port.createWindow({ url: 'https://example.test/', width: 800, height: 600 });
+    expect(capturedOptions?.width).toBe(800);
+    expect(capturedOptions?.height).toBe(600);
+  });
+
+  it('omits width/height from the factory options when not given', async () => {
+    const { factory } = createFakeTauriWindowFactory();
+    let capturedOptions: Parameters<typeof factory>[0] | undefined;
+    const spyFactory: typeof factory = (options) => {
+      capturedOptions = options;
+      return factory(options);
+    };
+    const port = createTauriWindowLifecyclePort(spyFactory);
+    await port.createWindow({ url: 'https://example.test/' });
+    expect(capturedOptions).not.toHaveProperty('width');
+    expect(capturedOptions).not.toHaveProperty('height');
+  });
+
+  it('exposes show/hide/focus delegating to the underlying Tauri window', async () => {
+    const { factory } = createFakeTauriWindowFactory();
+    const port = createTauriWindowLifecyclePort(factory);
+    const handle = await port.createWindow({ url: 'https://example.test/' });
+    handle.show();
+    handle.hide();
+    handle.focus();
+    expect(handle.isDestroyed()).toBe(false);
+  });
 });

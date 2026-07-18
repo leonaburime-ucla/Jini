@@ -110,9 +110,16 @@ export function createFakeTauriSidecarCommandApi(script: FakeTauriSidecarScript 
           return true;
         },
       };
-      if (script.exitImmediatelyWithCode != null) {
+      const exitImmediatelyWithCode = script.exitImmediatelyWithCode;
+      if (exitImmediatelyWithCode != null) {
+        // `exitImmediatelyWithCode` (a local, narrowed here) rather than
+        // `script.exitImmediatelyWithCode` again inside the closure: TS
+        // narrowing doesn't persist across a property access re-read in a
+        // later closure, but re-reading the property here is genuinely
+        // always defined given the guard above — a local avoids needing an
+        // otherwise-dead `?? 0` fallback to satisfy the type checker.
         setTimeout(() => {
-          for (const listener of exitListeners) listener(script.exitImmediatelyWithCode ?? 0, null);
+          for (const listener of exitListeners) listener(exitImmediatelyWithCode, null);
         }, 0);
       }
       void killed;
