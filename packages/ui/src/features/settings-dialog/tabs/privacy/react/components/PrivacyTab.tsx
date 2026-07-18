@@ -1,5 +1,5 @@
 import { useT } from '../../../../../../features/i18n/index.js';
-import { Icon } from '../../../../../../components/Icon.js';
+import { Icon } from '../../../../../../react/components/Icon.js';
 import {
   hasMadeConsentDecision,
   isSharingEnabled,

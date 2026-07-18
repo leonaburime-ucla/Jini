@@ -2,7 +2,7 @@
 // optional failure explanation, the written-entry chips, and a delete action.
 // Shared by the saved-memory list and the connected-apps scan history. Pure
 // formatting comes from the slice formatters; state lives in the hooks.
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import { describeExtractionFailure, describeRecord, extractionCardMeta, extractionCardTitle } from '../../formatters.js';
 import type { MemoryExtractionRecord } from '../../types.js';

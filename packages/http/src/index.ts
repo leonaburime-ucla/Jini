@@ -3,8 +3,8 @@
  *
  * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
  * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
- * legacy-shaped compat error helpers, and a route-pack registrar. See `source-map.md` for full
- * provenance and scope-decision notes.
+ * legacy-shaped compat error helpers, a route-pack registrar, and generic daemon status/shutdown
+ * routes. See `source-map.md` for full provenance and scope-decision notes.
  */
 export type {
   Handler,
@@ -44,6 +44,22 @@ export type { AdapterContext } from './adapter.js';
 export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export { mountPackHttp } from './pack-http.js';
+
+export {
+  isLoopbackHostname,
+  isLoopbackPeerAddress,
+  localOriginFromHeader,
+  normalizeLocalAuthority,
+  requireLocalDaemonRequest,
+  validateLocalDaemonRequest,
+} from './local-daemon-request.js';
+
+export type {
+  DaemonShutdownResponse,
+  DaemonStatusDeps,
+  DaemonStatusResponse,
+} from './daemon-status.js';
+export { daemonShutdownRoute, daemonStatusRoute, registerDaemonStatusRoutes } from './daemon-status.js';
 
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes

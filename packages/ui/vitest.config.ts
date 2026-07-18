@@ -41,6 +41,21 @@ export default defineConfig({
         'src/features/settings-dialog/types.ts',
         'src/features/settings-dialog/tabs/*/types.ts',
         'src/features/settings-dialog/tabs/integrations/ports.ts',
+        // features/tab-strip/types.ts: same carve-out — `export type`/
+        // `export interface` only (verified via the same grep), no runtime
+        // declarations. features/tab-strip/ports.ts is NOT excluded: it
+        // carries a real runtime declaration (`noopTabStripHaptics`) and
+        // is fully covered by dependencies.test.ts/index.test.ts.
+        'src/features/tab-strip/types.ts',
+        // Same carve-out: `features/html-viewer/types.ts` (plain
+        // `DeckSlideState`/`DeckNavigateAction` type shapes) and its
+        // `ports.ts` (`FullscreenPort`/`NewTabPreviewPort`/
+        // `HtmlViewerDependencies` — interfaces only, unlike
+        // `features/observability/ports.ts` which carries a real
+        // `noopSafetyEventReporter` runtime export) both verified
+        // zero-runtime-declaration.
+        'src/features/html-viewer/types.ts',
+        'src/features/html-viewer/ports.ts',
         // list-detail-panel/types.ts is pure `interface` declarations, zero
         // runtime statements (verified via the same
         // `grep -nE '^(export )?(const|function|class|let|var) '` check).

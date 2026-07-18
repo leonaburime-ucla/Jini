@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
-import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { Icon } from '../../../../react/components/Icon.js';
+import { RemixIcon } from '../../../../react/components/RemixIcon.js';
 import { useCommentReorder } from '../hooks/useCommentReorder.js';
 import { relativeCommentTimeTranslation, visibleSelectedCommentIds } from '../../rules.js';
 import type { ViewerCommentAttachment, ViewerCommentBase } from '../../types.js';

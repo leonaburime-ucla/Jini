@@ -1,7 +1,7 @@
 // Dumb panel for the "How it works" tab: the automatic-capture flow diagram, a
 // one-paragraph primer, and the pluggable-hooks toggles. Presentational only —
 // state + the toggle transport live in a host's config hook.
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import type { MemoryConfigFlagKey } from '../../rules.js';
 import { MemoryHooksPanel } from './MemoryHooksPanel.js';

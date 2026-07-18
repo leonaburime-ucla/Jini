@@ -3,7 +3,7 @@
 // `document.body` and passes it, so this file stays DOM-free). All state +
 // transport live in the entries hook; this is props-in / JSX-out.
 import { createPortal } from 'react-dom';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import type { MemoryTreeNode } from '../../types.js';
 

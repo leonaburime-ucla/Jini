@@ -167,7 +167,7 @@ across `packages/ui/src/**` for `@open-design/*` specifiers and the
 ### Not ported — out of task scope (unchanged from before this task)
 
 `src/features/byok-config/`, `mcp-config/`, `rich-text-input/`,
-`workspace-tabs/`, and the flat-group `src/components/` bucket (Icon.tsx,
+`workspace-tabs/`, and the flat-group `src/react/components/` bucket (Icon.tsx,
 Toast.tsx, etc.) from `docs/jini-port/ui-extraction-plan.md` are untouched —
 explicitly out of scope per this task's brief.
 
@@ -288,7 +288,7 @@ porting (as opposed to prior backend-milestone cloud runs) works through this
 mechanism — see the honesty note at the end of this section for what that
 surfaced.
 
-This is the **first real content in `packages/ui/src/components/` and
+This is the **first real content in `packages/ui/src/react/components/` and
 `src/hooks/`**, and the first task to add `react`/`react-dom` as real
 dependencies of this package (`peerDependencies` + `devDependencies` for
 building/testing within the package itself; `@types/react`, `@types/react-dom`,
@@ -301,11 +301,11 @@ gained `"jsx": "react-jsx"`. A new `src/utils/` slot was added per the plan
 
 | Jini file | Origin | Transform |
 |---|---|---|
-| `src/components/Icon.tsx` | `Icon.tsx` | Verbatim. 849-line pure `name -> <svg>` switch, zero deps, zero OD references — the pattern-setter for this bucket per the plan. |
-| `src/components/RemixIcon.tsx` | `RemixIcon.tsx` | Verbatim. |
-| `src/components/AgentIcon.tsx` | `AgentIcon.tsx` | Verified generic per the plan's flag: the `ICON_EXT`/`MONO_ICONS` tables are coding-agent-CLI brand ids (claude, codex, gemini, aider, devin, …), not an OD product list. Added an optional `basePath` prop (default `/agent-icons`, matching the origin's hardcoded path) so a host can serve assets from elsewhere — the one behavioral addition in this row. |
-| `src/components/Loading.tsx` | `Loading.tsx` | Verbatim logic. `DesignCardSkeleton`'s doc comment dropped its "DesignsTab grid" framing (an OD feature name) since the shape itself — thumbnail over meta lines — is a generic card-loading pattern; CSS class names (`design-card`, `skeleton-block`, …) are left as-is since they read as generic content-shape names, not product identity. |
-| `src/components/PaletteTweaks.tsx` | `PaletteTweaks.tsx` | **Verified dead code**: re-ran the plan's zero-fan-in check with a fresh grep across `components-original/` — still zero real consumers. Shipped anyway per the routine's instruction (small, self-contained, correct); flagged explicitly with an inline `NOTE` comment rather than silently presented as a normal port. |
+| `src/react/components/Icon.tsx` | `Icon.tsx` | Verbatim. 849-line pure `name -> <svg>` switch, zero deps, zero OD references — the pattern-setter for this bucket per the plan. |
+| `src/react/components/RemixIcon.tsx` | `RemixIcon.tsx` | Verbatim. |
+| `src/react/components/AgentIcon.tsx` | `AgentIcon.tsx` | Verified generic per the plan's flag: the `ICON_EXT`/`MONO_ICONS` tables are coding-agent-CLI brand ids (claude, codex, gemini, aider, devin, …), not an OD product list. Added an optional `basePath` prop (default `/agent-icons`, matching the origin's hardcoded path) so a host can serve assets from elsewhere — the one behavioral addition in this row. |
+| `src/react/components/Loading.tsx` | `Loading.tsx` | Verbatim logic. `DesignCardSkeleton`'s doc comment dropped its "DesignsTab grid" framing (an OD feature name) since the shape itself — thumbnail over meta lines — is a generic card-loading pattern; CSS class names (`design-card`, `skeleton-block`, …) are left as-is since they read as generic content-shape names, not product identity. |
+| `src/react/components/PaletteTweaks.tsx` | `PaletteTweaks.tsx` | **Verified dead code**: re-ran the plan's zero-fan-in check with a fresh grep across `components-original/` — still zero real consumers. Shipped anyway per the routine's instruction (small, self-contained, correct); flagged explicitly with an inline `NOTE` comment rather than silently presented as a normal port. |
 | `src/utils/auto-open-file.ts` | `auto-open-file.ts` | Verbatim logic. Comment wording lightly reworded to drop OD-specific framing (dropped a reference to a specific internal source file path). |
 | `src/hooks/useInView.ts` | `plugins-home/useInView.ts` | Verbatim. |
 
@@ -321,14 +321,14 @@ rather than glossed over:
 
 | Jini file | Origin | What was OD-specific, and what changed |
 |---|---|---|
-| `src/components/Toast.tsx` | `Toast.tsx` | Logic verbatim. CSS class hooks renamed `od-toast*` → `jini-toast*` — not on the AGENTS.md banned-string list (that's `OD_`/`Open Design` literal, not lowercase `od-`), but `od-` unmistakably reads as an Open-Design-branded class prefix in a package whose whole mandate is product-neutral, so renamed for genuine (not just regex-clean) neutrality. |
-| `src/components/TooltipLayer.tsx` | `TooltipLayer.tsx` | Same `od-tooltip*` → `jini-tooltip*` rename (trigger class, layer class, the suppressed-native-title data attribute). This component reads a cross-component contract (`.jini-tooltip[data-tooltip]`), so `AppChromeHeader.tsx` below was updated to emit the new class name to keep the contract intact. |
-| `src/components/CustomSelect.tsx` | `CustomSelect.tsx` | **Verified dead code** (see above) — shipped anyway, flagged with an inline `NOTE` comment. Same `od-select*` → `jini-select*` rename as Toast/TooltipLayer. |
-| `src/components/KitErrorBoundary.tsx` | `KitErrorBoundary.tsx` + `.module.css` | Per the routine's explicit instruction: swapped the concrete `reportHandledException` analytics import for an injected `onError` callback prop, defaulting to a no-op. Also dropped: the `useT()` i18n hook (this package has no i18n system; `title`/`retryLabel` are now plain-English string props with defaults) and the `.module.css` import (this package has no CSS-module-aware build step yet — flattened to plain `jini-kit-error*` class names, same as every other component in this batch; the underlying visual CSS itself was not ported, consistent with Toast/CustomSelect/TooltipLayer not shipping CSS either). |
-| `src/components/LanguageMenu.tsx` | `LanguageMenu.tsx` | Per the routine's explicit instruction: `LOCALES`/`LOCALE_LABEL` are now a `locales: LocaleOption[]` prop instead of a hardcoded import. Also dropped: OD's `useI18n()` context (replaced with `locale`/`onLocaleChange` props — the component is now fully controlled) and the `motion/react` (Framer Motion) animation — the origin's `popoverIn`/`staggerContainer`/`listItem` variants live in OD's own `../motion` module and pulling in a whole animation library as a transitive dependency for one menu's open/close felt like scope creep for a single flat-group item; replaced with a plain conditional-render (open/close is instant, no exit animation) and left animation as something a host's own CSS can add via the popover's className. |
-| `src/components/WorkingDirPicker.tsx` | `WorkingDirPicker.tsx` + `.module.css` | Dropped `useT()` (replaced with a `labels` prop, spread over English defaults) and the `.module.css` import (flattened to plain `jini-working-dir-*` class names, same rationale as KitErrorBoundary — no CSS-module build step in this package yet, and no CSS shipped). Doc comments' references to "the Home composer" / "the in-project composer" (OD's specific two call sites) reworded to describe the shape generically. |
-| `src/components/AppChromeHeader.tsx` | `AppChromeHeader.tsx` | Dropped `useT()` — `backLabel` already existed as an overridable prop in the origin, just widened its default from a translated string to a plain-English literal (`'Back'`). Updated its `od-tooltip` trigger class to `jini-tooltip`, matching the `TooltipLayer.tsx` rename above so the two still work together. |
-| `src/components/ExportDiagnosticsButton.tsx` | `ExportDiagnosticsButton.tsx` | The largest single deviation in this batch. The origin declared a **global `Window.openDesignDesktop`** API (an Electron contextBridge binding) and hardcoded `DIAGNOSTICS_FILENAME_PREFIX = 'open-design-diagnostics'` — both unmistakably product identity, even though neither string matches the AGENTS.md banned-list regex literally (`openDesignDesktop` isn't `OD_`; `open-design-diagnostics` isn't `Open Design` with a space). Read closely, this file is exactly the kind of component the plan's own footnote warns about — "these turn out narrower than they look on a closer read" — just not one the plan's per-file table had flagged. Generified: the global was replaced with an injected `desktopBridge?: DesktopExportBridge` prop (same shape, now caller-supplied instead of read off `window`); `filenamePrefix` and `exportPath` (was hardcoded `/api/diagnostics/export`) are now props with generic defaults (`'diagnostics'`, same path kept as the default since it's a reasonable convention, not a product name). Dropped `useT()` for a `labels` prop. Renamed the exported component from `ExportDiagnosticsRow` to `ExportDiagnosticsButton` to match the plan's target filename. |
+| `src/react/components/Toast.tsx` | `Toast.tsx` | Logic verbatim. CSS class hooks renamed `od-toast*` → `jini-toast*` — not on the AGENTS.md banned-string list (that's `OD_`/`Open Design` literal, not lowercase `od-`), but `od-` unmistakably reads as an Open-Design-branded class prefix in a package whose whole mandate is product-neutral, so renamed for genuine (not just regex-clean) neutrality. |
+| `src/react/components/TooltipLayer.tsx` | `TooltipLayer.tsx` | Same `od-tooltip*` → `jini-tooltip*` rename (trigger class, layer class, the suppressed-native-title data attribute). This component reads a cross-component contract (`.jini-tooltip[data-tooltip]`), so `AppChromeHeader.tsx` below was updated to emit the new class name to keep the contract intact. |
+| `src/react/components/CustomSelect.tsx` | `CustomSelect.tsx` | **Verified dead code** (see above) — shipped anyway, flagged with an inline `NOTE` comment. Same `od-select*` → `jini-select*` rename as Toast/TooltipLayer. |
+| `src/react/components/KitErrorBoundary.tsx` | `KitErrorBoundary.tsx` + `.module.css` | Per the routine's explicit instruction: swapped the concrete `reportHandledException` analytics import for an injected `onError` callback prop, defaulting to a no-op. Also dropped: the `useT()` i18n hook (this package has no i18n system; `title`/`retryLabel` are now plain-English string props with defaults) and the `.module.css` import (this package has no CSS-module-aware build step yet — flattened to plain `jini-kit-error*` class names, same as every other component in this batch; the underlying visual CSS itself was not ported, consistent with Toast/CustomSelect/TooltipLayer not shipping CSS either). |
+| `src/react/components/LanguageMenu.tsx` | `LanguageMenu.tsx` | Per the routine's explicit instruction: `LOCALES`/`LOCALE_LABEL` are now a `locales: LocaleOption[]` prop instead of a hardcoded import. Also dropped: OD's `useI18n()` context (replaced with `locale`/`onLocaleChange` props — the component is now fully controlled) and the `motion/react` (Framer Motion) animation — the origin's `popoverIn`/`staggerContainer`/`listItem` variants live in OD's own `../motion` module and pulling in a whole animation library as a transitive dependency for one menu's open/close felt like scope creep for a single flat-group item; replaced with a plain conditional-render (open/close is instant, no exit animation) and left animation as something a host's own CSS can add via the popover's className. |
+| `src/react/components/WorkingDirPicker.tsx` | `WorkingDirPicker.tsx` + `.module.css` | Dropped `useT()` (replaced with a `labels` prop, spread over English defaults) and the `.module.css` import (flattened to plain `jini-working-dir-*` class names, same rationale as KitErrorBoundary — no CSS-module build step in this package yet, and no CSS shipped). Doc comments' references to "the Home composer" / "the in-project composer" (OD's specific two call sites) reworded to describe the shape generically. |
+| `src/react/components/AppChromeHeader.tsx` | `AppChromeHeader.tsx` | Dropped `useT()` — `backLabel` already existed as an overridable prop in the origin, just widened its default from a translated string to a plain-English literal (`'Back'`). Updated its `od-tooltip` trigger class to `jini-tooltip`, matching the `TooltipLayer.tsx` rename above so the two still work together. |
+| `src/react/components/ExportDiagnosticsButton.tsx` | `ExportDiagnosticsButton.tsx` | The largest single deviation in this batch. The origin declared a **global `Window.openDesignDesktop`** API (an Electron contextBridge binding) and hardcoded `DIAGNOSTICS_FILENAME_PREFIX = 'open-design-diagnostics'` — both unmistakably product identity, even though neither string matches the AGENTS.md banned-list regex literally (`openDesignDesktop` isn't `OD_`; `open-design-diagnostics` isn't `Open Design` with a space). Read closely, this file is exactly the kind of component the plan's own footnote warns about — "these turn out narrower than they look on a closer read" — just not one the plan's per-file table had flagged. Generified: the global was replaced with an injected `desktopBridge?: DesktopExportBridge` prop (same shape, now caller-supplied instead of read off `window`); `filenamePrefix` and `exportPath` (was hardcoded `/api/diagnostics/export`) are now props with generic defaults (`'diagnostics'`, same path kept as the default since it's a reasonable convention, not a product name). Dropped `useT()` for a `labels` prop. Renamed the exported component from `ExportDiagnosticsRow` to `ExportDiagnosticsButton` to match the plan's target filename. |
 | `src/utils/localized-url.ts` | `enterpriseUrl.ts` | **Not a mechanical move — the biggest finding of this task.** The origin hardcoded OD's actual marketing domain (`https://open-design.ai`, plus a `127.0.0.1:17574` local-dev-server special case) and OD's own locale-to-landing-page-segment table. That's not reusable logic sitting next to OD-only consumers (which is what the plan's footnote anticipated for this file) — it's OD's own marketing URL, full stop, and doesn't belong in a product-neutral engine package even unported-but-dormant. What's actually generic is the *algorithm* (resolve locale → URL segment, falling back to the base's default language), so that's what was kept: `buildLocalizedUrl(locale, { baseUrl, localeSegments })` takes both the base URL and the segment table as caller-supplied arguments. Renamed the file since `enterpriseUrl` names an OD feature ("the enterprise landing page") that no longer exists in this version. |
 | `src/utils/markdown-scroll-sync.ts` | `markdown-scroll-sync.ts` | Logic verbatim (this was already generic — no OD coupling found). Added `micromark`/`micromark-extension-gfm` as real (non-dev) dependencies since `extractMarkdownBlockLines` needs them at runtime. One small generification: `measurePreviewBlockOffsets` took a hardcoded `.markdown-rendered` selector for the preview root; added it as an optional `previewSelector` parameter (same default) so a host isn't forced into that exact class name. |
 
@@ -2147,6 +2147,75 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 
 ---
 
+## Section: `features/tab-strip/` — WorkspaceTabsBar.tsx + FileWorkspace.tsx `Tab` consolidation (2026-07-18)
+
+Source: `WorkspaceTabsBar.tsx` (1,220 lines, the app's top-level workspace tab bar) and `FileWorkspace.tsx`'s inline `Tab` component (line ~5413 of 5,709, one project's file/terminal/browser/sketch tab strip) — both read in full from a fresh clone of the real OD fork (`https://github.com/leonaburime-ucla/open-design.git`, `main` @ `0b88ef56144b5a42dc427c1292ae22676d698a34`), not the frozen `integrations/open-design/reference/` snapshot. Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A `features/tab-strip/` row and r6 §3's "Draggable/reorderable tab-strip item" cross-file finding: r6 confirms these are two **independent, divergent** implementations of the same interaction — not shared even within OD's own codebase — so this task designs one generic primitive rather than porting either verbatim. Checked existing `packages/ui/src/features/` (`viewer-shell`, `browser-chrome`, `asset-grid`, etc.) and `src/components/` for an existing tab-strip/drag-reorder primitive first, per the audit-findings note in the dispatch brief about an undetected duplicate shipped previously — none found; `viewer-shell`'s `useCommentReorder` is a different domain (reordering a comment list, not a tab strip).
+
+### What the two sources actually shared vs. differed on
+
+**Shared (ported into the primitive):**
+- `TabDropEdge = 'before' | 'after'` — identical concept, identical name, in both files.
+- Computing which edge a pointer lands on from a tab element's bounding rect (`tabDropEdgeFromElement` in `WorkspaceTabsBar.tsx`, `tabDropEdgeFromEvent` in `FileWorkspace.tsx`) — the exact same "left half vs. right half" split, just against a `DragEvent` directly rather than a plain `clientX` number.
+- Reordering an id array by moving one id to before/after another (`reorderTabsById` / inline `reorderPersistedTab`) — the identical "filter the source out, find the target's new index, splice back in at index (+1 for `'after'`)" algorithm, including the same same-order no-op check (`arraysEqual` in both files, verbatim name).
+- Drag-state tracking for styling hooks: a `draggingId` + `{id, edge}` drag-over target, surfaced as `is-dragging`/`is-drag-over-before`/`is-drag-over-after` class modifiers in both files' CSS.
+- Visual shape: a draggable strip item with an icon+label, an optional close button that `stopPropagation`s so it never also activates the tab, a native-title/`data-tooltip` pattern, and a horizontally-scrolling strip with a trailing "add tab" affordance.
+- A drag-suppress-click mechanic (`WorkspaceTabsBar.tsx`'s `dragSuppressClickRef`) preventing the spurious click a drag-and-drop gesture can produce on release — `FileWorkspace.tsx` didn't have an equivalent, but the mechanic is drag-mechanics-generic (not tied to either file's domain data) and protects the exact same interaction class its own `Tab.onActivate` would otherwise be vulnerable to, so it's built into the primitive rather than left host-composed.
+
+**Differed (kept host-specific, not baked into the primitive):**
+- **Hit-testing locus.** `WorkspaceTabsBar.tsx` centralizes `onDragOver`/`onDrop` on the *strip container*, hit-testing via `closest('[data-workspace-tab-id]')` with a fallback scan over every child — this also handles the gap after the last tab. `FileWorkspace.tsx` wires `onDragOver` *per tab item*, only ever firing while directly over a tab element. The strip-level approach strictly generalizes the per-item one (every per-item-reachable case is also strip-level-reachable, but not vice versa — the gap-after-last-tab case), so it's adopted as the primitive's *single* mechanism (`useTabStripDragReorder`'s `stripDragProps`), not offered as two code paths. The dual-shape test proves both source shapes' drag interactions still work correctly through this one mechanism.
+- **Reorder timing.** `WorkspaceTabsBar.tsx` reorders live during `dragover` (`handleStripDragOver` calls `reorderTab` on every qualifying hover, continuously reshuffling the strip while dragging). `FileWorkspace.tsx` only reorders on `drop`. This is a genuine UX difference, not an implementation detail, so it's exposed as `reorderTiming: 'live' | 'onDrop'` (default `'onDrop'`, matching the more conservative of the two).
+- **Pinned/permanent tab.** `WorkspaceTabsBar.tsx` has exactly one non-draggable, non-closable, leftmost-pinned "entry" tab, with drop targets that would land before it coerced to land after it instead (`findTabDropTarget`'s `resolveTarget` closure). `FileWorkspace.tsx` has no equivalent — its 3 static tabs (design-system/design-files/questions) aren't rendered through `Tab` at all, and every tab that *is* rendered through `Tab` is a normal, unpinned, closable item. Generalized as an optional per-tab `pinned` flag (`TabStripTab.pinned`) rather than a single hardcoded slot, defaulting to unset so `FileWorkspace`'s shape never touches it.
+- **Per-tab draggable override.** `WorkspaceTabsBar.tsx`'s only non-draggable tab is the pinned one. `FileWorkspace.tsx` has an *unpinned* tab kind (`kind: 'browser'`) that's still explicitly non-draggable (the `<Tab>` call for browser tabs omits the `draggable` prop, defaulting `Tab`'s own `draggable = false`). Modeled as `TabStripTab.draggable?: boolean`, defaulting to `!pinned`, so a host can opt an unpinned tab out individually — exactly `FileWorkspace`'s case — without inventing a second flag.
+- **Content.** Icon/label only (`WorkspaceTabsBar.tsx`) vs. icon+label+meta+a `LiveArtifactBadges` slot (`FileWorkspace.tsx`) — neither shape's content is generic UI at all, both are entirely host-injected via `TabStripTab.content: ReactNode`. The primitive never renders an icon or label itself.
+- **Everything outside the tab-strip *item* itself**, correctly out of this task's scope per the dispatch brief's explicit "drag-to-reorder, active/close-button affordances, host-injected tab content rendering" list: `WorkspaceTabsBar.tsx`'s hover-preview popover (382ms-delayed rich tooltip via a `createPortal`), its "search tabs" popover/switcher, its global `window`-level keyboard shortcuts (Cmd/Ctrl+T/W/Tab/PageUp/PageDown/1-9), and its `localStorage` persistence + `Route`-syncing state machine (`initialTabsState`/`syncStateToRoute`, OD-specific `Project`/`Route` types) all stay host-owned, not silently dropped — flagged explicitly here per the "learn from tonight's audit findings" note, since a fuller `WorkspaceTabsBar.tsx` port (queued separately in the extraction plan's item list) would need to build these as host composition *around* this primitive, not find them missing from it unexpectedly. `FileWorkspace.tsx`'s `scrollWorkspaceTabsWithWheel` (horizontal-scroll-via-vertical-wheel) is a separate, already-identified atom in the plan's §7 batch sweep — not part of this task either.
+
+### What shipped — `packages/ui/src/features/tab-strip/`
+
+Uses the **new** `features/<domain>/{types.ts,constants.ts,rules.ts,ports.ts,dependencies.ts,index.ts}` + `react/{hooks,components}/` layout from day one (no flat-layout retrofit needed, unlike `connectors`/`progress-card`).
+
+| File | Contents |
+|---|---|
+| `types.ts` | `TabStripDropEdge`, `TabStripDragTarget`, `TabStripTab` (`id`, host-injected `content: ReactNode`, `title?`, `closable?`, `draggable?`, `pinned?`), `TabStripReorderTiming`, `TabStripElementRect`. Zero runtime declarations — `export type`/`export interface` only, same carve-out class as `settings-dialog`'s `types.ts` files (see vitest config exclude below). |
+| `constants.ts` | `TAB_STRIP_DRAG_HAPTIC_MS`/`TAB_STRIP_DROP_HAPTIC_MS` (ported verbatim from `WorkspaceTabsBar.tsx`'s haptic-pulse durations), `TAB_STRIP_ITEM_ID_ATTRIBUTE` (the generic form of `data-workspace-tab-id`). |
+| `rules.ts` | `dropEdgeFromPointerX`, `coercePinnedDropTarget`, `reorderTabIds`, `arraysEqual`, `dragTargetKey`, `findNearestDropTarget` (the strip-level fallback scan), `pinnedTabIdSet`, `isTabDraggable`, `isTabClosable` — all pure, zero React/DOM. |
+| `ports.ts` / `dependencies.ts` | `TabStripHapticsPort` (`pulse(durationMs)`) — the one browser-global touch (`navigator.vibrate`, ported from `pulseTabDragHaptic`, SSR-guarded and opportunistic like the origin), the single injectable seam in this feature. `noopTabStripHaptics` (default) + `createBrowserTabStripHaptics()` (real adapter, `dependencies.ts` — the only file allowed to touch `navigator`). |
+| `react/hooks/useTabStripDragReorder.ts` | Owns the drag gesture: `draggingTabId`/`dragOverTarget` state, `stripRef`, `stripDragProps` (`onDragOver`/`onDrop`/`onDragLeave`, centralized hit-testing), `getItemDragProps(tabId)` (per-item `draggable`/`onDragStart`/`onDragEnd`/`onClickCapture`). Never mutates tab order itself — calls the host's `onReorder(sourceId, targetId, edge)`; the host applies `reorderTabIds` (or its own equivalent) and re-renders with the new `tabs` array, keeping order fully host-owned. |
+| `react/components/TabStripItem.tsx` | One tab: active/pinned/dragging/drag-over-edge modifier classes, the close button (routed through `useT()`, default label `t('Close tab')`), click-to-activate + Enter/Space keyboard activation (the `role="tab"`/`tabIndex=0` pattern `FileWorkspace.tsx`'s `Tab` already used — `WorkspaceTabsBar.tsx`'s extra nested `<button>` for the same purpose is redundant once the outer element is itself focusable, so the simpler shape was kept). |
+| `react/components/TabStrip.tsx` | The `role="tablist"` container: composes the hook + `TabStripItem`, plus host-injected `trailing` content (a "new tab" button, etc.). |
+| `index.ts` | Public barrel. |
+
+### i18n
+
+The only user-facing string this primitive owns is the close button's default label — routed through `useT()` as `t('Close tab')` (English string as key, per the extraction plan's i18n policy), overridable via a `closeLabel` prop. `TabStripItem.test.tsx` mounts under `I18nProvider` with a French dictionary and asserts the translated label actually renders, not just that `t()` compiles. Every other piece of visible text (tab labels, meta, icons) is host-injected `content` and never touches this package's i18n mechanism at all — same reasoning `viewer-shell`'s pure layout components use.
+
+### Dual-shape proof
+
+`react/components/TabStrip.dual-shape.test.tsx` renders `TabStrip` twice against the same primitive with only `tabs`/`reorderTiming` differing:
+1. **`WorkspaceTabsBar.tsx` shape** — a pinned leftmost "Home" tab + 2 project tabs, `reorderTiming="live"`. Verifies: the pinned tab is non-draggable and shows no close button; dragging a project tab toward the *left half* of the pinned tab (a real "before entry" gesture) lands it *after* the pinned tab instead (pin coercion) and reorders live during `dragover`, before any drop; activation still works afterward.
+2. **`FileWorkspace.tsx` shape** — no pinned tab, 2 draggable file tabs + 1 explicitly `draggable: false` browser tab, default (`onDrop`) timing. Verifies: every non-pinned tab is closable by default (a real behavioral difference from the pinned-tab shape above); the browser tab's per-tab `draggable: false` override holds even though nothing is pinned; dragging over does *not* reorder yet under `onDrop` timing; the drop is what commits it.
+
+This is the actual proof the consolidation holds — both interaction shapes (different pin/draggable/closable combinations, different reorder timing, different injected content) work correctly through the exact same `TabStrip`/`TabStripItem`/`useTabStripDragReorder` code paths, not just that both compile against the same types.
+
+### A jsdom gotcha worth recording for the next drag-and-drop porting task
+
+jsdom has no `DragEvent` constructor (a known jsdom gap). `@testing-library/dom`'s `fireEvent.dragOver(el, { clientX })`/`fireEvent.drop(...)` silently fall back to a plain `Event`, which drops non-standard init properties like `clientX` — the handler always sees `undefined`, which this task's first test-writing pass didn't catch (`clientX: undefined > number` evaluates to `false`, so every drop silently resolved to `'before'` instead of erroring, making the bug look like a logic bug in `rules.ts` rather than a test-environment gap, until traced with debug logging). The reliable fix used throughout `TabStrip.test.tsx`/`TabStrip.dual-shape.test.tsx`: dispatch a manually constructed `new Event(type, {bubbles, cancelable})` with `clientX`/`dataTransfer` assigned as own properties, via `element.dispatchEvent(...)` — and wrap that dispatch in `act(...)` when a test harness's own React state (not just a spy) needs to be read afterward, since a raw `dispatchEvent` isn't auto-flushed the way `fireEvent` is.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` across every file under `features/tab-strip/`: **clean, zero matches.** The stricter self-imposed pass (`grep -rn "od-\|open-design\.ai\|openDesignDesktop"`) surfaced one hit — `types.ts`'s doc comment referencing `docs/jini-port/god-components-extraction-plan.md` by filename, where `god-components` contains the substring `od-` (`g` + `od-` + `components`) — reviewed and confirmed a false positive (a doc-filename reference, not a product-identity string), not a fix. No `od-`-prefixed CSS class names were introduced (this feature ships zero CSS, matching `Toast.tsx`/`connectors`/`viewer-shell` precedent — visual styling was explicitly out of scope, only `jini-tab-strip*` bare class hooks are emitted).
+
+### Coverage / vitest config change
+
+Added `src/features/tab-strip/types.ts` to `vitest.config.ts`'s coverage `exclude` list — same documented carve-out as `settings-dialog`'s `types.ts` files (verified via `grep -nE '^(export )?(const|function|class|let|var) '` finding zero runtime declarations; a file with nothing to execute is never loaded by any test, so v8 reports 0% rather than N/A). `features/tab-strip/ports.ts` is **not** excluded — it carries a real runtime declaration (`noopTabStripHaptics`) and is fully covered by `dependencies.test.ts`/`index.test.ts`.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors) — required the same `exactOptionalPropertyTypes` fix class as `settings-dialog` (optional prop/option fields that get passed through a possibly-`undefined` local variable need `| undefined` added explicitly to their type, not just `?`).
+- `pnpm --filter @jini/ui exec vitest run src/features/tab-strip`: **89 tests, 7 files, all green** — `rules.ts` (36, pure-function coverage of every drop-edge/coercion/reorder/fallback-scan/draggable/closable path), `dependencies.test.ts` (4, including a thrown-`vibrate` swallow case), `useTabStripDragReorder.test.ts` (22, including live vs. onDrop timing, pinned-drop coercion, the fallback scan when the pointer isn't directly over an item, haptic-pulse-only-on-target-change, and the drag-suppress-click re-arm), `TabStripItem.test.tsx` (15, including keyboard activation and the I18nProvider translation test), `TabStrip.test.tsx` (6, container wiring), `TabStrip.dual-shape.test.tsx` (2, the consolidation proof above), `index.test.ts` (4, barrel smoke test).
+- Coverage (`vitest run --coverage`, `json-summary`+`json` reporters per Phase 9.5's method): **100% statements/branches/functions/lines across every file in `features/tab-strip/`**, both in an isolated `--coverage src/features/tab-strip` run and in the full package-wide `--coverage` run (verified against `coverage/coverage-summary.json` directly, not just the text table, per the audit-findings note about per-file coverage claims not holding at the full-package aggregate) — reached via the classify-then-fix loop: the two branches that survived the first coverage pass were a TS-required `?? ''` fallback on an attribute guaranteed present by construction (refactored to a documented non-null assertion, not tested) and 5 genuinely-reachable-but-untested branches (an unknown `tabId` passed to `getItemDragProps`, the fallback scan finding only the drag source itself after its sibling was removed mid-drag, the strip ref being unattached) — all five got real tests, none got a suppression comment.
+- `pnpm --filter @jini/ui exec vitest run` (full package): **1298 tests, 147 files, all green** (up from the settings-dialog section's 495/70 — includes every feature landed since, not just this task's own numbers).
+- Full monorepo `pnpm -r run typecheck`: same two pre-existing, unrelated failures as documented above (`packages/cli`/`packages/chat-react` missing `tsconfig.json` entirely) — not touched by this task, not a regression.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
 ## Section: `features/list-detail-panel/` — generic `ListDetailPanel<TSummary,TDetail>` (2026-07-18)
 
 Source: `DesignSystemsTab.tsx` (1,282 lines) in the real OD fork, commit
@@ -2372,7 +2441,7 @@ row for three god-files' small presentational components (not the files'
 larger stateful bodies, which stay OD-specific). Cloud-dispatch preflight:
 source repo `leonaburime-ucla/open-design`, commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
 (cloned fresh to `/tmp/od-source`, not the vendored `integrations/open-design/reference/`
-snapshot); destination `packages/ui/src/components/`; task branch
+snapshot); destination `packages/ui/src/react/components/`; task branch
 `feature/jini-ui-flat-atoms-onboarding-plugins`; validation commands
 `pnpm --filter @jini/ui typecheck`, `pnpm --filter @jini/ui exec vitest run --coverage`,
 a product-identity purity grep, and `pnpm guard` from the repo root.
@@ -2425,16 +2494,16 @@ silent drop, just out of this dispatch's named scope.
 
 | Jini file | Origin (`apps/web/src/components/…`) | What changed |
 |---|---|---|
-| `src/components/OptionCards.tsx` | `NewProjectPanel.tsx`'s `OptionCards<T>` | Verbatim structural port. Zero OD coupling in the origin (label/options/value/onChange all caller-supplied) — no i18n needed since there's no component-owned copy. Added an optional `className` passthrough (this package's existing flat-component convention; the origin had none because it only had one caller). |
-| `src/components/CompactToggle.tsx` | `NewProjectPanel.tsx`'s `CompactToggle` | Verbatim structural port, same reasoning as `OptionCards` (no copy owned by the component itself). Added `className` passthrough. |
-| `src/components/ToggleRow.tsx` | `NewProjectPanel.tsx`'s `ToggleRow` | Verbatim structural port, same reasoning. Note: `PrivacySection.tsx` (a different OD file, not in this task's scope) has its own independent `ToggleRow` — not touched, not consolidated; out of scope for this dispatch. Added `className` passthrough. |
-| `src/components/StatCard.tsx` | `PluginsView.tsx`'s `StatCard` | Verbatim structural port — `{ label, value }` only, no OD coupling. Added `className` passthrough. |
-| `src/components/Notice.tsx` | `PluginsView.tsx`'s `Notice` | Genericized `outcome`'s type from OD's `PluginInstallOutcome` (a plugin-install wire DTO imported from `@open-design/contracts`) to a new local `NoticeOutcome` interface carrying the same three fields the component actually reads (`ok`, `message`, `warnings?`, `log?`) — any "ran an operation, got a result + warnings + a log" flow can supply this, not just plugin installs. Wrapped the two previously-hardcoded strings ("Install log", the "N warning(s)" pluralization) in `useT()` per the i18n policy; added an optional `logLabel` override prop since a host may want different copy for its own log-bearing operation. |
-| `src/components/ImportChoice.tsx` | `PluginsView.tsx`'s `ImportChoice` | Verbatim structural port — `active`/`icon`/`title`/`body`/`onClick` all caller-supplied, no component-owned copy. `icon`'s type narrowed from the origin's inline `'github' \| 'upload' \| 'folder'` union to this package's existing `IconName` (all three values already exist in `Icon.tsx`'s union). |
-| `src/components/FileImportPanel.tsx` | `PluginsView.tsx`'s `FileImportPanel` | Genericized the `webkitdirectory`/`directory` non-standard DOM attributes using the same `as Record<string, string>` cast pattern already used elsewhere in OD's own codebase (`DesignSystemFlow.tsx`) rather than reaching for a new type hack. Wrapped the previously-hardcoded `"Import"`/`"Importing…"` button copy (title/body/fileLabel were already props) in `useT()`. |
-| `src/components/OnboardingPanelHeader.tsx` | `EntryShell.tsx`'s `OnboardingPanelHeader` | Verbatim structural port — `title`/`body` caller-supplied, no component-owned copy. |
-| `src/components/OnboardingChipField.tsx` | `EntryShell.tsx`'s `OnboardingChipField` | Verbatim structural port — `label`/`options[].label` caller-supplied, no component-owned copy. The discriminated-union `multiple`/`value`/`onChange` prop shape (single vs. array) is unchanged. |
-| `src/components/OnboardingDropdown.tsx` | `EntryShell.tsx`'s `OnboardingDropdown` | Two genericizations beyond a structural port: (1) the single-open-at-a-time peer-coordination mechanism dispatched a `window` `CustomEvent` named literally `'open-design:onboarding-dropdown-open'` — a product-identity string forbidden by this package's hard boundary rule — renamed to `'jini-ui:onboarding-dropdown-open'`; (2) the two empty-state strings were OD's own i18n dictionary keys (`t('homeHero.footer.noMatches')`, `t('settings.fetchModelsEmpty')`), routed through this package's own `useT()` as plain English instead: `t('No matches')` for the searchable/query-no-hits case (its actual English string, per `content.en`-equivalent locale files, was already generic — "No matches" — so ported as-is), and a new `t('No options available')` for the non-searchable/zero-options case — the origin's real fallback text there ("No compatible text models were returned.") was leftover wording from the one settings call site it happened to serve, not a generic empty-dropdown message, so this is a genuine simplification rather than a verbatim string carry-over. Removed one dead defensive `if (!root) return` null-check on a ref that is always attached by the time the gating effect runs (surfaced by the Phase 9.5 coverage loop; see below). |
+| `src/react/components/OptionCards.tsx` | `NewProjectPanel.tsx`'s `OptionCards<T>` | Verbatim structural port. Zero OD coupling in the origin (label/options/value/onChange all caller-supplied) — no i18n needed since there's no component-owned copy. Added an optional `className` passthrough (this package's existing flat-component convention; the origin had none because it only had one caller). |
+| `src/react/components/CompactToggle.tsx` | `NewProjectPanel.tsx`'s `CompactToggle` | Verbatim structural port, same reasoning as `OptionCards` (no copy owned by the component itself). Added `className` passthrough. |
+| `src/react/components/ToggleRow.tsx` | `NewProjectPanel.tsx`'s `ToggleRow` | Verbatim structural port, same reasoning. Note: `PrivacySection.tsx` (a different OD file, not in this task's scope) has its own independent `ToggleRow` — not touched, not consolidated; out of scope for this dispatch. Added `className` passthrough. |
+| `src/react/components/StatCard.tsx` | `PluginsView.tsx`'s `StatCard` | Verbatim structural port — `{ label, value }` only, no OD coupling. Added `className` passthrough. |
+| `src/react/components/Notice.tsx` | `PluginsView.tsx`'s `Notice` | Genericized `outcome`'s type from OD's `PluginInstallOutcome` (a plugin-install wire DTO imported from `@open-design/contracts`) to a new local `NoticeOutcome` interface carrying the same three fields the component actually reads (`ok`, `message`, `warnings?`, `log?`) — any "ran an operation, got a result + warnings + a log" flow can supply this, not just plugin installs. Wrapped the two previously-hardcoded strings ("Install log", the "N warning(s)" pluralization) in `useT()` per the i18n policy; added an optional `logLabel` override prop since a host may want different copy for its own log-bearing operation. |
+| `src/react/components/ImportChoice.tsx` | `PluginsView.tsx`'s `ImportChoice` | Verbatim structural port — `active`/`icon`/`title`/`body`/`onClick` all caller-supplied, no component-owned copy. `icon`'s type narrowed from the origin's inline `'github' \| 'upload' \| 'folder'` union to this package's existing `IconName` (all three values already exist in `Icon.tsx`'s union). |
+| `src/react/components/FileImportPanel.tsx` | `PluginsView.tsx`'s `FileImportPanel` | Genericized the `webkitdirectory`/`directory` non-standard DOM attributes using the same `as Record<string, string>` cast pattern already used elsewhere in OD's own codebase (`DesignSystemFlow.tsx`) rather than reaching for a new type hack. Wrapped the previously-hardcoded `"Import"`/`"Importing…"` button copy (title/body/fileLabel were already props) in `useT()`. |
+| `src/react/components/OnboardingPanelHeader.tsx` | `EntryShell.tsx`'s `OnboardingPanelHeader` | Verbatim structural port — `title`/`body` caller-supplied, no component-owned copy. |
+| `src/react/components/OnboardingChipField.tsx` | `EntryShell.tsx`'s `OnboardingChipField` | Verbatim structural port — `label`/`options[].label` caller-supplied, no component-owned copy. The discriminated-union `multiple`/`value`/`onChange` prop shape (single vs. array) is unchanged. |
+| `src/react/components/OnboardingDropdown.tsx` | `EntryShell.tsx`'s `OnboardingDropdown` | Two genericizations beyond a structural port: (1) the single-open-at-a-time peer-coordination mechanism dispatched a `window` `CustomEvent` named literally `'open-design:onboarding-dropdown-open'` — a product-identity string forbidden by this package's hard boundary rule — renamed to `'jini-ui:onboarding-dropdown-open'`; (2) the two empty-state strings were OD's own i18n dictionary keys (`t('homeHero.footer.noMatches')`, `t('settings.fetchModelsEmpty')`), routed through this package's own `useT()` as plain English instead: `t('No matches')` for the searchable/query-no-hits case (its actual English string, per `content.en`-equivalent locale files, was already generic — "No matches" — so ported as-is), and a new `t('No options available')` for the non-searchable/zero-options case — the origin's real fallback text there ("No compatible text models were returned.") was leftover wording from the one settings call site it happened to serve, not a generic empty-dropdown message, so this is a genuine simplification rather than a verbatim string carry-over. Removed one dead defensive `if (!root) return` null-check on a ref that is always attached by the time the gating effect runs (surfaced by the Phase 9.5 coverage loop; see below). |
 
 ### Purity grep
 
@@ -2476,12 +2545,12 @@ in full before extracting anything, per the batch instruction.
 
 | Jini file | Origin | Contents |
 |---|---|---|
-| `src/components/BrandLogo.tsx` | `DesignKitView.tsx`'s `BrandLogo` (exported as `KitLogoProps`/`BrandLogo`) | The 4-stage logo fallback chain: brand-service image → explicit `logoSrc` → favicon lookup → monogram-letter fallback, advancing on each stage's `onError`. |
-| `src/components/HeaderActionsMenu.tsx` | `DesignKitView.tsx`'s `HeaderActionsMenu` + its co-located `HeaderMenuAction` type | The sticky-header "More" overflow menu: grouped popover, outside-click/Escape-to-close, checkbox-semantics for toggle items. |
+| `src/react/components/BrandLogo.tsx` | `DesignKitView.tsx`'s `BrandLogo` (exported as `KitLogoProps`/`BrandLogo`) | The 4-stage logo fallback chain: brand-service image → explicit `logoSrc` → favicon lookup → monogram-letter fallback, advancing on each stage's `onError`. |
+| `src/react/components/HeaderActionsMenu.tsx` | `DesignKitView.tsx`'s `HeaderActionsMenu` + its co-located `HeaderMenuAction` type | The sticky-header "More" overflow menu: grouped popover, outside-click/Escape-to-close, checkbox-semantics for toggle items. |
 | `src/hooks/useBrandFonts.ts` | `DesignKitView.tsx`'s `useBrandFonts` | Google Fonts `<link>` injection + self-hosted `@font-face` injection from a project's font manifest. |
 | `src/utils/design-md.ts` | `DesignKitView.tsx`'s module-private `designMdModuleSlice`/`replaceDesignMdModule`/`designMdHeadings`/`designMdHeadingMatches`/`designMdDefaultModuleText`/`normalizeDesignMdModuleDraft` | Pure markdown-heading-slice/replace helpers for pulling a single "module" section out of (and back into) a DESIGN.md-shaped document. |
 | `src/hooks/useEdgeAutoScroll.ts` | `home-hero/EdgeAutoScroll.tsx`'s `useEdgeAutoScroll` | Edge hover/click auto-scroll controller for a horizontally-overflowing rail (rAF-driven glide, click-to-nudge, `ResizeObserver`-refreshed reachable-edge state). |
-| `src/components/EdgeScrollZones.tsx` | `home-hero/EdgeAutoScroll.tsx`'s `EdgeScrollZones` | The paired left/right overlay zones that drive the hook above. |
+| `src/react/components/EdgeScrollZones.tsx` | `home-hero/EdgeAutoScroll.tsx`'s `EdgeScrollZones` | The paired left/right overlay zones that drive the hook above. |
 
 All six are re-exported from `src/index.ts`.
 
@@ -2639,7 +2708,7 @@ The origin wires `onKeyDown={handlePromptKeyDown}` (Escape closes the mention) a
 
 ### Popover chrome primitives + timezone utils (r6 §1.19 items 4c/4d)
 
-- **`PillButton`/`PopoverMenu`/`PopoverItem`** shipped as flat `packages/ui/src/components/*.tsx` (per the task's own instruction to ship flat if "truly standalone/reusable outside this file," using judgment). `RecurringSchedulePicker` is a **real consumer** of `PillButton` (its trigger). `PopoverMenu`/`PopoverItem` are **not** consumed by either shipped feature — the origin used them for the *project-target picker* popover (`New project each run` / existing-projects list), which is explicitly OD-specific form/target-selection wiring this task does not port (see "What stayed behind" below). They're shipped anyway because r6 classified them as "generic, no OD types" independent of that one call site, and a future project/target-picker-shaped extraction can reuse them without re-deriving the same simple check-mark-list-item shape — but this is flagged here explicitly as the honest state, not silently implied to be wired into either new feature.
+- **`PillButton`/`PopoverMenu`/`PopoverItem`** shipped as flat `packages/ui/src/react/components/*.tsx` (per the task's own instruction to ship flat if "truly standalone/reusable outside this file," using judgment). `RecurringSchedulePicker` is a **real consumer** of `PillButton` (its trigger). `PopoverMenu`/`PopoverItem` are **not** consumed by either shipped feature — the origin used them for the *project-target picker* popover (`New project each run` / existing-projects list), which is explicitly OD-specific form/target-selection wiring this task does not port (see "What stayed behind" below). They're shipped anyway because r6 classified them as "generic, no OD types" independent of that one call site, and a future project/target-picker-shaped extraction can reuse them without re-deriving the same simple check-mark-list-item shape — but this is flagged here explicitly as the honest state, not silently implied to be wired into either new feature.
 - **`detectLocalTimezone`/`listSupportedTimezones`/`tzCityLabel`** shipped as flat `packages/ui/src/utils/timezone.ts` (pure `Intl` wrappers, exactly as r6 described them). `useRecurringSchedulePicker` is the real consumer.
 
 ### Cross-check against r6 §1.19's full description (nothing dropped silently)
@@ -2682,7 +2751,7 @@ Ran across every new file in both features: no orphaned `useState`/`useRef` foun
 
 ### Purity grep
 
-`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across `packages/ui/src/features/schedule-picker/`, `packages/ui/src/features/mention-autocomplete/`, `packages/ui/src/utils/timezone.ts`(+test), `packages/ui/src/components/{PillButton,PopoverMenu,PopoverItem}.tsx`(+tests): **clean, zero matches.**
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across `packages/ui/src/features/schedule-picker/`, `packages/ui/src/features/mention-autocomplete/`, `packages/ui/src/utils/timezone.ts`(+test), `packages/ui/src/react/components/{PillButton,PopoverMenu,PopoverItem}.tsx`(+tests): **clean, zero matches.**
 
 ### Test/typecheck/coverage results
 
@@ -3455,3 +3524,330 @@ Explicit tests cover all 4 categories against both:
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
   implementation during extraction)` — unchanged, no boundary violations
   introduced.
+---
+
+## Section: `html-viewer` — classification of `HtmlViewer` + `FileVersionManagerModal` (2026-07-18)
+
+**Preflight.** Source: the real OD fork cloned fresh for this task at
+`/tmp/od-source` (NOT the frozen `integrations/open-design/reference/`
+snapshot), commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
+(2026-07-02), file `apps/web/src/components/FileViewer.tsx`, **12,652
+lines in this checkout** — differs from the 14,275/14,495-line figures
+cited elsewhere in this repo's docs; those figures describe a different
+point in the file's history, not this session's ground truth. Per
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map,
+this file is filed under "B. Own feature," `features/viewer-shell/`
+✅ done, with `HtmlViewer`/`FileVersionManagerModal` filed under "D.
+Confirmed OD-specific — do not attempt." This task's brief explicitly
+asked for independent re-verification of that filing rather than trusting
+it — the method below is a full read of both components against the real
+current source, done by two independent deep-read passes (not sampled,
+not extrapolated), specifically checking the "plausible generic
+candidates" a partial read had flagged earlier the same night.
+
+**Correction to `docs/jini-port/recon/r6-god-component-internals.md` §1.1's
+line counts**, found by both passes independently: `HtmlViewer` is
+**6,076 real lines** (5248–11323), not ~7,110; `FileVersionManagerModal` is
+**583 real lines** (2549–3131, plus 40 lines of directly-adjacent
+single-use helpers), not ~1,050. Neither correction changes which verdict
+is more defensible below, but both are recorded since r6 is cited
+elsewhere in this repo as a line-count source.
+
+### `FileVersionManagerModal` — verdict reversed: genuinely separable, **shipped this session**
+
+r6 and the viewer-shell extraction's own source-map both filed this as
+"OD-specific... saturated with OD analytics/deploy/export calls." A full
+read (every line, every co-located helper) found **zero** analytics,
+deploy, or export calls anywhere in the component — a full-text scan for
+`analytics|track|telemetry|deploy|Deploy|export|Export` returns one
+incidental code comment and nothing else. The "export" action inside the
+modal is `openVersionInNewTab()` — opening a version in a new sandboxed
+tab, not a file-export pipeline; PPTX/image/deploy exports live in
+sibling modals elsewhere in `FileViewer.tsx`, not inside this component.
+r6's characterization does not hold up.
+
+What the modal actually is: a **list + cached-iframe-preview + restore +
+search + view-generating-prompt modal shell**, parameterized over a
+version-record shape. 14 `useState`/8 `useEffect`/2 `useCallback`/4
+`useMemo`/5 `useRef` — overwhelmingly generic UI-interaction plumbing
+(loading flags, selection state, two independent dismissable popovers,
+search text, a viewport toggle, and a well-engineered content
+cache/prefetch/stale-overlay pipeline). Exactly four OD-coupled seams, all
+at clean call-boundary edges, not interleaved through the render body:
+
+| Concern | Lines | Verdict | What's generic vs. OD-specific |
+|---|---|---|---|
+| Version list fetch + render (skeleton/empty/list, a11y listbox roles) | 2564, 2678–2706, 2879–2947 | MIXED, clean seam | List/sort/render logic generic; `fetchProjectFileVersions(projectId, file.name)` is the one OD REST call — becomes an injected `listVersions(fileRef)` port |
+| Cached version-content preview (iframe) | 2586–2653, 2660–2750, 2752–2758, 3095–3110 | MIXED, generic core is most of it | The `Map`-based content cache, in-flight dedupe, hover/focus prefetch, and "keep stale content mounted under an overlay instead of blanking" UX are 100% generic and are the best-engineered part of the file. `fetchProjectFileVersion(projectId, file.name, versionId)` is the one fetch seam; `fileVersionPreviewOptions()`'s `sourceLooksLikeExportableDeck`/`projectRawUrl` calls are the other — both become one injected `getVersionContent`/`resolvePreviewOptions` pair |
+| Restore action | 2578–2580, 2814–2837, 3009–3058 | MIXED, thin OD shell | Confirm-popover UX (outside-click/Escape dismiss) generic; `restoreProjectFileVersion` REST call + `PROJECT_FILE_VERSION_CAPTURE_FAILED` warning code are OD-specific — injected `restoreVersion(fileRef, versionId)` port. Parent-supplied `onRestored` callback is already injected in the original |
+| Search/filter | 2606–2627, 2857–2878 | GENERIC | Pure client-side substring filter over already-fetched fields; zero network calls |
+| Generating-prompt viewer | 2575–2577, 2966–3005 | MIXED, trivial | Popover + copy-to-clipboard mechanics generic; the one field displayed (`version.prompt`) is just a nullable string on the injected version type, not a service call |
+| Modal chrome | 2760–2775, 2839–2852 | GENERIC | Portal + backdrop + `role="dialog"`/`aria-modal` + layered Escape-dismiss (closes nested popovers before the modal itself) — the exact `modal-backdrop viewer-modal-backdrop` shell OD's own code already reuses for 4 other unrelated export/deploy modals in the same file, i.e. already treated as generic infrastructure by the source itself |
+| `FileVersionViewportControls` | 755–787 | GENERIC, redundant | A `role="group"` toggle-button viewport switcher, structurally identical to `ViewportToggleGroup` already shipped in `features/viewer-shell/` — do not re-port, bind to the existing component instead |
+
+**Overlap with `HtmlViewer`'s iframe rendering**: confirmed **reuse, not
+duplication** — both components call the same shared `buildSrcdoc()`
+(`runtime/srcdoc.ts`) and `openSandboxedPreviewInNewTab()`
+(`runtime/exports.ts`) functions in the real source; the version modal
+uses a narrow read-only options subset (`deck`, `baseHref`,
+`previewFocusGuard`) of what `HtmlViewer` exercises. This means a real
+`@jini/renderers-react` sandboxed-iframe core, once built (see the
+`HtmlViewer` section below), should be designed to serve both a
+version-preview consumer and an eventual `HtmlViewer`-equivalent consumer
+from one primitive — but the version-manager shell **does not need that
+core to exist first**: it can ship today with a plain, host-supplied
+`resolveVersionPreviewHtml(fileRef, content) → string` port that a host
+implements however it likes (including by calling its own `buildSrcdoc`
+equivalent), no dependency on the deferred `HtmlViewer` work below.
+
+**Decision: port this as `packages/ui/src/features/version-manager/`.**
+Named for what it actually is (a generic version-history shell), not
+folded into a literally-named `html-viewer` folder, since it has no
+dependency on HTML-specific rendering — a host could use it for any
+versioned-artifact type. See "What shipped" below for the actual slice.
+
+### `HtmlViewer` — r6's "irreducibly OD-specific" verdict holds structurally; several individual generic *logic* shapes exist inside it but require new infrastructure to port safely, not a slice
+
+A full read (6,076 lines, every `useState`/`useEffect` traced) confirms
+r6's bottom line for the component **as a single unit**: it cannot be
+sliced feature-by-feature in place, because nearly every feature inside it
+(manual-edit, board/pod annotation, inspect mode, deck present) is wired
+into one shared state machine that decides which of three iframe-loading
+transports (`useUrlLoadPreview` / `useLazySrcDocTransport` / direct-mount
+`srcDoc`) is currently active, gated on a combination of every other
+feature's own mode flags (`manualEditMode`, `boardMode`, `drawOverlayOpen`,
+`inspectMode`, plus content-sniffing heuristics and a URL escape hatch).
+Extracting any one annotation mode by pulling its code out of `HtmlViewer`
+in place would drag this coupling along with it. This is corroborated
+independently a third time (after r6 and the viewer-shell extraction's own
+scope note) — but the read also found the "nothing generic here" framing
+understates how much reusable *logic* (not code-as-written) is embedded,
+consistent with this whole sweep's repeated finding elsewhere that a full
+read surfaces more than an aggregate/summary pass expects.
+
+**Per-concern classification** (task-brief item → what was actually
+found; "Present in prior partial read" column flags where tonight's
+earlier partial read was corrected):
+
+| Concern | Lines | Verdict | Disposition | Notes |
+|---|---|---|---|---|
+| Sandboxed iframe rendering + postMessage bridge | 5615–5666, 6216–6520, listeners across 6518–7108 | MIXED — core is portable, transport-selection state machine is not | **Deferred**, blocking | 31+ message types across 3 overlapping naming conventions (`od:*`, `od-edit-*`, legacy `__dc_*`) on one `addEventListener`; a real port needs one normalized protocol, designed fresh, not lifted verbatim. This is the coupling root for everything below |
+| Deck/slide navigation + zoom + present (fullscreen) | 6072–6075, 6159–6169, 6608–6628, 7685–7696, ~8300–8320 | GENERIC (core logic), low coupling to other features besides the shared `iframeRef` | **Deferred**, needs the bridge core above | Zero OD types in the postMessage payloads or `requestFullscreen()` calls. Does **not** overlap `ViewportSwitcher` (that's a breakpoint preset switcher; this is a numeric zoom% + slide pager) — would be a new small feature once a bridge exists |
+| Inline visual/DOM editor (manual edit) + undo/redo + page-styles panel | 5596–5612, 5779–5802, 7000–7641, `ManualEditPanel.tsx` (sibling file) | MIXED, cleanest split of the file | **Deferred**, needs the bridge core above | The patch/history/undo-redo model (`ManualEditPatch` union, linear undo/redo stack, debounced live-style preview, text-edit session handshake) and `ManualEditPanel`'s prop contract are genuinely clean and OD-type-free; only the persistence calls (`writeProjectTextFileDetailed`, `uploadProjectFiles`) are OD-specific. Shares a cross-cutting source-freeze mechanism with board/inspect mode (`annotationFreezeActive`) — another coupling point, not free-standing |
+| Comment-pinning to rendered elements + "board"/"pod" annotation | 5816–5951, 6802–6989, `CommentPreviewOverlays`/pod-geometry helpers (sibling, lines 4362–4831) | **Two different shapes** — see below | Split disposition | (a) side-list half: **already shipped**, confirmed exact prop-shape match with `CommentSideDock`/`CommentSidePanel` in `features/viewer-shell/` — no new work. (b) DOM-pinned overlay + "pod" lasso: needs the bridge core (deferred) for the overlay itself, but its pure geometry helpers are portable today with zero dependency — **shipped this session**, see below. Correction: "pod" is **not** multi-user collaboration/presence (grepped for presence/multiplayer/collaborat* — zero hits) — it's a single-user freehand-lasso multi-element selector. The task brief's "board/pod live-collaboration system" framing was inaccurate; relabeled here |
+| Cloudflare deploy flow | 5547–5572, 5953–6067, 8056–8300 | MIXED, broader than "Cloudflare-specific" | **Deferred**, not blocked on the bridge core, but out of scope this session | Confirmed a real two-provider abstraction (Cloudflare + Vercel) with provider-specific branching leaked through 5 functions and the render, rather than isolated behind a sub-component. `packages/deploy` already exists with a `DeployTarget` port for exactly this; the natural extraction is a generic deploy-modal shell over that existing port, not new infrastructure — a real future candidate, just not this session's scope |
+| Export menu (PDF/PPTX/image/zip/html/md/template) | 5301–5427, 8745–9017, 7957–8054 | MIXED | **Deferred**, out of scope this session | `fireShareExport`'s progress-toast/correlation-tracking wrapper and the export-menu shell are genuinely OD-type-free and reusable; every concrete exporter is deep OD/desktop-host infrastructure (dual desktop/web paths, CJK-fidelity workarounds) that stays behind an injected `ExportProvider` port a host supplies |
+| Public share links | 8261–8299, ~9139, ~9985 | OD-SPECIFIC, thin | **Not a separate concern** | A small tail of the deploy flow (derive a URL from an existing deployment, copy it) — not worth scoping independently; folds into the deploy-modal item above if that's ever picked up |
+| Speaker notes for deck mode | — | **Does not exist** | N/A — correction | Grepped the full component for "speaker"/"notes" (case-insensitive): zero matches related to presenter notes. The earlier partial read's inclusion of this item was inaccurate; dropped from scope entirely rather than carried forward as a phantom candidate |
+| Brand-extraction-stop hook | 5638–5650 | GENERIC, trivial | **Deferred**, rides with the bridge core | 6-line pass-through `useEffect` forwarding one message type to an already-injected callback prop — not worth scoping as its own unit |
+| Analytics tracking | 5301–5512 + ~14 inline call sites | OD-SPECIFIC, pervasive but shallow | **Not a separate concern** | Cross-cutting decorator around nearly every handler, not an extractable feature — a real port would inject a no-op-by-default `onTrack?()` callback rather than "extracting analytics" |
+| `InspectPanel` (CSS-override panel, sibling component adjacent to `HtmlViewer`) | 3706–4156 | GENERIC | **Deferred**, needs the bridge core (its target-selection comes from the same postMessage surface) | Clean `onApply`/`onResetElement`/`onSaveToSource` prop contract, no OD identifiers found in the component itself |
+| `FileVersionManagerModal`'s call surface from inside `HtmlViewer` | ~8300, `versionModalOpen` state 5530 | — | See the section above | `HtmlViewer` only gates and mounts the modal; the modal itself is now classified and shipped separately above |
+
+**Hook-count corroboration of the coupling claim**: 108 `useState`, 57
+`useEffect`, 46 `useRef` in one function — not itself dispositive, but
+consistent with the transport-state-machine finding rather than
+contradicting it.
+
+**Open question for Coordinator/Software-Architect sign-off (not resolved
+by this task):** every deferred item above except the deploy flow and
+export menu is blocked on the same missing prerequisite — a real,
+deliberately-simpler sandboxed-iframe + single normalized-protocol
+message-bus core in `@jini/renderers-react` (currently an empty stub: just
+`package.json` + a placeholder `index.ts`, confirmed no existing srcDoc
+core to build on or duplicate). Both deep-read passes independently
+concluded this is **a rewrite, not an extraction**: the generic logic
+shapes above (deck-nav, manual-edit model, `InspectPanel`, DOM-pinned
+comment overlay) are real and worth having, but porting them by slicing
+`HtmlViewer`'s current code in place would import its 31-message-type,
+3-naming-convention, state-machine-coupled bridge along with them. Building
+that core is a separate, materially larger design task than a standard
+god-component port — it needs its own scoping session and explicit
+sign-off before dispatch, not a default follow-on to this one. This task
+does not decide that question; it surfaces it.
+
+### What shipped this session
+
+1. **`packages/ui/src/features/version-manager/`** — the
+   `FileVersionManagerModal` generic slice (list/preview/restore/search/
+   prompt-viewer/modal-chrome), per the table above. See its own
+   "What shipped" subsection below for exact files.
+2. **Pod-selection geometry as a standalone utility**, not a `features/`
+   folder — the polygon/lasso-hit-test math (`isClosedLoop`,
+   `pointInPolygon`, `lineIntersectsLine`, `rectContains`,
+   `pathIntersectsRect`) has zero React/OD/framework dependency and no
+   current consumer in this package (the DOM-pinned overlay that would
+   consume it is deferred with the rest of `HtmlViewer`'s bridge-dependent
+   pieces) — matches this package's existing bucket-A precedent
+   (`src/utils/dom-subscriptions.ts`, `visual-stability.ts`: pure/small
+   helpers shipped ahead of a feature consumer when they're genuinely
+   zero-dependency). Shipped as `src/utils/polygon-selection.ts`.
+
+### What's explicitly deferred, not silently dropped
+
+Everything in the `HtmlViewer` table marked "Deferred" above: the
+sandboxed-iframe/message-bus core itself, deck-nav+zoom+present,
+the manual-edit patch/undo-redo model + `ManualEditPanel`, the DOM-pinned
+comment overlay (its geometry helpers shipped, its consuming overlay did
+not), `InspectPanel`, the deploy-modal shell, and the export-menu shell.
+Each has a real, defensible generic shape per the table — none of these
+are "confirmed nothing there," they're "confirmed real, blocked on
+infrastructure or scope, not attempted this session."
+
+### What shipped — `packages/ui/src/features/version-manager/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `VersionSource`, `VersionRecord` (generic version-record shape), `VersionManagerFileRef` (opaque `scopeId` + `name` — deliberately not `ViewerFileRef`, see the file's own doc comment for why), `VersionRestoreWarning`/`VersionRestoreResult`, `PreviewCanvasSize`. |
+| `constants.ts` | `SEARCH_VISIBLE_THRESHOLD`, `PROMPT_COPY_FEEDBACK_RESET_MS`, `PREVIEW_LOAD_FALLBACK_MS`, `DEFAULT_PREVIEW_CANVAS_PADDING`. |
+| `rules.ts` | List/select/search/restore-eligibility pure logic ported 1:1 from the source (`formatVersionDateTime`, `versionSourceLabel`/`versionSourceClassName`, `sortVersionsDescending`, `buildVersionIndex`, `restoredFromVersion`, `resolveSelectedVersion`, `shouldShowVersionSearch`, `filterVersionsBySearch`, `isRestoreDisabled`, `contentMatchesSelection`), plus the viewport-scaling math ported from the source's `effectivePreviewScale`/`previewViewportStyle`/`previewScaleShellStyle` — generalized off the source's hardcoded `viewport === 'desktop'` string check to `preset.width === null` ("no fixed frame"), matching `viewer-shell`'s own `ViewportPreset` convention, and parameterized over any `ViewportPreset[]` rather than the source's fixed 3-preset array. |
+| `ports.ts` / `dependencies.ts` | `VersionManagerPort` (`listVersions`/`fetchVersionContent`/`restoreVersion`/`resolvePreviewDocument`/optional `openPreviewInNewTab`) + `VersionManagerClipboardPort`. `createFakeVersionManagerPort` ships an in-memory test/demo double (per the connectors-canary precedent); `createBrowserVersionManagerClipboard` reuses `features/viewer-shell/`'s real browser clipboard implementation rather than re-deriving one. `resolvePreviewDocument` is deliberately NOT a sandboxed-iframe builder — see "What's deferred" below. |
+| `react/hooks/usePreviewCanvasSize.ts` | Ported the source's `usePreviewCanvasSize` `ResizeObserver` measurement hook verbatim in spirit; dropped its `typeof window === 'undefined'` guard as genuinely dead code (a `useEffect` body never runs during SSR) rather than leaving it untested. |
+| `react/hooks/useVersionManager.ts` | The single cohesive controller hook (list fetch, selection, content cache/prefetch, search, restore, viewport) — one hook per this package's Phase 6 "one natural owning cluster" discipline, matching `features/connectors/`'s `useConnectorAuthorization` precedent. `useWiredVersionManager` binds the module-level default-dependencies singleton. |
+| `react/components/VersionSidebar.tsx`, `VersionPromptPopover.tsx`, `VersionRestoreControl.tsx`, `VersionPreviewFrame.tsx` | Dumb/presentational pieces, each with its own small local disclosure state (popover open/close) per Phase 6's "small local UI state is acceptable" allowance; the two popovers reuse `browser/useDismissOnOutsideOrEscape` instead of hand-rolling outside-click/Escape listeners. |
+| `react/components/VersionManagerModal.tsx` | The orchestrator — portal + backdrop + dialog chrome, composes the controller hook + the four dumb components, reuses `features/viewer-shell/`'s `useCopyToClipboard`/`ViewportToggleGroup` rather than re-deriving either. |
+| `index.ts` | Public barrel. |
+
+### A real behavior gap found and fixed during porting (not present in the shipped code)
+
+While building `useVersionManager`, drafting a test for the source's "restore succeeds with a warning" path surfaced a genuine race: the source's `restoreVersion()` reloads the version list on a warning (which changes the selected version), and the list-driven content-load effect unconditionally calls `setError(null)` on every selection change — including the one the reload itself just caused — clobbering the warning message that was set immediately after. This appears to be a latent bug in the source's own code (same structure, same conflated `error` state for both "list/content load failed" and "restore succeeded with a caveat"), not something this port introduced. Fixed here via a one-shot `preserveErrorOnNextSelectionRef` flag set only by the warning path and consumed once by the content-load effect — the warning message now survives the reload. Also: cache-seeds the just-restored content under its new version id before reloading, both fixing the race at its root (the reload's selection change becomes a cache HIT, which was always going to run through `setError(null)` too, so the flag guards that path specifically) and avoiding a pointless refetch of content the hook already has in hand.
+
+### What's deferred, and why
+
+Per the `html-viewer` classification above: the sandboxed-iframe/postMessage-bridge core this feature's `resolvePreviewDocument` port is designed to eventually delegate to (`@jini/renderers-react`, currently a stub) does not exist yet. This feature does **not** wait on it — a host without a real sandbox core can implement `resolvePreviewDocument` as an identity function for a plain, unsandboxed preview, or delegate to whatever iframe-rendering mechanism it already has. `FileVersionViewportControls` was not re-ported; the orchestrator binds directly to `features/viewer-shell/`'s already-shipped `ViewportToggleGroup` (confirmed identical `role="group"`/`aria-pressed` shape by reading both source components side by side) rather than shipping a second, competing viewport-toggle primitive.
+
+### `src/utils/polygon-selection.ts` — what shipped
+
+Ported the pod-selection lasso-hit-test geometry (`isClosedLoop`, `rectContains`, `lineIntersectsLine`, `pointInPolygon`, `pathIntersectsRect`, and a new composed `lassoSelectionHitsRect` generalizing the source's `selectionHitsSnapshot`) as a standalone `src/utils/` primitive, per the `html-viewer` classification's disposition for this piece — zero dependency on the deferred sandboxed-iframe core, no current consumer in this package (the DOM-pinned overlay that would consume it stays deferred with the rest of `HtmlViewer`'s bridge-dependent pieces), matching this package's existing precedent for shipping small, proven-zero-dependency helpers ahead of their eventual feature consumer.
+
+### i18n
+
+Every user-facing string in every `react/components/` file routes through `useT()`, English string as key, per this package's convention. `rules.ts` stays hook-free; `versionSourceLabel()` returns a plain-English label the orchestrator wraps in `t()` at the call site, matching `features/connectors/`'s `statusLabel()` pattern. Verified end-to-end, not just compiled: `VersionSidebar.test.tsx`, `VersionPromptPopover.test.tsx`, `VersionRestoreControl.test.tsx`, `VersionPreviewFrame.test.tsx`, and `VersionManagerModal.test.tsx` each mount under `I18nProvider` with a translated (French) dictionary and assert the translated text actually renders, covering every component's string paths, not just a happy-path smoke case.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design"` across every new file under `features/version-manager/` and `utils/polygon-selection.ts`: **clean, zero matches.** A stricter self-imposed case-insensitive pass for `od-`/`open-design.ai`/`openDesignDesktop`/`@open-design/`/the vendored-path substrings only turns up prose doc comments describing provenance ("a vendored OD file-viewer god-component") — the same accepted "OD" shorthand convention already used in shipped doc comments elsewhere in this package (e.g. `features/connectors/constants.ts`), not a literal product-identity string, class name, or storage key.
+
+### Test / typecheck / guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean (zero errors), full package.
+- New feature's own test run (`npx vitest run src/features/version-manager src/utils/polygon-selection.test.ts`): **161 tests, 11 files, all green.**
+- Per-file coverage for every new/touched file (`rules.ts`, `dependencies.ts`, `ports.ts`, `types.ts`, `index.ts`, both hooks, all 5 components, `utils/polygon-selection.ts`): **100% on all 4 metrics (statements/branches/functions/lines)** — reached via the Phase 9.5 classify-then-fix loop, not padding: one genuinely dead branch was found and refactored away in each of `usePreviewCanvasSize.ts` (an SSR guard inside a `useEffect`, which never runs server-side) and `utils/polygon-selection.ts` (a divide-by-zero guard the surrounding `&&` already makes unreachable) and documented inline; every other gap was a real reachable path that got a real test. Zero `/* v8 ignore */` or any coverage-suppression comment anywhere in this task's new files.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+- **Full monorepo `pnpm -r run typecheck`**: same two pre-existing, unrelated failures every prior section in this file has already documented (`@jini/agent-runtime`/`@jini/chat-react` missing `tsconfig.json`).
+
+### Full `@jini/ui` package coverage aggregate — reported honestly, not just this task's files
+
+Per this task's explicit instruction to report the real full-package number, not just per-file numbers for what was touched: `npx vitest run --coverage` (whole package, 151 test files, 1370 tests, **all green**) gives an aggregate of **93.19% statements / 91.07% branches / 92.60% functions / 93.19% lines** — well below the ≥99% bar the skill file requires, and this is **not** attributable to this task's own files (every file this task added or touched is 100% on all 4 metrics, confirmed above). The gap is entirely pre-existing debt in features and utilities shipped by earlier sessions, spanning a wide swath of the package: `src/react/components/` (`Icon.tsx` 41%, `TooltipLayer.tsx` 73%, `CustomSelect.tsx` 79%, `AppChromeHeader.tsx` 50% branches, several others), `src/features/connectors/` (several files 60-90% branches/functions despite that feature's own source-map section above reporting "144/145 tests, all green" with no coverage percentage claimed), `src/features/observability/` (most files 60-88%), `src/features/i18n/context.tsx` (83% functions), `src/utils/notifications.ts` (67%), `src/utils/visual-stability.ts` (33% branches), and several more (full list available via `coverage/coverage-summary.json`, not reproduced here). This directly corroborates the exact failure pattern the `port-refactor-audit-canary` findings warned about for a sibling task ("real full-package coverage was 93-94%, not the 100% its own commit messages claimed") — except here it traces to debt already present before this task started, not a false claim made by this task. Fixing it is a real, separate, package-wide undertaking (dozens of files, none owned by this task's scope) and was not attempted here; flagged explicitly rather than left as a silent gap in this record.
+
+---
+
+## Section: `features/html-viewer/` — deck navigation + zoom + present (2026-07-18)
+
+Scope: the next slice of `HtmlViewer` after the `html-viewer` classification
+section above — that task ended with the sandboxed-iframe/message-bus core
+flagged as "a rewrite, not an extraction," needing its own scoping before
+any of `HtmlViewer`'s deferred GENERIC pieces (deck navigation, manual
+edit, comment pinning, `InspectPanel`) could actually ship. This task
+builds that core (`@jini/renderers-react`, see its own `source-map.md`)
+and, as the classification's own recommended staging suggested ("sandboxed
+rendering + postMessage bridge first, then deck/slide navigation, then the
+inline visual editor, then comment-pinning"), the deck/slide-navigation +
+zoom + present row — the classification's lowest-coupling deferred item
+once the bridge exists.
+
+### Re-verification against the real source before building
+
+Re-read the classification's cited line ranges directly against the real
+OD fork (same commit, `0b88ef56144b5a42dc427c1292ae22676d698a34`) rather
+than trusting the summary: `SlideState = { active, count }` cached in a
+module-level `Map` keyed per preview, `od:slide`/`od:slide-state`
+postMessage protocol (host sends `action: next|prev|first|last|go` +
+optional `index`; iframe replies with the new `{active, count}`); a
+`zoom` percentage (`useState(100)`) with a `[50, 75, 100, 125, 150, 200]`
+preset dropdown (`previewScale = zoom / 100`); three present actions
+(`presentInThisTab` — mode switch + local "in-tab present" flag,
+`presentFullscreen` — `element.requestFullscreen()` with a fallback to
+in-tab present, `presentNewTab` — reuses the same new-tab-preview
+mechanism `@jini/renderers-react` now ships). Confirmed zero OD types in
+any of these — matches the classification's verdict.
+
+### What shipped — `packages/ui/src/features/html-viewer/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `DeckSlideState`, `DeckNavigateAction`. Zero runtime declarations — excluded from coverage per the established carve-out (see `vitest.config.ts`). |
+| `constants.ts` | A **fresh** `jini:deck-navigate`/`jini:deck-state` postMessage protocol — deliberately not a rename of OD's `od:slide`/`od:slide-state`, per the classification's own finding that the real bridge needs a redesign, not a rename. `DEFAULT_ZOOM_LEVELS`/`DEFAULT_ZOOM` (verbatim preset values from the source). |
+| `rules.ts` | `canGoPrev`/`canGoNext`/`slideCounterLabel`/`clampSlideIndex` (pure deck-state derivations); `parseDeckStateMessage` — validates an inbound `postMessage` payload (finite, non-negative, in-range `active`/`count`) since that data crosses a trust boundary from sandboxed content; `isKnownZoomLevel`/`zoomToScale`. |
+| `ports.ts` / `dependencies.ts` | `FullscreenPort` (`requestFullscreen`/`exitFullscreen`/`fullscreenElement`/`subscribeFullscreenChange`) and `NewTabPreviewPort` — the two real browser APIs this slice needs, following `features/viewer-shell`'s clipboard-port precedent. `createBrowserNewTabPreviewPort` delegates straight to `@jini/renderers-react`'s `openSandboxedPreviewInNewTab` — this feature is that package's first `@jini/ui` consumer. Zero runtime declarations in `ports.ts` itself (interfaces only) — same carve-out as `types.ts`. |
+| `react/hooks/useDeckNavigation.ts` | Wraps `@jini/renderers-react`'s `useSandboxBridge`, speaking the `jini:deck-*` protocol; tracks `DeckSlideState` and exposes `goNext`/`goPrev`/`goFirst`/`goLast`/`goTo`. No port/`useWired` variant needed — it talks directly to the generic, already-real `useSandboxBridge`, not a host-specific transport. |
+| `react/hooks/useZoomControl.ts` | Pure client-side zoom-percentage + menu-open state, no host dependency (matches `usePreviewCanvasSize`'s no-port precedent in `features/version-manager/` for a hook with nothing to inject). |
+| `react/hooks/usePresentMode.ts` + `useWiredPresentMode` | Binds `FullscreenPort`/`NewTabPreviewPort`; tracks `isFullscreen` via the browser's own `fullscreenchange` event (so an Escape-driven exit is reflected, not just a call this hook itself made). |
+| `react/components/DeckNavigationControls.tsx` | Prev/next + counter, renders nothing until the sandboxed content reports its first state. |
+| `react/components/ZoomMenu.tsx` | Percentage trigger + preset dropdown; outside-click/Escape dismiss is local, reusing `browser/useDismissOnOutsideOrEscape` exactly like `features/version-manager/`'s `VersionPromptPopover`. |
+| `react/components/PresentMenu.tsx` | The three present actions as a disclosure menu, same local-dismiss shape as `ZoomMenu`. `onPresentInline` is a bare callback prop — "present in this tab" is host layout state (which panel is showing), not a browser API this package should own. |
+| `index.ts` | Public barrel; also added to the package-root `src/index.ts` barrel (`export * from './features/html-viewer/index.js'`). |
+
+### Pre-existing barrel-completeness gap found and fixed in passing
+
+While adding this feature to `src/index.test.ts`'s tracked-modules map (the
+barrel-completeness smoke test — see its own doc comment for the bug class
+it guards against: a feature shipped, individually tested, and
+100%-coverage-verified, but never re-exported from the package's public
+barrel), found `features/version-manager` was **already** missing from
+that map since the session that shipped it — a real instance of the exact
+gap the test exists to catch, just never added to the test's own tracking
+list. Added both `version-manager` and `html-viewer` to the map in this
+task; both pass (no missing exports).
+
+### i18n
+
+Every user-facing string in `DeckNavigationControls`/`ZoomMenu`/`PresentMenu`
+routes through `useT()`. Verified end-to-end: each component has a test
+mounting under `I18nProvider` with a translated (French) dictionary and
+asserting the translated text actually renders (button labels, `aria-label`s,
+and the `role="group"` accessible name), not just a happy-path smoke case.
+
+### A real cross-environment coverage-merge gap found and worked around
+
+Drafting `dependencies.ts`'s tests initially split them the way this
+package's own documented convention prescribes for an SSR guard: a jsdom
+test file for the "browser present" cases plus a separate
+`// @vitest-environment node` companion for the "no `document` at all"
+case. Coverage on the merged report showed that one guard's branch
+(`typeof document === 'undefined'` in `exitFullscreen`) as **uncovered**
+even though the node companion file, run alone, proved it covered — a real
+`@vitest/coverage-v8` limitation merging branch-hit counts for one source
+file instrumented under two different test environments in the same
+`vitest run`. Fixed by moving every `createBrowserFullscreenPort` test
+into a single `// @vitest-environment node` file, using a hand-built fake
+`document` (a real `EventTarget` plus the two Fullscreen-API members this
+port reads) for the "document present" cases instead of jsdom's real
+global — eliminating the environment split (and the merge gap with it)
+rather than leaving a genuinely-tested branch looking uncovered in the
+aggregate. Worth flagging for any future task in this package relying on
+the jsdom-file-plus-node-companion pattern for an SSR guard: verify the
+*merged* per-file coverage, not just the companion file's own isolated
+number, before trusting it clears the bar.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|open-design\.ai\|openDesignDesktop\|@open-design/"` across every new file under `features/html-viewer/`: **clean, zero matches.** The stricter case-insensitive `od-`-prefix pass is also clean.
+
+### Test / typecheck / guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/html-viewer`): **71 tests, 9 files, all green.**
+- Per-file coverage for every new file (`constants.ts`, `dependencies.ts`, `rules.ts`, `index.ts`, all 3 hooks, all 3 components): **100% on all 4 metrics**, `types.ts`/`ports.ts` excluded per the documented zero-executable-statement carve-out (both re-verified via the standard grep). Reached via the Phase 9.5 classify-then-fix loop — every gap found was a real reachable path (an untested `PresentMenu` action, an untested `injectBeforeHeadEnd`-style branch in the sibling `@jini/renderers-react` package) that got a real test, not a suppression comment; zero `/* v8 ignore */` anywhere in this task's new files.
+- **Full `@jini/ui` package** (`npx vitest run --coverage`, whole package): **160 test files, 1441 tests, all green**, aggregate **93.35% statements / 91.28% branches / 92.88% functions / 93.35% lines** — a small improvement over the prior section's 93.19/91.07/92.60/93.19 (this task's own files are 100%; the rest is the same pre-existing debt that section already catalogued in detail, not re-itemized here).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### What's still deferred (unchanged from the classification section above)
+
+The sandboxed-iframe/message-bus core's remaining consumers: the inline
+visual/DOM editor (manual edit + undo/redo + page-styles panel), the
+DOM-pinned comment overlay (its geometry helpers already shipped as
+`utils/polygon-selection.ts`; the overlay itself has not), `InspectPanel`,
+the deploy-modal shell, and the export-menu shell. Each still has the same
+real, defensible generic shape the classification described — none
+attempted this session; genuinely out of scope, not silently dropped.

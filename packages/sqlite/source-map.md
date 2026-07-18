@@ -117,3 +117,110 @@ logic behind it yet (`throws when used`, per its own header comment).
 to root `package.json`'s `pnpm.onlyBuiltDependencies` so its install-time
 native build runs under pnpm's default script-blocking policy) +
 `@types/better-sqlite3` (devDependency).
+
+## 2026-07-18 addition — `backend-config.ts` + `db-inspect.ts`
+
+Task brief: port `apps/daemon/src/storage/{daemon-db,db-inspect}.ts` and
+`apps/daemon/src/{metrics,logging}/` from the real `leonaburime-ucla/open-design`
+fork (cloned fresh to `/tmp/od-source`; `apps/daemon/src` on `main`), per
+`docs/jini-port/recon/r1-daemon.md`'s TASK 1 classification
+(`storage/`: "`aws-sigv4.ts`, `daemon-db.ts`, `db-inspect.ts` generic; only
+`project-storage.ts` leans OD"; `metrics/`+`logging/`: "generic observability
+primitives").
+
+**This supersedes the note above** ("`daemon-db.ts`'s Postgres-adapter-selection
+stub... was read for context... but not ported") — that decision was scoped to
+the earlier `EventLog`-focused porting session; this task's brief explicitly
+targets `daemon-db.ts`/`db-inspect.ts` as first-class port items, and both
+files are, independently verified by reading them in full, generic and
+storage/backend-selection-shaped with no OD product coupling beyond `OD_*`
+env-var names and comment mentions of `od daemon db status`/`od doctor`
+CLI subcommands.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/backend-config.ts` | `apps/daemon/src/storage/daemon-db.ts` | `resolveDaemonDbConfig`→`resolveSqliteBackendConfig`, `DaemonDbConfig`→`SqliteBackendConfig`, `DaemonDbKind`→`SqliteBackendKind`, `DaemonDbConfigError`→`SqliteBackendConfigError`; logic verbatim. **Identity-stripped**: `OD_DAEMON_DB`→`JINI_SQLITE_BACKEND`, `OD_PG_HOST`→`JINI_PG_HOST`, `OD_PG_PORT`→`JINI_PG_PORT`, `OD_PG_DATABASE`→`JINI_PG_DATABASE`, `OD_PG_USER`→`JINI_PG_USER`, `OD_PG_SSL_MODE`→`JINI_PG_SSL_MODE` (same `JINI_*` substitution convention `@jini/http`'s `origin-validation.ts` already established for `OD_ALLOWED_ORIGINS`/etc). Comment referencing "the OD daemon" reworded to "v1 ships local SQLite" (no product name). |
+| `src/db-inspect.ts` | `apps/daemon/src/storage/db-inspect.ts` | `inspectSqliteDatabase`/`verifySqliteIntegrity` + their types, logic verbatim (no renames — already product-neutral names). **Identity-stripped**: header comment's `` `od daemon db status` `` / `` `od doctor` `` CLI references reworded to "a host daemon's own ops CLI (a `db status` subcommand)" / "a diagnostics aggregator" — prose only, no behavior change. |
+
+Both files ported with zero logic changes beyond the identity strips above —
+verified against the Phase 0 "no behavior changes in the same PR" guardrail
+in `docs/jini-port/skills/fixing-open-design.md` (the file that skill doc
+governs is a capability-barrel *refactor* template, not a strict fit for a
+first-time *port* like this one, but the same discipline applies).
+
+**Phase 6.6 note:** the task brief that requested this port also referenced
+a "Phase 6.6" async/network test-category checklist in
+`docs/jini-port/skills/fixing-open-design.md`, said to have been "added
+tonight." That file was read in full before this port began (quoted its
+actual Phase 6.5 coverage-bar line as instructed) and **contains no Phase
+6.6 section — the document ends at Phase 7.** This is a discrepancy between
+the task brief and the actual file contents; no Phase 6.6 was fabricated to
+satisfy the brief. The underlying advice the brief describes (malformed
+responses, races, missing error handling, stale state on retry) is sound
+practice regardless, and was applied in spirit to `db-inspect.ts` anyway:
+`src/db-inspect.test.ts` covers a throwing `user_version` pragma, a
+non-numeric pragma return, a throwing `sqlite_master` query, a throwing
+per-table `count(*)` (simulating a corrupted table), an identifier that
+fails `sanitizeTableName`, a missing primary DB file, a throwing
+`integrity_check`/`foreign_key_check` pragma, and malformed pragma row
+shapes (non-string message, missing named key, missing FK-violation
+fields) — via a fake `Database.Database`-shaped object for the
+otherwise-unreachable error paths, plus real `better-sqlite3` instances
+(including a genuine FK-violation row via `PRAGMA foreign_keys = OFF`) for
+the happy paths.
+
+### `metrics/` + `logging/` — NOT ported (recon classification was wrong)
+
+The task brief's premise — "`metrics/` (1) and `logging/` (1)... generic
+observability primitives," per `r1-daemon.md`'s TASK 1 table — does not
+hold up against the actual file contents. Both files
+(`apps/daemon/src/metrics/index.ts`, `apps/daemon/src/logging/critique.ts`)
+are **100% Critique Theater domain content**, not generic daemon
+observability:
+
+- `metrics/index.ts`: a `prom-client` registry whose nine series are all
+  literally namespaced `open_design_critique_*` (`open_design_critique_runs_total`,
+  `..._round_duration_ms`, `..._composite_score`, `..._must_fix_total`, etc.),
+  with label sets (`panelist`, `dim`, `adapter`, `skill`, `round`) that are
+  closed enums specific to the Critique Theater panelist/scoring model.
+- `logging/critique.ts`: a `CritiqueLogEvent` discriminated union
+  (`run_started`/`round_closed`/`run_shipped`/`degraded`/`parser_recover`/
+  `run_failed`) whose every field is Critique-Theater-domain vocabulary
+  (`composite`, `mustFix`, `panelist` semantics implied by `round`/`decision`).
+
+This is the *same* OD feature `r1-daemon.md`'s own TASK 1 table separately
+and correctly classifies as OD-PRODUCT under `critique/` (21 files,
+"Design-critique orchestrator/scoreboard/ratchet/conformance. Product.") —
+the recon simply missed that `metrics/`+`logging/` are that feature's
+telemetry, not standalone generic infrastructure. There is no generic core
+to extract: every constant, label, and event-type name is Critique-Theater-
+specific, and porting either file into `packages/@jini/**` under any
+renaming would violate root `AGENTS.md`'s hard boundary (no
+`Open Design`/`OD_`-branded content in the engine) while also misrepresenting
+product-feature telemetry as engine-neutral. **Correct action: dropped,
+not ported.** If Jini ever wants a generic Prometheus-registry or
+JSON-line-logger *primitive*, that would be new engine-shaped code
+designed from scratch against real cross-consumer metrics — not a
+rename of this file.
+
+### `project-storage.ts` — split: generic core ported to `@jini/platform`, OD-specific factory dropped
+
+Read in full (`apps/daemon/src/storage/project-storage.ts`, 437 lines).
+Verified the recon's "leans OD" flag against the actual content: the
+`ProjectStorage` interface + `LocalProjectStorage` + `S3ProjectStorage`
+implementations are ~90% generic blob-storage logic with no OD nouns in
+their own bodies; the only OD-coupled piece is the bottom-of-file
+`resolveProjectStorage()` factory, which reads `OD_PROJECT_STORAGE`/
+`OD_S3_BUCKET`/`OD_S3_REGION`/`OD_S3_PREFIX`/`OD_S3_ENDPOINT`/
+`OD_S3_ACCESS_KEY_ID`/`OD_S3_SECRET_ACCESS_KEY`/`OD_S3_SESSION_TOKEN` env
+vars directly. See `packages/platform/source-map.md`'s corresponding
+section for the full file map — landed in `@jini/platform`, not
+`@jini/sqlite`, because it is a filesystem/network blob-storage primitive
+with no SQL/sqlite involvement (parallel to `fs.ts`'s existing role in that
+package), and `aws-sigv4.ts` (its S3-signing dependency) lives there too.
+`resolveProjectStorage()` itself was **not ported** — it is OD adapter
+wiring (env-var names, and the choice to key storage on "project," a
+product noun extraction-plan.md §Task-4-Port-2 already flags as OD's model,
+not the engine's) — a Jini host application supplies its own equivalent
+composition (`new LocalBlobStorage(root)` / `new S3BlobStorage({...})`
+directly, or its own env-var convention) rather than inheriting OD's.

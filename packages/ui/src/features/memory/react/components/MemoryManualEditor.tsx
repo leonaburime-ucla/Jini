@@ -3,7 +3,7 @@
 // save/cancel). The draft, its validity, and the save transport live in a
 // host's entries hook; this renders the draft and reports edits.
 import { useMemo, type MutableRefObject } from 'react';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import { FIELD_LABEL_STYLE, STARTERS, TYPES } from '../../constants.js';
 import { memoryFlashLabels, memoryTypeLabels } from '../../formatters.js';

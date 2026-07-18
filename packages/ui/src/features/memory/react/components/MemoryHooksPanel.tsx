@@ -12,7 +12,7 @@
 // toggle callbacks. Folded into this slice from OD's separate
 // `components/MemoryHooksPanel.tsx` (single consumer, `MemoryHowPanel`) — see
 // `packages/ui/source-map.md`.
-import { Icon, type IconName } from '../../../../components/Icon.js';
+import { Icon, type IconName } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 
 export type MemoryHookKey = 'profileEnabled' | 'rewriteEnabled' | 'verifyEnabled' | 'chatExtractionEnabled';

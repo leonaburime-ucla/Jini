@@ -78,6 +78,9 @@ export * from './prompt-augmenter.js';
 export * from './artifact-taxonomy.js';
 export * from './telemetry-sink.js';
 
+// LLM-provider integrations (BYOK model catalogs, OAuth+PKCE, gateway helpers).
+export * from './providers/index.js';
+
 /** @jini/agent-runtime — public barrel (agent-protocol/ half).
  * Re-exports the agent-protocol/ capability barrel's public surface (ACP +
  * pi-rpc subprocess protocol adapters over a shared JSON-line-stream core).

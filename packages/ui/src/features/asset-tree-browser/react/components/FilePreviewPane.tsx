@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { fileExtensionLabel, humanBytes, relativeTimeResult } from '../../rules.js';
 
 export interface FilePreviewPaneProps<TFile> {
