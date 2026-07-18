@@ -46,4 +46,13 @@ describe('@jini/http barrel', () => {
     expect(HttpBarrel.daemonStatusRoute.path).toBe('/api/daemon/status');
     expect(HttpBarrel.daemonShutdownRoute.path).toBe('/api/daemon/shutdown');
   });
+
+  it('re-exports the local-daemon-request helpers', () => {
+    expect(typeof HttpBarrel.requireLocalDaemonRequest).toBe('function');
+    expect(typeof HttpBarrel.validateLocalDaemonRequest).toBe('function');
+    expect(typeof HttpBarrel.normalizeLocalAuthority).toBe('function');
+    expect(typeof HttpBarrel.isLoopbackHostname).toBe('function');
+    expect(typeof HttpBarrel.isLoopbackPeerAddress).toBe('function');
+    expect(typeof HttpBarrel.localOriginFromHeader).toBe('function');
+  });
 });

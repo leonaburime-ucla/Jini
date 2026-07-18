@@ -45,6 +45,15 @@ export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export { mountPackHttp } from './pack-http.js';
 
+export {
+  isLoopbackHostname,
+  isLoopbackPeerAddress,
+  localOriginFromHeader,
+  normalizeLocalAuthority,
+  requireLocalDaemonRequest,
+  validateLocalDaemonRequest,
+} from './local-daemon-request.js';
+
 export type {
   DaemonShutdownResponse,
   DaemonStatusDeps,

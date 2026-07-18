@@ -20,20 +20,21 @@ describe('isPrivateIpv4', () => {
     },
   );
 
-  it.each(['172.15.255.255', '172.32.0.1', '8.8.8.8', '192.168.1.256', 'not-an-ip'])(
+  it.each(['172.15.255.255', '172.32.0.1', '8.8.8.8', '192.168.1.256', 'not-an-ip', '1.2.3.x'])(
     'classifies %s as not private',
     (host) => {
       expect(isPrivateIpv4(host)).toBe(false);
     },
   );
 
-  it('classifies a 4-part host with a non-numeric octet as not private', () => {
-    expect(isPrivateIpv4('1.2.3.abc')).toBe(false);
+  it('treats a falsy hostname as not private', () => {
+    expect(isPrivateIpv4(undefined)).toBe(false);
+    expect(isPrivateIpv4(null)).toBe(false);
+    expect(isPrivateIpv4('')).toBe(false);
   });
 
-  it('classifies a missing hostname as not private', () => {
-    expect(isPrivateIpv4(undefined)).toBe(false);
-    expect(isPrivateIpv4('')).toBe(false);
+  it('classifies a 4-part host with a non-numeric octet as not private', () => {
+    expect(isPrivateIpv4('1.2.3.abc')).toBe(false);
   });
 });
 
@@ -43,24 +44,27 @@ describe('isIpLiteralHostname', () => {
   });
 
   it('accepts a dotted-quad IPv4 literal', () => {
+    expect(isIpLiteralHostname('192.168.1.1')).toBe(true);
     expect(isIpLiteralHostname('127.0.0.1')).toBe(true);
   });
 
-  it('rejects a missing hostname', () => {
-    expect(isIpLiteralHostname(undefined)).toBe(false);
-    expect(isIpLiteralHostname('')).toBe(false);
-  });
-
-  it('rejects a hostname with the wrong number of dotted parts', () => {
+  it('rejects a hostname', () => {
     expect(isIpLiteralHostname('example.com')).toBe(false);
   });
 
-  it('rejects a 4-part hostname with a non-numeric octet', () => {
+  it('rejects an IPv4-shaped string with an out-of-range octet', () => {
+    expect(isIpLiteralHostname('192.168.1.999')).toBe(false);
+    expect(isIpLiteralHostname('1.2.3.999')).toBe(false);
+  });
+
+  it('rejects an IPv4-shaped string with a non-digit part', () => {
+    expect(isIpLiteralHostname('192.168.1.x')).toBe(false);
     expect(isIpLiteralHostname('example.com.not.numeric')).toBe(false);
   });
 
-  it('rejects a 4-part hostname with an out-of-range octet', () => {
-    expect(isIpLiteralHostname('1.2.3.999')).toBe(false);
+  it('rejects a falsy/empty hostname', () => {
+    expect(isIpLiteralHostname(undefined)).toBe(false);
+    expect(isIpLiteralHostname('')).toBe(false);
   });
 });
 
@@ -110,6 +114,10 @@ describe('isLoopbackOrPrivateLanHost', () => {
   it('rejects a public host', () => {
     expect(isLoopbackOrPrivateLanHost('evil.com')).toBe(false);
   });
+
+  it('rejects a falsy hostname', () => {
+    expect(isLoopbackOrPrivateLanHost(undefined)).toBe(false);
+  });
 });
 
 describe('configuredAllowedOrigins', () => {
@@ -130,6 +138,36 @@ describe('configuredAllowedOrigins', () => {
     expect(() =>
       configuredAllowedOrigins({ JINI_ALLOWED_ORIGINS: 'ftp://example.com' }),
     ).toThrowError('JINI_ALLOWED_ORIGINS only supports http:// and https:// origins');
+  });
+});
+
+describe('parseHostHeader', () => {
+  it('parses a plain hostname:port value', () => {
+    expect(parseHostHeader('127.0.0.1:7456')).toEqual({ hostname: '127.0.0.1', host: '127.0.0.1:7456', port: '7456' });
+  });
+
+  it('defaults port to "80" when the header carries none', () => {
+    expect(parseHostHeader('localhost')).toEqual({ hostname: 'localhost', host: 'localhost', port: '80' });
+  });
+
+  it('reads the first element when the header arrives as an array (multi-value header)', () => {
+    expect(parseHostHeader(['a.example.com', 'b.example.com'])).toEqual({
+      hostname: 'a.example.com',
+      host: 'a.example.com',
+      port: '80',
+    });
+  });
+
+  it('returns null for an empty array header (no first element)', () => {
+    expect(parseHostHeader([])).toBeNull();
+  });
+
+  it('returns null for a missing/undefined header', () => {
+    expect(parseHostHeader(undefined)).toBeNull();
+  });
+
+  it('returns null when the value cannot be parsed as a URL authority', () => {
+    expect(parseHostHeader('[')).toBeNull();
   });
 });
 
@@ -199,16 +237,20 @@ describe('isAllowedBrowserOrigin', () => {
     ).toBe(true);
   });
 
-  it('rejects a parseable origin whose protocol is neither http nor https', () => {
-    expect(
-      isAllowedBrowserOrigin(`ftp://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}`, [PORT], '127.0.0.1', []),
-    ).toBe(false);
+  it('rejects a non-http(s) origin scheme', () => {
+    expect(isAllowedBrowserOrigin(`ftp://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}`, [PORT], '127.0.0.1', [])).toBe(
+      false,
+    );
   });
 
   it('rejects when the request Host header cannot be parsed at all', () => {
     expect(isAllowedBrowserOrigin(`http://127.0.0.1:${PORT}`, '[', [PORT], '127.0.0.1', [])).toBe(
       false,
     );
+  });
+
+  it('rejects when the Host header is missing/unparseable', () => {
+    expect(isAllowedBrowserOrigin(`http://127.0.0.1:${PORT}`, undefined, [PORT], '127.0.0.1', [])).toBe(false);
   });
 
   it('defaults an origin with no explicit port to 80 for http', () => {
@@ -225,6 +267,10 @@ describe('isAllowedBrowserOrigin', () => {
 });
 
 describe('isLocalSameOrigin', () => {
+  it('is fail-closed when the request carries no headers object at all', () => {
+    expect(isLocalSameOrigin({}, PORT, {})).toBe(false);
+  });
+
   it('allows a request with no Origin header when the Host is loopback', () => {
     const req = { headers: { host: `127.0.0.1:${PORT}` } };
     expect(isLocalSameOrigin(req, PORT, {})).toBe(true);
