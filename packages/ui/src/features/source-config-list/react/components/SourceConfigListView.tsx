@@ -54,8 +54,8 @@ export function SourceConfigListView<TSource extends SourceConfigItem>({
     <section className="source-config-list">
       {title || subtitle ? (
         <div className="source-config-list-head">
-          {title ? <h3>{title}</h3> : null}
-          {subtitle ? <p className="source-config-list-subtitle">{subtitle}</p> : null}
+          {title ? <h3>{t(title)}</h3> : null}
+          {subtitle ? <p className="source-config-list-subtitle">{t(subtitle)}</p> : null}
         </div>
       ) : null}
 
@@ -63,7 +63,7 @@ export function SourceConfigListView<TSource extends SourceConfigItem>({
 
       {loadError ? (
         <div className="source-config-list-error" role="alert">
-          {loadError}
+          {t(loadError)}
         </div>
       ) : null}
 
@@ -72,7 +72,7 @@ export function SourceConfigListView<TSource extends SourceConfigItem>({
           {t('Loading…')}
         </div>
       ) : sources.length === 0 ? (
-        <div className="source-config-list-empty">{emptyMessage ?? t('No sources configured yet.')}</div>
+        <div className="source-config-list-empty">{emptyMessage ? t(emptyMessage) : t('No sources configured yet.')}</div>
       ) : (
         <div className="source-config-list-items">
           {sources.map((source) => (

@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../../../i18n/index.js';
 import { SourceConfigField } from './SourceConfigField.js';
 import type { SourceFieldSpec } from '../../types.js';
 
@@ -94,5 +95,36 @@ describe('SourceConfigField', () => {
     const spec: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url' };
     render(<SourceConfigField spec={spec} value="" disabled onChange={vi.fn()} />);
     expect(screen.getByLabelText('URL')).toBeDisabled();
+  });
+
+  describe('i18n — host-supplied label/placeholder/option copy', () => {
+    it('translates the field label and placeholder under a matching dictionary', () => {
+      const spec: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url', placeholder: 'https://example.com' };
+      render(
+        <I18nProvider
+          dictionaries={{ fr: { URL: 'Adresse URL', 'https://example.com': 'https://exemple.fr' } }}
+          initialLocale="fr"
+        >
+          <SourceConfigField spec={spec} value="" onChange={vi.fn()} />
+        </I18nProvider>,
+      );
+      expect(screen.getByText('Adresse URL')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('https://exemple.fr')).toBeInTheDocument();
+    });
+
+    it('translates select option labels under a matching dictionary', () => {
+      const spec: SourceFieldSpec = {
+        key: 'protocol',
+        label: 'Protocol',
+        kind: 'select',
+        options: [{ value: 'anthropic', label: 'Anthropic' }],
+      };
+      render(
+        <I18nProvider dictionaries={{ fr: { Anthropic: 'Anthropique' } }} initialLocale="fr">
+          <SourceConfigField spec={spec} value="anthropic" onChange={vi.fn()} />
+        </I18nProvider>,
+      );
+      expect(screen.getByDisplayValue('Anthropique')).toBeInTheDocument();
+    });
   });
 });

@@ -60,7 +60,7 @@ export function SourceConfigAddForm({
             value={values[spec.key] ?? ''}
             disabled={submitting}
             onChange={(value) => onFieldChange(spec.key, value)}
-            {...(issue ? { error: issue.message } : {})}
+            {...(issue ? { error: t(issue.message, { label: t(spec.label) }) } : {})}
           />
         );
       })}
@@ -81,7 +81,7 @@ export function SourceConfigAddForm({
             ) : null}
             {trustOptions.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </option>
             ))}
           </select>
@@ -89,11 +89,11 @@ export function SourceConfigAddForm({
       ) : null}
       {submitError ? (
         <div className="source-config-add-form-error" role="alert">
-          {submitError}
+          {t(submitError)}
         </div>
       ) : null}
       <button type="submit" className="source-config-add-form-submit" disabled={submitting}>
-        {submitting ? t('Adding…') : (addLabel ?? t('Add source'))}
+        {submitting ? t('Adding…') : addLabel ? t(addLabel) : t('Add source')}
       </button>
     </form>
   );

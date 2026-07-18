@@ -1930,7 +1930,18 @@ in the entire 23-file god-component sweep — appears in at least 6 places. This
 than add-by-URL/key; not Memory slice's connector reducers either, a rules-level-only future
 reuse, flagged below, not this task's UI).
 
-Sources, read from `/tmp/od-source` (public OD fork, `main`), not the vendored snapshot:
+Sources, read in FULL from `/tmp/od-source` (public OD fork, `main` branch, commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`, 2026-07-02 — the same commit already pinned below for
+`features/resource-dashboard/`), not the vendored snapshot. This SHA was not recorded when this
+section was first written (it cited only the now-gone `/tmp/od-source` checkout with no commit
+pin, an unreproducible provenance gap flagged by a 2026-07-18 audit). Re-verified directly against
+the real fork clone (`https://github.com/leonaburime-ucla/open-design.git`) via `git show
+0b88ef56144b5a42dc427c1292ae22676d698a34:<path>`: `McpClientSection.tsx` is exactly 1,471 lines,
+`PluginsView.tsx`'s `SourcesPanel` function starts at exactly line 1402, `EntryShell.tsx`'s
+`OnboardingByokSetupPanel` function starts at exactly line 2904, and all 6
+`apps/web/src/components/byok/*` files listed below are present at that commit — every cited
+location matches exactly, confirming this SHA (not merely a plausible candidate) as the actual
+extraction revision:
 
 1. `apps/web/src/components/McpClientSection.tsx` (1,471 lines) — the strongest reference: an
    add-server picker (template categories + custom-blank), a draft-rows-with-bulk-Save-button
@@ -2012,7 +2023,51 @@ Uses the **new** `react/{hooks,components}/` layout end-to-end (per `god-compone
 
 ### i18n
 
-Every user-facing string in every component (`SourceConfigField`, `SourceConfigTestControl`, `SourceConfigAddForm`, `SourceConfigItemCard`, `SourceConfigListView`) is wrapped in `useT()`'s `t()`, using the English string itself as the key convention this package already established. `rules.ts` stays hook-free (pure validation messages built as plain English strings; the component wraps them at the call site, e.g. `SourceConfigAddForm`'s `issueForField(validation, spec.key)?.message` rendered via `<SourceConfigField error={issue.message} />` — masking/label-derivation stay pure with no i18n wrapping needed since they never produce user-facing copy directly). `SourceConfigList.test.tsx`'s dedicated i18n test mounts the full orchestrator under `I18nProvider` with a French dictionary (`{'Add source': 'Ajouter une source', 'No sources configured yet.': 'Aucune source configurée.'}`) and asserts the translated strings actually render — not just the unconfigured passthrough case.
+**Correction (2026-07-18 audit + fix-up):** this section previously claimed "every user-facing
+string in every component is wrapped in `t()`" and that `<SourceConfigField error={issue.message}>`
+was evidence of that. Both claims were false. `rules.ts`'s `validateSourceDraft` built pre-baked
+English sentences (`` `${spec.label} is required.` ``) that rendered straight through, unwrapped;
+`SourceConfigField.tsx` rendered host-supplied `spec.label`/`spec.placeholder`/`option.label` raw
+(never passed through `t()`); `SourceConfigItemCard.tsx` rendered the trust badge/select
+`option.label` and expanded-field `spec.label` raw; `SourceConfigListView.tsx` rendered custom
+`title`/`subtitle`/`emptyMessage`/`loadError` raw when a host supplied them. The dedicated i18n
+test's dictionary translated only `Add source`/the empty-state string, plus an *identity*
+`URL -> URL` entry that could never distinguish "translated" from "never wrapped" — and the suite
+never submitted an invalid form, so the raw validation-message path was never exercised at all.
+
+Fixed for real, verified with actual failing-then-passing tests (not just re-reading the source):
+
+- `rules.ts`'s `validateSourceDraft` now returns an i18n-ready TEMPLATE (`'{label} is required.'`,
+  `'{label} must be a valid http:// or https:// URL.'`) instead of a baked English sentence —
+  `rules.ts` stays hook-free per policy; the render boundary (`SourceConfigAddForm.tsx`) wraps it
+  via `t(issue.message, { label: t(spec.label) })`, translating both the template AND the
+  interpolated field label.
+- `SourceConfigField.tsx` now wraps `spec.label`, `spec.placeholder` (input/textarea/select
+  fallback), and every `option.label` in `t()`.
+- `SourceConfigItemCard.tsx` now wraps the trust badge (`trustOption?.label ?? source.trust`),
+  every trust-`<select>` `option.label`, and each expanded field's `spec.label` in `t()`.
+- `SourceConfigListView.tsx` now wraps custom `title`/`subtitle`/`emptyMessage`/`loadError` in
+  `t()` (falling back to the existing built-in `t('No sources configured yet.')` etc. when a host
+  doesn't override them).
+- `SourceConfigAddForm.tsx` also now wraps `addLabel` and `submitError` (a host-suppliable
+  `AddSourceResult.message` or the hook's own `'Failed to add source.'` fallback) in `t()`.
+- Masking (`maskFieldValue`) and label-derivation (`sourceDisplayLabel`) stay pure with no i18n
+  wrapping — they operate on arbitrary host DATA (a source's own field values, an id), not
+  translatable vocabulary, matching how `ResourceBoard.tsx`'s item titles are handled elsewhere in
+  this package.
+
+Real-provider regression tests were added specifically to close the gap the audit's own citation
+described (not just re-running the existing happy-path smoke test): `SourceConfigList.test.tsx`'s
+i18n block now includes a real INVALID submission under a dictionary translating both `URL` and
+the `'{label} is required.'` template, asserting the fully-translated sentence
+(`'Adresse URL est requis.'`) renders — not just the field label alone — plus a second test
+translating a host-supplied `select`-kind field's placeholder/option label. `SourceConfigField.test.tsx`,
+`SourceConfigItemCard.test.tsx`, and `SourceConfigListView.test.tsx` each gained their own `describe('i18n — ...')`
+blocks mounting under a real `I18nProvider` with a non-identity French dictionary and asserting the
+translated string actually renders, covering: field label/placeholder/select-option translation,
+trust badge/trust-select-option/expanded-field-label translation, and custom title/subtitle/
+emptyMessage/loadError translation respectively. All pre-existing tests (162 total after these
+additions, up from 152) still pass unmodified in default/passthrough locale.
 
 ### Two-shape proof (the actual abstraction test, per the task's own instruction)
 

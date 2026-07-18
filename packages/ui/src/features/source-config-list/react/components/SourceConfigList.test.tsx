@@ -185,6 +185,64 @@ describe('SourceConfigList — i18n wiring', () => {
     await waitFor(() => expect(screen.getByText('Aucune source configurée.')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Ajouter une source' })).toBeInTheDocument();
   });
+
+  /**
+   * Regression for the audit finding that the original i18n smoke test's
+   * identity `URL -> URL` dictionary entry, and its lack of an invalid
+   * submission, could never detect a hardcoded/unwrapped validation message:
+   * `rules.ts`'s `validateSourceDraft` used to build a pre-baked English
+   * sentence (`` `${spec.label} is required.` ``) that rendered straight
+   * through `SourceConfigField`'s `error` prop with no `t()` wrapping
+   * anywhere in the chain. This submits the form empty (a real invalid
+   * submission) under a dictionary that translates BOTH the field label and
+   * the now-templated validation message, and asserts the fully-translated
+   * sentence renders — not just the field label alone.
+   */
+  it('translates a real validation error (not just passthrough copy) on an invalid submission', async () => {
+    const dependencies = mcpDependencies();
+    render(
+      <I18nProvider
+        dictionaries={{
+          fr: {
+            URL: 'Adresse URL',
+            '{label} is required.': '{label} est requis.',
+          },
+        }}
+        initialLocale="fr"
+      >
+        <SourceConfigList<McpServerSource> dependencies={dependencies} fieldSpecs={MCP_FIELD_SPECS} />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Adresse URL', { exact: false })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Add source' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Adresse URL est requis.');
+  });
+
+  /** Regression for host-supplied field placeholders/select-option labels rendering raw. */
+  it('translates host-supplied field placeholder and select option labels under a matching dictionary', async () => {
+    interface ProtocolSource extends SourceConfigItem {
+      fields: { protocol: string };
+    }
+    const fieldSpecs: SourceFieldSpec[] = [
+      {
+        key: 'protocol',
+        label: 'Protocol',
+        kind: 'select',
+        placeholder: 'Choose a protocol',
+        options: [{ value: 'anthropic', label: 'Anthropic' }],
+      },
+    ];
+    const dependencies = createFakeSourceConfigDependencies<ProtocolSource>({
+      createSource: (input) => ({ id: 'p1', fields: { protocol: input.fields.protocol ?? '' } }),
+    });
+    render(
+      <I18nProvider dictionaries={{ fr: { Protocol: 'Protocole', Anthropic: 'Anthropique' } }} initialLocale="fr">
+        <SourceConfigList<ProtocolSource> dependencies={dependencies} fieldSpecs={fieldSpecs} />
+      </I18nProvider>,
+    );
+    expect(await screen.findByLabelText('Protocole', { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Anthropique' })).toBeInTheDocument();
+  });
 });
 
 describe('SourceConfigList — title/subtitle/emptyMessage/addLabel passthrough', () => {

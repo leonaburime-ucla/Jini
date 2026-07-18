@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../../../i18n/index.js';
 import { SourceConfigItemCard } from './SourceConfigItemCard.js';
 import type { ComponentProps } from 'react';
 import type { SourceConfigListCapabilities } from '../hooks/useSourceConfigList.js';
@@ -170,5 +171,38 @@ describe('SourceConfigItemCard', () => {
     render(<SourceConfigItemCard {...baseProps({ testResult: { ok: true, message: 'All good.' } })} />);
     await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
     expect(screen.getByRole('status')).toHaveTextContent('All good.');
+  });
+
+  describe('i18n — trust badge/select and expanded field labels', () => {
+    it('translates the trust badge (option label) under a matching dictionary', () => {
+      const source: SourceConfigItem = { id: 's1', fields: {}, trust: 'trusted' };
+      const { container } = render(
+        <I18nProvider dictionaries={{ fr: { Trusted: 'Fiable' } }} initialLocale="fr">
+          <SourceConfigItemCard {...baseProps({ source, trustOptions: TRUST_OPTIONS })} />
+        </I18nProvider>,
+      );
+      expect(container.querySelector('.source-config-item-card-trust-badge')?.textContent).toBe('Fiable');
+    });
+
+    it('translates trust select option labels under a matching dictionary', () => {
+      const source: SourceConfigItem = { id: 's1', fields: {}, trust: 'restricted' };
+      render(
+        <I18nProvider dictionaries={{ fr: { Restricted: 'Restreint', Trusted: 'Fiable' } }} initialLocale="fr">
+          <SourceConfigItemCard {...baseProps({ source, trustOptions: TRUST_OPTIONS })} />
+        </I18nProvider>,
+      );
+      expect(screen.getByDisplayValue('Restreint')).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Fiable' })).toBeInTheDocument();
+    });
+
+    it('translates expanded field labels under a matching dictionary', async () => {
+      render(
+        <I18nProvider dictionaries={{ fr: { URL: 'Adresse URL' } }} initialLocale="fr">
+          <SourceConfigItemCard {...baseProps()} />
+        </I18nProvider>,
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
+      expect(screen.getByText('Adresse URL')).toBeInTheDocument();
+    });
   });
 });

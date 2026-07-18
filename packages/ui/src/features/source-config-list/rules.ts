@@ -37,6 +37,13 @@ function isValidHttpUrl(value: string): boolean {
  * Google key-format detection) is deliberately NOT ported here — see
  * `source-map.md`'s dropped-behavior list; a host that needs it supplies its
  * own extra validation before calling `addSource`.
+ *
+ * `message` is an i18n-ready TEMPLATE (`'{label} is required.'`), not a
+ * pre-baked English sentence — this module stays hook-free per the i18n
+ * policy (no `useT()` here), so the call site wraps it at render time via
+ * `t(issue.message, { label: t(spec.label) })`, exactly like every other
+ * `{placeholder}`-templated string this package already produces (e.g.
+ * `t('Trust level for {name}', { name: label })`).
  */
 export function validateSourceDraft(
   fieldSpecs: readonly SourceFieldSpec[],
@@ -47,11 +54,11 @@ export function validateSourceDraft(
     const raw = values[spec.key] ?? '';
     const trimmed = raw.trim();
     if (spec.required && !trimmed) {
-      issues.push({ field: spec.key, message: `${spec.label} is required.` });
+      issues.push({ field: spec.key, message: '{label} is required.' });
       continue;
     }
     if (spec.kind === 'url' && trimmed && !isValidHttpUrl(trimmed)) {
-      issues.push({ field: spec.key, message: `${spec.label} must be a valid http:// or https:// URL.` });
+      issues.push({ field: spec.key, message: '{label} must be a valid http:// or https:// URL.' });
     }
   }
   return { ok: issues.length === 0, issues };

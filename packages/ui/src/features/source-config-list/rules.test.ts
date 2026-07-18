@@ -43,7 +43,7 @@ describe('validateSourceDraft', () => {
   it('flags a missing required field', () => {
     const result = validateSourceDraft([URL_FIELD], { url: '' });
     expect(result.ok).toBe(false);
-    expect(result.issues).toEqual([{ field: 'url', message: 'URL is required.' }]);
+    expect(result.issues).toEqual([{ field: 'url', message: '{label} is required.' }]);
   });
 
   it('flags a required field that is only whitespace', () => {
@@ -55,7 +55,7 @@ describe('validateSourceDraft', () => {
   it('flags an invalid url-kind value even when non-empty', () => {
     const result = validateSourceDraft([URL_FIELD], { url: 'not-a-url' });
     expect(result.ok).toBe(false);
-    expect(result.issues).toEqual([{ field: 'url', message: 'URL must be a valid http:// or https:// URL.' }]);
+    expect(result.issues).toEqual([{ field: 'url', message: '{label} must be a valid http:// or https:// URL.' }]);
   });
 
   it('rejects a non-http(s) url-kind value', () => {
@@ -88,7 +88,7 @@ describe('validateSourceDraft', () => {
 describe('issueForField', () => {
   it('finds the issue matching a field key', () => {
     const validation = validateSourceDraft([URL_FIELD, KEY_FIELD], { url: '', apiKey: 'x' });
-    expect(issueForField(validation, 'url')?.message).toBe('URL is required.');
+    expect(issueForField(validation, 'url')?.message).toBe('{label} is required.');
   });
 
   it('returns undefined when no issue matches', () => {

@@ -64,7 +64,7 @@ export function SourceConfigItemCard<TSource extends SourceConfigItem>({
         >
           <span className="source-config-item-card-label">{label}</span>
           {source.trust ? (
-            <span className="source-config-item-card-trust-badge">{trustOption?.label ?? source.trust}</span>
+            <span className="source-config-item-card-trust-badge">{t(trustOption?.label ?? source.trust)}</span>
           ) : null}
         </button>
         <div className="source-config-item-card-actions">
@@ -82,7 +82,7 @@ export function SourceConfigItemCard<TSource extends SourceConfigItem>({
               ) : null}
               {editableTrustOptions.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.label)}
                 </option>
               ))}
             </select>
@@ -103,7 +103,7 @@ export function SourceConfigItemCard<TSource extends SourceConfigItem>({
           <dl className="source-config-item-card-fields">
             {fieldSpecs.map((spec) => (
               <div key={spec.key} className="source-config-item-card-field">
-                <dt>{spec.label}</dt>
+                <dt>{t(spec.label)}</dt>
                 <dd>{maskFieldValue(spec.kind, source.fields[spec.key] ?? '')}</dd>
               </div>
             ))}

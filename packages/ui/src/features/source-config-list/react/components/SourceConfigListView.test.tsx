@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../../../i18n/index.js';
 import { validateSourceDraft } from '../../rules.js';
 import { SourceConfigListView } from './SourceConfigListView.js';
 import type { ComponentProps } from 'react';
@@ -135,5 +136,38 @@ describe('SourceConfigListView', () => {
     await userEvent.click(screen.getByRole('button', { name: /^https:\/\/a\.example/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Test' }));
     expect(onTest).toHaveBeenCalledWith('a');
+  });
+
+  describe('i18n — custom title/subtitle/emptyMessage/loadError copy', () => {
+    it('translates custom title/subtitle under a matching dictionary', () => {
+      render(
+        <I18nProvider
+          dictionaries={{ fr: { 'MCP servers': 'Serveurs MCP', 'Connect external tools.': 'Connecter des outils externes.' } }}
+          initialLocale="fr"
+        >
+          <SourceConfigListView {...baseProps({ title: 'MCP servers', subtitle: 'Connect external tools.' })} />
+        </I18nProvider>,
+      );
+      expect(screen.getByRole('heading', { name: 'Serveurs MCP' })).toBeInTheDocument();
+      expect(screen.getByText('Connecter des outils externes.')).toBeInTheDocument();
+    });
+
+    it('translates a custom emptyMessage under a matching dictionary', () => {
+      render(
+        <I18nProvider dictionaries={{ fr: { 'No MCP servers yet.': 'Aucun serveur MCP.' } }} initialLocale="fr">
+          <SourceConfigListView {...baseProps({ emptyMessage: 'No MCP servers yet.' })} />
+        </I18nProvider>,
+      );
+      expect(screen.getByText('Aucun serveur MCP.')).toBeInTheDocument();
+    });
+
+    it('translates the loadError banner under a matching dictionary', () => {
+      render(
+        <I18nProvider dictionaries={{ fr: { 'Failed to load sources.': 'Échec du chargement des sources.' } }} initialLocale="fr">
+          <SourceConfigListView {...baseProps({ loadError: 'Failed to load sources.' })} />
+        </I18nProvider>,
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent('Échec du chargement des sources.');
+    });
   });
 });

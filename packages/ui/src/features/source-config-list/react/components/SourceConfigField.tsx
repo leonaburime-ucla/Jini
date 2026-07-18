@@ -23,11 +23,12 @@ export function SourceConfigField({ spec, value, error, disabled = false, onChan
   const [revealed, setRevealed] = useState(false);
   const inputId = `source-config-field-${spec.key}`;
   const errorId = error ? `${inputId}-error` : undefined;
+  const placeholder = spec.placeholder ? t(spec.placeholder) : undefined;
 
   return (
     <label className="source-config-field" htmlFor={inputId}>
       <span className="source-config-field-label">
-        {spec.label}
+        {t(spec.label)}
         {spec.required ? (
           <span className="source-config-field-required" aria-label={t('required')}>
             *
@@ -44,11 +45,11 @@ export function SourceConfigField({ spec, value, error, disabled = false, onChan
           onChange={(event) => onChange(event.target.value)}
         >
           <option value="" disabled hidden>
-            {spec.placeholder ?? t('Select…')}
+            {placeholder ?? t('Select…')}
           </option>
           {(spec.options ?? []).map((option) => (
             <option key={option.value} value={option.value}>
-              {option.label}
+              {t(option.label)}
             </option>
           ))}
         </select>
@@ -56,7 +57,7 @@ export function SourceConfigField({ spec, value, error, disabled = false, onChan
         <textarea
           id={inputId}
           value={value}
-          placeholder={spec.placeholder}
+          placeholder={placeholder}
           disabled={disabled}
           aria-invalid={Boolean(error) || undefined}
           aria-describedby={errorId}
@@ -68,7 +69,7 @@ export function SourceConfigField({ spec, value, error, disabled = false, onChan
             id={inputId}
             type={revealed ? 'text' : 'password'}
             value={value}
-            placeholder={spec.placeholder}
+            placeholder={placeholder}
             disabled={disabled}
             aria-invalid={Boolean(error) || undefined}
             aria-describedby={errorId}
@@ -89,7 +90,7 @@ export function SourceConfigField({ spec, value, error, disabled = false, onChan
           id={inputId}
           type={spec.kind === 'url' ? 'url' : 'text'}
           value={value}
-          placeholder={spec.placeholder}
+          placeholder={placeholder}
           disabled={disabled}
           aria-invalid={Boolean(error) || undefined}
           aria-describedby={errorId}
