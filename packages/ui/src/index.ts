@@ -6,6 +6,7 @@
 export * from './features/i18n/index.js';
 export * from './features/observability/index.js';
 export * from './features/connectors/index.js';
+export * from './features/progress-card/index.js';
 export * from './features/browser-chrome/index.js';
 export * from './features/sketch-editor/index.js';
 export * from './features/asset-grid/index.js';
