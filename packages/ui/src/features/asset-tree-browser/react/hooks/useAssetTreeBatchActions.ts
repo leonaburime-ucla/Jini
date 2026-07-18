@@ -4,7 +4,7 @@ export interface UseAssetTreeBatchActionsParams {
   selected: ReadonlySet<string>;
   onDeleteFiles: (paths: string[]) => Promise<void> | void;
   /** Omit to disable batch download entirely — the host owns the actual archive endpoint. */
-  downloadFiles?: (paths: string[]) => Promise<{ blob: Blob; filename: string }>;
+  downloadFiles?: ((paths: string[]) => Promise<{ blob: Blob; filename: string }>) | undefined;
 }
 
 export interface UseAssetTreeBatchActionsResult {

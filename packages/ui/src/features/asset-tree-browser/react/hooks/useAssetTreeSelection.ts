@@ -16,10 +16,23 @@ export interface UseAssetTreeSelectionResult {
  * disappears from the current listing (a delete or a refresh) — mirrors
  * `features/asset-grid`'s `useAssetGridSelection`, scoped to `path` instead
  * of `id`.
+ *
+ * `pendingRenamePath` (the path `useAssetTreeRename` currently has in
+ * flight, if any) is exempted from pruning. Without this, a host that
+ * updates its `files` prop as soon as `onRenameFile` resolves — before
+ * `AssetTreeBrowser`'s own `onRenamed` callback gets to call `renamePath`
+ * below — creates a real race: the old path vanishes from `filesAtCurrentDir`
+ * and gets pruned away *before* `renamePath` runs, so `renamePath`'s own
+ * `prev.has(oldPath)` guard (see below) then finds nothing to carry over and
+ * silently no-ops, dropping the selection. Keeping the in-flight path "live"
+ * for pruning purposes closes that window; once the rename actually
+ * resolves, `renamePath` swaps it for the new path, which is by then always
+ * present in the caller's updated `files`.
  */
 export function useAssetTreeSelection<TFile extends AssetTreeFileItem>(
   filesAtCurrentDir: readonly TFile[],
   currentDir: string,
+  pendingRenamePath?: string | null,
 ): UseAssetTreeSelectionResult {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
 
@@ -28,8 +41,12 @@ export function useAssetTreeSelection<TFile extends AssetTreeFileItem>(
   }, [currentDir]);
 
   useEffect(() => {
-    setSelected((prev) => pruneMissingPaths(prev, filesAtCurrentDir.map((f) => f.path)));
-  }, [filesAtCurrentDir]);
+    setSelected((prev) => {
+      const livePaths = filesAtCurrentDir.map((f) => f.path);
+      if (pendingRenamePath) livePaths.push(pendingRenamePath);
+      return pruneMissingPaths(prev, livePaths);
+    });
+  }, [filesAtCurrentDir, pendingRenamePath]);
 
   const toggleSelect = useCallback((path: string) => {
     setSelected((prev) => toggleInSet(prev, path));

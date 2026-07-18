@@ -5,8 +5,10 @@ import {
   buildBreadcrumbSegments,
   canCopyLocalPath,
   computeMenuPosition,
+  countFilesUnderDir,
   deriveTreeChildren,
   extensionForMimeType,
+  fileExtensionLabel,
   filesFromClipboardData,
   filesFromDataTransfer,
   filesFromFileSystemEntry,
@@ -77,6 +79,27 @@ describe('deriveTreeChildren', () => {
     const result = deriveTreeChildren(files, [], '');
     expect(result.dirsAtCurrentDir).toEqual(['alpha', 'zeta']);
   });
+});
+
+describe('countFilesUnderDir', () => {
+  it('counts files at every depth under the directory, not just the immediate level', () => {
+    const files = [file('dir/a.txt'), file('dir/sub/b.txt'), file('dir/sub/deep/c.txt'), file('other/x.txt')];
+    expect(countFilesUnderDir(files, 'dir')).toBe(3);
+  });
+
+  it('returns 0 for a directory with no files under it', () => {
+    expect(countFilesUnderDir([file('a.txt')], 'empty')).toBe(0);
+  });
+
+  it('does not count a file whose name merely starts with the dir name as a prefix (no slash)', () => {
+    expect(countFilesUnderDir([file('dirextra.txt')], 'dir')).toBe(0);
+  });
+});
+
+describe('fileExtensionLabel', () => {
+  it('uppercases the extension', () => expect(fileExtensionLabel('a/b.txt')).toBe('TXT'));
+  it('empty for a path with no extension', () => expect(fileExtensionLabel('README')).toBe(''));
+  it('empty for a path ending in a bare dot', () => expect(fileExtensionLabel('a.')).toBe(''));
 });
 
 describe('groupFilesByKind', () => {

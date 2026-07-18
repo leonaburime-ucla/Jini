@@ -9,6 +9,7 @@ export * from './features/connectors/index.js';
 export * from './features/browser-chrome/index.js';
 export * from './features/sketch-editor/index.js';
 export * from './features/asset-grid/index.js';
+export * from './features/asset-tree-browser/index.js';
 export * from './features/viewer-shell/index.js';
 export * from './features/settings-dialog/index.js';
 export * from './features/settings-dialog/tabs/appearance/index.js';

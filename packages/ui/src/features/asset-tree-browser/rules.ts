@@ -77,6 +77,19 @@ export function deriveTreeChildren<TFile extends AssetTreeFileItem>(
   };
 }
 
+/** Total files (at every depth, not just the immediate level) under `dirPath` — what a folder row's "N files" subtitle counts. */
+export function countFilesUnderDir<TFile extends AssetTreeFileItem>(
+  files: readonly TFile[],
+  dirPath: string,
+): number {
+  const prefix = `${dirPath}/`;
+  let count = 0;
+  for (const f of files) {
+    if (f.path.startsWith(prefix)) count += 1;
+  }
+  return count;
+}
+
 /**
  * Groups files at the current level into kind sections, ordered by the
  * host's `sectionOrder` with any kind absent from it appended afterward in
@@ -279,6 +292,13 @@ export function relativeTimeResult(ts: number, nowMs: number = Date.now()): Asse
     return { label: '{n}w ago', translatable: true, params: { n: Math.floor(diff / (7 * day)) } };
   }
   return { label: new Date(ts).toLocaleDateString(), translatable: false };
+}
+
+/** Uppercase extension for a path's display, e.g. `"a/b.TXT"` -> `"TXT"`; `""` for an extensionless or dotfile-only path. */
+export function fileExtensionLabel(path: string): string {
+  const dot = path.lastIndexOf('.');
+  if (dot < 0 || dot === path.length - 1) return '';
+  return path.slice(dot + 1).toUpperCase();
 }
 
 /** Breadcrumb segments for every path component below the tree root (the root itself is rendered separately by `Breadcrumbs` since its label is host-configurable). */

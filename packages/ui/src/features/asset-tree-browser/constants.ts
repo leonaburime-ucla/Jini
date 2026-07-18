@@ -1,8 +1,15 @@
+import type { AssetTreeKindConfigMap, AssetTreeToolbarAction } from './types.js';
+
 /** Default host-defined "kind" display config: empty — a host with no
  *  `AssetTreeKindConfigMap` gets every kind rendered with its raw key as the
  *  label and the generic fallback glyph (see `resolveKindConfig` in
  *  `rules.ts`). */
-export const DEFAULT_KIND_CONFIG_MAP: Record<string, never> = {};
+export const DEFAULT_KIND_CONFIG_MAP: AssetTreeKindConfigMap = {};
+
+/** Stable empty toolbar/empty-state action list — reused as the default so
+ *  omitting `toolbarActions`/`emptyStateActions` doesn't allocate a fresh
+ *  array (and therefore a fresh prop identity) on every render. */
+export const EMPTY_TOOLBAR_ACTIONS: readonly AssetTreeToolbarAction[] = [];
 
 /** Fallback glyph for a file kind absent from the host's `AssetTreeKindConfigMap`. */
 export const DEFAULT_KIND_GLYPH = '·'; // ·

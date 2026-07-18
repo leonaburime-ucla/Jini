@@ -19,14 +19,14 @@ const EMPTY_FOLDERS: readonly AssetTreeFolderItem[] = [];
 
 export interface UseAssetTreeNavigationParams<TFile extends AssetTreeFileItem> {
   files: readonly TFile[];
-  folders?: readonly AssetTreeFolderItem[];
+  folders?: readonly AssetTreeFolderItem[] | undefined;
   /** Kind render order; kinds absent from it append in first-seen order. Defaults to `[]` (pure first-seen order). */
-  sectionOrder?: readonly string[];
+  sectionOrder?: readonly string[] | undefined;
   getKind: (file: TFile) => string;
   getModifiedAt: (file: TFile) => number;
   /** Seeds the initial directory and is reported back to on every navigation. Uncontrolled after mount — see `AssetTreeBrowser`'s doc comment. */
-  navState?: AssetTreeNavState;
-  onNavStateChange?: (state: AssetTreeNavState) => void;
+  navState?: AssetTreeNavState | undefined;
+  onNavStateChange?: ((state: AssetTreeNavState) => void) | undefined;
 }
 
 export interface UseAssetTreeNavigationResult<TFile> {
