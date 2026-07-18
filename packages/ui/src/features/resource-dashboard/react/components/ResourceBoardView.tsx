@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { ResourceBoardToolbar } from './ResourceBoardToolbar.js';
 import { ResourceCard } from './ResourceCard.js';
 import { ResourceKanbanBoard, type ResourceKanbanColumn } from './ResourceKanbanBoard.js';
@@ -44,6 +44,7 @@ export interface ResourceBoardViewProps<TBody = unknown> {
   onCreate?: () => void;
 
   openMenuId: string | null;
+  menuContainerRef?: RefObject<HTMLDivElement | null>;
   onToggleMenu: (id: string) => void;
   onItemAction: (id: string, kind: string) => void;
   isItemBusy: (id: string) => boolean;
@@ -101,6 +102,7 @@ export function ResourceBoardView<TBody = unknown>({
   createLabel,
   onCreate,
   openMenuId,
+  menuContainerRef,
   onToggleMenu,
   onItemAction,
   isItemBusy,
@@ -174,6 +176,7 @@ export function ResourceBoardView<TBody = unknown>({
               {...(toneMap ? { toneMap } : {})}
               {...(menuActionLabel ? { menuActionLabel } : {})}
               moreLabel={moreLabel}
+              {...(menuContainerRef ? { menuContainerRef } : {})}
               {...(renderBody ? { renderBody } : {})}
               onOpen={() => onOpenItem(item.id)}
               onToggleSelected={() => onToggleSelected(item.id)}

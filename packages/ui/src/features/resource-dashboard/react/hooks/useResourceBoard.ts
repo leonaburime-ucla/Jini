@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   filterBoardItemsByQuery,
   groupItemsByStatus,
@@ -35,6 +35,8 @@ export interface UseResourceBoardParams<TItem extends ResourceBoardItem> {
 export interface ResourceBoardController<TItem extends ResourceBoardItem> {
   loading: boolean;
   error: string | null;
+  /** Raw (pre search-filter) item count — lets a host distinguish "nothing exists yet" from "search matched nothing" without needing its own separate fetch. */
+  totalCount: number;
   query: string;
   setQuery: (query: string) => void;
   sort: string | undefined;
@@ -51,6 +53,8 @@ export interface ResourceBoardController<TItem extends ResourceBoardItem> {
   bulkDeleteBusy: boolean;
   bulkDelete: () => Promise<{ deleted: number; failed: number }>;
   openMenuId: string | null;
+  /** Attach to the currently-open menu's container (only when `openMenuId === item.id`) so the outside-click dismiss effect can tell a click INSIDE the open menu (e.g. clicking a menu item) apart from a genuine outside click — mirrors DesignsTab's own `menuContainerRef` pattern. */
+  menuContainerRef: RefObject<HTMLDivElement | null>;
   toggleMenu: (id: string) => void;
   closeMenu: () => void;
   isItemBusy: (id: string) => boolean;
@@ -87,6 +91,7 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(new Set());
   const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewModeState] = useState<ResourceBoardViewMode>(() => {
     const stored = (viewModeStorage ?? createLocalStorageViewModeStorage()).getViewMode(storageScopeKey);
     return stored ?? defaultViewMode;
@@ -124,13 +129,20 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
     }
   }, [viewMode, selectMode]);
 
-  // Single-open-at-a-time kebab menu: outside-click/Escape dismiss.
+  // Single-open-at-a-time kebab menu: outside-click/Escape dismiss. A click
+  // INSIDE the open menu (e.g. a menu item) must NOT close it before its own
+  // click handler runs — checked via `menuContainerRef.contains(target)`,
+  // same guard DesignsTab's own `menuContainerRef`-based effect uses.
   useEffect(() => {
     if (!openMenuId) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpenMenuId(null);
     };
-    const onPointerDown = () => setOpenMenuId(null);
+    const onPointerDown = (event: MouseEvent) => {
+      const container = menuContainerRef.current;
+      if (container && container.contains(event.target as Node)) return;
+      setOpenMenuId(null);
+    };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onPointerDown);
     return () => {
@@ -230,6 +242,7 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
   return {
     loading,
     error,
+    totalCount: items.length,
     query,
     setQuery,
     sort,
@@ -246,6 +259,7 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
     bulkDeleteBusy,
     bulkDelete,
     openMenuId,
+    menuContainerRef,
     toggleMenu,
     closeMenu,
     isItemBusy,

@@ -77,6 +77,16 @@ describe('useResourceBoard', () => {
     await waitFor(() => expect(fetchItems).toHaveBeenCalledTimes(2));
   });
 
+  it('exposes totalCount as the raw (pre-filter) item count', async () => {
+    const port = fakePort({ fetchItems: vi.fn().mockResolvedValue([ITEM_A, ITEM_B]) });
+    const { result } = renderHook(() => useResourceBoard({ port }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.totalCount).toBe(2);
+    act(() => result.current.setQuery('no-such-match'));
+    expect(result.current.visibleItems).toEqual([]);
+    expect(result.current.totalCount).toBe(2);
+  });
+
   it('filters visibleItems by the search query', async () => {
     const port = fakePort({ fetchItems: vi.fn().mockResolvedValue([ITEM_A, ITEM_B]) });
     const { result } = renderHook(() => useResourceBoard({ port }));
@@ -223,6 +233,22 @@ describe('useResourceBoard', () => {
         window.dispatchEvent(new MouseEvent('mousedown'));
       });
       expect(result.current.openMenuId).toBeNull();
+    });
+
+    it('stays open on a mousedown INSIDE menuContainerRef (e.g. clicking a menu item) — regression for a real bug caught while wiring ResourceBoard', () => {
+      const { result } = renderHook(() => useResourceBoard({ port: fakePort() }));
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      act(() => {
+        result.current.menuContainerRef.current = container;
+      });
+      act(() => result.current.toggleMenu('a'));
+      expect(result.current.openMenuId).toBe('a');
+      act(() => {
+        container.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      });
+      expect(result.current.openMenuId).toBe('a');
+      document.body.removeChild(container);
     });
 
     it('does not throw dispatching keydown/mousedown while no menu is open', () => {

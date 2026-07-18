@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { StatusPill } from './StatusPill.js';
 import type { ResourceBoardItem, ResourceStatusToneMap } from '../../types.js';
 
@@ -14,6 +14,8 @@ export interface ResourceCardProps<TBody = unknown> {
   /** Pre-translated kebab-menu labels (keyed by `ResourceMenuActionSpec.kind`) — same i18n-at-the-boundary rule. */
   menuActionLabel?: (kind: string, fallback: string) => string;
   moreLabel: string;
+  /** Attach only when `menuOpen` is true — lets the owning hook's outside-click effect tell a click inside the open menu apart from a genuine outside click (see `useResourceBoard`'s `menuContainerRef`). */
+  menuContainerRef?: RefObject<HTMLDivElement | null>;
   /** Host-supplied render slot for anything beyond title/subtitle/status (DesignsTab's cover-thumbnail resolution stays entirely host-owned). */
   renderBody?: (item: ResourceBoardItem<TBody>) => ReactNode;
   onOpen: () => void;
@@ -40,6 +42,7 @@ export function ResourceCard<TBody = unknown>({
   toneMap,
   menuActionLabel,
   moreLabel,
+  menuContainerRef,
   renderBody,
   onOpen,
   onToggleSelected,
@@ -69,7 +72,7 @@ export function ResourceCard<TBody = unknown>({
       {selectMode ? (
         <span className={`resource-board-card-checkbox${selected ? ' checked' : ''}`} aria-hidden data-testid="resource-board-card-checkbox" />
       ) : hasMenu ? (
-        <div className="resource-board-card-menu-anchor">
+        <div className="resource-board-card-menu-anchor" ref={menuOpen ? menuContainerRef : undefined}>
           <button
             type="button"
             className="resource-board-card-more"
