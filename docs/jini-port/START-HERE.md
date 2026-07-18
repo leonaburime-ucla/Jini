@@ -10,6 +10,13 @@ A general-purpose, reusable, **headless, agent-drivable engine** extracted from 
 
 The architecture is decided and hardened at three levels (kernel, subsystems, seams). Do NOT relitigate it — extend it. The authority is **`extraction-plan.md`** (§1–§11 = locked design; §12 = whole-system corrections).
 
+**This file is a snapshot of the 2026-07-16 lock-in and is not kept current.** For
+real, up-to-date task/package status, read `docs/jini-port/refactor-roadmap.md`
+instead (it's been updated since; this file has not). For OD's real current source
+(not this repo's `integrations/open-design/reference/**` snapshot), read
+`/Users/la/Desktop/Programming/OSS-Repos/open-design` directly — see the caveat in
+`integrations/open-design/README.md` and root `AGENTS.md`.
+
 ### The one-line story
 Jini is a headless daemon that runs coding agents, exposes tools + providers, and streams protocol events over CLI/HTTP/MCP/sidecar. `chat-react`, `desktop-host`, and the automation control-plane are optional satellites that consume it.
 
