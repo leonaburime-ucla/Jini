@@ -1,0 +1,96 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import { validateSourceDraft } from '../../rules.js';
+import { SourceConfigListView } from './SourceConfigListView.js';
+import type { ComponentProps } from 'react';
+import type { SourceConfigListCapabilities } from '../hooks/useSourceConfigList.js';
+import type { SourceConfigItem, SourceFieldSpec } from '../../types.js';
+
+const URL_FIELD: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url', required: true };
+const FULL_CAPS: SourceConfigListCapabilities = { canRefresh: true, canSetTrust: true, canTest: true };
+
+function baseProps(overrides: Partial<ComponentProps<typeof SourceConfigListView>> = {}) {
+  const values = { url: '' };
+  return {
+    fieldSpecs: [URL_FIELD],
+    sources: [] as SourceConfigItem[],
+    loading: false,
+    capabilities: FULL_CAPS,
+    pendingKeys: new Set<string>(),
+    testResults: {},
+    addForm: {
+      values,
+      trust: undefined,
+      validation: validateSourceDraft([URL_FIELD], values),
+      submitAttempted: false,
+      submitting: false,
+      onFieldChange: vi.fn(),
+      onTrustChange: vi.fn(),
+      onSubmit: vi.fn(),
+    },
+    onRefresh: vi.fn(),
+    onRemove: vi.fn(),
+    onTrustChange: vi.fn(),
+    onTest: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe('SourceConfigListView', () => {
+  it('renders a title and subtitle when given', () => {
+    render(<SourceConfigListView {...baseProps({ title: 'MCP servers', subtitle: 'Connect external tools.' })} />);
+    expect(screen.getByRole('heading', { name: 'MCP servers' })).toBeInTheDocument();
+    expect(screen.getByText('Connect external tools.')).toBeInTheDocument();
+  });
+
+  it('renders no head block when both title and subtitle are omitted', () => {
+    render(<SourceConfigListView {...baseProps()} />);
+    expect(screen.queryByRole('heading')).toBeNull();
+  });
+
+  it('always renders the add form', () => {
+    render(<SourceConfigListView {...baseProps()} />);
+    expect(screen.getByLabelText('URL', { exact: false })).toBeInTheDocument();
+  });
+
+  it('shows a loading indicator while loading, before the empty/list state', () => {
+    render(<SourceConfigListView {...baseProps({ loading: true })} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading…');
+  });
+
+  it('shows the default empty message when there are no sources and not loading', () => {
+    render(<SourceConfigListView {...baseProps()} />);
+    expect(screen.getByText('No sources configured yet.')).toBeInTheDocument();
+  });
+
+  it('shows a custom empty message when given', () => {
+    render(<SourceConfigListView {...baseProps({ emptyMessage: 'No MCP servers yet.' })} />);
+    expect(screen.getByText('No MCP servers yet.')).toBeInTheDocument();
+  });
+
+  it('renders a load error banner with role="alert"', () => {
+    render(<SourceConfigListView {...baseProps({ loadError: 'Failed to load sources.' })} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load sources.');
+  });
+
+  it('renders one item card per source and wires per-item callbacks to the right id', async () => {
+    const sources: SourceConfigItem[] = [
+      { id: 'a', fields: { url: 'https://a.example' } },
+      { id: 'b', fields: { url: 'https://b.example' } },
+    ];
+    const onRemove = vi.fn();
+    render(<SourceConfigListView {...baseProps({ sources, onRemove })} />);
+    expect(screen.getAllByTestId('source-config-item-card')).toHaveLength(2);
+    const removeButtons = screen.getAllByRole('button', { name: 'Remove' });
+    await userEvent.click(removeButtons[1]!);
+    expect(onRemove).toHaveBeenCalledWith('b');
+  });
+
+  it('reflects per-item pending state from pendingKeys', () => {
+    const sources: SourceConfigItem[] = [{ id: 'a', fields: { url: 'https://a.example' } }];
+    const pendingKeys = new Set(['refresh:a']);
+    render(<SourceConfigListView {...baseProps({ sources, pendingKeys })} />);
+    expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeInTheDocument();
+  });
+});
