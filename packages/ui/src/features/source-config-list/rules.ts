@@ -138,14 +138,19 @@ export function maskFieldValue(kind: SourceFieldSpec['kind'], value: string): st
   return MASK_CHAR.repeat(maskLength) + visible;
 }
 
-/** Derives a display label for a source card: explicit `label`, else the first field's value, else the raw id. */
+/**
+ * Derives a display label for a source card: explicit `label`, else the
+ * first field's value (masked, if that field is `password`-kind — a source
+ * with no explicit label and a secret as its only field must never leak
+ * that secret into the always-visible summary row), else the raw id.
+ */
 export function sourceDisplayLabel(source: SourceConfigItem, fieldSpecs: readonly SourceFieldSpec[]): string {
   const label = source.label?.trim();
   if (label) return label;
   const firstSpec = fieldSpecs[0];
   if (firstSpec) {
     const value = source.fields[firstSpec.key]?.trim();
-    if (value) return value;
+    if (value) return maskFieldValue(firstSpec.kind, value);
   }
   return source.id;
 }

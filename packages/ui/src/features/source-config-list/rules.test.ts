@@ -217,4 +217,11 @@ describe('sourceDisplayLabel', () => {
     const source = makeSource({ label: '   ', fields: { url: 'https://example.com' } });
     expect(sourceDisplayLabel(source, [URL_FIELD])).toBe('https://example.com');
   });
+
+  it('masks the fallback value when the first field spec is password-kind, so a labelless secret never leaks into the summary', () => {
+    const source = makeSource({ fields: { apiKey: 'sk-ant-1234567890wxyz' } });
+    const label = sourceDisplayLabel(source, [KEY_FIELD]);
+    expect(label).not.toBe('sk-ant-1234567890wxyz');
+    expect(label.endsWith('wxyz')).toBe(true);
+  });
 });
