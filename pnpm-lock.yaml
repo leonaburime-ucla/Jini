@@ -52,7 +52,11 @@ importers:
 
   packages/chat-react: {}
 
-  packages/cli: {}
+  packages/cli:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/core: {}
 
