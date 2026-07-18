@@ -240,6 +240,14 @@ describe('SourceConfigItemCard', () => {
       expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     });
 
+    it('seeds an editable field with an empty string when the source is missing that field spec\'s key entirely', async () => {
+      const source: SourceConfigItem = { id: 's1', fields: {} };
+      render(<SourceConfigItemCard {...baseProps({ source, fieldSpecs: [URL_FIELD] })} />);
+      await userEvent.click(screen.getByRole('button', { name: 's1' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      expect(screen.getByLabelText('URL', { exact: false })).toHaveValue('');
+    });
+
     it('discards edits when Cancel is clicked, without calling onUpdate', async () => {
       const source: SourceConfigItem = { id: 's1', fields: { url: 'https://a.example' } };
       const onUpdate = vi.fn();

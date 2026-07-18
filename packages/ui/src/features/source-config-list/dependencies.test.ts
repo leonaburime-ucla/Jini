@@ -69,12 +69,13 @@ describe('createFakeSourceConfigPort', () => {
     }
   });
 
-  describe('optional refresh/trust/test capabilities', () => {
+  describe('optional refresh/trust/test/update capabilities', () => {
     it('are wired by default', () => {
       const port = createFakeSourceConfigPort({ createSource });
       expect(port.refreshSource).toBeInstanceOf(Function);
       expect(port.setTrust).toBeInstanceOf(Function);
       expect(port.testSource).toBeInstanceOf(Function);
+      expect(port.updateSource).toBeInstanceOf(Function);
     });
 
     it('are omitted entirely when disabled, matching a source shape with no such concept', () => {
@@ -83,10 +84,12 @@ describe('createFakeSourceConfigPort', () => {
         supportsRefresh: false,
         supportsTrust: false,
         supportsTest: false,
+        supportsUpdate: false,
       });
       expect(port.refreshSource).toBeUndefined();
       expect(port.setTrust).toBeUndefined();
       expect(port.testSource).toBeUndefined();
+      expect(port.updateSource).toBeUndefined();
     });
 
     it('refreshSource defaults to returning the stored source unchanged', async () => {
@@ -140,6 +143,44 @@ describe('createFakeSourceConfigPort', () => {
       const result = await port.testSource!('a', { url: 'https://draft.example' });
       expect(onTest).toHaveBeenCalledWith('a', { url: 'https://draft.example' }, seed);
       expect(result).toEqual({ ok: false, message: 'boom' });
+    });
+
+    it('testSource resolves source to undefined when testing an unsaved draft (id undefined)', async () => {
+      const onTest = vi.fn().mockReturnValue({ ok: true });
+      const port = createFakeSourceConfigPort({ createSource, onTest });
+      await port.testSource!(undefined, { apiKey: 'sk-draft' });
+      expect(onTest).toHaveBeenCalledWith(undefined, { apiKey: 'sk-draft' }, undefined);
+    });
+
+    it('updateSource defaults to a shallow merge of label/enabled/fields onto the stored source', async () => {
+      const seed: SourceConfigItem = { id: 'a', label: 'Old', enabled: true, fields: { url: 'https://old.example', extra: 'kept' } };
+      const port = createFakeSourceConfigPort({ sources: [seed], createSource });
+      const updated = await port.updateSource!('a', { label: 'New', enabled: false, fields: { url: 'https://new.example' } });
+      expect(updated).toEqual({ id: 'a', label: 'New', enabled: false, fields: { url: 'https://new.example', extra: 'kept' } });
+      expect((await port.fetchSources())[0]).toEqual(updated);
+    });
+
+    it('updateSource leaves label/enabled/fields untouched when the patch omits them', async () => {
+      const seed: SourceConfigItem = { id: 'a', label: 'Old', enabled: true, fields: { url: 'https://old.example' } };
+      const port = createFakeSourceConfigPort({ sources: [seed], createSource });
+      const updated = await port.updateSource!('a', {});
+      expect(updated).toEqual(seed);
+    });
+
+    it('updateSource applies a custom onUpdate transform', async () => {
+      const seed: SourceConfigItem = { id: 'a', fields: {} };
+      const onUpdate = vi.fn().mockReturnValue({ id: 'a', fields: {}, statusMessage: 'custom-merged' });
+      const port = createFakeSourceConfigPort({ sources: [seed], createSource, onUpdate });
+      const updated = await port.updateSource!('a', { label: 'New' });
+      expect(onUpdate).toHaveBeenCalledWith(seed, { label: 'New' });
+      expect(updated?.statusMessage).toBe('custom-merged');
+    });
+
+    it('updateSource returns null for an unknown id and leaves the store untouched', async () => {
+      const seed: SourceConfigItem = { id: 'a', fields: {} };
+      const port = createFakeSourceConfigPort({ sources: [seed], createSource });
+      expect(await port.updateSource!('zzz', { label: 'New' })).toBeNull();
+      expect(await port.fetchSources()).toEqual([seed]);
     });
   });
 });

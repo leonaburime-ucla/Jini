@@ -202,6 +202,33 @@ describe('useResourceRowList', () => {
       expect(result.current.historyByRowId['a']).toEqual([RUN_2]);
       expect(result.current.historyLoadingRowId).toBeNull();
     });
+
+    /** Same race as above, but the stale OLDER request rejects instead of resolving — must not overwrite the newer, already-committed history with an empty-result "recovery" either. */
+    it('does not let a stale, older REJECTED response for the SAME row overwrite a newer response that already resolved', async () => {
+      let rejectFirst!: (err: Error) => void;
+      const RUN_2: ResourceRunHistoryItem = { id: 'run-2', status: 'succeeded', startedAtLabel: 'later' };
+      const fetchRowHistory = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<ResourceRunHistoryItem[]>((_resolve, reject) => (rejectFirst = reject)))
+        .mockResolvedValueOnce([RUN_2]);
+      const port = fakePort({ fetchRowHistory });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+
+      act(() => result.current.toggleExpand('a')); // starts the slow FIRST fetch for 'a'
+      act(() => result.current.toggleExpand('a')); // collapses (no new fetch)
+      act(() => result.current.toggleExpand('a')); // re-expands: starts the SECOND, newer fetch for 'a', which resolves immediately
+      await waitFor(() => expect(result.current.historyByRowId['a']).toEqual([RUN_2]));
+
+      // The first (older) fetch finally REJECTS now, well after the second
+      // already committed its result.
+      await act(async () => {
+        rejectFirst(new Error('stale failure'));
+        await Promise.resolve();
+      });
+      // Must still be the NEWER result — the stale rejection must not reset it to [].
+      expect(result.current.historyByRowId['a']).toEqual([RUN_2]);
+      expect(result.current.historyLoadingRowId).toBeNull();
+    });
   });
 
   describe('isRowBusy / dispatchRowAction', () => {
