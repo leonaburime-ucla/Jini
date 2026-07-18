@@ -9,7 +9,7 @@
 //
 // Adapted from the pinned OD source's
 // apps/web/tests/features/memory/useMemoryExtractions.test.tsx: import paths
-// point at this package's ported hook/types and `@open-design/contracts`
+// point at this package's ported hook/types and OD's contracts-package
 // types are replaced by this slice's local `types.js`.
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';

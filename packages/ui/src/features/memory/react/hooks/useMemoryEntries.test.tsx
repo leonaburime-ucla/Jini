@@ -5,7 +5,7 @@
 //
 // Adapted from the pinned OD source's
 // apps/web/tests/features/memory/useMemoryEntries.test.tsx: import paths
-// point at this package's ported hook/types, `@open-design/contracts` types
+// point at this package's ported hook/types, OD's contracts-package types
 // are replaced by this slice's local `types.js`, and the `onCopyPath` total-
 // failure test asserts against this package's `copyToClipboard` (which
 // resolves `false` on total failure) rather than the pinned source's
