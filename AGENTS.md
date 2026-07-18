@@ -5,6 +5,19 @@
 > 2. Then read **`docs/jini-port/START-HERE.md`** and **`docs/jini-port/extraction-plan.md`** for the locked architecture and the task list.
 > Skipping step 1 is a blocker: the pipeline, personas, and skills that do the work live there.
 
+> **⚠️ PORT STATUS — how much is actually left (read before trusting "done"):**
+> Jini is **early, not near-complete.** The `@jini/*` list below is real, tested
+> code — but it is a set of *fragments*, and **there is no runnable daemon.** The
+> entire backend service spine (`server.ts`, `cli.ts` bootstrap, `routes/`,
+> `mcp.ts`, `start-chat-run.ts`, `db.ts` schema, `plugins/` host) — **~49K lines** —
+> is **absent**, and `@jini/node-host`'s `createLocalNodeDaemon` assembly does not
+> exist. Measured 2026-07-18: **~73.5K lines ported** (of which ~15K frontend is
+> *unaudited*), **~93K generic still to port** (the ~49K backend spine is the
+> load-bearing gap), and **~364K of OD is *product*** that must stay out of the
+> neutral engine. **Do not read the package list below as "the engine is mostly
+> built."** Full breakdown: **`ADS-memory/reports/od-port-status-2026-07-18.md`**
+> and `ADS-memory/reports/daemon-full-gap-map-2026-07-18.md`.
+
 **Read `docs/jini-port/START-HERE.md` first**, then `docs/jini-port/extraction-plan.md`. Those hold the locked architecture, the reasoning (every debate transcript), and the dependency-ordered task list. This file is the map; those are the authority.
 
 ## What Jini is
