@@ -1916,3 +1916,173 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+---
+
+## Section: `html-viewer` — classification of `HtmlViewer` + `FileVersionManagerModal` (2026-07-18)
+
+**Preflight.** Source: the real OD fork cloned fresh for this task at
+`/tmp/od-source` (NOT the frozen `integrations/open-design/reference/`
+snapshot), commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
+(2026-07-02), file `apps/web/src/components/FileViewer.tsx`, **12,652
+lines in this checkout** — differs from the 14,275/14,495-line figures
+cited elsewhere in this repo's docs; those figures describe a different
+point in the file's history, not this session's ground truth. Per
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map,
+this file is filed under "B. Own feature," `features/viewer-shell/`
+✅ done, with `HtmlViewer`/`FileVersionManagerModal` filed under "D.
+Confirmed OD-specific — do not attempt." This task's brief explicitly
+asked for independent re-verification of that filing rather than trusting
+it — the method below is a full read of both components against the real
+current source, done by two independent deep-read passes (not sampled,
+not extrapolated), specifically checking the "plausible generic
+candidates" a partial read had flagged earlier the same night.
+
+**Correction to `docs/jini-port/recon/r6-god-component-internals.md` §1.1's
+line counts**, found by both passes independently: `HtmlViewer` is
+**6,076 real lines** (5248–11323), not ~7,110; `FileVersionManagerModal` is
+**583 real lines** (2549–3131, plus 40 lines of directly-adjacent
+single-use helpers), not ~1,050. Neither correction changes which verdict
+is more defensible below, but both are recorded since r6 is cited
+elsewhere in this repo as a line-count source.
+
+### `FileVersionManagerModal` — verdict reversed: genuinely separable, **shipped this session**
+
+r6 and the viewer-shell extraction's own source-map both filed this as
+"OD-specific... saturated with OD analytics/deploy/export calls." A full
+read (every line, every co-located helper) found **zero** analytics,
+deploy, or export calls anywhere in the component — a full-text scan for
+`analytics|track|telemetry|deploy|Deploy|export|Export` returns one
+incidental code comment and nothing else. The "export" action inside the
+modal is `openVersionInNewTab()` — opening a version in a new sandboxed
+tab, not a file-export pipeline; PPTX/image/deploy exports live in
+sibling modals elsewhere in `FileViewer.tsx`, not inside this component.
+r6's characterization does not hold up.
+
+What the modal actually is: a **list + cached-iframe-preview + restore +
+search + view-generating-prompt modal shell**, parameterized over a
+version-record shape. 14 `useState`/8 `useEffect`/2 `useCallback`/4
+`useMemo`/5 `useRef` — overwhelmingly generic UI-interaction plumbing
+(loading flags, selection state, two independent dismissable popovers,
+search text, a viewport toggle, and a well-engineered content
+cache/prefetch/stale-overlay pipeline). Exactly four OD-coupled seams, all
+at clean call-boundary edges, not interleaved through the render body:
+
+| Concern | Lines | Verdict | What's generic vs. OD-specific |
+|---|---|---|---|
+| Version list fetch + render (skeleton/empty/list, a11y listbox roles) | 2564, 2678–2706, 2879–2947 | MIXED, clean seam | List/sort/render logic generic; `fetchProjectFileVersions(projectId, file.name)` is the one OD REST call — becomes an injected `listVersions(fileRef)` port |
+| Cached version-content preview (iframe) | 2586–2653, 2660–2750, 2752–2758, 3095–3110 | MIXED, generic core is most of it | The `Map`-based content cache, in-flight dedupe, hover/focus prefetch, and "keep stale content mounted under an overlay instead of blanking" UX are 100% generic and are the best-engineered part of the file. `fetchProjectFileVersion(projectId, file.name, versionId)` is the one fetch seam; `fileVersionPreviewOptions()`'s `sourceLooksLikeExportableDeck`/`projectRawUrl` calls are the other — both become one injected `getVersionContent`/`resolvePreviewOptions` pair |
+| Restore action | 2578–2580, 2814–2837, 3009–3058 | MIXED, thin OD shell | Confirm-popover UX (outside-click/Escape dismiss) generic; `restoreProjectFileVersion` REST call + `PROJECT_FILE_VERSION_CAPTURE_FAILED` warning code are OD-specific — injected `restoreVersion(fileRef, versionId)` port. Parent-supplied `onRestored` callback is already injected in the original |
+| Search/filter | 2606–2627, 2857–2878 | GENERIC | Pure client-side substring filter over already-fetched fields; zero network calls |
+| Generating-prompt viewer | 2575–2577, 2966–3005 | MIXED, trivial | Popover + copy-to-clipboard mechanics generic; the one field displayed (`version.prompt`) is just a nullable string on the injected version type, not a service call |
+| Modal chrome | 2760–2775, 2839–2852 | GENERIC | Portal + backdrop + `role="dialog"`/`aria-modal` + layered Escape-dismiss (closes nested popovers before the modal itself) — the exact `modal-backdrop viewer-modal-backdrop` shell OD's own code already reuses for 4 other unrelated export/deploy modals in the same file, i.e. already treated as generic infrastructure by the source itself |
+| `FileVersionViewportControls` | 755–787 | GENERIC, redundant | A `role="group"` toggle-button viewport switcher, structurally identical to `ViewportToggleGroup` already shipped in `features/viewer-shell/` — do not re-port, bind to the existing component instead |
+
+**Overlap with `HtmlViewer`'s iframe rendering**: confirmed **reuse, not
+duplication** — both components call the same shared `buildSrcdoc()`
+(`runtime/srcdoc.ts`) and `openSandboxedPreviewInNewTab()`
+(`runtime/exports.ts`) functions in the real source; the version modal
+uses a narrow read-only options subset (`deck`, `baseHref`,
+`previewFocusGuard`) of what `HtmlViewer` exercises. This means a real
+`@jini/renderers-react` sandboxed-iframe core, once built (see the
+`HtmlViewer` section below), should be designed to serve both a
+version-preview consumer and an eventual `HtmlViewer`-equivalent consumer
+from one primitive — but the version-manager shell **does not need that
+core to exist first**: it can ship today with a plain, host-supplied
+`resolveVersionPreviewHtml(fileRef, content) → string` port that a host
+implements however it likes (including by calling its own `buildSrcdoc`
+equivalent), no dependency on the deferred `HtmlViewer` work below.
+
+**Decision: port this as `packages/ui/src/features/version-manager/`.**
+Named for what it actually is (a generic version-history shell), not
+folded into a literally-named `html-viewer` folder, since it has no
+dependency on HTML-specific rendering — a host could use it for any
+versioned-artifact type. See "What shipped" below for the actual slice.
+
+### `HtmlViewer` — r6's "irreducibly OD-specific" verdict holds structurally; several individual generic *logic* shapes exist inside it but require new infrastructure to port safely, not a slice
+
+A full read (6,076 lines, every `useState`/`useEffect` traced) confirms
+r6's bottom line for the component **as a single unit**: it cannot be
+sliced feature-by-feature in place, because nearly every feature inside it
+(manual-edit, board/pod annotation, inspect mode, deck present) is wired
+into one shared state machine that decides which of three iframe-loading
+transports (`useUrlLoadPreview` / `useLazySrcDocTransport` / direct-mount
+`srcDoc`) is currently active, gated on a combination of every other
+feature's own mode flags (`manualEditMode`, `boardMode`, `drawOverlayOpen`,
+`inspectMode`, plus content-sniffing heuristics and a URL escape hatch).
+Extracting any one annotation mode by pulling its code out of `HtmlViewer`
+in place would drag this coupling along with it. This is corroborated
+independently a third time (after r6 and the viewer-shell extraction's own
+scope note) — but the read also found the "nothing generic here" framing
+understates how much reusable *logic* (not code-as-written) is embedded,
+consistent with this whole sweep's repeated finding elsewhere that a full
+read surfaces more than an aggregate/summary pass expects.
+
+**Per-concern classification** (task-brief item → what was actually
+found; "Present in prior partial read" column flags where tonight's
+earlier partial read was corrected):
+
+| Concern | Lines | Verdict | Disposition | Notes |
+|---|---|---|---|---|
+| Sandboxed iframe rendering + postMessage bridge | 5615–5666, 6216–6520, listeners across 6518–7108 | MIXED — core is portable, transport-selection state machine is not | **Deferred**, blocking | 31+ message types across 3 overlapping naming conventions (`od:*`, `od-edit-*`, legacy `__dc_*`) on one `addEventListener`; a real port needs one normalized protocol, designed fresh, not lifted verbatim. This is the coupling root for everything below |
+| Deck/slide navigation + zoom + present (fullscreen) | 6072–6075, 6159–6169, 6608–6628, 7685–7696, ~8300–8320 | GENERIC (core logic), low coupling to other features besides the shared `iframeRef` | **Deferred**, needs the bridge core above | Zero OD types in the postMessage payloads or `requestFullscreen()` calls. Does **not** overlap `ViewportSwitcher` (that's a breakpoint preset switcher; this is a numeric zoom% + slide pager) — would be a new small feature once a bridge exists |
+| Inline visual/DOM editor (manual edit) + undo/redo + page-styles panel | 5596–5612, 5779–5802, 7000–7641, `ManualEditPanel.tsx` (sibling file) | MIXED, cleanest split of the file | **Deferred**, needs the bridge core above | The patch/history/undo-redo model (`ManualEditPatch` union, linear undo/redo stack, debounced live-style preview, text-edit session handshake) and `ManualEditPanel`'s prop contract are genuinely clean and OD-type-free; only the persistence calls (`writeProjectTextFileDetailed`, `uploadProjectFiles`) are OD-specific. Shares a cross-cutting source-freeze mechanism with board/inspect mode (`annotationFreezeActive`) — another coupling point, not free-standing |
+| Comment-pinning to rendered elements + "board"/"pod" annotation | 5816–5951, 6802–6989, `CommentPreviewOverlays`/pod-geometry helpers (sibling, lines 4362–4831) | **Two different shapes** — see below | Split disposition | (a) side-list half: **already shipped**, confirmed exact prop-shape match with `CommentSideDock`/`CommentSidePanel` in `features/viewer-shell/` — no new work. (b) DOM-pinned overlay + "pod" lasso: needs the bridge core (deferred) for the overlay itself, but its pure geometry helpers are portable today with zero dependency — **shipped this session**, see below. Correction: "pod" is **not** multi-user collaboration/presence (grepped for presence/multiplayer/collaborat* — zero hits) — it's a single-user freehand-lasso multi-element selector. The task brief's "board/pod live-collaboration system" framing was inaccurate; relabeled here |
+| Cloudflare deploy flow | 5547–5572, 5953–6067, 8056–8300 | MIXED, broader than "Cloudflare-specific" | **Deferred**, not blocked on the bridge core, but out of scope this session | Confirmed a real two-provider abstraction (Cloudflare + Vercel) with provider-specific branching leaked through 5 functions and the render, rather than isolated behind a sub-component. `packages/deploy` already exists with a `DeployTarget` port for exactly this; the natural extraction is a generic deploy-modal shell over that existing port, not new infrastructure — a real future candidate, just not this session's scope |
+| Export menu (PDF/PPTX/image/zip/html/md/template) | 5301–5427, 8745–9017, 7957–8054 | MIXED | **Deferred**, out of scope this session | `fireShareExport`'s progress-toast/correlation-tracking wrapper and the export-menu shell are genuinely OD-type-free and reusable; every concrete exporter is deep OD/desktop-host infrastructure (dual desktop/web paths, CJK-fidelity workarounds) that stays behind an injected `ExportProvider` port a host supplies |
+| Public share links | 8261–8299, ~9139, ~9985 | OD-SPECIFIC, thin | **Not a separate concern** | A small tail of the deploy flow (derive a URL from an existing deployment, copy it) — not worth scoping independently; folds into the deploy-modal item above if that's ever picked up |
+| Speaker notes for deck mode | — | **Does not exist** | N/A — correction | Grepped the full component for "speaker"/"notes" (case-insensitive): zero matches related to presenter notes. The earlier partial read's inclusion of this item was inaccurate; dropped from scope entirely rather than carried forward as a phantom candidate |
+| Brand-extraction-stop hook | 5638–5650 | GENERIC, trivial | **Deferred**, rides with the bridge core | 6-line pass-through `useEffect` forwarding one message type to an already-injected callback prop — not worth scoping as its own unit |
+| Analytics tracking | 5301–5512 + ~14 inline call sites | OD-SPECIFIC, pervasive but shallow | **Not a separate concern** | Cross-cutting decorator around nearly every handler, not an extractable feature — a real port would inject a no-op-by-default `onTrack?()` callback rather than "extracting analytics" |
+| `InspectPanel` (CSS-override panel, sibling component adjacent to `HtmlViewer`) | 3706–4156 | GENERIC | **Deferred**, needs the bridge core (its target-selection comes from the same postMessage surface) | Clean `onApply`/`onResetElement`/`onSaveToSource` prop contract, no OD identifiers found in the component itself |
+| `FileVersionManagerModal`'s call surface from inside `HtmlViewer` | ~8300, `versionModalOpen` state 5530 | — | See the section above | `HtmlViewer` only gates and mounts the modal; the modal itself is now classified and shipped separately above |
+
+**Hook-count corroboration of the coupling claim**: 108 `useState`, 57
+`useEffect`, 46 `useRef` in one function — not itself dispositive, but
+consistent with the transport-state-machine finding rather than
+contradicting it.
+
+**Open question for Coordinator/Software-Architect sign-off (not resolved
+by this task):** every deferred item above except the deploy flow and
+export menu is blocked on the same missing prerequisite — a real,
+deliberately-simpler sandboxed-iframe + single normalized-protocol
+message-bus core in `@jini/renderers-react` (currently an empty stub: just
+`package.json` + a placeholder `index.ts`, confirmed no existing srcDoc
+core to build on or duplicate). Both deep-read passes independently
+concluded this is **a rewrite, not an extraction**: the generic logic
+shapes above (deck-nav, manual-edit model, `InspectPanel`, DOM-pinned
+comment overlay) are real and worth having, but porting them by slicing
+`HtmlViewer`'s current code in place would import its 31-message-type,
+3-naming-convention, state-machine-coupled bridge along with them. Building
+that core is a separate, materially larger design task than a standard
+god-component port — it needs its own scoping session and explicit
+sign-off before dispatch, not a default follow-on to this one. This task
+does not decide that question; it surfaces it.
+
+### What shipped this session
+
+1. **`packages/ui/src/features/version-manager/`** — the
+   `FileVersionManagerModal` generic slice (list/preview/restore/search/
+   prompt-viewer/modal-chrome), per the table above. See its own
+   "What shipped" subsection below for exact files.
+2. **Pod-selection geometry as a standalone utility**, not a `features/`
+   folder — the polygon/lasso-hit-test math (`isClosedLoop`,
+   `pointInPolygon`, `lineIntersectsLine`, `rectContains`,
+   `pathIntersectsRect`) has zero React/OD/framework dependency and no
+   current consumer in this package (the DOM-pinned overlay that would
+   consume it is deferred with the rest of `HtmlViewer`'s bridge-dependent
+   pieces) — matches this package's existing bucket-A precedent
+   (`src/utils/dom-subscriptions.ts`, `visual-stability.ts`: pure/small
+   helpers shipped ahead of a feature consumer when they're genuinely
+   zero-dependency). Shipped as `src/utils/polygon-selection.ts`.
+
+### What's explicitly deferred, not silently dropped
+
+Everything in the `HtmlViewer` table marked "Deferred" above: the
+sandboxed-iframe/message-bus core itself, deck-nav+zoom+present,
+the manual-edit patch/undo-redo model + `ManualEditPanel`, the DOM-pinned
+comment overlay (its geometry helpers shipped, its consuming overlay did
+not), `InspectPanel`, the deploy-modal shell, and the export-menu shell.
+Each has a real, defensible generic shape per the table — none of these
+are "confirmed nothing there," they're "confirmed real, blocked on
+infrastructure or scope, not attempted this session."
