@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { DRAFT_TEST_SCOPE } from '../../constants.js';
 import {
   isActionPending,
   removeSourceById,
@@ -33,7 +34,13 @@ export interface SourceConfigListController<TSource extends SourceConfigItem> {
   remove: (id: string) => Promise<void>;
   refresh: (id: string) => Promise<void>;
   setTrust: (id: string, trust: string) => Promise<void>;
-  test: (id: string, draft?: SourceFieldValues) => Promise<void>;
+  /**
+   * `id === undefined` tests the add-form's still-unsaved draft (the byok
+   * "test before save" flow — see `ports.ts`'s `testSource` doc comment);
+   * pending/result state for that case is tracked under
+   * {@link DRAFT_TEST_SCOPE} instead of a real item id.
+   */
+  test: (id: string | undefined, draft?: SourceFieldValues) => Promise<void>;
 }
 
 const LOAD_FAILED_MESSAGE = 'Failed to load sources.';
@@ -125,14 +132,15 @@ export function useSourceConfigList<TSource extends SourceConfigItem>(
   );
 
   const test = useCallback(
-    async (id: string, draft?: SourceFieldValues) => {
+    async (id: string | undefined, draft?: SourceFieldValues) => {
       if (!port.testSource) return;
-      setPendingKeys((current) => withPendingAction(current, id, 'test'));
+      const key = id ?? DRAFT_TEST_SCOPE;
+      setPendingKeys((current) => withPendingAction(current, key, 'test'));
       try {
         const result = await port.testSource(id, draft);
-        setTestResults((current) => ({ ...current, [id]: result }));
+        setTestResults((current) => ({ ...current, [key]: result }));
       } finally {
-        setPendingKeys((current) => withoutPendingAction(current, id, 'test'));
+        setPendingKeys((current) => withoutPendingAction(current, key, 'test'));
       }
     },
     [port],

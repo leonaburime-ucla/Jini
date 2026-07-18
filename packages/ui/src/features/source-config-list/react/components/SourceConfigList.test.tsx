@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../../i18n/index.js';
 import { createFakeSourceConfigDependencies } from '../../dependencies.js';
 import { SourceConfigList } from './SourceConfigList.js';
@@ -162,6 +162,50 @@ describe('SourceConfigList — BYOK-key-shaped source (same component, different
     expect(await within(card).findByRole('status')).toHaveTextContent('Connected in 12ms.');
     // No refresh capability for this shape.
     expect(within(card).queryByRole('button', { name: /Refresh/ })).toBeNull();
+  });
+
+  /**
+   * Regression, end-to-end through the real orchestrator: the audit's exact
+   * finding was that `ports.ts`'s `testSource(id, draft?)` promised support
+   * for testing an unsaved draft, but the shipped add form had no test
+   * control at all and the orchestrator only ever called `list.test(id)`
+   * for an already-persisted item — an unrepresentable contract. This drives
+   * the real add-form BEFORE any submit, clicks its own "Test" control, and
+   * asserts the port's `testSource` was called with `id === undefined` (no
+   * persisted item exists yet) and the CURRENT draft field values — the
+   * real BYOK "test before save" shape (real OD's `testProviderInline`
+   * calls its test endpoint with only the current form values, no id).
+   */
+  it('tests the add form\'s unsaved draft before any submit (BYOK "test before save")', async () => {
+    const onTest = vi.fn((id: string | undefined, draft: Record<string, string> | undefined) => ({
+      ok: true,
+      message: id === undefined ? 'Draft reachable.' : 'Persisted reachable.',
+    }));
+    const dependencies = createFakeSourceConfigDependencies<ByokKeySource>({
+      createSource: (input) => ({ id: 'byok-0', fields: { apiKey: input.fields.apiKey ?? '', model: input.fields.model ?? '' } }),
+      supportsTrust: false,
+      supportsRefresh: false,
+      supportsTest: true,
+      onTest: (id, draft) => onTest(id, draft),
+    });
+    render(<SourceConfigList<ByokKeySource> dependencies={dependencies} fieldSpecs={BYOK_FIELD_SPECS} />);
+    await waitFor(() => expect(screen.getByText('No sources configured yet.')).toBeInTheDocument());
+
+    await userEvent.type(screen.getByLabelText('API Key', { exact: false }), 'sk-ant-draft-key');
+    await userEvent.type(screen.getByLabelText('Model', { exact: false }), 'claude-sonnet-4-5');
+    await userEvent.click(screen.getByRole('button', { name: 'Test' }));
+
+    expect(onTest).toHaveBeenCalledWith(undefined, { apiKey: 'sk-ant-draft-key', model: 'claude-sonnet-4-5' });
+    expect(await screen.findByText('Draft reachable.')).toBeInTheDocument();
+    // Nothing was persisted — the draft is still in the form, no item card exists.
+    expect(screen.queryByTestId('source-config-item-card')).toBeNull();
+  });
+
+  it('disables the add form\'s Test control until required fields are filled', async () => {
+    const dependencies = byokDependencies();
+    render(<SourceConfigList<ByokKeySource> dependencies={dependencies} fieldSpecs={BYOK_FIELD_SPECS} />);
+    await waitFor(() => expect(screen.getByText('No sources configured yet.')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Test' })).toBeDisabled();
   });
 });
 

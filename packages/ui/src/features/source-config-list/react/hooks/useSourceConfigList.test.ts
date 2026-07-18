@@ -191,6 +191,48 @@ describe('useSourceConfigList', () => {
       expect(testSource).toHaveBeenCalledWith('a', { url: 'https://draft.example' });
       expect(result.current.testResults.a).toEqual({ ok: true, message: 'reached', latencyMs: 12 });
     });
+
+    /**
+     * Regression for the audit finding that "test before save" (testing the
+     * add-form's unsaved draft, which has no item id yet) was unrepresentable:
+     * the port contract already accepted an optional `draft`, but every call
+     * site assumed an already-persisted `id`. `id === undefined` is the real
+     * "no persisted item yet" case (mirrors real OD's `testProviderInline`,
+     * which calls its test endpoint with only the current form field values,
+     * never an id) — result/pending state for it is tracked under the
+     * `DRAFT_TEST_SCOPE` pseudo-id rather than a real source id.
+     */
+    it('tests an unsaved draft (no id) and stores the result under the draft scope, not mixed with any real source id', async () => {
+      const testSource = vi.fn().mockResolvedValue({ ok: false, message: 'invalid key', latencyMs: 3 });
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([SEED]), testSource });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toEqual([SEED]));
+      await act(async () => {
+        await result.current.test(undefined, { apiKey: 'sk-draft' });
+      });
+      expect(testSource).toHaveBeenCalledWith(undefined, { apiKey: 'sk-draft' });
+      expect(result.current.testResults['__draft__']).toEqual({ ok: false, message: 'invalid key', latencyMs: 3 });
+      expect(result.current.testResults.a).toBeUndefined();
+    });
+
+    it('tracks pending state for a draft test independently of any real source id', async () => {
+      let resolveTest!: (result: { ok: boolean }) => void;
+      const testSource = vi.fn().mockReturnValue(new Promise((resolve) => (resolveTest = resolve)));
+      const port = fakePort({ fetchSources: vi.fn().mockResolvedValue([SEED]), testSource });
+      const { result } = renderHook(() => useSourceConfigList({ port }));
+      await waitFor(() => expect(result.current.sources).toEqual([SEED]));
+      let testPromise!: Promise<void>;
+      act(() => {
+        testPromise = result.current.test(undefined, { apiKey: 'sk-draft' });
+      });
+      expect(result.current.isPending('__draft__', 'test')).toBe(true);
+      expect(result.current.isPending('a', 'test')).toBe(false);
+      await act(async () => {
+        resolveTest({ ok: true });
+        await testPromise;
+      });
+      expect(result.current.isPending('__draft__', 'test')).toBe(false);
+    });
   });
 });
 

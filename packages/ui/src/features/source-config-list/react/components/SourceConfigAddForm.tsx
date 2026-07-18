@@ -1,7 +1,8 @@
 import { useT } from '../../../i18n/index.js';
 import { issueForField } from '../../rules.js';
 import { SourceConfigField } from './SourceConfigField.js';
-import type { SourceDraftValidation, SourceFieldSpec, SourceFieldValues, SourceTrustOption } from '../../types.js';
+import { SourceConfigTestControl } from './SourceConfigTestControl.js';
+import type { SourceDraftValidation, SourceFieldSpec, SourceFieldValues, SourceTestResult, SourceTrustOption } from '../../types.js';
 
 export interface SourceConfigAddFormProps {
   fieldSpecs: readonly SourceFieldSpec[];
@@ -16,16 +17,30 @@ export interface SourceConfigAddFormProps {
   onFieldChange: (key: string, value: string) => void;
   onTrustChange: (value: string) => void;
   onSubmit: () => void;
+  /**
+   * Test-before-save (the origin BYOK `EntryShell.tsx`/`ByokConnectionTestControl`
+   * "test before save" UX — see `ports.ts`'s `testSource` doc comment): only
+   * rendered when the host's port implements `testSource` at all
+   * (`capabilities.canTest`, mirrored here as `canTest` since this
+   * presentational component never reads `capabilities` itself). Disabled
+   * while the current draft fails required-field/URL validation, matching
+   * the origin's own `canTestProvider`/`baseUrlValid` gate — testing an
+   * incomplete draft isn't a meaningful connection test.
+   */
+  canTest?: boolean;
+  testing?: boolean;
+  testResult?: SourceTestResult;
+  onTest?: () => void;
 }
 
 /**
  * The "add a source" form: one `SourceConfigField` per host-supplied field
  * spec, an optional trust selector (rendered only when `trustOptions` is
- * given — the origin MCP-server shape has no trust concept at all), and a
- * submit button. Dumb/presentational — the draft state lives in
- * `useSourceConfigAddForm`. Field errors only render once a submit has been
- * attempted, matching the origin sources' "don't yell at the user before
- * they've tried to submit" UX.
+ * given — the origin MCP-server shape has no trust concept at all), an
+ * optional test-before-save control, and a submit button. Dumb/
+ * presentational — the draft state lives in `useSourceConfigAddForm`. Field
+ * errors only render once a submit has been attempted, matching the origin
+ * sources' "don't yell at the user before they've tried to submit" UX.
  */
 export function SourceConfigAddForm({
   fieldSpecs,
@@ -40,6 +55,10 @@ export function SourceConfigAddForm({
   onFieldChange,
   onTrustChange,
   onSubmit,
+  canTest = false,
+  testing = false,
+  testResult,
+  onTest,
 }: SourceConfigAddFormProps) {
   const t = useT();
 
@@ -86,6 +105,14 @@ export function SourceConfigAddForm({
             ))}
           </select>
         </label>
+      ) : null}
+      {canTest && onTest ? (
+        <SourceConfigTestControl
+          running={testing}
+          disabled={submitting || !validation.ok}
+          onTest={onTest}
+          {...(testResult ? { result: testResult } : {})}
+        />
       ) : null}
       {submitError ? (
         <div className="source-config-add-form-error" role="alert">

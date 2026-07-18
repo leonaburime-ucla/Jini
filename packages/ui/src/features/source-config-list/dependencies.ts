@@ -28,8 +28,8 @@ export interface FakeSourceConfigPortOptions<TSource extends SourceConfigItem> {
   supportsTest?: boolean;
   /** Called by the fake's `refreshSource` (when enabled) to compute the refreshed value. Defaults to returning the stored source unchanged. */
   onRefresh?: (source: TSource) => TSource;
-  /** Called by the fake's `testSource` (when enabled). Defaults to always-ok. */
-  onTest?: (id: string, draft: SourceFieldValues | undefined, source: TSource | undefined) => SourceTestResult;
+  /** Called by the fake's `testSource` (when enabled). `id` is `undefined` when testing the add-form's unsaved draft. Defaults to always-ok. */
+  onTest?: (id: string | undefined, draft: SourceFieldValues | undefined, source: TSource | undefined) => SourceTestResult;
 }
 
 /** An in-memory test double good enough for demos and for driving this feature's own hook/component tests. */
@@ -80,8 +80,8 @@ export function createFakeSourceConfigPort<TSource extends SourceConfigItem>(
   }
 
   if (options.supportsTest ?? true) {
-    port.testSource = (id: string, draft?: SourceFieldValues): Promise<SourceTestResult> => {
-      const source = store.find((s) => s.id === id);
+    port.testSource = (id: string | undefined, draft?: SourceFieldValues): Promise<SourceTestResult> => {
+      const source = id === undefined ? undefined : store.find((s) => s.id === id);
       const defaultResult: SourceTestResult = { ok: true, message: 'Connection ok.', latencyMs: 0 };
       const result = options.onTest ? options.onTest(id, draft, source) : defaultResult;
       return delay(result);

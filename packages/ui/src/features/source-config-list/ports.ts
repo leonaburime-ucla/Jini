@@ -29,8 +29,18 @@ export interface SourceConfigPort<TSource extends SourceConfigItem = SourceConfi
   refreshSource?(id: string): Promise<TSource | null>;
   /** Optional: omit for a source shape with no trust/authorization-level concept. */
   setTrust?(id: string, trust: string): Promise<TSource | null>;
-  /** Optional: omit for a source shape with no connection-test concept. `draft`, when supplied, lets a host test unsaved field edits (the byok "test before save" UX) rather than only the last-persisted values. */
-  testSource?(id: string, draft?: SourceFieldValues): Promise<SourceTestResult>;
+  /**
+   * Optional: omit for a source shape with no connection-test concept.
+   * `id` is `undefined` for the one case that has no persisted item yet at
+   * all — testing the add-form's still-unsaved draft (the origin BYOK
+   * `EntryShell.tsx`'s `testProviderInline`/`ByokConnectionTestControl`
+   * "test before save" UX, which calls its test endpoint with the current
+   * form field values directly, never an item id). `draft`, when supplied
+   * alongside a real `id`, lets a host test unsaved edits to an
+   * already-persisted item rather than only its last-saved values; a host
+   * implementation reads `draft ?? <persisted fields for id>` itself.
+   */
+  testSource?(id: string | undefined, draft?: SourceFieldValues): Promise<SourceTestResult>;
 }
 
 export interface SourceConfigDependencies<TSource extends SourceConfigItem = SourceConfigItem> {

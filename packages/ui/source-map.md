@@ -2021,6 +2021,53 @@ Uses the **new** `react/{hooks,components}/` layout end-to-end (per `god-compone
 - **Two dead `?? []` fallbacks were refactored away, not tested around**, per Phase 9.5 point 2: `SourceConfigAddForm.tsx` and `SourceConfigItemCard.tsx` each originally computed a separate boolean (`hasTrustOptions`/`showTrustSelect`) to decide whether to render a trust `<select>`, then separately null-coalesced `trustOptions` again inside the JSX — but TypeScript can't narrow through an intermediate boolean, so the `?? []` branch could never actually fire once the boolean was already true. Refactored to narrow `trustOptions` directly in the JSX condition (`trustOptions && trustOptions.length > 0 ? trustOptions.map(...) : null`), which both satisfies the type checker without a fallback and removes the genuinely-unreachable branch instead of writing a test that could never hit it.
 - **A real, if minor, UX bug surfaced by the same loop**: neither trust `<select>` (add-form or item-card) had a placeholder `<option>` for "no trust chosen yet" — so with a controlled `value=""` and no matching `<option value="">`, the DOM silently displayed the *first* trust option as selected even though no explicit choice had been made. Added a disabled/hidden placeholder option to both, gated on `!trust`/`!source.trust`.
 
+### BYOK "test before save" fix (2026-07-18 audit)
+
+A 2026-07-18 audit found that `ports.ts`'s own `testSource(id, draft?)` doc comment already promised
+support for testing an unsaved draft (the `draft` param), but the shipped implementation contradicted
+that promise: the add form had no test control at all, and `SourceConfigList.tsx`'s orchestrator only
+ever called `list.test(id)` for an already-persisted item — an unsaved draft has no id, so this flow
+was genuinely unrepresentable, not just unwired. Real OD `ByokConnectionTestControl.tsx` (lines 36-42,
+75-105) and `EntryShell.tsx`'s `testProviderInline` (lines 2120-2144) confirm the actual origin shape:
+the test call is made with the CURRENT FORM FIELD VALUES directly (`testApiProvider({ protocol,
+baseUrl, apiKey, model, ... })`), never an item id — there is no id to have yet.
+
+Fixed for real (not narrowed/disclosed-as-dropped), matching the port's own already-stated contract:
+
+- `ports.ts`'s `testSource` signature widened from `testSource(id: string, draft?)` to
+  `testSource(id: string | undefined, draft?)` — `id === undefined` is the real "no persisted item
+  yet" case; a host implementation branches on it (test the draft directly) vs. a defined `id`
+  (test an existing item, optionally with unsaved edits to it).
+- `useSourceConfigList.ts`'s `test(id, draft?)` now accepts `id: string | undefined` and keys its
+  pending/result tracking (`pendingKeys`/`testResults`) by `id ?? DRAFT_TEST_SCOPE` (a new
+  `constants.ts` pseudo-id, `'__draft__'`) — the same "give a not-yet-real id a stable pseudo-key"
+  pattern `features/resource-dashboard`'s `BULK_DELETE_SCOPE` already established for its own
+  not-scoped-to-one-item bulk-delete tracking.
+- `SourceConfigAddForm.tsx` gained an optional test-before-save control (reusing the existing
+  `SourceConfigTestControl` presentational component — no new UI primitive needed), rendered only
+  when the host's port implements `testSource` at all (`canTest`, mirroring `capabilities.canTest`)
+  and disabled while the current draft fails required-field/URL validation (mirroring the origin's
+  own `canTestProvider`/`baseUrlValid` gate — testing an incomplete draft isn't meaningful).
+- `SourceConfigList.tsx` wires it: `onTest={() => void list.test(undefined, addForm.values)}`,
+  `testing={list.isPending(DRAFT_TEST_SCOPE, 'test')}`, `testResult={list.testResults[DRAFT_TEST_SCOPE]}`.
+- `createFakeSourceConfigPort`'s `testSource`/`onTest` fake also widened to accept `id: string |
+  undefined` (resolving `source` to `undefined` when `id` is `undefined`, since there is nothing
+  persisted to look up yet).
+
+Verified with real tests, not just re-reading the source: `useSourceConfigList.test.ts` gained a
+regression proving a draft test (`id === undefined`) is forwarded to the port verbatim and its
+result is stored under `DRAFT_TEST_SCOPE` — NOT mixed into any real source id's `testResults` entry
+— plus a pending-state-isolation regression. `SourceConfigAddForm.test.tsx` gained a `describe`
+block covering: the control is absent when `canTest` is false or `onTest` is omitted, it renders and
+calls `onTest` when the draft is valid, it stays disabled while the draft is invalid (even before a
+submit attempt — deliberately NOT gated on `submitAttempted` like field errors are, since testing
+never "yells" the way a submit-validation error does), and it shows running/result state.
+`SourceConfigList.test.tsx` gained a full end-to-end regression: render the real add form, type BYOK
+draft values, click its own "Test" button BEFORE any submit, and assert the injected port's
+`testSource` was called with `(undefined, { apiKey: ..., model: ... })` and the result renders — with
+no item card ever created (nothing was persisted). Full package after this fix: 171 source-config-list
+tests, all green (up from 162 after the i18n fix, 152 at the pinned audit head).
+
 ### i18n
 
 **Correction (2026-07-18 audit + fix-up):** this section previously claimed "every user-facing

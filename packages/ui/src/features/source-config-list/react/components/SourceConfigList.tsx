@@ -1,3 +1,4 @@
+import { DRAFT_TEST_SCOPE } from '../../constants.js';
 import { useSourceConfigList, useWiredSourceConfigList } from '../hooks/useSourceConfigList.js';
 import { useSourceConfigAddForm, useWiredSourceConfigAddForm } from '../hooks/useSourceConfigAddForm.js';
 import { SourceConfigListView } from './SourceConfigListView.js';
@@ -63,6 +64,14 @@ export function SourceConfigList<TSource extends SourceConfigItem>({
         onFieldChange: addForm.setField,
         onTrustChange: addForm.setTrust,
         onSubmit: () => void addForm.submit(),
+        // Test-before-save: tests the CURRENT draft values, not a persisted
+        // item — there is no id yet (see `ports.ts`'s `testSource` doc
+        // comment). Pending/result state for this case is tracked under
+        // `DRAFT_TEST_SCOPE` by `useSourceConfigList.test`.
+        canTest: list.capabilities.canTest,
+        testing: list.isPending(DRAFT_TEST_SCOPE, 'test'),
+        onTest: () => void list.test(undefined, addForm.values),
+        ...(list.testResults[DRAFT_TEST_SCOPE] ? { testResult: list.testResults[DRAFT_TEST_SCOPE] } : {}),
         ...(addLabel ? { addLabel } : {}),
       }}
       onRefresh={(id) => void list.refresh(id)}
