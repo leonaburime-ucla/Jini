@@ -3,9 +3,11 @@ import {
   allowedBrowserPorts,
   configuredAllowedOrigins,
   isAllowedBrowserOrigin,
+  isIpLiteralHostname,
   isLocalSameOrigin,
   isLoopbackOrPrivateLanHost,
   isPrivateIpv4,
+  parseHostHeader,
 } from './origin-validation.js';
 
 const PORT = 7456;
@@ -24,6 +26,73 @@ describe('isPrivateIpv4', () => {
       expect(isPrivateIpv4(host)).toBe(false);
     },
   );
+
+  it('classifies a 4-part host with a non-numeric octet as not private', () => {
+    expect(isPrivateIpv4('1.2.3.abc')).toBe(false);
+  });
+
+  it('classifies a missing hostname as not private', () => {
+    expect(isPrivateIpv4(undefined)).toBe(false);
+    expect(isPrivateIpv4('')).toBe(false);
+  });
+});
+
+describe('isIpLiteralHostname', () => {
+  it('accepts a bracketed IPv6 literal', () => {
+    expect(isIpLiteralHostname('[::1]')).toBe(true);
+  });
+
+  it('accepts a dotted-quad IPv4 literal', () => {
+    expect(isIpLiteralHostname('127.0.0.1')).toBe(true);
+  });
+
+  it('rejects a missing hostname', () => {
+    expect(isIpLiteralHostname(undefined)).toBe(false);
+    expect(isIpLiteralHostname('')).toBe(false);
+  });
+
+  it('rejects a hostname with the wrong number of dotted parts', () => {
+    expect(isIpLiteralHostname('example.com')).toBe(false);
+  });
+
+  it('rejects a 4-part hostname with a non-numeric octet', () => {
+    expect(isIpLiteralHostname('example.com.not.numeric')).toBe(false);
+  });
+
+  it('rejects a 4-part hostname with an out-of-range octet', () => {
+    expect(isIpLiteralHostname('1.2.3.999')).toBe(false);
+  });
+});
+
+describe('parseHostHeader', () => {
+  it('parses a plain string host header', () => {
+    expect(parseHostHeader('example.com:8080')).toEqual({
+      hostname: 'example.com',
+      host: 'example.com:8080',
+      port: '8080',
+    });
+  });
+
+  it('takes the first element when the header arrives as an array (duplicate-header case)', () => {
+    expect(parseHostHeader(['example.com:9999', 'other.example'])).toEqual({
+      hostname: 'example.com',
+      host: 'example.com:9999',
+      port: '9999',
+    });
+  });
+
+  it('returns null for an empty array (no header value at all)', () => {
+    expect(parseHostHeader([])).toBeNull();
+  });
+
+  it('returns null for a missing/null header value', () => {
+    expect(parseHostHeader(undefined)).toBeNull();
+    expect(parseHostHeader(null)).toBeNull();
+  });
+
+  it('returns null (malformed-input category) rather than throwing when the header cannot form a valid URL', () => {
+    expect(parseHostHeader('[')).toBeNull();
+  });
 });
 
 describe('isLoopbackOrPrivateLanHost', () => {
@@ -32,6 +101,10 @@ describe('isLoopbackOrPrivateLanHost', () => {
     expect(isLoopbackOrPrivateLanHost('127.0.0.1')).toBe(true);
     expect(isLoopbackOrPrivateLanHost('::1')).toBe(true);
     expect(isLoopbackOrPrivateLanHost('0.0.0.0')).toBe(true);
+  });
+
+  it('rejects a missing hostname', () => {
+    expect(isLoopbackOrPrivateLanHost(undefined)).toBe(false);
   });
 
   it('rejects a public host', () => {
@@ -125,6 +198,30 @@ describe('isAllowedBrowserOrigin', () => {
       ]),
     ).toBe(true);
   });
+
+  it('rejects a parseable origin whose protocol is neither http nor https', () => {
+    expect(
+      isAllowedBrowserOrigin(`ftp://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}`, [PORT], '127.0.0.1', []),
+    ).toBe(false);
+  });
+
+  it('rejects when the request Host header cannot be parsed at all', () => {
+    expect(isAllowedBrowserOrigin(`http://127.0.0.1:${PORT}`, '[', [PORT], '127.0.0.1', [])).toBe(
+      false,
+    );
+  });
+
+  it('defaults an origin with no explicit port to 80 for http', () => {
+    expect(isAllowedBrowserOrigin('http://127.0.0.1', '127.0.0.1:80', [80], '127.0.0.1', [])).toBe(
+      true,
+    );
+  });
+
+  it('defaults an origin with no explicit port to 443 for https', () => {
+    expect(
+      isAllowedBrowserOrigin('https://127.0.0.1', '127.0.0.1:443', [443], '127.0.0.1', []),
+    ).toBe(true);
+  });
 });
 
 describe('isLocalSameOrigin', () => {
@@ -151,6 +248,11 @@ describe('isLocalSameOrigin', () => {
   it('is fail-closed when the port is not yet resolved (falsy port)', () => {
     const req = { headers: { host: `127.0.0.1:${PORT}`, origin: `http://127.0.0.1:${PORT}` } };
     expect(isLocalSameOrigin(req, 0, {})).toBe(false);
+  });
+
+  it('is fail-closed when the request carries no Host header at all', () => {
+    const req = { headers: {} };
+    expect(isLocalSameOrigin(req, PORT, {})).toBe(false);
   });
 
   // Regression coverage for the reverse-proxy escape hatch: the Host header a
