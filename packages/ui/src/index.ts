@@ -18,6 +18,7 @@ export * from './features/settings-dialog/tabs/instructions/index.js';
 export * from './features/settings-dialog/tabs/privacy/index.js';
 export * from './features/settings-dialog/tabs/integrations/index.js';
 export * from './features/source-config-list/index.js';
+export * from './features/resource-dashboard/index.js';
 export * from './utils/index.js';
 export * from './utils/zip.js';
 export * from './utils/sse.js';
