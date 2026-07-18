@@ -356,13 +356,16 @@ function ContentStage({
       </div>
     );
   }
+  // `status === 'ready'` is only ever returned by `deriveContentStatus` for
+  // a defined view with a string `html` (see rules.ts) — `view!`/`.html`
+  // (no `??`) is safe by that invariant, not a runtime guess.
   return (
     <div style={scalerStyle} data-preview-modal-stage-scaler="">
       <SrcDocSandbox
-        key={view?.id ?? 'view'}
-        html={view?.html ?? ''}
+        key={view!.id}
+        html={view!.html as string}
         options={srcDocOptions}
-        title={`${title} ${view?.label ?? ''}`}
+        title={`${title} ${view!.label}`}
       />
     </div>
   );

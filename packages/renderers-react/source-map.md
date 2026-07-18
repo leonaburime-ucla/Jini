@@ -557,8 +557,9 @@ scope for this task, and not attempted here.
 - OD's `Icon` component (`./Icon`, an internal named-icon-set component) —
   not ported (product-specific icon set, out of scope, same call already
   made for `AnnotationCanvas`'s icon set). Replaced with a small local
-  `icons.tsx` (2 icons: `close`, `chevron-down`) following the exact
-  `DEFAULT_ANNOTATION_CANVAS_ICONS` pattern already in this package —
+  `icons.tsx` (4 icons: `close`, `chevron-down`, `fullscreen`,
+  `fullscreen-exit`) following the exact `DEFAULT_ANNOTATION_CANVAS_ICONS`
+  pattern already in this package —
   overridable via a `PreviewModalShellProps.icons` prop. The stage
   fullscreen toggle's icon was already a raw inline `<svg>` in the origin
   (not `Icon`), so it needed no OD-icon replacement, just carrying the two
@@ -572,3 +573,82 @@ scope for this task, and not attempted here.
   `data-preview-modal-*` attributes for host styling hooks and a
   `className` passthrough on the root, mirroring `AnnotationCanvas`'s
   `data-annotation-canvas-active` convention.
+
+### What shipped
+
+**Target:** `src/preview-modal-shell/` (top-level feature folder, matching
+`annotation-canvas/`'s own layout — this package uses a flat
+`<feature-name>/` at `src/`, not `features/<name>/`), following the
+React-layout policy (zero-React files at the feature's top level;
+`react/{hooks,components}/` for anything importing React).
+
+| File | Contents |
+|---|---|
+| `types.ts` | `PreviewModalPrimaryAction`, `PreviewModalPrimaryActionMenuItem`, `PreviewModalUnavailable` (generalized to `{message: string}` — see above), `PreviewModalScalerStyle`, `PreviewModalContentStatus`. Zero runtime declarations (excluded from coverage per the same carve-out `src/types.ts` already uses in this package's `vitest.config.ts`). |
+| `rules.ts` | `resolveInitialViewId`, `findActiveView`, `computeStageScale`, `computeScalerStyle`, `deriveContentStatus` — pure extractions of the origin's inline `initial`/`activeView`/`scale`/`scalerStyle` derivations, generic over a minimal `PreviewModalViewLike`/`PreviewModalContentViewLike` shape so the React layer's richer view type (which also carries a `ReactNode` `custom` field) flows through without this file importing `react`. |
+| `react/hooks/usePreviewModalShell.ts` | The headless controller — active-view state, fullscreen (native Fullscreen API + `fullscreenchange` sync + Escape-exits-first), sidebar open state + lazy-load notification, primary-menu open state + outside-click/Escape dismissal, body-scroll lock, and the `ResizeObserver`-with-`window`-resize-fallback stage-measurement effects. Ported near-verbatim from the origin's component body, minus every piece belonging to the deferred share menu. |
+| `react/components/PreviewModalShell.tsx` | The presentational shell: backdrop/header/title/subtitle/tabs, the split-button `PrimaryAction`, the sidebar + edge handles, and the `ContentStage` state-machine renderer (custom/unavailable/error+retry/loading/ready). The `ready` state renders through this package's *existing* `SrcDocSandbox`/`buildSrcDoc` (Part A above) rather than a re-implemented raw iframe. |
+| `react/components/icons.tsx` | `DEFAULT_PREVIEW_MODAL_ICONS` — `close`/`chevron-down`/`fullscreen`/`fullscreen-exit`, overridable via `PreviewModalShellProps.icons`, same shape as `annotation-canvas/react/components/icons.tsx`. |
+| `index.ts` | Public barrel. Re-exported from this package's top-level `src/index.ts` alongside every other slice. |
+
+### Validation
+
+`pnpm --filter @jini/renderers-react typecheck`: clean, zero errors
+(repo-wide, all slices together). `npx vitest run` (whole package): **450/450
+passing** (375 pre-existing + 75 new: 18 `rules.test.ts`, 22
+`usePreviewModalShell.test.ts`, 35 `PreviewModalShell.test.tsx` — including a
+real `I18nProvider`+dictionary end-to-end test asserting *translated* text
+renders, per this repo's i18n policy, and explicit tests for both the
+`ResizeObserver`-available and `window`-resize-fallback stage-measurement
+paths). `npx vitest run --coverage` (whole package): **100%/99.82%/100%/100%**
+(statements/branches/functions/lines) — every `preview-modal-shell/` file is
+100% on all 4 metrics; the aggregate's one sub-100 branch (99.82%, not
+99.79% as before this task) is `annotation-canvas/react/hooks/
+useAnnotationCanvas.ts` lines 920/926, **pre-existing and untouched by this
+task** (that file was already below 100% branch coverage in the prior
+merge's own recorded baseline — this task does not touch `annotation-canvas/`
+at all). Clears the ≥99%-on-all-4-metrics bar
+(`docs/jini-port/skills/fixing-open-design-web.md` Phase 9.5) both
+aggregate and per file for every file this task added or touched. Reached
+via the Phase 9.5 classify-then-fix loop: two genuinely-reachable branches
+were found under-tested (a menu item's missing-`testId`/missing-`description`
+defaults, a primary action's missing-`testId`/`busyLabel` defaults, and the
+stage-edge expand handle's optional `onSidebarToggleClick` call) and got real
+tests; one dead branch (`ContentStage`'s `ready` render used `view?.html ??
+''`/`view?.label ?? ''`, but `deriveContentStatus` only ever returns `'ready'`
+for a defined view with a string `html` — TypeScript can't see that
+invariant across the generic boundary, so the `?.`/`??` were never
+reachable at runtime) was refactored to a documented non-null assertion
+instead of padded with a contrived test, per Phase 9.5's classification #4.
+No `/* v8 ignore */` or other coverage suppression used anywhere.
+
+**Purity grep**: `grep -rniE "open design|OD_|--od-stamp|/tmp/open-design|open-design\.ai|openDesignDesktop|@open-design/"` across `src/preview-modal-shell/`: clean, zero matches. The two bare occurrences of the word "OD" in doc comments (`usePreviewModalShell.ts`, `types.ts`) are the same descriptive-prose shorthand already used elsewhere in this package's shipped `src/` (e.g. `src/index.ts`'s "OD's `runtime/srcdoc.ts`") — not a banned product-identity string.
+
+`pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — clean, no boundary violations.
+
+### Phase 9.6 (async/network test-category gate) — exemption
+
+This cluster has no network/async surface to gate. Its one asynchronous
+operation is the native `Element.requestFullscreen()` promise
+(`usePreviewModalShell.ts`'s `enterFullscreen`), which is a local browser
+API call, not a network round-trip: there is no server response to be
+malformed, no second request to race against, and both the resolve and
+reject paths already converge on the same `setFullscreen(true)` (tested
+explicitly — see "renders... via requestFullscreen"/"still flips to
+fullscreen when requestFullscreen rejects" in `PreviewModalShell.test.tsx`),
+so there is no unhandled-rejection or stale-retry-state risk to test for.
+Stating this explicitly per the gate's own exemption clause rather than
+skipping it silently.
+
+### Not yet done (deferred, disclosed — this was a scoping-first task)
+
+- The merged Share/Export popover (social platforms, copy-link/copy-text,
+  PDF/ZIP/HTML/image export, "open in new tab") — needs the unported
+  `runtime/exports.ts` pipeline first; out of scope for this task, not
+  attempted.
+- Deck-aware srcDoc navigation for `deck: true` views — needs a deck
+  `SrcDocBridge`, which does not exist in this package yet (see the
+  sandboxed-iframe-rendering-core section above's "Not ported" list).
+- A live consumer wiring this shell up against a design-system/example-card
+  preview (the origin's two real call sites) — this task ports the generic
+  primitive only, per its scoping-first brief; wiring a host is a follow-up.
