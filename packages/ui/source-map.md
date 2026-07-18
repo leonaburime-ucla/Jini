@@ -2010,3 +2010,755 @@ fallback chain, by contrast, was classified genuinely reachable (a real
 embed/iframe timing edge case) and given two tests that force each fallback
 step. No `/* v8 ignore */` or other coverage-suppression comment was used
 anywhere in this batch.
+---
+
+## Section: flat atoms — `DesignKitView.tsx` + `home-hero/EdgeAutoScroll.tsx` (2026-07-18)
+
+Scope: `docs/jini-port/god-components-extraction-plan.md`'s Section C (bucket-A
+flat atoms, not `features/` folders) for the two items listed for this batch:
+`DesignKitView.tsx`'s `BrandLogo`/`HeaderActionsMenu`/`useBrandFonts`/
+`designMd*` utilities, and `HomeHero.tsx`'s already-isolated
+`home-hero/EdgeAutoScroll.tsx`. Source: a fresh clone of the real
+`leonaburime-ucla/open-design` fork (commit `0b88ef56144b5a42dc427c1292ae22676d698a34`,
+`main`, 2026-07-02), per the cloud-dispatch preflight — not the vendored
+`integrations/open-design/reference/` snapshot. Both source files were read
+in full before extracting anything, per the batch instruction.
+
+### What shipped
+
+| Jini file | Origin | Contents |
+|---|---|---|
+| `src/components/BrandLogo.tsx` | `DesignKitView.tsx`'s `BrandLogo` (exported as `KitLogoProps`/`BrandLogo`) | The 4-stage logo fallback chain: brand-service image → explicit `logoSrc` → favicon lookup → monogram-letter fallback, advancing on each stage's `onError`. |
+| `src/components/HeaderActionsMenu.tsx` | `DesignKitView.tsx`'s `HeaderActionsMenu` + its co-located `HeaderMenuAction` type | The sticky-header "More" overflow menu: grouped popover, outside-click/Escape-to-close, checkbox-semantics for toggle items. |
+| `src/hooks/useBrandFonts.ts` | `DesignKitView.tsx`'s `useBrandFonts` | Google Fonts `<link>` injection + self-hosted `@font-face` injection from a project's font manifest. |
+| `src/utils/design-md.ts` | `DesignKitView.tsx`'s module-private `designMdModuleSlice`/`replaceDesignMdModule`/`designMdHeadings`/`designMdHeadingMatches`/`designMdDefaultModuleText`/`normalizeDesignMdModuleDraft` | Pure markdown-heading-slice/replace helpers for pulling a single "module" section out of (and back into) a DESIGN.md-shaped document. |
+| `src/hooks/useEdgeAutoScroll.ts` | `home-hero/EdgeAutoScroll.tsx`'s `useEdgeAutoScroll` | Edge hover/click auto-scroll controller for a horizontally-overflowing rail (rAF-driven glide, click-to-nudge, `ResizeObserver`-refreshed reachable-edge state). |
+| `src/components/EdgeScrollZones.tsx` | `home-hero/EdgeAutoScroll.tsx`'s `EdgeScrollZones` | The paired left/right overlay zones that drive the hook above. |
+
+All six are re-exported from `src/index.ts`.
+
+### Genericized / what changed
+
+- **`BrandLogo`**: the origin hardcoded an OD API endpoint
+  (`` `/api/brands/${bid}/logo` ``) for the brand-service stage. Replaced with
+  an injected `resolveBrandLogoUrl?: (brandId: string) => string` — omitting
+  it skips the brand-service stage entirely (falls through to `logoSrc` /
+  favicon / letter) rather than ever constructing an OD-specific URL. The
+  Google-favicon-service call (`https://www.google.com/s2/favicons?...`) was
+  kept as the default (a genuinely generic third-party API, not OD-specific —
+  same reasoning `useBrandFonts`'s Google Fonts `<link>` injection already
+  uses) but is now also overridable via `resolveFaviconUrl`. Dropped the
+  origin's legacy `id?: string` alias for `brandId` (an OD call-site quirk —
+  "Brands list rows pass `id`" — not a generic concern for a standalone
+  component).
+- **`useBrandFonts`**: the origin's self-hosted-font-manifest fetch called
+  `projectRawUrl(projectId, path)`, an OD-specific import from
+  `../providers/registry`. Replaced with an injected
+  `options.resolveProjectAssetUrl?: (projectId, path) => string` — per the
+  batch instruction, omitting it skips the manifest fetch entirely rather
+  than hardcoding any font-service URL. The Google Fonts `<link>`-injection
+  half needed no change (already generic).
+- **`HeaderActionsMenu`**: no OD coupling beyond a `styles.*` CSS-module
+  import (`./BrandPreviewCard.module.css`) — this package has no
+  CSS-module build step (same situation every prior flat-group component
+  hit, e.g. `KitErrorBoundary`/`WorkingDirPicker`), so class names were
+  flattened to plain `jini-header-actions-menu*` names. The
+  `data-testid="design-kit-more-actions"` (naming the menu after its one
+  origin call site) was renamed to `header-actions-menu-trigger` since this
+  is now a standalone, non-"design-kit"-specific component.
+- **`design-md.ts`**: `DesignMdModuleSpec`'s original `id` field was a fixed
+  6-value OD union (`'identity' | 'typography' | 'palette' | 'voice' |
+  'imageryLayout' | 'designSystem'`, the brand-kit's own module list) and
+  `label` was a translated UI-display string — neither is read by the pure
+  slice/replace/heading-match logic itself (only `heading`/`keywords`/
+  `includePreamble` are). Both fields were dropped from the ported
+  `DesignMdModule` type; a host building a real module picker UI supplies
+  its own id/label alongside a `DesignMdModule` when calling into this
+  utility, rather than this pure-logic file carrying UI-display fields it
+  never reads.
+- **`EdgeScrollZones`**: only OD-specific artifact was the `home-hero__rail-edge*`
+  CSS class family (named after the one OD component that used it). Renamed
+  to `jini-edge-scroll-zone*`. Logic is otherwise byte-identical to the
+  origin — r6's "already isolated, ship as-is" verdict held up on a full
+  read; the only change was the class-name neutrality pass.
+
+### i18n
+
+None of the six atoms render a hardcoded user-facing string that needed
+`useT()` wrapping: `HeaderActionsMenu` takes every label (`label`, each
+`HeaderMenuAction.label`) as a caller-supplied prop with no default value
+(the "translatable for free" pattern already holds without any wrapping —
+there is nothing in this component's own source to translate); `BrandLogo`
+renders no text beyond a derived monogram initial and an intentionally-empty
+`alt=""`; `EdgeScrollZones` is `aria-hidden` on both zones with no visible
+text or `aria-label` (decorative overlays, matching the origin exactly —
+verified this wasn't an accessibility gap introduced by porting, it was
+already `aria-hidden` in the origin); `useBrandFonts`/`useEdgeAutoScroll`
+render nothing; `design-md.ts` is pure logic with no React import (exempt
+per the i18n policy) and its `heading`/markdown output is document content
+written by the module, not UI chrome to translate. Flagged explicitly per
+the policy's own "no silent gaps" instruction rather than left unstated.
+
+### Coverage
+
+Ran the Phase 9.5 classify-then-fix loop once per atom; every uncovered
+branch on the first pass classified as either "genuinely reachable, just
+untested" (all `BrandLogo` fallback-chain permutations; `useBrandFonts`'s
+resolver-present/absent × projectId-present/absent × fetch-ok/fetch-fail/
+fetch-throw/manifest-empty/unmount-mid-fetch matrix; every `useEdgeAutoScroll`
+glide/nudge/stop/restart/ResizeObserver-present-or-absent/ref-unattached
+path) or "TS-required fallback with no real runtime path" (two `??`
+fallbacks in `design-md.ts`'s `designMdHeadings` — `match.index`/`match[1]`
+are typed possibly-`undefined` by the JS regex API even though this
+pattern's mandatory capture group and `matchAll` result always define them;
+converted to non-null assertions with an explaining comment, not tested
+around) or a genuine **dead branch** refactored away rather than tested
+around: `design-md.ts`'s `designMdModuleSlice`/`replaceDesignMdModule` both
+defensively wrote `body ?? ''` for a parameter already typed `string` (not
+optional) — the `??` fallback was unreachable under the function's own type
+contract, so it was deleted (using `body` directly) instead of adding a
+type-defeating cast just to hit it; `HeaderActionsMenu`'s
+`Fragment key={group[0]?.id ?? groupIndex}` — `group` is always drawn from
+`visibleGroups = groups.filter((g) => g.length > 0)`, so `group[0]` is
+always defined at that call site and the `?.`/`??` fallback could never
+fire — replaced with `group[0]!.id` plus a one-line comment recording the
+invariant. No `/* v8 ignore */` or other suppression was used anywhere.
+Final numbers, all six atoms, statements/branches/functions/lines:
+
+| File | Statements | Branches | Functions | Lines |
+|---|---|---|---|---|
+| `BrandLogo.tsx` | 100 | 100 | 100 | 100 |
+| `HeaderActionsMenu.tsx` | 100 | 100 | 100 | 100 |
+| `EdgeScrollZones.tsx` | 100 | 100 | 100 | 100 |
+| `useBrandFonts.ts` | 100 | 100 | 100 | 100 |
+| `useEdgeAutoScroll.ts` | 100 | 100 | 100 | 100 |
+| `design-md.ts` | 100 | 100 | 100 | 100 |
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` and
+the stricter `grep -rn "od-\|open-design\.ai\|openDesignDesktop"` pass, both
+run across every new/changed file in this batch (the six source files, their
+six test files, and the `src/index.ts` barrel diff): **clean, zero matches**
+in both passes.
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui typecheck`: green (zero errors).
+- New atom tests in isolation: **94 tests across 6 files, all green**, 100%
+  statements/branches/functions/lines on all six atoms (table above).
+- `pnpm --filter @jini/ui exec vitest run` (full package): **1306 tests,
+  146 files, all green** — no regression in any pre-existing test.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — no boundary violations introduced.
+## Section: `features/schedule-picker/` (`RecurringSchedulePicker`) + `features/mention-autocomplete/` (`MentionAutocomplete`) — `NewAutomationModal.tsx` (2026-07-18)
+
+Source: `apps/web/src/components/NewAutomationModal.tsx` (1,165 lines in the
+real clone at `leonaburime-ucla/open-design`, commit at dispatch time —
+**not** `integrations/open-design/reference/`'s frozen snapshot, per this
+task's mandate to clone the real fork), per
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map
+Section B rows for `features/schedule-picker/` and
+`features/mention-autocomplete/`, and recon `r6-god-component-internals.md`
+§1.19. Two separate `features/<domain>/` slices, both under the NEW
+`react/{hooks,components}/` layout, per this repo's React-layout policy.
+
+### `features/schedule-picker/` — what shipped
+
+| File | Contents |
+|---|---|
+| `types.ts` | `Weekday`, `ScheduleKind`, `ScheduleValue` (tagged union — the generic replacement for the origin's `RoutineSchedule` contract type), `ScheduleKindOption`, `WeekdayOption`, `ScheduleEditorState` (carries every kind's fields simultaneously, mirroring the origin's `FormState` schedule fields so switching kind tabs doesn't lose in-progress edits), `ScheduleSummaryParts`. |
+| `constants.ts` | `DEFAULT_SCHEDULE_KINDS`, `DEFAULT_WEEKDAYS` (Sunday-first), `DEFAULT_SCHEDULE_TIME`/`WEEKDAY`/`MINUTE`. |
+| `rules.ts` | `clampMinute`, `formatTime12h`, `decomposeSchedule`/`describeScheduleSummary` (ported from the origin's identically-named functions, generalized off `RoutineSchedule`), `defaultScheduleEditorState`, `scheduleEditorStateFromValue` (the origin's `formFromRoutine`, generalized), `buildScheduleValue` (the origin's `buildSchedule`, generalized), `showsWeekdayGrid`/`showsTimeFields`. Hook-free by design. |
+| `react/hooks/useRecurringSchedulePicker.ts` | Owns popover open/closed, the editor working-state, and outside-click/Escape dismissal via the shared `useDismissOnOutsideOrEscape` hook (`packages/ui/src/browser/`) rather than hand-rolling a second listener pair — this task is the second consumer of that shared hook after `browser-chrome`'s `BrowserViewportControls`. Re-syncs the editor state from the latest committed `value` each time the popover re-opens (so a discarded in-progress edit doesn't leak into the next open). No `ports.ts`/`dependencies.ts` — this feature has no transport dependency; timezone data comes from the flat `utils/timezone.ts` and there's no persistence port to inject (matches the `settings-dialog` tabs' "no ports" precedent for pure-client-state features). |
+| `react/components/ScheduleKindTabs.tsx`, `WeekdayGrid.tsx`, `ScheduleFields.tsx` (kind-dependent minute-field vs. time+timezone-row), `ScheduleSummary.tsx` (+ `translatedScheduleSummaryLabel` — a translated-string sibling of the JSX summary, used for the trigger pill's `aria-label`; needed because `rules.ts`'s `describeScheduleSummary` is hook-free and therefore can't itself produce translated output), `RecurringSchedulePicker.tsx` (orchestrator — trigger `PillButton` + popover assembling the above + a Done action that commits the edit). |
+| `index.ts` | Public barrel. |
+
+### `features/mention-autocomplete/` — what shipped
+
+| File | Contents |
+|---|---|
+| `types.ts` | `MentionItem<TIcon = unknown>` (the generic `{id, label, category, meta?, icon?}` shape the task brief specified, replacing the origin's `SkillSummary`/`InstalledPluginRecord`/`McpServerConfig`/`ConnectorDetail` union), `MentionCategory`, `MentionCategoryFilter`, `MentionTriggerMatch`, `MentionInsertResult`. `icon` is generic over `TIcon` (not `ReactNode` directly) specifically so this file has zero *runtime* React import per the React-layout policy — the `react/` layer binds `TIcon = ReactNode` itself (see `MentionResultItem`'s `T extends MentionItem<ReactNode>` constraint), the same kind of split `settings-dialog`'s `SettingsDialogTabMeta`/`SettingsDialogTab` used for the same reason. |
+| `constants.ts` | `ALL_CATEGORY_FILTER`, `DEFAULT_TRIGGER_CHAR` (`'@'`), `DEFAULT_MAX_RESULTS_PER_CATEGORY` (10, matching the origin's per-kind `.slice(0, 10)`). |
+| `rules.ts` | `readMentionTrigger` (the origin's `readContextMention`, generalized: trigger character is now a parameter, not hardcoded `@`), `buildMentionToken` (the origin's `inlineMentionToken` from `utils/inlineMentions.ts` — **only this one trivial function was ported from that file**, see the "3-way overlap" note below for why the rest of it wasn't), `insertMentionToken` (the text-splicing half of the origin's `replaceMentionWithLabel`, with the DOM focus/cursor-restore half kept in the hook), `filterMentionItems`, `groupItemsByCategory` (per-category-capped, matching the origin's independent per-kind `.slice(0,10)` rather than one shared cap across every category combined — a subtlety that needed a second pass to get right, see the coverage-loop notes below), `isCategoryVisible` (the origin's `showSkills`/`showPlugins`/`showMcp`/`showConnectors` booleans, generalized to one predicate), `mentionSelectionKey` (a new `category:id` composite-key helper — needed because two different categories may reuse the same raw id, which the origin never had to handle since it tracked `selectedSkillIds`/`selectedPluginIds`/etc. as four separate arrays), `hasAnyResults`. |
+| `react/hooks/useMentionAutocomplete.ts` | Owns the live-textarea trigger detection, the active category tab, filtered/grouped results, and — a deliberate design decision beyond a literal port — the **selected-items set itself** (`selectedItems: T[]`, add-on-pick/remove-on-chip-click), rather than requiring the host to own that state externally. The origin owned `selectedSkillIds`/`selectedPluginIds`/`selectedMcpIds`/`selectedConnectorIds` in the *modal's* own state (OD-specific, per the "form/REST wiring stays behind" rule) — but the underlying *mechanism* ("track what's picked, render removable chips, allow removal") is exactly what r6 §1.19 named as part of the generic picker shape ("removable chips"), so this port makes the widget fully self-contained rather than pushing that mechanism back onto every future host. A host that wants to observe the selection gets `onSelectionChange`. Also owns a real, disclosed bug fix (see below). |
+| `react/components/MentionCategoryTabs.tsx`, `MentionResultItem.tsx`, `MentionResultsList.tsx`, `SelectedMentionChips.tsx`, `MentionAutocomplete.tsx` (orchestrator: renders its own `<textarea>` + tabbed popover + chips row — a self-contained "mention-enabled textarea" widget, not just the popover in isolation, since that's what makes it directly drop-in reusable). All four inner components generic over `T extends MentionItem<ReactNode>`. |
+| `index.ts` | Public barrel. |
+
+### A real bug found and fixed, not silently ported
+
+The origin wires `onKeyDown={handlePromptKeyDown}` (Escape closes the mention) and `onKeyUp={refreshMentionFromPrompt}` (re-derives the mention from the live textarea) on the same `<textarea>`. Since Escape doesn't change the textarea's value or cursor, the `keyup` that always follows the `keydown` re-reads the still-live `@token` and **immediately reopens the mention Escape just closed** — a real, reproducible defect in the origin (confirmed by porting it faithfully first, per Phase 0's behavior-preserving instinct, and watching a new test fail). Per this task's own instructions ("no OD tilt," building a *good* generic primitive, not a byte-identical clone) this was fixed rather than reproduced: `onTextareaKeyUp` now skips the refresh specifically when `event.key === 'Escape'`, with a code comment and a dedicated test (`onTextareaKeyUp skips the refresh for an Escape key`) proving the fix. Flagged here explicitly rather than left as a silent behavior change.
+
+### Popover chrome primitives + timezone utils (r6 §1.19 items 4c/4d)
+
+- **`PillButton`/`PopoverMenu`/`PopoverItem`** shipped as flat `packages/ui/src/components/*.tsx` (per the task's own instruction to ship flat if "truly standalone/reusable outside this file," using judgment). `RecurringSchedulePicker` is a **real consumer** of `PillButton` (its trigger). `PopoverMenu`/`PopoverItem` are **not** consumed by either shipped feature — the origin used them for the *project-target picker* popover (`New project each run` / existing-projects list), which is explicitly OD-specific form/target-selection wiring this task does not port (see "What stayed behind" below). They're shipped anyway because r6 classified them as "generic, no OD types" independent of that one call site, and a future project/target-picker-shaped extraction can reuse them without re-deriving the same simple check-mark-list-item shape — but this is flagged here explicitly as the honest state, not silently implied to be wired into either new feature.
+- **`detectLocalTimezone`/`listSupportedTimezones`/`tzCityLabel`** shipped as flat `packages/ui/src/utils/timezone.ts` (pure `Intl` wrappers, exactly as r6 described them). `useRecurringSchedulePicker` is the real consumer.
+
+### Cross-check against r6 §1.19's full description (nothing dropped silently)
+
+- "kind-tabs + weekday-grid + time/timezone-select" — all three shipped (`ScheduleKindTabs`/`WeekdayGrid`/`ScheduleFields`).
+- "only the `RoutineSchedule` type is OD-specific" — confirmed; replaced by `ScheduleValue`, no other OD coupling found in the schedule editor during the Phase 8.5 audit.
+- "inline @-token detection, tabbed multi-category filtered results, removable chips" — all three shipped (`readMentionTrigger`, `MentionCategoryTabs`+grouped `MentionResultsList`, `SelectedMentionChips`).
+- "OD-specific only via the capability data types" — confirmed; replaced by generic `MentionItem`, no other OD coupling found.
+- "Popover chrome primitives... generic, no OD types" — shipped flat, per above (with the honest non-consumption note).
+- "Timezone utilities... pure Intl wrappers" — shipped flat, consumed by schedule-picker.
+- Nothing r6 called generic was simplified away or dropped in this pass.
+
+### What stayed OD-specific and was NOT ported (per r6 §1.19 + the task brief)
+
+- `FormState`/schedule-building tied to the `Routine` contract type, and the whole `buildSchedule`→`CreateRoutineRequest` submission shape.
+- The template-picker (`TemplatePopover`, `AutomationTemplate`) and OD's own automation-template catalog content.
+- The project-target picker (`New project each run` / existing-project list) — this is *also* where `PopoverMenu`/`PopoverItem` would have been consumed in the origin; not ported since it's a project/target-selection concept, not a generic picker shape on its own.
+- The form-submit/REST-endpoint wiring (`/api/routines` POST/PATCH, `onSaved`/`onClose` callback contract).
+- `utils/inlineMentions.ts`'s Lexical-adjacent rich-text mention *parser* (`buildInlineMentionParts`, the trie-based token index, `isMentionBoundary`/`isMentionRightBoundary`/`mentionTokenPresent`) — the origin's `NewAutomationModal.tsx` only ever called that file's trivial `inlineMentionToken(label)` helper (ported here as `buildMentionToken`, generalized). The rest of that file is a much larger rich-text-over-a-committed-string mention system that belongs with the Lexical `composer/*` `@mention` system instead (see the 3-way overlap note directly below) — pulling it in here would have smuggled a second, unrelated feature's source file into this task's scope.
+
+### The mention-autocomplete 3-way overlap (flagged per the task brief, not resolved here)
+
+`docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" list (~line 148) names three "type a trigger character, get a filtered picker" shapes: `QuickSwitcher.tsx` (Cmd-K fuzzy file/tab switcher), this file's `@`-mention/capability picker (now shipped as `MentionAutocomplete`), and `composer/*`'s Lexical `@mention` system (`MentionNode.ts` + siblings). Read all three at dispatch time to check this:
+
+- **`QuickSwitcher.tsx`** (`apps/web/src/components/QuickSwitcher.tsx` in the real clone): a full-screen Cmd-K-style modal overlay with a single always-visible search input (no inline trigger-character detection — it's already open when mounted), fuzzy-scored ranked results (`scoreMatch`/`scoreWorkspaceContextMatch`, prefix/substring/full-text tiers), arrow-key + Enter keyboard navigation with a `cursor` index and `nextCursor` wraparound, and a recents-first empty-query ordering (`quickSwitcherRecents`). **Not the same component shape as `MentionAutocomplete`**: no inline-textarea trigger detection, no tabbed multi-category grouping, no removable-chips multi-select, and a fundamentally different selection model (arrow-key cursor + Enter, not click/mousedown-to-pick with a chip trail). Both are "type text, get filtered results," but `MentionAutocomplete`'s defining shape (trigger character *inside* a text field, multi-category tabs, persistent multi-select chips) doesn't match `QuickSwitcher`'s (an already-open single-purpose fuzzy-match palette with keyboard-cursor selection). **Conclusion: do not fold `QuickSwitcher.tsx` into `features/mention-autocomplete/`** — it's a distinct shape (closer to a generic "command palette" primitive) and should get its own extraction if/when it's prioritized.
+- **`composer/*`'s Lexical `@mention` system** (`apps/web/src/components/composer/MentionNode.ts` + siblings, referenced but not fully read in this dispatch — out of this task's file scope): per r5's own characterization ("generic Lexical rich-text/mention editor primitive," target `features/rich-text-input/`), this is a *contenteditable rich-text* mention system built on the Lexical editor framework, rendering mentions as atomic inline nodes inside a WYSIWYG document model — a fundamentally different implementation substrate than `MentionAutocomplete`'s plain `<textarea>` + string-splicing approach. They likely share only the shallow "type `@`, see a filtered list" *interaction pattern*, not a reusable component-level shape — a plain textarea can't host a Lexical node tree, so `MentionAutocomplete` cannot become `features/rich-text-input/`'s implementation, and shouldn't try to.
+- **This task's own verdict**: `MentionAutocomplete` (this shipment) and `QuickSwitcher`/the Lexical mention system are three genuinely different shapes under one superficially-similar description, not the same primitive done three ways. A future dispatch extracting `QuickSwitcher.tsx` or `features/rich-text-input/` should still read this section first and re-verify this conclusion (this recon was done by one task under time pressure, not an exhaustive side-by-side), but should not assume `features/mention-autocomplete/` is already "the" answer for either.
+
+### The `features/progress-card/` discrepancy (flagged per the task brief)
+
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map (line ~100) and its §1 priority list (line ~267) both describe `features/progress-card/` as "✅ landed"/"already shipped." **This is not true in this repo as of this dispatch (2026-07-18, branch `extract/schedule-picker-and-mention-autocomplete` off `origin/main` at `e3110ac`)**: `packages/ui/src/features/progress-card/` does not exist — confirmed via `ls packages/ui/src/features/` (lists `asset-grid, browser-chrome, connectors, i18n, observability, settings-dialog, sketch-editor, viewer-shell` only) and via `find`/`ls` directly on the path (no such file or directory). This task did not attempt to reconcile or re-land it — it's out of scope for the schedule-picker/mention-autocomplete extraction — but is recorded here per the task brief's explicit instruction not to let a doc claim stand unverified. A future task should either land `features/progress-card/` for real or correct the plan doc's two claims.
+
+### i18n
+
+Every user-facing string in every new file (both features) routes through `useT()`, English string as key, per this package's i18n policy. `rules.ts` in both features stays hook-free — `ScheduleSummary`'s translated pill segments and `translatedScheduleSummaryLabel`'s translated `aria-label` both wrap `decomposeSchedule`'s untranslated return value at the call site, exactly the pattern the policy prescribes. Every component has a real test mounting under `I18nProvider` with a translated dictionary and asserting the translated text renders (not just that `t()` compiles), including one full end-to-end `MentionAutocomplete` test exercising a translated placeholder, tab labels, section labels, and the chips-row `aria-label` together in one flow.
+
+### Phase 8.5 audit
+
+Ran across every new file in both features: no orphaned `useState`/`useRef` found (every state value/ref in `useRecurringSchedulePicker` and `useMentionAutocomplete` is read somewhere — render, an effect, or a returned callback). No inline JSX callback with real multi-statement branching was found — the only inline arrows are one-line `onClick={() => onChange(x)}`-shaped calls or a `preventDefault()`+one-call pair (`MentionCategoryTabs`'/`MentionResultItem`'s `onMouseDown`), matching the audit bar already accepted for `AssetGridToolbar`'s `onSearchChange`-shaped one-liners elsewhere in this package. Every `useMemo` in `useMentionAutocomplete` (`filteredItems`, `groups`, `selectedKeys`) is a direct, single-purpose derivation with no unextracted branching. Two genuinely-dead-but-TS-required fallbacks were found and refactored away rather than tested around, per Phase 9.5 point 3: `rules.ts`'s `readMentionTrigger` had two `match[n] ?? ''` fallbacks for regex capture groups that are structurally guaranteed to participate whenever the overall match succeeds (replaced with non-null assertions + an explaining comment); `utils/timezone.ts`'s `tzCityLabel` had a `.split('/').pop() ?? timezone` fallback that's likewise unreachable (`split` always returns a non-empty array) (same fix).
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across `packages/ui/src/features/schedule-picker/`, `packages/ui/src/features/mention-autocomplete/`, `packages/ui/src/utils/timezone.ts`(+test), `packages/ui/src/components/{PillButton,PopoverMenu,PopoverItem}.tsx`(+tests): **clean, zero matches.**
+
+### Test/typecheck/coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors) — required the same `exactOptionalPropertyTypes` discipline as prior sections (every optional hook/prop param needs `| undefined` added explicitly, not just `?`), plus one `renderHook` generic-inference gotcha (an arrow function parameter's *explicit* type annotation does not feed back into inferring the call's own generic type parameters — TypeScript inferred a narrowed union member from `initialProps` instead of the intended full `ScheduleValue` union; fixed by passing `renderHook`'s `<Result, Props>` type arguments explicitly rather than relying on inference).
+- `pnpm --filter @jini/ui exec vitest run`: package-wide **160 test files, 1372 tests, all green** (up from the pre-existing 140 files/1209 tests baseline) — this task contributes 12 new test files/79 tests for `schedule-picker` (+ its 3 flat components/timezone util) and 8 new test files/81 tests for `mention-autocomplete`.
+- Coverage (`vitest run --coverage`, `json-summary`+`json` reporters, per the Phase 9.5 method): **100% statements/branches/functions/lines on every single new file in both features**, confirmed via the real per-file `coverage-summary.json` numbers (the v8 text-table reporter alone would have hidden this — it drops rows once there are many files, per this package's `vitest.config.ts` comment). The full classify-then-fix loop was needed twice: (1) `groupItemsByCategory`'s per-category cap vs. a single shared cap across all categories — caught by branch coverage before it became a real bug, not just a style choice; (2) the two genuinely-dead `?? ''`/`?? timezone` fallbacks noted in the Phase 8.5 section above, refactored to non-null assertions rather than tested around, per the "never fake the number" rule. No `/* v8 ignore */` or any coverage-suppression comment was used anywhere. The package-wide aggregate (`coverage-summary.json`'s `total`) sits at 93.1%/90.83%/92.67%/93.1% (statements/branches/functions/lines) — this is **pre-existing debt in files this task never touched** (e.g. `utils/notifications.ts` at 67%, `utils/scroll-to-top.ts`, several untested hooks under `src/hooks/`), not a regression; every file this task actually authored or edited is at 100%, which is the bar the task brief's Phase 9.5 method targets (per-file, not a blanket whole-package retrofit).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+- Full monorepo `pnpm -r run typecheck`: fails only at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing and already documented in this file's `settings-dialog`/`connectors` sections above; unrelated to this task's changes.
+## Section: `features/asset-tree-browser/` — file-tree browser + preview pane (2026-07-18)
+
+Source: a real design-tool origin project's web tree, branch
+`refactor/web-memory-slice` @ commit `d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d`,
+file `apps/web/src/components/DesignFilesPanel.tsx` (1,731 lines), read in
+full and re-verified line-by-line while porting each piece (per
+`docs/jini-port/skills/fixing-open-design-web.md`'s standing instruction —
+never invent behavior from a summary). Task brief: extract a generic
+`AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>` UI feature into
+`packages/ui/src/features/asset-tree-browser/`. This had never been
+attempted before this session — no prior branch or partial work existed.
+
+Structural precedent: `features/asset-grid/` (the shipped `types.ts`/
+`constants.ts`/`rules.ts`/`ports.ts`/`dependencies.ts`/`index.ts` +
+`react/hooks/`+`react/components/` layout, the `Selectors<TAsset>`
+accessor-object discipline, and the "ship a real browser-generic port,
+fake only the genuinely host-specific one" split).
+
+### What shipped — `packages/ui/src/features/asset-tree-browser/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `AssetTreeFileItem`/`AssetTreeFolderItem` (`{path: string}` identity constraints, mirroring `AssetGridItem`'s `{id: string}`), `AssetTreeSelectors<TFile>` (`getSize`/`getModifiedAt`/`getKind`/optional `getLocalPath`), `AssetTreeKindConfig`/`AssetTreeKindConfigMap` (host-supplied label+glyph per kind), `AssetTreeSection<TFile>`, `AssetTreeNavState`, `AssetTreeToolbarAction`, `AssetTreeBreadcrumbSegment`, `AssetTreeRelativeTime` (the `{label, translatable, params?}` i18n-safe shape — see the i18n section below), `AssetTreeRenameState`, `AssetTreeMenuPosition`. |
+| `constants.ts` | `DEFAULT_KIND_CONFIG_MAP`/`DEFAULT_KIND_GLYPH`/`DEFAULT_SECTION_ORDER` (all empty — an unconfigured host still gets every kind rendered, just under its raw key), `EMPTY_TOOLBAR_ACTIONS` (a stable `[]` so omitting `toolbarActions`/`emptyStateActions` doesn't allocate a fresh array every render), `ROW_MENU_ESTIMATED_HEIGHT_PX`/`ROW_MENU_SAFE_PADDING_PX`, `COPY_LOCAL_PATH_CONFIRM_MS` (1600ms, matching the origin), `DOUBLE_ACTIVATION_WINDOW_MS` (300ms, matching the origin's keyboard double-Enter-to-open window). |
+| `rules.ts` | `deriveTreeChildren` (dirs/files at the current level — preserves a genuinely surprising origin behavior verbatim, see below), `groupFilesByKind` (kind sections ordered by host `sectionOrder`, unconfigured kinds appended in first-seen order — a generification the origin never needed since its `SECTION_ORDER` enumerated every possible kind), `nextExistingAncestorDir` (the auto-navigate-up-when-the-viewed-dir-vanishes logic), `countFilesUnderDir`, `toggleInSet`/`pruneMissingPaths` (selection, path-keyed instead of id-keyed), `basenameForRename`/`resolveRenameCommit` (the rename-commit decision, extracted from inline branching), `computeMenuPosition` (the row-menu's pure viewport-flip math), `canCopyLocalPath`, `isDoubleActivation`, `resolveKindConfig`, `humanBytes` (verbatim, no i18n — matches the origin, which never translated it either), `relativeTimeResult` (returns `{label, translatable, params?}`, not a finished string — see i18n section), `fileExtensionLabel`, `buildBreadcrumbSegments`, the clipboard-paste parsing quartet (`filesFromClipboardData`/`normalizePastedFile`/`extensionForMimeType`/`shouldIgnoreClipboardFilePaste`), and the drag-drop recursive-folder-expansion quartet (`filesFromDataTransfer`/`filesFromFileSystemEntry` + two private helpers) — all ported near-verbatim from the origin, reusing the already-shipped `utils/file-system-errors.ts` for the read-failure wrapping instead of reimplementing it. |
+| `ports.ts` | `AssetTreeClipboardPort` (`copyToClipboard`), `AssetTreeDomBridgePort` (`subscribeOutsideDismiss`/`subscribeGlobalPaste`/`getViewportHeight`), `AssetTreeDependencies`. See the "deliberate correction" note below for `subscribeOutsideDismiss`'s signature. |
+| `dependencies.ts` | `createBrowserAssetTreeClipboardPort`/`createBrowserAssetTreeDomBridgePort`/`createBrowserAssetTreeDependencies` — all REAL, SSR-guarded implementations (both ports are genuinely browser-generic, same reasoning `asset-grid`'s `createBrowserSseLiveUpdatesPort` used), bound to the already-shipped `utils/copy-to-clipboard.ts` and `utils/dom-subscriptions.ts` rather than reimplemented. `createFakeAssetTreeDependencies` — an inert test double for this feature's own tests (and any host's). |
+| `react/hooks/useAssetTreeNavigation.ts` | Current-directory state (seeded from `navState`, reported upward via `onNavStateChange` — a one-time seed + report-upward callback, not a fully controlled prop, matching the origin's own `navState`/`onNavStateChange` pair), `dirsAtCurrentDir`/`filesAtCurrentDir`/`sections` derivations, the ancestor-correction effect. |
+| `react/hooks/useAssetTreeSelection.ts` | Path-keyed `Set` selection: toggle/clear, reset-on-nav, prune-on-vanish, `renamePath` (carries a selection over to a renamed path), and `pendingRenamePath` — a fix discovered while writing the orchestrator's own integration test, see below. |
+| `react/hooks/useAssetTreePreview.ts` | Which file is previewed (resolved against the FULL `files` list, not just the current directory — the origin never clears the preview on navigation, so neither does this), one-time auto-initial-preview via an optional host `selectInitialPreviewFile`, clear-on-vanish. |
+| `react/hooks/useAssetTreeRename.ts` | Start/edit/commit/cancel. One deliberate behavior change from the origin: a failed rename surfaces as `renameError` state instead of a blocking native `alert()` — see below. |
+| `react/hooks/useAssetTreeRowMenu.ts` | The `⋯` context menu's open/positioned/dismiss state, wired to `AssetTreeDomBridgePort`. |
+| `react/hooks/useAssetTreeDragUpload.ts` | Drag-depth-tracked drag-over overlay + the drop handler (recursive folder expansion via `rules.ts`). |
+| `react/hooks/useAssetTreeClipboardPasteUpload.ts` | The global paste listener (parsing/filtering already done by the DOM bridge port — see dependencies.ts). |
+| `react/hooks/useAssetTreeBatchActions.ts` | Batch delete (busy-gated, deliberately doesn't clear `selected` itself — matches the origin's own "leave the selection intact for retry" comment) + optional batch download (`triggerBrowserDownload`, a real anchor-click download trigger). |
+| `react/hooks/useAssetTreeCopyLocalPath.ts` | The row menu's "copy local path" action + its transient "Copied" confirmation (setTimeout-based revert). |
+| `react/components/AssetTreeBreadcrumbs.tsx` | Root label (non-interactive at the root, a button once navigated away) + one segment per path component. |
+| `react/components/AssetTreeToolbar.tsx` | Renders host-supplied `toolbarActions` — this package ships zero built-in toolbar buttons (the origin's New-Sketch/Paste/Upload/Library/project-menu buttons are all OD-specific product actions with no generic equivalent). |
+| `react/components/AssetTreeSelectionBar.tsx` | Selected count, optional batch-download button, batch-delete (busy-gated), clear. |
+| `react/components/AssetTreeFileRow.tsx` | Hover-revealed checkbox + `⋯` menu trigger, click-to-preview/dblclick-to-open on the icon/name/size/time cells, inline rename input, keyboard parity (Enter/Space previews, a second activation within `DOUBLE_ACTIVATION_WINDOW_MS` opens — mirrors the origin's mouse double-click via keyboard). |
+| `react/components/AssetTreeFolderRow.tsx` | Navigates on click (both the row and its name button, matching the origin's doubled click targets), shows the deep (not just immediate-level) file count via `countFilesUnderDir`. |
+| `react/components/AssetTreeRowMenu.tsx` | The popover itself: open / rename / copy-local-path (disabled unless `getLocalPath` resolves one) / download (hidden unless `getFileUrl` is supplied) / delete. |
+| `react/components/FilePreviewPane.tsx` | The separately-named export the task explicitly calls for: thumbnail slot (host-supplied `renderThumbnail`, defaults to a glyph placeholder) + meta footer (full path, kind, modified/size/extension stats, download link) + Open action. `thumbnailIsInteractive` generifies the origin's hardcoded `kind !== 'audio' && kind !== 'video'` check (this package has no fixed kind enum to hardcode against). |
+| `react/components/AssetTreeEmptyState.tsx` | Shown when the directory has no files, folders, or persisted folders at all; renders host-supplied `emptyStateActions`. |
+| `react/components/AssetTreeUploadErrorBanner.tsx` | A dismissible banner for a failed drag-drop-folder read. |
+| `react/components/AssetTreeBrowser.tsx` | The orchestrator — composes all 9 hooks, renders the Folders section (pinned above kind sections), each kind section, the preview pane, and the row menu. Defaults `dependencies` to `createBrowserAssetTreeDependencies()`. |
+| `index.ts` | Public barrel — every type/constant/rule/port/dependency-factory/hook/component, matching `asset-grid/index.ts`'s re-export granularity. Also wired into the package-wide `src/index.ts` barrel (`export * from './features/asset-tree-browser/index.js';`), placed alongside the `asset-grid` line. |
+
+### Dropped (origin-specific, non-separable) — cross-checked line-by-line against the real file, not assumed
+
+- **The "live artifacts" section** (`liveArtifacts` prop, `LiveArtifactBadges`, `onOpenLiveArtifact`) — a workspace-tabs-pointing-at-a-live-preview concept, a different domain entirely from file-tree browsing.
+- **"Plugin folders" section** (`getPluginFolderCandidates`, `PluginFolderAgentAction`, install/publish/contribute buttons, `buildActionNotice`/`escapeRegExp` notice-parsing) — a plugin-ecosystem feature specific to the origin product.
+- **The project menu** (`onCreateDesignSystem(FromProject)`, `onDuplicateProject`, the dropdown) — origin-specific project actions; a host that wants these back adds them via `toolbarActions`.
+- **`RotatingTip` footer + the entire tip-copy array** — hardcoded marketing copy with literal social-media links. Product content, full stop — not even the typewriter *mechanism* is ported. A host supplies its own `footer` slot if it wants one; this package ships none by default.
+- **`onRefreshFiles`** — declared in the origin's own `Props` interface but genuinely dead: grepped the full 1,731-line file and confirmed it's never called anywhere in the component body (the parent evidently wires the actual refresh button elsewhere). Not ported at all — including a no-op prop for it would be inventing behavior the origin itself doesn't have.
+- **"Select from library" special-casing** (`LIBRARY_UI_VISIBLE`/`onSelectFromLibrary`) — generalizes into just another `toolbarActions` entry; no dedicated prop.
+- **Analytics** (`useAnalytics()`/`trackFileManagerClick`) — fire-and-forget tracking pings gating no actual behavior; dropped entirely, no `onAction` telemetry callback added either (would be inventing a hook the origin's own calls don't need).
+- **`buildSrcdoc`-based HTML iframe preview** and **Excalidraw-shaped sketch-JSON preview** — both are file-kind-specific rendering strategies this generic package cannot know about. Replaced by the single `renderPreviewThumbnail` host slot on `AssetTreeBrowser` (threaded to `FilePreviewPane`'s `renderThumbnail`), defaulting to a generic glyph-in-a-box placeholder.
+- **`projectFileUrl`/`projectRawUrl`** (daemon-REST-endpoint builders) — fully replaced by the host-supplied `getFileUrl` callback prop; the builder functions themselves aren't ported at all.
+- **The stylesheet-splitting display refinement** (`FileCategory = ProjectFileKind | 'stylesheet'`, the `STYLESHEET_EXTENSIONS` extension-sniffing carve-out that gave CSS/SCSS/etc. their own section separate from `code`) — this is presentation policy layered atop a fixed kind enum this package doesn't have. A host that wants the same effect encodes it directly in its own `getKind` implementation (return `'stylesheet'` for CSS-family extensions).
+- **`kindFilter`/`page`/`pageSize`** on the origin's `DesignFilesNavState` — re-verified against the real file per the task brief's own instruction to double-check this: the origin component itself never applies a kind filter or paginates its own rendering (no filter UI, no pager UI anywhere in the file); those fields exist only to be reported upward to a parent outside this component. Confirmed absent from `AssetTreeNavState`, which carries only `currentDir`.
+
+### Two corrections discovered while writing the orchestrator's own integration tests
+
+Both are documented inline in the source, not just here:
+
+1. **`useAssetTreeSelection` gained an optional `pendingRenamePath` param.** The origin's `commitRename` calls `await onRenameFile(...)` then patches `selected`/`preview` afterward — but its selection-pruning effect depends on `[files]` independently, with no coordination between the two. A host that updates its `files` prop as soon as `onRenameFile` resolves (a very plausible, even synchronous, real-world pattern — this session's own `AssetTreeBrowser.test.tsx` rename test hit it immediately with a stateful test harness) can re-render *before* the orchestrator's own `onRenamed` callback gets to run, pruning the in-flight old path out of the selection before it ever gets swapped for the new one — silently dropping the user's selection on every rename. `pendingRenamePath` (the path `useAssetTreeRename` currently has in flight, if any) exempts it from pruning until the rename actually resolves, closing the race. Proven by two dedicated `useAssetTreeSelection.test.ts` cases (with and without `pendingRenamePath`, showing the fix and the bug it fixes side by side) plus the orchestrator's own "renames a file, carrying an active selection and preview over to the new path" end-to-end test, which uses a small stateful `RenameHarness` wrapper specifically to exercise this race realistically rather than against a static `files` array.
+2. **The row menu's copy-local-path action no longer closes the popover on click.** The origin's equivalent handler called `setMenuPos(null)` immediately before `copyLocalPath(name)` — every other menu action does this too, but for copy-local-path specifically it means the dedicated `copiedLocalPath`/"Copied" confirmation state can *never actually be seen*, since it only ever renders inside the now-unmounted popover. This reads as a real latent bug in the origin rather than intentional design (the whole point of a transient-confirmation label is to be visible). Fixed by not closing the menu for this one action; the existing outside-dismiss/Escape handling still closes it normally afterward. Proven by the orchestrator's "gates copy-local-path..." test, which asserts the "Copied" label actually renders.
+
+Also, `useAssetTreeRename`'s failed-rename path surfaces `renameError` state instead of calling a blocking native `alert()` (the origin's own behavior) — a deliberate divergence, not an oversight: this package ships into a headless, agent-drivable engine (per this repo's own `AGENTS.md`), where a hardcoded blocking dialog call is exactly the kind of host-hostile side effect a generic UI feature must not own.
+
+And `AssetTreeDomBridgePort.subscribeOutsideDismiss` takes a `container` parameter not present in the task brief's original type sketch — it binds to the already-shipped `utils/dom-subscriptions.ts`'s real `subscribeOutsideClickOrEscape(container, onClose)` signature (proper containment-based outside-click detection) instead of the origin's cruder "any `mousedown` anywhere closes the menu, and the popover manually stops its own `mousedown` from bubbling to protect itself" trick. Documented inline in `ports.ts`.
+
+### The root-level "flattened tree" quirk — verified, not assumed, and preserved
+
+`deriveTreeChildren` preserves a genuinely surprising piece of the origin's own `dirsAtCurrentDir`/`filesAtCurrentDir` `useMemo` verbatim: at the tree root (`currentDir === ''`), **every** file is pushed into `filesAtCurrentDir` — both root-level files and files nested under a subdirectory (which *also* separately contribute their top segment to `dirsAtCurrentDir`) — so the root view is a flattened "everything" listing with folders offered only as a secondary drill-down. Once navigated into any non-root directory, only files strictly at that one level are included. This asymmetry looked enough like a bug to warrant re-reading the real source line-by-line before committing to it (per the task's own "don't trust it blindly" instruction) — but it's exactly what the code does, so it's preserved rather than "fixed," with a `rules.test.ts` case asserting it explicitly (`'at the root, flattens every file (including nested) and surfaces the top-level dir'`).
+
+### i18n wiring
+
+Every user-facing string in every new component is routed through `useT()`,
+English string as the key. Two pure `rules.ts` functions return
+i18n-safe discriminated shapes instead of finished strings, so a caller can
+translate without minting a new dictionary key per distinct value:
+- `relativeTimeResult(ts, now)` returns `{label, translatable, params?}` —
+  `translatable: true` means `label` is a stable template key
+  (`'{n}m ago'`/`'Just now'`/etc.) to pass through `t(label, params)`;
+  `translatable: false` means `label` is already a locale-formatted date
+  string (`Date#toLocaleDateString`), which isn't a sensible translation key
+  since it varies per call — mirrors `asset-grid/rules.ts`'s
+  `dayHeadingResult`'s exact same `{label, translatable}` reasoning.
+- Folder/section file counts and the selection/batch-bar counts use the same
+  discipline directly at the call site (`t('{n} files', { n: count })`,
+  `t('{n} selected', { n: count })`) rather than a dedicated rules.ts
+  helper, since there's no branching logic to extract — just an
+  interpolated template.
+
+Verified end-to-end (not just that `t()` calls compile) by
+`AssetTreeBrowser.test.tsx`'s "renders translated copy when mounted under an
+I18nProvider with a matching dictionary" test, mounting under a French
+dictionary and asserting `Fichiers`/`Dossiers` actually render in place of
+the English `Files`/`Folders` fallbacks.
+
+### Phase 8.5-equivalent audit — what it caught
+
+- **Inline JSX callbacks with real branching**: the row's keyboard-Enter
+  double-activation dispatch (`handleNameKeyDown` in `AssetTreeFileRow.tsx`)
+  and the menu-trigger's click/keydown dispatch (`handleMenuTrigger`) were
+  both extracted to named functions inside the component (not `rules.ts`,
+  since they call the row's own props/refs directly) rather than left as
+  inline arrows; the underlying *decision* logic each dispatches to
+  (`isDoubleActivation`, `computeMenuPosition`) is pure and lives in
+  `rules.ts`, unit-tested in isolation. The row menu popover's own
+  `onMouseDown`/`onClick` `stopPropagation()` one-liners were left inline —
+  the same single-line "don't bubble" idiom already established as
+  acceptable inline elsewhere in this package (e.g. `asset-grid`'s
+  `DeleteConfirmDialog.tsx` backdrop click).
+- **Multi-line/inline-construction `useMemo`/derivation bodies**: none of
+  the 9 hooks compute anything beyond a one-line call into an already-pure
+  `rules.ts` function or a plain default-selection expression — the target
+  end state, no extraction needed.
+- **Orphaned `useState`/`useRef`**: enumerated every one across all 9 hooks
+  and the orchestrator by hand — `useAssetTreeNavigation`'s `currentDir`,
+  `useAssetTreeSelection`'s `selected`, `useAssetTreePreview`'s
+  `previewPath` + `autoPreviewAppliedRef`, `useAssetTreeRename`'s
+  `renaming`/`renameError`, `useAssetTreeRowMenu`'s `menuPos` +
+  `containerRef`, `useAssetTreeDragUpload`'s `draggingFiles`/
+  `dropReadError` + `dragDepthRef` + `onUploadFilesRef`,
+  `useAssetTreeClipboardPasteUpload`'s two latest-value-bridging refs,
+  `useAssetTreeBatchActions`'s `deleting`/`downloading`/`downloadError`,
+  `useAssetTreeCopyLocalPath`'s `copiedPath`, `AssetTreeFileRow`'s
+  `lastActivationRef` — every one traced to a real read site, none
+  unassigned.
+
+`pnpm --filter @jini/ui run typecheck` was re-run clean after every fix in
+this pass.
+
+### Purity grep — reported verbatim per this task's own instructions
+
+```
+$ grep -rn "Open Design\|OD_\|--od-stamp\|open-design\.ai\|openDesignDesktop\|@open-design/" packages/ui/src/features/asset-tree-browser/
+(no output — clean)
+
+$ grep -rn "od-" packages/ui/src/features/asset-tree-browser/
+(no output — clean)
+```
+
+One doc comment in `AssetTreeBrowser.tsx` initially read "Ported from Open
+Design's `DesignFilesPanel.tsx`" — caught by the first grep above during
+this same pass and reworded to "Ported from a design-tool origin project's
+file-manager panel," matching this section's own prose-only provenance
+convention (bare source filenames like `DesignFilesPanel.tsx` are fine to
+cite — 15 files across this feature do — the product name itself is not).
+
+### Test/coverage/typecheck/guard results — verbatim
+
+- `pnpm --filter @jini/ui run typecheck`: **clean, zero errors** (confirmed both mid-pass and as the final check).
+- `pnpm --filter @jini/ui exec vitest run src/features/asset-tree-browser --coverage --coverage.reporter=json-summary --coverage.reporter=json`: **251 tests, 22 files, all green.** Coverage read from the real `coverage-summary.json` (not the v8 text table, which silently drops rows — per this task's own Phase 9.5 method), aggregated across every file in the feature:
+  ```
+  statements 1223 / 1223  100.00%
+  branches    476 /  476  100.00%
+  functions    94 /   94  100.00%
+  lines      1223 / 1223  100.00%
+  ```
+  **Every individual file is 100% on all four metrics** — no file needed a specific call-out, no `/* v8 ignore */` anywhere. The loop closed in two passes: pass 1 landed at 99.92% statements / 96.30% branches / 91.49% functions aggregate; classifying every uncovered line found one genuinely dead ternary arm in `rules.ts`'s `filesFromDataTransfer` (refactored away — the `if (rejected)` guard above it already proves every remaining result is fulfilled) and one genuinely-unreachable ternary arm in `AssetTreeBrowser.tsx`'s copy-local-path handler (the button is `disabled` whenever the arm would matter, so a real click can never reach it — replaced with an asserted non-null read + comment); every other gap was a reachable-but-untested line/branch, closed with a real test (see the "corrections" and audit sections above for the interesting ones: the non-FileSystemReadError rethrow, the cancel-during-in-flight-rename race, the omitted-`folders`/omitted-`dependencies` default paths, the vanishing-menu-file race, the two-level-nested-folder path template branch).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **1460 tests, 162 files, all green** (no regressions in any other feature).
+- Full monorepo `pnpm -r --no-bail --if-present run typecheck`: `packages/ui typecheck: Done` (clean). Summary: 9 fails, 7 passes — every failure pre-existing and unrelated to this task, the identical set the `asset-grid` section above already documented: `agent-runtime`/`chat-react`/`cli`/`http`/`node-host`/`renderers-react`/`sqlite` (7 stub packages genuinely missing a `tsconfig.json`) and `daemon`/`deploy` (2 packages failing only on unbuilt `@jini/protocol`/`@jini/core` workspace `dist/` output in this fresh checkout — a build-order issue, not a type error).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### Dependencies installed, not skipped
+
+`node_modules` did not exist anywhere in this repo checkout at the start of
+this task (confirmed: no root `node_modules`, no `vitest` binary resolvable
+via `pnpm --filter @jini/ui exec vitest`). Per this task's own instruction
+("do NOT run `pnpm install` at the repo root unless you find dependencies
+are missing"), ran `pnpm install` once at the repo root — this genuinely
+qualified as the documented exception, not a shortcut.
+
+---
+---
+
+## Section: `features/memory/` — MemorySection vertical-slice port (2026-07-18)
+
+### Source
+
+**PR #5228**, `nexu-io/open-design`, "refactor(web): decompose MemorySection into a
+features/memory vertical slice" —
+<https://github.com/nexu-io/open-design/pull/5228> — closed 2026-07-15 **without
+merging**, authored by this project's own owner. Pinned at commit
+`d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d` (verified: `git fetch
+https://github.com/nexu-io/open-design.git refs/pull/5228/head` resolves to this
+exact SHA). Primary source read in full at that commit:
+`apps/web/src/features/memory/`, `apps/web/src/providers/memory/`,
+`apps/web/tests/features/memory/`.
+
+### What happened, plainly
+
+The decomposition itself did **not** create bugs. Extensive automated review (many
+rounds, over an extended review cycle) found a long sequence of real
+async/state-correctness bugs — malformed-response trust, concurrency races,
+missing error handling, stale state on retry — but the PR author independently
+verified via `git show` against the original 2,636-line pre-refactor
+`MemorySection.tsx` that **every one of those bug classes already existed
+byte-for-byte in the monolith**. The decomposition didn't introduce them, it
+exposed pre-existing ones that had zero test coverage (the original file's 29
+tests were 100% happy-path — no test for a failed fetch, a malformed response, two
+operations racing, or a retry). The author fixed round after round of these as
+they were found, and closed the PR because the review process felt endless, not
+because a reviewer or maintainer rejected the underlying approach — the
+maintainer's own last comment explicitly agrees the bugs were pre-existing and
+only asks that the PR's own remaining loose ends be closed before merging.
+
+One specific bug was still open and unfixed when the PR was closed: `fetchMemoryList()`
+in the pinned source's `providers/memory/entries.ts` validated only that the
+`entries` field was present on a 2xx response, even though
+`useMemoryConfig.hydrate()` (`enabled`) and `useMemoryEntries.reload()`
+(`rootDir`/`index`) all consumed other fields off that same response with no
+fallback. A malformed `200` like `{ entries: [] }` passed validation and then
+silently hydrated those fields to `undefined` instead of surfacing a broken
+response. **Fixed as part of this port** — see "The `fetchMemoryList()` fix"
+below.
+
+### Standing flag for later
+
+Open Design's own live version of this component (the still-monolithic
+`components/MemorySection.tsx` on its current `main`) likely still has these bugs
+today, since the fix never merged there. If Open Design revisits this component
+in the future, PR #5228's later commits (and this Jini port, which carries the
+fixes forward plus the one additional fix made here) are a ready-made reference
+for what a corrected version looks like.
+
+A broader CI/CD gate generalizing the exact bug taxonomy found here
+(malformed-success responses, races, missing error handling, stale state on
+retry) as a standard requirement for future async-heavy ports is tracked as a
+**separate follow-up**, not part of this task's scope.
+
+### Where it landed, and why (`packages/ui/src/features/memory/`, not `chat-react`)
+
+Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map and
+`packages/ui/README.md`'s scope boundary: Memory is a settings/data-management
+surface (saved facts/preferences, an editable index, connector-sourced
+suggestions) — the same shape as the already-shipped `features/connectors/` and
+`features/settings-dialog/`, not a conversation surface. It lands alongside them
+in `@jini/ui`, using the **new** `types.ts`/`constants.ts`/`rules.ts`/`ports.ts`/
+`dependencies.ts`/`formatters.ts`/`async-commit-guard.ts`/`index.ts` at the
+feature's top level, `hooks/`+`components/` under a `react/` subfolder — the
+layout decided 2026-07-17, matching `features/viewer-shell/`/`features/asset-grid/`/
+`features/sketch-editor/`, not `features/connectors/`'s older flat layout.
+
+### The connector-reconciliation-reducer decision (the "third piece")
+
+The task brief's third sought piece — "connector-reconciliation reducers" — does
+**not** come from PR #5228. Its real origin is Open Design's `main`-branch
+`apps/web/src/components/connectors-state.ts` (confirmed by cloning
+`https://github.com/leonaburime-ucla/open-design.git` at its default `main`
+branch and reading `connectors-state.ts` directly, since `codex/connector-memory-settings`,
+the branch originally suspected to hold this, diffs empty against current `main`
+— i.e. that logic already lives on `main` by some other route). Its 4 functions
+— `connectorAuthSnapshotChanged`/`hasConnectorStatusChanges`/`mergeConnectorCatalog`/
+`applyConnectorStatuses` — are a **separate, shared/generic** connector-list
+reconciliation module OD's `MemorySection.tsx` monolith imports directly
+(`import { hasConnectorStatusChanges } from './connectors-state'`), distinct from
+PR #5228's own Memory-local `mergeMemoryConnector`/`upsertMemoryConnector`/
+`applyMemoryConnectorStatus(es)`/`connectorStatusesChanged` (which the PR's own
+`rules.ts` comment calls "convenience duplication" of the shared module, kept
+slice-local per the PR's own stated slice conventions).
+
+Direct line-by-line comparison found `@jini/ui`'s `features/connectors/rules.ts`
+**already ships the generified port of `connectors-state.ts`** — from the
+`ConnectorsBrowser.tsx` canary task (2026-07-17), see that section above —
+as `mergeConnectors`/`applyConnectorStatuses`/`hasConnectorStatusChanges`/
+`connectorAuthSnapshotChanged`, operating on the generic `Connector`/
+`ConnectorStatusMap` types instead of OD's `ConnectorDetail`. Their logic is
+identical to `connectors-state.ts`'s (verified field-by-field), and `mergeConnectors`
+already subsumes what PR #5228's `mergeMemoryConnector`+`upsertMemoryConnector`
+did (single-connector merge + array upsert in one pass). This is exactly the
+overlap `god-components-extraction-plan.md`'s Consolidation map flagged in
+advance: *"Memory slice's connector reducers... substantially overlap
+`features/connectors`'... check whether it can import these directly instead of
+re-deriving equivalents."*
+
+**Decision**: `features/memory/rules.ts` imports `mergeConnectors`/
+`applyConnectorStatuses`/`hasConnectorStatusChanges` from `../connectors` and
+re-exposes two thin, Memory-specific conveniences over them
+(`upsertMemoryConnector` = `mergeConnectors(current, next ? [next] : [])`;
+`applyMemoryConnectorStatus` = the 1-item form of `applyConnectorStatuses`, used
+by the synthetic not-yet-detailed catalogue row). Only `connectorWithPendingAuthorization`
+(no equivalent in `features/connectors`) is genuinely new Memory-local logic.
+Memory's own connector type is `Connector` from `features/connectors/types.ts`
+directly (not a third near-duplicate of `ConnectorDetail`) — its shape already
+matches (id/name/provider/category/status/accountLabel/lastError/tools/toolCount/
+toolsNextCursor/toolsHasMore/logoUrl).
+
+### The `fetchMemoryList()` fix
+
+`dependencies.ts`'s `fetchMemoryList()` now validates `entries`/`rootDir`/`index`/
+`enabled` are all present on a 2xx response (throwing `"Memory list request
+succeeded without a '<field>' field"` if any is missing), matching the pattern
+already used by the pinned source's own `fetchMemoryEntry()` (which the PR had
+already fixed earlier in its history: only a genuine 404 maps to `null`, and a
+successful-but-field-missing response throws via `requiredNonNullField` rather
+than silently returning something falsy-but-plausible). The four per-hook flags
+(`chatExtractionEnabled`/`profileEnabled`/`rewriteEnabled`/`verifyEnabled`) are
+**deliberately not** added to the required set — `useMemoryConfig.hydrate()`
+already treats their absence as legitimate legacy-default behavior
+(`list.xEnabled !== false`), a design choice already present and already
+documented in the pinned source; validating them as required would be a
+*behavior* change, not a bug fix.
+
+Before/after, `dependencies.ts`:
+```ts
+// BEFORE (the pinned source, still-open bug)
+export async function fetchMemoryList(): Promise<MemoryListResponse> {
+  const resp = await fetch('/api/memory');
+  if (!resp.ok) throw new Error(`Memory list request failed (${resp.status})`);
+  const json = (await resp.json()) as MemoryListResponse;
+  requiredField(json, 'entries', 'Memory list request');
+  return json;
+}
+
+// AFTER (this port's fix)
+export async function fetchMemoryList(): Promise<MemoryListResponse> {
+  const resp = await fetch('/api/memory');
+  if (!resp.ok) throw new Error(`Memory list request failed (${resp.status})`);
+  const json = (await resp.json()) as MemoryListResponse;
+  requiredField(json, 'entries', 'Memory list request');
+  requiredField(json, 'rootDir', 'Memory list request');
+  requiredField(json, 'index', 'Memory list request');
+  requiredField(json, 'enabled', 'Memory list request');
+  return json;
+}
+```
+Regression coverage: `dependencies.test.ts`'s `fetchMemoryList` describe block
+parametrizes over all 4 newly-required fields (each rejected when absent), plus
+an explicit test reproducing the exact bug-report payload (`{ entries: [] }`
+alone) and a test proving the 4 per-hook flags are still NOT required.
+
+### Transport binding: real HTTP, not a fake — a deliberate deviation from the connectors canary's precedent
+
+`features/connectors/dependencies.ts` ships a **fake** in-memory double for its
+main data port by design (the real transport is a specific third-party
+OAuth-catalog vendor's API shape, which a product-neutral package shouldn't
+assume). Memory's `/api/memory*` surface is different: a plain, generic
+list/tree/entry-CRUD + config-PATCH + extraction-history-CRUD REST contract with
+no third-party vendor coupling, and the task's own bug-fix/regression-test
+requirement only makes sense against a real, testable adapter. So
+`memoryConfigPort`/`memoryEntriesPort`/`memoryExtractionsPort` bind **real**
+`fetch`-based adapters (ported from the pinned source's `providers/memory/{config,entries,extractions}.ts`,
+with the `fetchMemoryList` fix applied) as this package's default — a disclosed,
+deliberate difference from the connectors canary's fake-only convention, not an
+oversight.
+
+`memoryConnectorsPort`, by contrast, keeps the fake-by-default convention:
+`fetchMemoryConnectors`/`fetchConnectorStatuses`/`connectConnector`/
+`suggestConnectorMemories` all depend on the same kind of vendor-specific
+OAuth-catalog discovery transport `features/connectors` already declines to ship
+for real, so `createFakeMemoryConnectorsPort()` (an in-memory catalogue double,
+same shape as `createFakeConnectorsPort`) is the default. `saveMemoryEntry` on
+this same port is the **real** HTTP adapter, though — saving a connector
+suggestion is an ordinary memory write, not a connector-transport concern, so it
+reuses the entries cluster's real binding rather than being faked too.
+`readPendingConnectorAuthIds`/`writePendingConnectorAuthIds` (sessionStorage) and
+`notifyConnectorsChanged` (a same-page `CustomEvent`, `jini:memory-connectors-changed`
+— the pinned source's cross-tab broadcast mechanism, out of scope for this
+slice, same carve-out `features/connectors` already made for its own
+`connectors-events.ts`) are real, SSR-guarded browser-only bridges, matching
+`features/connectors`' own real-bridge-for-generic-browser-APIs convention.
+
+### `MemoryHooksPanel` folded in from a separate OD file
+
+The pinned source's `MemoryHowPanel.tsx` imports `MemoryHooksPanel` from OD's
+**separate** `components/MemoryHooksPanel.tsx` (not part of `features/memory/`,
+single consumer). Ported into this slice as
+`react/components/MemoryHooksPanel.tsx` rather than left as a dangling
+cross-package import — it has no other consumer in OD's tree and no reason to
+live outside this feature in Jini. Its `.module.css` import was dropped (no
+CSS-module build step in this package yet, same as every other component in
+this package's earlier flat-group porting task) and flattened to plain
+`memory-hooks-panel*` class names; its `useT()` dictionary keys were converted
+to plain-English keys per this package's i18n convention (see below).
+
+### `renderMarkdown`: a scoped-down local reimplementation, not the real `runtime/markdown.tsx`
+
+`MemoryEntryCard.tsx`'s saved-memory preview needs to render a memory body's
+Markdown. The pinned source's real `runtime/markdown.tsx` (2,881 lines) is
+chat/artifact-rendering territory this package's own README already scopes out
+to `@jini/chat-react`/`@jini/renderers-react` (see the "i18n/observability/utils
+sweep" section above: "Deferred, not yet ported"). Rather than drop the feature
+or take on that whole file, `react/render-markdown.tsx` is a ~20-line local
+reimplementation covering just this one need — GFM Markdown → HTML via
+`micromark`/`micromark-extension-gfm` (already real dependencies of this
+package, added earlier for `utils/markdown-scroll-sync.ts`). `micromark`
+escapes raw HTML in its input by default (`allowDangerousHtml` is not set), so
+this is XSS-safe without a separate sanitizer pass — proven by a real test
+asserting a `<script>`/event-handler payload embedded in memory-body Markdown
+renders as inert text, not live markup.
+
+### `copyToClipboard` semantics changed under the port — adapted, not ignored
+
+`useMemoryEntries.hooks.ts`'s `onCopyPath` in the pinned source relied on
+`copyToClipboard` **rejecting** when both the Clipboard API and its
+`execCommand('copy')` fallback fail, catching that rejection to avoid a false
+"copied" flash. `@jini/ui`'s own `utils/copy-to-clipboard.ts` (ported earlier,
+2026-07-16) has a different, already-shipped contract: it **never rejects** —
+it resolves `false` on total failure, having already implemented the same
+Clipboard-API-then-`execCommand`-fallback chain internally. `onCopyPath` was
+adapted to check the boolean return instead of catching a throw, preserving the
+original intent (never claim success on a total failure) against the actual
+contract of the utility this package already ships, rather than silently
+becoming dead code (a `catch` block that could never fire).
+
+### i18n
+
+Every user-facing string across all 8 components routes through `useT()`,
+following this package's "the English string itself is the key" convention
+(`t('Connect')`, not `t('settings.memoryX')`) — the pinned source's OD dictionary
+keys are product content and were not ported; every `t(...)` call site below
+uses a plain-English default chosen from surrounding context (there was no OD
+dictionary available to port the actual translated copy from, since that
+content is explicitly out of scope per this package's own established i18n
+policy). `constants.ts`'s `STARTERS` array changed shape accordingly — plain
+`name`/`description`/`body` strings instead of dictionary-key fields — since the
+manual editor's starter chips now call `t(starter.name)` etc. directly at the
+render site, matching how every other pure-data module in this package already
+defers translation to the call site (`rules.ts`'s `statusLabel()` precedent,
+noted in the connectors section above).
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/\|open-design\.ai\|openDesignDesktop"`
+across every file in `features/memory/`: **clean, zero matches** (two
+provenance-comment leaks initially found during a self-review pass — a literal
+`Open Design` in `rules.ts`'s comment and a literal `@open-design/` in
+`types.ts`'s comment — were caught and reworded to `OD`, matching the
+established convention already used elsewhere in this package, e.g.
+`features/connectors/dependencies.ts`'s "OD's real implementation calls
+`providers/registry`"). A second pass for the lowercase lookalikes this
+package's earlier sections also checked (`od-*` class prefixes, `composio`)
+found one real hit: the pinned source's hardcoded `provider: 'composio'` for a
+synthetic not-yet-detailed connector catalogue row — replaced with a neutral
+`DEFAULT_CONNECTOR_PROVIDER` constant (`'connector-catalog'`), documented in
+`constants.ts` with the same reasoning `ConnectorLogo`'s Composio-CDN-slug drop
+used in the connectors canary section above.
+
+### What's intentionally not ported (host-owned, or genuinely out of scope)
+
+- **The orchestrator itself.** Unlike the `ConnectorsBrowser.tsx` canary (which
+  shipped its own full orchestrator inside the slice), PR #5228's diff never
+  included OD's `components/MemorySection.tsx` — that 2,636-line file stays the
+  host's own composition root, importing this slice's pieces through its
+  barrel. This port ships exactly what PR #5228 shipped: ports + dependencies +
+  hooks + dumb components + barrel, no orchestrator.
+- **The two OAuth browser subscriptions** (the mid-authorization status poll,
+  the popup-callback message listener) and **the SSE event stream**
+  (`/api/memory/events`). All three open accumulating browser subscriptions;
+  the pinned source's own `useMemoryConnectors.hooks.ts` file-header comment
+  already documents that a single-instance host orchestrator must own these and
+  drive the hook's exposed `refreshConnectorStatuses()`/`applyExtractionEvent()`
+  — this port preserves that exact seam rather than inventing a different one.
+  `ports.ts` correctly never declared these as slice responsibilities in the
+  first place.
+- **`isTrustedConnectorCallbackOrigin`/`subscribeConnectorCallback`/
+  `subscribeConnectorStatusPolling`** (the pinned source's
+  `providers/memory/connector-auth.ts`) — same reasoning: these back the two
+  host-owned OAuth subscriptions above, not a slice-owned port method.
+
+### Test/typecheck/coverage results
+
+- `pnpm --filter @jini/ui typecheck`: green (zero errors).
+- `pnpm --filter @jini/ui exec vitest run src/features/memory`: **423 tests, 21
+  files, all green** — `async-commit-guard` (4), `rules` (12), `formatters`
+  (38), `dependencies` (30, including the full `fetchMemoryList()` bug-fix
+  regression suite), `index` (3, this feature's own barrel completeness
+  smoke test), the extraction-history store (46, direct unit tests of the
+  pure concurrency-ordering rules), 6 hook test files (`useMemoryFlash` 7,
+  `useMemoryNavigation` 10, `useMemoryConfig` 33, `useMemoryEntries` 46,
+  `useMemoryExtractions` 27, `useMemoryConnectors` 61), and 9 component test
+  files (`MemoryHooksPanel` 6, `MemoryHowPanel` 4, `MemoryEntryCard` 8,
+  `MemoryExtractionCard` 9, `MemoryList` 11, `MemoryAdvancedModal` 15,
+  `MemoryManualEditor` 15, `MemoryConnectedPanel` 32, `render-markdown` 6).
+  Every hook has a mounted `renderHook` test against a hand-written fake
+  port; every component has both a `@testing-library/react` mount test and a
+  real `I18nProvider`-mounted French-dictionary translation-proof test.
+- **Coverage (v8, `json-summary`/`json` reporters): 100% on all 4 metrics —
+  statements, branches, functions, lines — aggregate (2616/2616 statements,
+  993/993 branches, 120/120 functions, 2616/2616 lines) AND every individual
+  file**, clearing the ≥99%-with-100%-as-the-goal bar with no `/* v8 ignore */`
+  anywhere. Reached via the classify-then-fix loop: every initially-uncovered
+  branch was genuinely reachable and got a real test (a `requiredNonNullField`
+  present-but-null case, a connector with no `accountLabel`, a blocked
+  `sessionStorage` write, the editor scroll/focus effect — driven by
+  attaching real DOM elements to the hook's returned refs before triggering
+  it, rather than writing it off as hook-level-untestable, a suggestion's
+  `toolTitle`-only source-label fallback) — except one real dead branch,
+  found in `useMemoryExtractions.hooks.ts`'s `reloadExtractions()`: a
+  `try/catch/finally` whose bare `catch {}` never itself throws carried a
+  structurally-unreachable "exception during catch, before finally" edge
+  that no test could ever satisfy. Refactored away (not suppressed) per this
+  project's coverage policy — replaced the `finally` with an explicit
+  `endReload()` call at each of the 3 return points, behavior-preserving.
+- Full monorepo `pnpm -r --no-bail run typecheck`: 7 pass, 9 fail — every
+  failure pre-existing and unrelated (stub packages with no `tsconfig.json`
+  at all: `agent-runtime`/`chat-react`/`cli`/`http`/`node-host`/
+  `renderers-react`/`sqlite`; `daemon`/`deploy` failing only on unbuilt
+  `@jini/protocol`/`@jini/core` `dist/` resolution, per this checkout not
+  having run `pnpm -r run build`) — the same set of pre-existing breakages
+  every prior section in this file has already documented. `@jini/ui` itself,
+  `@jini/core`, `@jini/protocol`, `@jini/platform`, `@jini/sidecar`,
+  `@jini/chat-core`, and `automation/project-runner` all typecheck clean.
+- Purity grep (`Open Design`/`OD_`/`--od-stamp`/`/tmp/open-design`/
+  `@open-design/`/`open-design.ai`/`openDesignDesktop`, plus the stricter
+  lowercase `od-`/`composio` self-imposed pass) across every file in
+  `features/memory/`: **clean, zero matches** — two provenance-comment leaks
+  (a literal `Open Design` and two literal `@open-design/contracts`
+  mentions, all in doc comments explaining what was ported *from*, none in
+  actual code) were caught during self-review and reworded to `OD`, matching
+  this package's established convention.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged, no boundary violations
+  introduced.
