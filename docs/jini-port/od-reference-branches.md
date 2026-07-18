@@ -65,6 +65,29 @@ from the fork if not using that local clone.
 | #5484 | CLOSED | `agent/file-viewer-continue-ghf` | `FileViewer.tsx` clusters (checkpoint, not for merge) | OD-product (design/deck preview — the most OD-tilted surface in the app). Not engine material. |
 | #5486 | OPEN (draft) | `agent/file-viewer-clean` | `FileViewer.tsx` clusters (isolated checkpoint base) | Same slice as #5484, cleaner checkpoint. OD-product. |
 
+### Cloud-safe canonical fetch for the Memory canary and PreviewDrawOverlay
+
+The branch name for closed PR #5228 is not durable: it may no longer be
+advertised by either remote. Cloud tasks must therefore fetch the PR ref
+directly from the upstream repository, pinned to the verified head below,
+rather than assuming `od-web-src.orig/` is a live checkout:
+
+```bash
+git fetch https://github.com/nexu-io/open-design.git refs/pull/5228/head
+# Expected HEAD: d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d
+```
+
+At that commit, `apps/web/src/components/PreviewDrawOverlay.tsx` is the
+2,158-line canonical target and is byte-identical to Jini's
+`integrations/open-design/reference/components-original/PreviewDrawOverlay.tsx`.
+`integrations/open-design/reference/od-web-src.orig/components/PreviewDrawOverlay.tsx`
+is an older 1,440-line snapshot and is not a valid live-source substitute.
+
+Run `pnpm --filter @jini-automation/project-runner run
+verify:od-preview-reference` before dispatching this extraction. It proves the
+remote ref, complete MemorySection reference set, and byte identity before a
+cloud task is allowed to start.
+
 **Reading the table**: only #5228, #5461, #5465 are candidate source material for
 `@jini/*` packages (chat-core already done; chat-react is next). Everything else
 in this table is real, useful work, but it's OD's own product decomposition —

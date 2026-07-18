@@ -50,6 +50,12 @@ Then:
    summary: current Git branch and SHA, requested scope, destination package or
    directory, intended branch/PR outcome, and the validation commands. For a
    frontend god-component task, this is blocking and must additionally name:
+   - the exact consolidation-map row in
+     `docs/jini-port/god-components-extraction-plan.md` covering this target
+     (destination kind, exact destination name, and any noted overlap with
+     another file) — if the target isn't in that map, or its row is marked
+     "blocked"/"not yet actionable," stop and report the gap rather than
+     inventing a destination or proceeding past an unresolved question;
    - the exact OD source branch and SHA;
    - `MemorySection`'s feature, provider, and test directories as the primary
      reference;

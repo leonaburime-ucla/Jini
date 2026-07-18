@@ -38,7 +38,7 @@ substitute a similar-looking local file or infer the pattern from memory.
 1. The exact target component, source branch, and source commit SHA.
 2. The primary canary was read in full: `apps/web/src/features/memory/`,
    `apps/web/src/providers/memory/`, and `apps/web/tests/features/memory/`.
-3. `docs/adr/0002-frontend-vertical-slice-decomposition.md`, `apps/web/AGENTS.md`,
+3. `docs/adr/0002-frontend-vertical-slice-decomposition.md`, `apps/AGENTS.md`,
    and `scripts/check-web-slice-boundaries.ts` were read from the same branch as
    the canary.
 4. Every current caller/importer of the target was enumerated and its public
@@ -50,6 +50,31 @@ For an extraction into another repository rather than an in-place OD refactor,
 also record the destination package and the explicit product seam that remains
 in OD. The MemorySection structure still governs the split; only OD transport,
 submission, and product-domain bindings may cross that seam through a port.
+
+If the destination repository is Jini specifically: first read
+`docs/jini-port/god-components-extraction-plan.md`'s "Consolidation map"
+section in that repository and quote the exact row covering the target
+component before choosing a destination package name. Several patterns in
+this sweep recur across more than one god-component (the same "URL/OAuth
+source config" shape shows up in at least 6 places, for example) — that map
+exists specifically so each one lands in a shared destination instead of a
+new near-duplicate every time. If the target isn't in that map, or its row is
+marked "blocked" or "not yet actionable," stop and report the gap rather than
+inventing a destination. Also apply Jini's React-layout policy (same doc,
+"React-layout policy" note): within the destination feature folder, anything
+importing React (`hooks/`, `components/`) goes under a `react/` subfolder;
+everything else (`types.ts`/`rules.ts`/`ports.ts`/`dependencies.ts`) stays at
+the feature's top level.
+
+### Retained-behavior manifest (blocking)
+
+Before moving code, inventory every generic behavior that remains in scope.
+For each, record source line(s), invariant, destination module or host port,
+and the test that proves it. Mark product-bound behavior `host-owned` with its
+seam; never silently omit it. For interactive components explicitly inventory
+keyboard shortcuts, pointer/cancel paths, history rules, resize/observer and
+transform behavior, accessibility labels, and responsive placement. Completion
+requires a passing test or a documented, user-approved scope change per row.
 
 ---
 
@@ -100,7 +125,8 @@ Plus: one transport home per route (a route may live in only one `providers/<res
 2. Classify: is it **transport-heavy** (many endpoints → the payoff is a `providers/<resource>/` folder + hooks) or **state/UI-heavy** (many `useState`/subcomponents, ≤1 endpoint → the payoff is hooks + `rules.ts` + splitting subcomponents, NOT a big provider layer)? MemorySection is transport-heavy; McpClientSection mixes both; a composer is state/UI-heavy.
 3. Sketch the slice tree (mirror the canary): `types.ts`, `constants.ts`, `rules.ts` (+ `formatters.ts` if needed), `ports.ts`, `dependencies.ts`, `hooks/*.hooks.ts`, `components/*.tsx`, `index.ts`; plus any `providers/<resource>/` additions.
 4. **Produce the full cluster-by-cluster extraction plan before extracting anything.** For every remaining cluster, write down: the state/functions it owns, its coupling to other clusters, the proposed target file, the extraction shape, and a risk rating — then work the plan top to bottom. Do NOT plan one cluster, extract it, re-profile the file, plan the next cluster, repeat: that reactive loop re-reads the file and re-runs the full validation cycle after every single cluster, which burns tokens and wall-clock on repeated serial passes that a single upfront pass avoids. If a cluster's real shape differs from the plan once you're inside it, correct that cluster's plan entry — don't abandon the plan for the rest. See `ADS-project-knowledge/.local-artifacts/handoff/20260710T220440Z-chatcomposer-handoff.md`'s "Extraction Plan" section for the reference format (one numbered subsection per cluster, DONE/pending status, line-number snapshot caveat).
-5. **Decide which clusters can run in parallel.** A cluster is parallelizable if it doesn't share state/functions with another cluster you're about to run alongside it. For each parallel cluster, cut one worktree-isolated subagent from the same base commit; brief it with the established pattern (the canary + the most recently landed cluster as reference), its target file, and an explicit instruction to FLAG — not fix — anything that reaches outside its assigned cluster (subagent worktrees have no `node_modules`, so they cannot run typecheck/tests/guard themselves; the reviewing session validates after merge). **This defers integration cost, it does not eliminate it**: expect real merge conflicts even between clusters whose diffs both look additive, and watch for one specific silent-failure shape — two clusters that each independently delete their own adjacent function from the same source region can produce a 3-way-merge conflict block where NEITHER side's deletion/replacement survives; a plain conflict-resolution pass won't catch this without understanding both clusters' intent, so re-grep for both clusters' expected new call sites after resolving, not just for the absence of conflict markers. Measured on `ChatComposer.tsx`: 3 parallel clusters landed faster wall-clock than serial, but the reviewing session still did ~100% of the merge/reconciliation work — plan for that cost up front, don't expect the parallel run to make it disappear.
+5. **Turn high-risk manifest rows into red tests before implementation.** A happy-path render or one callback test is not parity evidence for a retained interaction.
+6. **Decide which clusters can run in parallel.** A cluster is parallelizable if it doesn't share state/functions with another cluster you're about to run alongside it. For each parallel cluster, cut one worktree-isolated subagent from the same base commit; brief it with the established pattern (the canary + the most recently landed cluster as reference), its target file, and an explicit instruction to FLAG — not fix — anything that reaches outside its assigned cluster (subagent worktrees have no `node_modules`, so they cannot run typecheck/tests/guard themselves; the reviewing session validates after merge). **This defers integration cost, it does not eliminate it**: expect real merge conflicts even between clusters whose diffs both look additive, and watch for one specific silent-failure shape — two clusters that each independently delete their own adjacent function from the same source region can produce a 3-way-merge conflict block where NEITHER side's deletion/replacement survives; a plain conflict-resolution pass won't catch this without understanding both clusters' intent, so re-grep for both clusters' expected new call sites after resolving, not just for the absence of conflict markers. Measured on `ChatComposer.tsx`: 3 parallel clusters landed faster wall-clock than serial, but the reviewing session still did ~100% of the merge/reconciliation work — plan for that cost up front, don't expect the parallel run to make it disappear.
 
 ### Phase 2 — Contracts (usually a no-op)
 Check `packages/contracts/src/api/<resource>.ts` for the wire DTOs. Reuse them; add only genuinely new wire shapes. Never redeclare a DTO in the slice.
@@ -152,6 +178,11 @@ Do this pass once, after Phase 8 looks done, before moving to Phase 9.
 ### Phase 9 — Tests
 In `apps/web/tests/features/<slice>/`: pure `rules` tests (no doubles); hooks via `renderHook` + a hand-written fake port (wrap in `<I18nProvider initial="en">` if the hook uses `useT`); dumb components under `@testing-library/react`; provider adapters mock global `fetch`; add a `// @vitest-environment node` companion for any `typeof window === 'undefined'` SSR guard (genuine coverage, no source change). Target ≥98% on all 4 metrics (statements/branches/functions/lines), both aggregate and per file — see Phase 9.5 for the loop that gets you there honestly.
 
+Walk the retained-behavior manifest row by row before declaring tests complete.
+For a canvas/overlay/editor, mount and test pointer cancel, normalized
+coordinates after resize/transform, every history rule, keyboard shortcuts,
+and observer-driven repositioning; testing a pure helper alone is insufficient.
+
 ### Phase 9.5 — Coverage-driven refactor loop (repeat until ≥98% on all 4 metrics)
 Coverage is a floor, not a target to game. Run with `json-summary`+`json` reporters (the v8 text table drops rows) and read the real per-file numbers. While any of statements/branches/functions/lines sits below 98% (aggregate or per file):
 1. **Classify every uncovered line/branch before touching anything** — do not add a test or delete code speculatively:
@@ -174,6 +205,10 @@ Run and record real numbers:
 1. Commit ONLY the refactor's files (`git add <paths>`). **No `Co-authored-by` trailer** (repo policy).
 2. If opening a PR, cross-repo PRs push to the contributor's **fork** remote, not `origin` (upstream 403s). Body: **Why** (use case + the pain: unenforceable boundaries / testability), **What users will see** (nothing; internal refactor, public API identical; name the QA regression surface), **What this does**, **Surface area** (a pure refactor is `None` unless a new contract file was added), **Validation** (the real Phase 10 numbers).
 3. For a very large target (SettingsDialog-class), a fully-validated PARTIAL (one section fully sliced + any leaked-helper consolidation) that keeps typecheck+guard+existing-tests green beats a broken whole — commit the rest as a clear `WIP:` commit. Never leave typecheck or guard red on the committed HEAD.
+4. Verify delivery, not just local Git state: confirm the task branch exists on
+the remote and that the draft PR URL resolves. If either is unavailable, commit
+a task report with command output and the exact retry instruction; a hosted
+task saying `READY` is not delivery evidence.
 
 ---
 
@@ -186,6 +221,9 @@ Run and record real numbers:
 - [ ] Orchestrator has zero standalone `function`/named-`const`-arrow declarations left (grep `^\s*function \|^\s*async function \|^\s*const \w+ = (` at the component's top level) — only hook calls, accumulating-subscription effects, trivial derived `const`/`useMemo`/`useCallback`, the handle, and JSX. Before landing here, check each remaining callback against Phase 8's escape-hatch order (owning hook → pure rule → DOM provider → deps-bag action → last-resort `useCallback`). **Verify "zero" literally against the reference, not by feel**: run the same grep against `MemorySection.tsx` first (it returns exactly one match — the component declaration itself) so you know what a true pass looks like, then run it against your orchestrator and confirm every match is either the component or nested inside an allowed accumulating-subscription effect. The bar is stricter than it sounds until checked against the real example — "looks pretty clean" is not the same as zero.
 - [ ] Each feature hook call is injectable: an optional `<Name>Hooks` prop per hook, defaulting to the real wired hook (see Phase 8 "Injectable hooks").
 - [ ] Exact markup / className / i18n keys preserved; no logic changes; no CSS migration; no TanStack/SWR.
+- [ ] Retained-behavior manifest complete; every generic row has a passing
+  targeted test or an explicit host-owned seam/scope decision.
 - [ ] Coverage ≥98% on all 4 metrics (statements/branches/functions/lines), aggregate and per file, reached via the Phase 9.5 classify-then-fix loop (test the reachable, refactor away the dead/tangled, node-companion the SSR guards, non-null-assert the type-required fallbacks) — never `/* v8 ignore */`.
 - [ ] `pnpm --filter @open-design/web typecheck`, new slice tests, existing component tests, and `pnpm guard` (vertical-slice boundary check) all green — numbers recorded.
 - [ ] Committed with no co-author trailer; PR (if any) pushed to the fork with the full body.
+- [ ] Remote branch and draft PR URL verified after hosted execution.
