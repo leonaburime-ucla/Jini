@@ -1916,3 +1916,141 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+---
+
+## Section: `features/list-detail-panel/` — generic `ListDetailPanel<TSummary,TDetail>` (2026-07-18)
+
+Source: `DesignSystemsTab.tsx` (1,282 lines) in the real OD fork, commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34` on `main`
+(`https://github.com/leonaburime-ucla/open-design.git`, cloned fresh for this
+task per the skill's cloud-dispatch preflight — not the vendored
+`integrations/open-design/reference/` snapshot). Per
+`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A
+row `features/list-detail-panel/` and
+`docs/jini-port/recon/r6-god-component-internals.md` §1.18/§4's
+"Master-detail (list+preview) navigator" cross-file pattern.
+
+### Shared-shape verification (the task's own required first step)
+
+r6 §4's cross-file pattern table names this shape as recurring in
+`DesignSystemsTab.tsx` and, "conceptually," `PluginsView.tsx`'s detail modal
+and `ProjectView.tsx`'s composition — but flags both of the latter as
+unconfirmed (neither's own per-file section, §1.11/§1.2, calls out a concrete
+second instance). Read all three files in full from the fresh OD clone to
+check, per this task's explicit instruction not to assume:
+
+- **`PluginsView.tsx`'s "detail modal" (`PluginDetailsModal.tsx`) is a
+  different shape, confirmed by reading it.** It's rendered via
+  `createPortal` as a full-screen overlay opened on a card click
+  (`detailsRecord ? <PluginDetailsModal record={detailsRecord} onClose={...} /> : null`),
+  dispatching on content kind (media/html/design/text) to one of four
+  separate detail components. There is no persistent sidebar list with a
+  selection state synced to an inline preview pane — closing the modal
+  returns to the grid, there's nothing to "reselect." This is a
+  card-grid-plus-overlay-modal pattern, not a master-detail navigator.
+  §1.11's own five real extraction candidates for this file
+  (`SourcesPanel`, `AvailablePluginsPanel`, `ImportChoice`/`FileImportPanel`,
+  `StatCard`/`Notice`, the import-modal wizard shell) independently confirm
+  this — none of them is "list+detail navigator."
+- **`ProjectView.tsx`'s "composition" is the two-pane resizable chat/file-
+  workspace split, confirmed by reading §1.2 and the file itself.** §1.2
+  found exactly one generic exception in this 9,907-line file: the
+  resizable-split-pane drag-to-resize hook, already shipped as
+  `hooks/useResizableSplitPane.ts` (see the "Batch atoms sweep" section of
+  this doc / the extraction plan's item 7). That's a 2-pane resize
+  interaction (drag a divider to change width), not a list-of-summaries
+  with click-to-select-and-preview. Everything else in the file's
+  composition is a thin JSX wrapper around exclusively-OD child components
+  (`ChatPane`, `FileWorkspace`, `AmrBalanceDialog`, etc.) — confirmed
+  OD-specific, not a second master-detail instance.
+
+**Verdict: not a real shared shape beyond `DesignSystemsTab.tsx`.** Per the
+task's own instruction for this outcome, built only what
+`DesignSystemsTab.tsx` actually needs — a generic, still fully reusable
+`ListDetailPanel<TItem>` (real TypeScript generics, so any future second
+consumer can still use it), not a primitive shaped by guesswork about
+`PluginsView.tsx`/`ProjectView.tsx`'s needs.
+
+### What shipped — `packages/ui/src/features/list-detail-panel/`
+
+`DesignSystemsTab.tsx`'s master-detail shell: a sidebar list of summary rows
+with a selection state (`previewId`), syncing to a detail pane rendering
+whichever row is selected, with a loading state and empty states for both
+panes. OD-specific parts of the file left behind entirely: the
+`DesignSystemSummary`/`DesignSystemDetail` types, the scope-tab (mine/
+official/enterprise) and surface/category filter chrome, `SystemRow`'s own
+visual content (logo resolution, status dot, badges), and all of
+`DesignSystemDetail`'s brand.json/DESIGN.md parsing and publish/download/
+edit-with-agent actions — none of that is generic, all of it stays OD-side.
+
+| File | Contents |
+|---|---|
+| `types.ts` | `ListDetailItem` (the `{ id: string }` identity contract a summary type must satisfy) + `ListDetailItemRenderState` (`{ active: boolean }`, handed to a row's `renderItem`). Zero runtime declarations (pure `interface`s) — added to `vitest.config.ts`'s coverage `exclude` alongside `settings-dialog/types.ts`, same documented carve-out (verified via the same `grep -nE '^(export )?(const\|function\|class\|let\|var) '` check). |
+| `rules.ts` | `resolveListDetailSelection` — ports `DesignSystemsTab.tsx`'s master-detail sync effect (lines ~265-271: keep the current pick if still present, else the first item, else `null` for an empty list) as a pure function instead of an inline effect body. `findSelectedItem` — the `selectedSystem` derivation (line ~286-289), generified. |
+| `react/hooks/useListDetailSelection.ts` | Owns the selection `useState` + the `useEffect` that re-runs `resolveListDetailSelection` whenever `items` changes — the hook a host uses instead of hand-rolling `DesignSystemsTab.tsx`'s inline effect. `ListDetailPanel` itself stays fully controlled (`selectedId`/`onSelect` props), so this hook is opt-in, not mandatory — matches this package's "hooks are feature-local, components are dumb" discipline. |
+| `react/components/ListDetailPanel.tsx` | The dumb shell: sidebar (`header` slot + list) and detail pane (`renderDetail`/`emptyDetailContent`/loading). The panel owns the selection-interaction chrome (each row is wrapped in a `<button type="button" aria-pressed data-active>`, click calls `onSelect(item.id)`) — host-injected only for the row's *visual content* (`renderItem`) and the detail pane's content (`renderDetail`), matching the task brief's "host-injected for the actual data/rendering of both summary rows and detail content." Wired through `useT()` for its one built-in string (`"Loading"`, the loading-region `aria-label`) — every other string is host-supplied via slots/render props, so there's nothing else in this file to translate. |
+| `index.ts` | Public barrel. |
+
+### What did NOT get ported (and why)
+
+- **No `ports.ts`/`dependencies.ts`.** Unlike every other feature in this
+  package, `ListDetailPanel` has zero transport/DOM surface of its own — the
+  host supplies items, the current selection, and both renderers as plain
+  props/render-callbacks. There is nothing here for a port to abstract; the
+  DI-seam ceremony would be empty ceremony for a purely presentational
+  primitive, so it was skipped rather than added for form's sake.
+- **No visual skeleton markup.** `DesignSystemsTab.tsx`'s loading state is a
+  richly detailed, OD-styled skeleton (specific row-variation patterns, a
+  multi-section detail skeleton with its own CSS module). Per this package's
+  established precedent (no `.module.css` ported anywhere in `@jini/ui` —
+  see the flat-group porting section above), the loading state is generified
+  to `loading` + `loadingSidebarContent`/`loadingDetailContent` slots; a host
+  supplies its own skeleton visuals. The panel's only built-in loading-state
+  contribution is the `role="status" aria-busy aria-label` wrapper.
+- **Analytics, i18n dictionary keys, scope/surface/category filtering,
+  `SystemRow`'s thumbnail-resolution logic, publish/delete/make-default
+  actions** — all OD-specific, stay in OD.
+
+### Retained-behavior manifest
+
+| Behavior | Source line(s) | Test |
+|---|---|---|
+| Empty list clears the selection | `DesignSystemsTab.tsx:266-268` | `rules.test.ts` "clears the selection when items is empty"; `useListDetailSelection.test.ts` "clears the selection when items becomes empty" |
+| Current pick kept if still present (no flicker on unrelated list updates) | `DesignSystemsTab.tsx:270` | `rules.test.ts` "keeps the current pick..."; `useListDetailSelection.test.ts` "keeps the current pick when items changes but the pick is still present" |
+| Falls back to the first item when the current pick is gone | `DesignSystemsTab.tsx:270` | `rules.test.ts` + `useListDetailSelection.test.ts`, both "falls back to the first item..." |
+| Detail pane renders the selected item; empty-selection fallback otherwise | `DesignSystemsTab.tsx:759-793` | `ListDetailPanel.test.tsx` "renders the detail pane...", "shows emptyDetailContent when nothing is selected", "...when selectedId points at a missing item" |
+| Row click selects that row | `DesignSystemsTab.tsx:487-490` (`handleSelectSystem`) | `ListDetailPanel.test.tsx` "calls onSelect with the clicked row id" |
+| Loading state replaces both panes | `DesignSystemsTab.tsx:500-563` | `ListDetailPanel.test.tsx` "replaces the sidebar list and detail with loading content when loading" |
+
+The scope-tab/surface-filter/category-dropdown chrome, `SystemRow`'s
+thumbnail/status-badge rendering, and every `DesignSystemDetail` action are
+marked host-owned/OD-specific per the manifest instructions — they live
+entirely outside this primitive's scope (see "What did NOT get ported"
+above), not silently dropped.
+
+### i18n wiring
+
+Only one built-in string exists in this component (`"Loading"`, the
+loading-region `aria-label`) — everything else is a host-supplied slot or
+render-prop, so there's no OD copy to strip and no dictionary keys to
+enumerate beyond that one. `ListDetailPanel.test.tsx`'s
+`"translates the loading aria-label through I18nProvider"` test mounts under
+`I18nProvider` with a French dictionary (`{ Loading: 'Chargement' }`) and
+asserts the translated `aria-label` renders — proving the wiring actually
+localizes, not just that `t()` calls compile (per this repo's i18n policy,
+after the connectors canary's first pass got this wrong by skipping this
+exact kind of end-to-end proof).
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|open-design\.ai\|openDesignDesktop\|@open-design/"` across every file under `features/list-detail-panel/`: **clean, zero matches.** Stricter `\bod-` class-prefix check: also clean — every class in `ListDetailPanel.tsx` uses the `jini-` prefix (`jini-list-detail-panel*`).
+
+### Test/typecheck/guard/coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors.
+- `pnpm --filter @jini/ui exec vitest run src/features/list-detail-panel`: **4 test files, 30 tests, all green** (`rules.test.ts` 7, `useListDetailSelection.test.ts` 9, `ListDetailPanel.test.tsx` 13, `index.test.ts` 1 barrel smoke test).
+- Per-file coverage for every new file in this feature (via `coverage-summary.json`, not the v8 text table): **`types.ts` excluded (zero runtime statements, see above); `rules.ts`, `react/hooks/useListDetailSelection.ts`, `react/components/ListDetailPanel.tsx`, `index.ts` all 100/100/100/100** (statements/branches/functions/lines) — clears the ≥99% bar with room, no Phase 9.5 classify-and-fix loop was needed since nothing was left uncovered on the first real pass.
+- **Full `pnpm --filter @jini/ui` package coverage aggregate** (all 144 test files, 1239 tests, all green): **92.68% statements/lines, 92% functions, 90.33% branches** — below the 99% bar, but this is **pre-existing debt unrelated to this task**, not a regression introduced here: 41 files package-wide sit below 99% on at least one metric, concentrated in `features/sketch-editor/`'s Excalidraw-integration React layer (several components/hooks at literal 0% — no test files exist for them yet) and a handful of `src/utils/` files (`notifications.ts` 67%, `visual-stability.ts` 81.81%) from earlier porting tasks. Reported honestly per this task's explicit instruction (and the audit-findings note about per-file claims not holding at the full-package aggregate) rather than only citing this feature's own 100% and calling the package done — fixing that pre-existing debt is out of scope for a `ListDetailPanel` dispatch and would need its own task.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+- Purity grep (product-identity strings + `od-` class prefix): clean, see above.
