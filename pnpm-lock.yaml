@@ -41,6 +41,10 @@ importers:
       '@jini/platform':
         specifier: workspace:*
         version: link:../platform
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/capability-providers:
     dependencies:
@@ -87,7 +91,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/core: {}
+  packages/core:
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/daemon:
     dependencies:
@@ -97,6 +105,10 @@ importers:
       '@jini/protocol':
         specifier: workspace:*
         version: link:../protocol
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/deploy:
     dependencies:
@@ -151,6 +163,10 @@ importers:
       undici:
         specifier: ^7.25.0
         version: 7.28.0
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/protocol:
     dependencies:
