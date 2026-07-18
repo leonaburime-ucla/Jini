@@ -56,7 +56,7 @@ export interface MemoryConnectorsPort {
   connectConnector(connectorId: string): Promise<ConnectorActionResult>;
   suggestConnectorMemories(
     connectorIds: string[],
-    context: { chatAgentId?: string | null; chatModel?: string | null },
+    context: { chatAgentId?: string | null | undefined; chatModel?: string | null | undefined },
   ): Promise<ConnectorMemorySuggestionResponse | null>;
   saveMemoryEntry(draft: DraftEntry): Promise<MemoryEntry | null>;
   /** Read the connectors mid-authorization, persisted across reloads. */

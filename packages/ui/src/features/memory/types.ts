@@ -34,9 +34,9 @@ export interface MemoryTreeNode {
   id: string;
   kind: MemoryTreeNodeKind;
   name: string;
-  path?: string;
-  parentId?: string;
-  description?: string;
+  path?: string | undefined;
+  parentId?: string | undefined;
+  description?: string | undefined;
 }
 
 /** The shape `fetchMemoryList()`'s shared read path returns. `entries`,
@@ -51,10 +51,10 @@ export interface MemoryListResponse {
   rootDir: string;
   index: string;
   enabled: boolean;
-  chatExtractionEnabled?: boolean;
-  profileEnabled?: boolean;
-  rewriteEnabled?: boolean;
-  verifyEnabled?: boolean;
+  chatExtractionEnabled?: boolean | undefined;
+  profileEnabled?: boolean | undefined;
+  rewriteEnabled?: boolean | undefined;
+  verifyEnabled?: boolean | undefined;
 }
 
 export interface MemoryTreeListResponse {
@@ -63,20 +63,20 @@ export interface MemoryTreeListResponse {
 
 /** Body for both create (`POST`) and update (`PUT`) — `id` present selects update. */
 export interface UpsertMemoryRequest {
-  id?: string;
+  id?: string | undefined;
   name: string;
   description: string;
   type: MemoryType;
   body: string;
 }
 
-export type UpdateMemoryConfigRequest = Partial<{
-  enabled: boolean;
-  chatExtractionEnabled: boolean;
-  profileEnabled: boolean;
-  rewriteEnabled: boolean;
-  verifyEnabled: boolean;
-}>;
+export interface UpdateMemoryConfigRequest {
+  enabled?: boolean | undefined;
+  chatExtractionEnabled?: boolean | undefined;
+  profileEnabled?: boolean | undefined;
+  rewriteEnabled?: boolean | undefined;
+  verifyEnabled?: boolean | undefined;
+}
 
 /** A memory entry being created or edited in the manual editor form. */
 export interface DraftEntry {
@@ -102,22 +102,22 @@ export type MemoryExtractionSkipReason =
   | 'no-match';
 
 export interface MemoryExtractionProvider {
-  kind?: 'anthropic' | 'azure' | 'google' | 'ollama' | 'openai' | string;
-  credentialSource?: 'chat-cli' | string;
+  kind?: 'anthropic' | 'azure' | 'google' | 'ollama' | 'openai' | string | undefined;
+  credentialSource?: 'chat-cli' | string | undefined;
 }
 
 export interface MemoryExtractionRecord {
   id: string;
   phase: MemoryExtractionPhase;
-  kind?: 'llm' | 'heuristic' | 'connector';
-  reason?: MemoryExtractionSkipReason;
-  provider?: MemoryExtractionProvider;
-  error?: string;
-  userMessagePreview?: string;
-  writtenCount?: number;
-  writtenIds?: string[];
+  kind?: 'llm' | 'heuristic' | 'connector' | undefined;
+  reason?: MemoryExtractionSkipReason | undefined;
+  provider?: MemoryExtractionProvider | undefined;
+  error?: string | undefined;
+  userMessagePreview?: string | undefined;
+  writtenCount?: number | undefined;
+  writtenIds?: string[] | undefined;
   startedAt: number;
-  finishedAt?: number;
+  finishedAt?: number | undefined;
 }
 
 /** Same wire shape as a fetched record — a live SSE frame is just one more
@@ -133,25 +133,27 @@ export interface MemoryExtractionsResponse {
 export interface MemorySuggestion {
   id: string;
   name: string;
-  description?: string;
+  description?: string | undefined;
   type: MemoryType;
   body: string;
-  source?: {
-    connectorName?: string;
-    toolTitle?: string;
-  };
+  source?:
+    | {
+        connectorName?: string | undefined;
+        toolTitle?: string | undefined;
+      }
+    | undefined;
 }
 
 export type ConnectorMemoryAttemptStatus = 'succeeded' | 'failed' | 'skipped';
 
 export interface ConnectorMemoryAttempt {
   connectorId: string;
-  connectorName?: string;
+  connectorName?: string | undefined;
   status: ConnectorMemoryAttemptStatus;
-  toolName?: string;
-  toolTitle?: string;
-  error?: string;
-  summary?: string;
+  toolName?: string | undefined;
+  toolTitle?: string | undefined;
+  error?: string | undefined;
+  summary?: string | undefined;
 }
 
 export interface ConnectorMemorySuggestionResponse {
@@ -186,7 +188,7 @@ export interface MemorySourceTab {
 
 /** Props a host's own orchestrator wraps this slice's pieces with. */
 export interface MemorySectionProps {
-  onOpenConnectors?: () => void;
-  chatAgentId?: string | null;
-  chatModel?: string | null;
+  onOpenConnectors?: (() => void) | undefined;
+  chatAgentId?: string | null | undefined;
+  chatModel?: string | null | undefined;
 }
