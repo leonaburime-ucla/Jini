@@ -27,4 +27,14 @@ describe('Loading primitives', () => {
     render(<CenteredLoader label="Bootstrapping" />);
     expect(screen.getByText('Bootstrapping')).toBeTruthy();
   });
+
+  it('Skeleton appends a custom className', () => {
+    const { container } = render(<Skeleton className="my-skel" />);
+    expect((container.firstChild as HTMLElement).className).toBe('skeleton-block my-skel');
+  });
+
+  it('CenteredLoader omits the label span when no label is given', () => {
+    const { container } = render(<CenteredLoader />);
+    expect(container.querySelector('.centered-loader-label')).toBeNull();
+  });
 });

@@ -27,4 +27,14 @@ describe('AgentIcon', () => {
     const { getByText } = render(<AgentIcon id="some-new-agent" />);
     expect(getByText('S')).toBeTruthy();
   });
+
+  it('appends a custom className to the rendered mark', () => {
+    const { container } = render(<AgentIcon id="claude" className="pinned" />);
+    expect(container.querySelector('img')?.getAttribute('class')).toBe('agent-icon pinned');
+  });
+
+  it('uses a "?" placeholder for an id with no letters', () => {
+    const { getByText } = render(<AgentIcon id="123-456" />);
+    expect(getByText('?')).toBeTruthy();
+  });
 });

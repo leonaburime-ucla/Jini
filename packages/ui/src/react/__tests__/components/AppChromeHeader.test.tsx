@@ -29,6 +29,22 @@ describe('AppChromeHeader', () => {
     const { container } = render(<AppChromeHeader />);
     expect(container.querySelector(`#${APP_CHROME_FILE_ACTIONS_ID}`)).toBeTruthy();
   });
+
+  it('renders content, file-actions-before, and actions, and can hide the traffic space', () => {
+    const { container } = render(
+      <AppChromeHeader
+        showTrafficSpace={false}
+        fileActionsBefore={<span data-testid="fab" />}
+        actions={<span data-testid="acts" />}
+      >
+        <span data-testid="kids" />
+      </AppChromeHeader>,
+    );
+    expect(container.querySelector('.app-chrome-traffic-space')).toBeNull();
+    expect(screen.getByTestId('kids')).toBeTruthy();
+    expect(screen.getByTestId('fab')).toBeTruthy();
+    expect(screen.getByTestId('acts')).toBeTruthy();
+  });
 });
 
 describe('SettingsIconButton', () => {
