@@ -102,6 +102,23 @@ export const RegistryEntrySchema = z
   .passthrough();
 export type RegistryEntry = z.infer<typeof RegistryEntrySchema>;
 
+/**
+ * A registry's whole published index: one or more {@link RegistryEntry}
+ * records under a spec/name/version envelope. This is the generic shape a
+ * `static`/`github`/`database` backend reads from or writes to — the direct
+ * counterpart of a package registry's index.json / a plugin marketplace's
+ * manifest, with no vendor-specific fields.
+ */
+export const RegistryManifestSchema = z
+  .object({
+    specVersion: z.string().min(1),
+    name: z.string().min(1),
+    version: z.string().min(1),
+    entries: z.array(RegistryEntrySchema),
+  })
+  .passthrough();
+export type RegistryManifest = z.infer<typeof RegistryManifestSchema>;
+
 export const RegistryListFilterSchema = z
   .object({
     query: z.string().optional(),
