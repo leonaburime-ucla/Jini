@@ -130,3 +130,107 @@ narrowing noted in the `src/request.ts` row above, not a redesign).
 `express` (`^4.21.0`, new runtime dependency) + `@types/express`
 (devDependency) — this package is Express-typed by design; no HTTP
 framework dependency previously existed anywhere in the Jini workspace.
+
+## 2026-07-18 addition — resolving the `http/` recon discrepancy + `local-daemon-request.ts`
+
+Tonight's task brief flagged a discrepancy: `docs/jini-port/recon/r1-daemon.md`'s
+TASK 1 table lists a 10-file `http/` directory (`adapter.ts`, `api-errors.ts`,
+`origin-guard.ts`, `parse.ts`, `response.ts`, `tool-request-auth.ts`, "plus 4
+more") as GENERIC-ENGINE, which doesn't match this package's already-merged
+file list (`adapter.ts`, `compat.ts`, `index.ts`, `origin-validation.ts`,
+`origin.ts`, `pack-http.ts`, `request.ts`, `response.ts`, `types.ts`, from
+branch `port/http-sqlite-platform-protocol-plus`). Investigated by cloning
+the real `leonaburime-ucla/open-design` fork fresh (`/tmp/od-source`) and
+comparing three branches' `apps/daemon/src/http/` directories directly (not
+relying on either port's prior write-up):
+
+- **`main`** and **`refactor/http-capability-barrel`** (this package's actual
+  origin per the "File map" table above) — 7-file flat / capability-barrel-
+  subdivided forms of the same six logical modules (`adapter`/`api-errors`/
+  `origin-guard`/`parse`/`response`/`types` + `index`). Byte-diffed the flat
+  files on `main` against `refactor/web-memory-slice` (see next bullet) —
+  **identical**. Diffed `web-memory-slice`'s flat `api-errors.ts` against
+  `http-capability-barrel`'s refactored `compat/api-errors.ts` — differs only
+  by added JSDoc comments, logic byte-identical. **Verdict: already covered,
+  no action** — these six modules are the same underlying source at different
+  points in its own capability-barrel refactor history, and this package
+  already ports the post-refactor, better-documented version.
+- **`refactor/web-memory-slice`** — the recon's actual scope (stated at the
+  top of `r1-daemon.md`) — has a **genuinely different, still-10-file**
+  flat `http/` directory: the same six shared files above, **plus**
+  `local-daemon-request.ts`, `oauth-result-page.ts`, and `tool-request-auth.ts`
+  (10 total, matching the recon's count exactly — the prior port's source-map
+  claim of "zero matches for `tool-request-auth.ts`... across the entire
+  clone (both on `refactor/http-capability-barrel` and `main`)" is accurate
+  for the two branches it checked, but did not check `web-memory-slice`,
+  which is where the recon's file list actually came from).
+
+Of those three additional files:
+
+- **`local-daemon-request.ts`** — genuinely separate, generic, zero OD
+  coupling (loopback-peer/Host/Origin validation + a CORS-header-setting
+  Express middleware; no product nouns). **Ported** — see below.
+- **`tool-request-auth.ts`** — generic-shaped bearer-token middleware
+  (`createToolRequestAuth`, `bearerTokenFromRequest`), but its only
+  real dependency, `../tool-tokens.js` (`ToolTokenRegistry`), is
+  **OD-product-coupled**: `CHAT_TOOL_ENDPOINTS`/`CHAT_TOOL_OPERATIONS`
+  hardcode OD feature endpoints (`/api/tools/live-artifacts/*`,
+  `/api/tools/design-systems/read`, `/api/tools/media/generate`,
+  `/api/tools/library/*`, `/api/tools/connectors/*`), and its opaque token
+  prefix is literally `odtt_`. This isn't a thin coupling to strip — it's
+  the whole registry's reason to exist. **Not ported.** This module's
+  generic shape (bearer-token-gated tool endpoints) is exactly what
+  extraction-plan.md §8 task 6 (`ToolExecutor` boundary, §2.5) will need to
+  build as a real engine port when that task starts — a future port should
+  design that port's shape fresh against `ToolExecutor`'s actual contract
+  rather than reusing this OD-coupled registry.
+- **`oauth-result-page.ts`** — pure OD-branded product HTML (an MCP-OAuth
+  callback landing page; literal "Open Design" text in its `<title>`/body
+  copy, a `BroadcastChannel('open-design-mcp-oauth')` channel name). **Not
+  ported** — no generic core to extract; a future MCP-OAuth-flow port (out
+  of scope for this task) would need its own neutral result-page template.
+
+### `local-daemon-request.ts` — ported
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/local-daemon-request.ts` | `apps/daemon/src/http/local-daemon-request.ts` (on `refactor/web-memory-slice`) | `normalizeLocalAuthority`/`isLoopbackHostname`/`isLoopbackPeerAddress`/`localOriginFromHeader`/`validateLocalDaemonRequest`/`requireLocalDaemonRequest`, logic verbatim except one dead-code removal — see below. Import switched from the origin's own `./api-errors.js` (`sendApiError(code, message, init)`, separate-arguments call shape) to this package's `./compat.js` `sendApiError`, which is the exact same call shape already ported here (see the original "File map" table's `src/compat.ts` row) — a mechanical import-source change, not a redesign. |
+
+**One dead-code removal (behavior-preserving, coverage-proven):**
+`normalizeLocalAuthority`'s origin body had
+`if (!hostname || parsed.username || parsed.password || parsed.pathname !== '/') return null;`.
+Empirically proved unreachable-as-written before removing anything:
+`trimmed` is already rejected one line earlier by
+`/[\s/@]/.test(trimmed)` whenever it contains `/` or `@` — the two
+characters required for a URL to ever produce a non-root `pathname` or a
+non-empty `username`/`password` — so those three sub-conditions can never
+be true when this line executes. Verified with a standalone probe against
+Node's actual `URL` parser (not just reasoning about the grammar) before
+simplifying to `if (!hostname) return null;` (the fourth condition, `!hostname`,
+*is* reachable — e.g. `trimmed === '.'` parses to `parsed.hostname === '.'`,
+which becomes `''` after the trailing-dot strip — and is kept, with a test).
+This is the same category of fix Phase 6.5's coverage-driven loop calls a
+"dead branch... refactor it away behaviorally-safely," applied narrowly and
+proven, not assumed.
+
+## Tests
+
+`src/local-daemon-request.test.ts`, written fresh for this port. Also
+backfilled two coverage gaps in the **pre-existing** (not authored by this
+task) `origin-validation.ts` while getting this package's aggregate to the
+Phase 6.5 bar: `parseHostHeader` had zero tests before tonight (added a
+`describe` block covering array-header/empty-array/catch-branch cases), and
+`isAllowedBrowserOrigin`/`isLocalSameOrigin`/`isPrivateIpv4`/
+`isLoopbackOrPrivateLanHost` had a handful of untested branches (non-http(s)
+origin scheme, missing Host header, default 80/443 origin ports, a
+completely headerless request, falsy-hostname fallbacks); added
+`isIpLiteralHostname` tests (previously untested despite being exported).
+Also added `src/index.test.ts` (the barrel had no direct test, so v8 counted
+it as 0% covered even though every symbol it re-exports is exercised via its
+own file's tests).
+
+## Dependencies
+
+No new dependency — `local-daemon-request.ts` uses only `node:net` plus this
+package's own `compat.ts` export and `express`'s existing `Request`/
+`Response`/`NextFunction` types (already a dependency of this package).

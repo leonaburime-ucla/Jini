@@ -14,6 +14,9 @@
  *   external media references.
  * - `download`    — managed-download engine (atomic resume, checksum, lock,
  *   manifest, retention pruning).
+ * - `aws-sigv4`   — AWS Signature V4 request signing (no `@aws-sdk/*` dependency).
+ * - `blob-storage` — a backend-agnostic blob storage port + local-disk and
+ *   S3-compatible implementations.
  *
  * The set of names exported here is intentionally identical to the pre-split
  * public surface; importers see no change.
@@ -105,3 +108,9 @@ export {
   pruneManagedDownloads,
   removeManagedDownload,
 } from "./download.js";
+
+export type { SigV4Credentials, SignSigV4Input, SignSigV4Result } from "./aws-sigv4.js";
+export { encodeS3PathSegment, signSigV4 } from "./aws-sigv4.js";
+
+export type { BlobFileMeta, BlobStorage, S3BlobStorageOptions } from "./blob-storage.js";
+export { LocalBlobStorage, S3BlobStorage, StorageError } from "./blob-storage.js";

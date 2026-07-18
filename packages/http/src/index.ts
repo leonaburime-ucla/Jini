@@ -45,6 +45,15 @@ export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export { mountPackHttp } from './pack-http.js';
 
+export {
+  isLoopbackHostname,
+  isLoopbackPeerAddress,
+  localOriginFromHeader,
+  normalizeLocalAuthority,
+  requireLocalDaemonRequest,
+  validateLocalDaemonRequest,
+} from './local-daemon-request.js';
+
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
 // `(code, message, init)` — same job, different call-site generation, so it is re-exported here
