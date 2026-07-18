@@ -101,9 +101,21 @@ export function createClaudeStreamHandler(
   }
 
   function nextGeneratedRuntimeTaskId(): string {
-    while (runtimeTasks.has(String(nextRuntimeTaskId))) {
-      nextRuntimeTaskId += 1;
-    }
+    // Coverage-driven refactor (2026-07-18, no behavior change): the
+    // original OD source guarded the returned id with
+    // `while (runtimeTasks.has(String(nextRuntimeTaskId))) nextRuntimeTaskId += 1;`.
+    // Tracing every path that can insert a numeric id into `runtimeTasks`
+    // shows the guard can never trigger: the only two insertion paths are
+    // (a) this function itself, which always hands out the current
+    // `nextRuntimeTaskId` and then increments it, so that exact value is
+    // never in the map yet; and (b) `runtimeTaskIdFromCreate`'s
+    // explicit-id branch, which bumps `nextRuntimeTaskId` to
+    // `numericId + 1` (strictly past itself) BEFORE this function could
+    // ever be asked to reuse that id. Since `nextRuntimeTaskId` only ever
+    // increases, it can never equal an id already present in the map at
+    // this point. Removed per the coverage skill's Phase 6.5 "dead
+    // branch" classification rather than fake a test for an unreachable
+    // loop; see source-map.md.
     const id = String(nextRuntimeTaskId);
     nextRuntimeTaskId += 1;
     return id;
@@ -123,7 +135,6 @@ export function createClaudeStreamHandler(
   function emitCanonicalTaskSnapshot(toolUseId: unknown, name: unknown, input: unknown): boolean {
     if (typeof toolUseId !== 'string' || typeof name !== 'string' || !isRecord(input)) return false;
     if (canonicalTaskToolUseIds.has(toolUseId)) return true;
-    let changed = false;
     if (name === 'TaskCreate') {
       const content = typeof input.subject === 'string'
         ? input.subject
@@ -139,7 +150,6 @@ export function createClaudeStreamHandler(
         status: normalizeTaskStatus(input.status),
         ...(activeForm ? { activeForm } : {}),
       });
-      changed = true;
     } else if (name === 'TaskUpdate') {
       if (typeof input.taskId !== 'string') return false;
       const existing = runtimeTasks.get(input.taskId);
@@ -156,12 +166,21 @@ export function createClaudeStreamHandler(
         status: normalizeTaskStatus(input.status),
         ...(activeForm ? { activeForm } : {}),
       });
-      changed = true;
     } else {
       return false;
     }
+    // Coverage-driven refactor (2026-07-18, no behavior change): the
+    // original OD source guarded this emission with
+    // `if (!changed || runtimeTasks.size === 0) return false;`. Tracing
+    // every path into this point shows both conditions are unreachable —
+    // the `TaskCreate` and `TaskUpdate` branches above only fall through
+    // to here after an unconditional `runtimeTasks.set(...)` (so `size`
+    // can never be 0), and every early-return path above returns before
+    // reaching here (so the "changed" flag those returns guarded was
+    // always true here). Removed the dead double-guard per the coverage
+    // skill's Phase 6.5 "dead branch" classification rather than fake a
+    // test for an unreachable condition; see source-map.md.
     canonicalTaskToolUseIds.add(toolUseId);
-    if (!changed || runtimeTasks.size === 0) return false;
     onEvent({
       type: 'tool_use',
       id: `${toolUseId}:todo-task`,
@@ -334,16 +353,30 @@ export function createClaudeStreamHandler(
     return typeof input.content === 'string' || typeof input.new_string === 'string';
   }
 
+  // Coverage-driven refactor (2026-07-18, no behavior change): both
+  // `fileWriteContent` and `isHtmlWriteToolInput` originally opened with
+  // their own `if (!isRecord(input)) return ...;` guard. Each function
+  // has exactly one call site (`emitToolUse`, for both), and both call
+  // sites already sit inside an `if (isFileWriteToolUse(name, input))`
+  // block, which itself already asserted `isRecord(input)` before
+  // returning true. So `input` is always a record by the time either
+  // function runs — the guards duplicated a check the shared caller
+  // already made. Removed the runtime early-return per the coverage
+  // skill's Phase 6.5 "dead branch" classification rather than fake a
+  // test with a non-record `input` neither function can ever actually
+  // receive (see source-map.md), replaced by a one-line type assertion
+  // (classification 4: TS-required, no real runtime path) so the
+  // parameter can stay `unknown` without disturbing the call sites.
   function fileWriteContent(input: unknown): string | null {
-    if (!isRecord(input)) return null;
-    if (typeof input.content === 'string') return input.content;
-    if (typeof input.new_string === 'string') return input.new_string;
+    const record = input as Record<string, unknown>;
+    if (typeof record.content === 'string') return record.content;
+    if (typeof record.new_string === 'string') return record.new_string;
     return null;
   }
 
   function isHtmlWriteToolInput(input: unknown): boolean {
-    if (!isRecord(input)) return false;
-    const rawPath = input.file_path ?? input.filePath;
+    const record = input as Record<string, unknown>;
+    const rawPath = record.file_path ?? record.filePath;
     if (typeof rawPath === 'string' && /\.(?:html?|xhtml)$/i.test(rawPath)) return true;
     const content = fileWriteContent(input);
     return typeof content === 'string' && /<!doctype\s+html\b|<html\b/i.test(content);

@@ -282,7 +282,7 @@ commit. Two note-worthy layout differences from what the brief anticipated:
 | `src/mcp.ts` | `runtimes/core/mcp.ts` | De-branded, and narrowed to the genuinely generic half. Origin `buildLiveArtifactsMcpServersForAgent` hardcoded a product-branded server name, a product-branded default `command`, and an args tail baked in — i.e. it injected exactly one product's own MCP feature. Renamed to `buildAcpMcpServersForAgent`; `name`/`command`/`args` are now fully caller-supplied with no product-branded default. Kept: the actual generic mechanism — gate on `mcpDiscovery === 'mature-acp'`, and shape the `env` field as an array (`[{name,value}]`) or a map (`{KEY:value}`) per `def.acpMcpEnvFormat`, since different ACP implementations expect different shapes there. |
 | `src/executables.ts` | `runtimes/core/executables.ts` | De-branded + sandbox dependency dropped. `wellKnownUserToolchainBins` import swapped to `@jini/platform`. Origin read two product-prefixed env vars directly and called `resolveSandboxRuntimeConfigFromEnv` from OD's daemon-level `sandbox-mode.ts` (out of this package's charter). Replaced with `configureExecutableResolutionEnv({ agentHomeEnvVar, resourceRootEnvVar })` — an injectable pair of env-var names defaulting to `AGENT_RUNTIME_HOME` / `AGENT_RUNTIME_RESOURCE_ROOT` — and the sandbox-mode integration is simply not present (no equivalent kept; a host needing sandboxed detection-home scoping can still set the agent-home override env var, which achieves the same practical effect for detection purposes). |
 | `src/role-marker-guard.ts` | top-level `apps/daemon/src/role-marker-guard.ts` (not under `runtimes/`, but consumed by `claude-stream.ts`) | Verbatim. Self-contained fabricated-role-marker (`## user`/`## assistant`) detector; no product coupling found. |
-| `src/claude-stream.ts` | `runtimes/stream/claude-stream.ts` | Verbatim except the `role-marker-guard` import path (now same-package instead of two directories up). |
+| `src/claude-stream.ts` | `runtimes/stream/claude-stream.ts` | Verbatim except the `role-marker-guard` import path (now same-package instead of two directories up), plus four coverage-driven dead-branch removals made 2026-07-18 — see "Coverage-driven refactors" below. |
 | `src/json-event-stream.ts` | `runtimes/stream/json-event-stream.ts` | Verbatim. Zero imports in the origin. |
 | `src/qoder-stream.ts` | `runtimes/stream/qoder-stream.ts` | Verbatim. Only import is `node:buffer`. |
 | `src/copilot-stream.ts` | top-level `apps/daemon/src/copilot-stream.ts` (not under `runtimes/`; r1 recon notes Jini's own daemon relocated this file under `runtimes/`, mirrored here) | Verbatim. Zero imports in the origin. |
@@ -391,6 +391,64 @@ contract composer (OD's "research" feature) — every one of them product-specif
 them a generic prompt-composition mechanism. Per the task's explicit instruction ("do NOT
 lift the OD logic itself"), none of it is ported; `PromptAugmenter` is the injection seam in
 full.
+
+### Coverage-driven refactors (2026-07-18)
+
+`claude-stream.ts`, `qoder-stream.ts`, and `copilot-stream.ts` were the three stream-parser
+test files left at their original-port baseline (55.66%/47.74%/62.5%, 76.19%/58.92%/90%,
+83.87%/62.85%/100% statements/branches/functions respectively) after the earlier coverage-fix
+pass brought the other ~50 files (including `json-event-stream.ts` and all 24 `defs/*.ts`
+files) to ~100%. All three were expanded to 100%/100%/100%/100% (statements/branches/
+functions/lines) with real behavioral tests, following `json-event-stream.test.ts`'s
+established pattern (synthetic JSONL traces shaped to the parser's own documented wire
+format, fed line-by-line through `feed()`/`flush()`, asserting the emitted event sequence).
+Per the coverage skill's Phase 6.5 loop, four uncovered branches in `claude-stream.ts` were
+classified as genuinely dead (a defensive check duplicated by an earlier guard) rather than
+tested, and removed — no behavior change, verified by the full existing + new test suite
+passing unchanged:
+
+1. `emitCanonicalTaskSnapshot`'s trailing `if (!changed || runtimeTasks.size === 0) return
+   false;` guard — both operands are unreachable by construction: every early-return path
+   already covers the `!changed` case, and `runtimeTasks.set(...)` always executes
+   immediately before this line on both surviving paths, so `size` can never be 0 here.
+2. `nextGeneratedRuntimeTaskId`'s `while (runtimeTasks.has(String(nextRuntimeTaskId)))
+   nextRuntimeTaskId += 1;` collision-skip loop — `nextRuntimeTaskId` is monotonically
+   non-decreasing everywhere in the file (this function always hands out the current value
+   then increments it; `runtimeTaskIdFromCreate`'s explicit-id branch bumps it to
+   `numericId + 1`, strictly past any id `>=` the current counter, before this function can
+   run again), so the counter can never equal an id already present in the map when the loop
+   condition is checked.
+3. `fileWriteContent`'s own `if (!isRecord(input)) return null;` guard — its only call sites
+   (`emitToolUse`, and internally from `isHtmlWriteToolInput`) already sit inside an
+   `isFileWriteToolUse(name, input)` truthy check, which itself already asserted
+   `isRecord(input)`. Replaced by a one-line type assertion (`input as Record<string,
+   unknown>`) with a justifying comment — a TS-required cast, not a runtime guard, per Phase
+   6.5's 4th classification (a TS-required fallback with no real runtime path).
+4. `isHtmlWriteToolInput`'s own `if (!isRecord(input)) return false;` guard — same reasoning
+   as #3 (its one call site is inside the same `isFileWriteToolUse` check); same fix.
+
+None of these four change `claude-stream.ts`'s observable event output for any input a real
+`claude --output-format stream-json` process (or a malformed/adversarial one) can produce —
+each removed condition was provably unreachable given the surrounding code's own invariants,
+not a behavior the file relied on. See the four inline comments at each call site
+(`// Coverage-driven refactor (2026-07-18, no behavior change): ...`) for the full reasoning
+trail. `qoder-stream.ts` and `copilot-stream.ts` needed no code changes — their remaining
+gaps were all genuinely-reachable-but-untested branches (env defaults, malformed-input
+fallbacks, `flush()`'s empty/non-empty-buffer paths, etc.), closed with tests only.
+
+A pre-existing, unrelated `src/launch.test.ts` test
+(`resolveAgentLaunch > codex: falls back to the wrapper with no diagnostic when the wrapper
+file cannot be read (permission denied)`) fails in this sandbox because the whole session
+runs as `root`, and `chmod 000` does not deny a root reader — confirmed pre-existing via
+`git stash` (fails identically on the pre-refactor tree). Not touched; out of this task's
+scope (it is not one of the three stream-parser files, and the failure is an environment
+property, not a code or test defect). Likewise, a handful of other pre-existing files
+(`defs/amr.ts`, `detection.ts`, `launch.ts`, `json-event-stream.ts`, `amr-model-cache.ts`,
+`env.ts`, `models.ts`, `opencode-log.ts`, `pi-models.ts`, `prompt-budget.ts`,
+`terminal-launch.ts`, `defs/antigravity.ts`, and the `index.ts` barrel) sit below the
+package's 99.9% branch/function threshold in the full merged run; all were confirmed (via
+the same `git stash` before/after comparison) to already sit there before this task's changes
+— untouched, out of scope, not a regression introduced by this pass.
 
 ### Not ported / explicitly out of scope
 
