@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
-import { $isMentionNode, MentionNode } from '../../mention-node.js';
+import { MentionNode } from '../../mention-node.js';
 import { $collectMentionNodeKeys } from '../../rules.js';
 import type { MentionEntity } from '../../types.js';
 
@@ -34,8 +34,15 @@ export function useMentionColorStamping(
     const stampByKey = (key: string): void => {
       const dom = editor.getElementByKey(key);
       if (!dom) return;
-      const node = $getNodeByKey(key);
-      if (!$isMentionNode(node)) return;
+      // Both call sites below hand `stampByKey` a key already guaranteed to
+      // resolve to a `MentionNode`: `$collectMentionNodeKeys()` only ever
+      // collects mention-node keys, and `registerMutationListener(MentionNode,
+      // ...)` only ever reports keys of that type (a 'destroyed' mutation —
+      // the one case where the node no longer exists — is filtered out by
+      // the caller before this runs). The cast documents that guarantee
+      // instead of adding an `$isMentionNode` branch neither call site can
+      // actually fail.
+      const node = $getNodeByKey(key) as MentionNode;
       const color = resolveMentionColor(node.getEntity());
       if (color) dom.style.setProperty(MENTION_COLOR_PROPERTY, color);
       else dom.style.removeProperty(MENTION_COLOR_PROPERTY);

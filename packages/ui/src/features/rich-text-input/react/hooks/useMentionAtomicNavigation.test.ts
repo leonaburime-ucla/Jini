@@ -8,8 +8,10 @@ import {
   KEY_ARROW_RIGHT_COMMAND,
   KEY_BACKSPACE_COMMAND,
   KEY_DELETE_COMMAND,
+  type ElementNode,
   type LexicalEditor,
   type RangeSelection,
+  type TextNode,
 } from 'lexical';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { $createMentionNode } from '../../mention-node.js';
@@ -53,7 +55,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const after = $getRoot().getFirstChild()!.getLastChild()!;
+          const after = $getRoot().getFirstChild<ElementNode>()!.getLastChild<TextNode>()!;
           after.select(0, 0);
         },
         { discrete: true },
@@ -79,7 +81,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const first = $getRoot().getFirstChild()!.getFirstChild()!;
+          const first = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
           first.select(0, 0);
         },
         { discrete: true },
@@ -100,7 +102,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const first = $getRoot().getFirstChild()!.getFirstChild()!;
+          const first = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
           first.select(first.getTextContentSize(), first.getTextContentSize());
         },
         { discrete: true },
@@ -121,7 +123,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const after = $getRoot().getFirstChild()!.getLastChild()!;
+          const after = $getRoot().getFirstChild<ElementNode>()!.getLastChild<TextNode>()!;
           after.select(0, 0);
         },
         { discrete: true },
@@ -146,7 +148,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const first = $getRoot().getFirstChild()!.getFirstChild()!;
+          const first = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
           first.select(first.getTextContentSize(), first.getTextContentSize());
         },
         { discrete: true },
@@ -171,7 +173,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const after = $getRoot().getFirstChild()!.getLastChild()!;
+          const after = $getRoot().getFirstChild<ElementNode>()!.getLastChild<TextNode>()!;
           after.select(0, 0);
         },
         { discrete: true },
@@ -193,7 +195,7 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const after = $getRoot().getFirstChild()!.getLastChild()!;
+          const after = $getRoot().getFirstChild<ElementNode>()!.getLastChild<TextNode>()!;
           after.select(0, 0);
         },
         { discrete: true },
@@ -214,8 +216,186 @@ describe('useMentionAtomicNavigation', () => {
     act(() => {
       editor.update(
         () => {
-          const p = $getRoot().getFirstChild()!;
+          const p = $getRoot().getFirstChild<ElementNode>()!;
           p.select(0, 2);
+        },
+        { discrete: true },
+      );
+    });
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(KEY_BACKSPACE_COMMAND, key('Backspace'));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it('ArrowLeft is a no-op when the selection is not collapsed', () => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    act(() => {
+      editor.update(
+        () => {
+          const p = $getRoot().getFirstChild<ElementNode>()!;
+          p.select(0, 2);
+        },
+        { discrete: true },
+      );
+    });
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(KEY_ARROW_LEFT_COMMAND, key('ArrowLeft'));
+    });
+    expect(handled).toBe(false);
+  });
+
+  // Each of the four registered commands (ArrowLeft/ArrowRight/Backspace/
+  // Delete) repeats the same four guard checks (composing, modifier held,
+  // non-collapsed selection, no adjacent mention) as its own separate
+  // source-level `if`, so v8 branch coverage needs each guard exercised
+  // once PER command, not just once overall — the tests above already
+  // cover one command's worth of each; these fill in the rest.
+  const otherCommands: Array<{
+    name: string;
+    command: typeof KEY_ARROW_RIGHT_COMMAND;
+    keyName: string;
+    selectAdjacent: (editor: LexicalEditor) => void;
+    selectNonAdjacent: (editor: LexicalEditor) => void;
+  }> = [
+    {
+      name: 'ArrowRight',
+      command: KEY_ARROW_RIGHT_COMMAND,
+      keyName: 'ArrowRight',
+      selectAdjacent: (editor) =>
+        editor.update(
+          () => {
+            const first = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
+            first.select(first.getTextContentSize(), first.getTextContentSize());
+          },
+          { discrete: true },
+        ),
+      selectNonAdjacent: (editor) =>
+        editor.update(
+          () => {
+            $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!.select(0, 0);
+          },
+          { discrete: true },
+        ),
+    },
+    {
+      name: 'Delete',
+      command: KEY_DELETE_COMMAND,
+      keyName: 'Delete',
+      selectAdjacent: (editor) =>
+        editor.update(
+          () => {
+            const first = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
+            first.select(first.getTextContentSize(), first.getTextContentSize());
+          },
+          { discrete: true },
+        ),
+      selectNonAdjacent: (editor) =>
+        editor.update(
+          () => {
+            $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!.select(0, 0);
+          },
+          { discrete: true },
+        ),
+    },
+  ];
+
+  it.each(otherCommands)('$name is a no-op when no mention is adjacent', ({ command, keyName, selectNonAdjacent }) => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    act(() => selectNonAdjacent(editor));
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(command, key(keyName));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it.each(otherCommands)('$name is ignored during IME composition', ({ command, keyName, selectAdjacent }) => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    vi.spyOn(editor, 'isComposing').mockReturnValue(true);
+    act(() => selectAdjacent(editor));
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(command, key(keyName));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it.each(otherCommands)('$name is ignored with a modifier key held', ({ command, keyName, selectAdjacent }) => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    act(() => selectAdjacent(editor));
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(command, key(keyName, { shiftKey: true }));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it.each(otherCommands)('$name is a no-op when the selection is not collapsed', ({ command, keyName }) => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    act(() => {
+      editor.update(
+        () => {
+          $getRoot().getFirstChild<ElementNode>()!.select(0, 2);
+        },
+        { discrete: true },
+      );
+    });
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(command, key(keyName));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it('Backspace is a no-op when no mention is adjacent to the caret', () => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    act(() => {
+      editor.update(
+        () => {
+          $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!.select(0, 0);
+        },
+        { discrete: true },
+      );
+    });
+    let handled: boolean | undefined;
+    act(() => {
+      handled = editor.dispatchCommand(KEY_BACKSPACE_COMMAND, key('Backspace'));
+    });
+    expect(handled).toBe(false);
+  });
+
+  it('Backspace is ignored during IME composition', () => {
+    const { wrapper, getEditor } = makeLexicalWrapper();
+    renderHook(() => useMentionAtomicNavigation(), { wrapper });
+    const editor = getEditor();
+    buildDoc(editor);
+    vi.spyOn(editor, 'isComposing').mockReturnValue(true);
+    act(() => {
+      editor.update(
+        () => {
+          const after = $getRoot().getFirstChild<ElementNode>()!.getLastChild<TextNode>()!;
+          after.select(0, 0);
         },
         { discrete: true },
       );

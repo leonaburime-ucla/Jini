@@ -11,17 +11,26 @@ import type { MentionEntity } from '../../types.js';
  *  (initial value, a template insert, a programmatic reset). When `value`
  *  already equals the live serialized text, the change came from the user
  *  typing — bail so the caret is preserved instead of clobbering it with a
- *  full rebuild. */
+ *  full rebuild.
+ *
+ *  The origin additionally tracked a `lastSeeded` ref to skip a "StrictMode
+ *  double-invoke" of this effect for the same `value`. Tracing it through
+ *  carefully: `setRichTextFromPlainText` commits its update with
+ *  `discrete: true`, so by the time StrictMode's mount-only cleanup+re-run
+ *  cycle reaches this effect a second time, `editor.getEditorState()`
+ *  already reflects the first run's seed — meaning `current === value`
+ *  and the check directly above already bails first. Since this effect's
+ *  only dependencies are `[value, editor]` (both otherwise stable), no
+ *  other path re-invokes it for an unchanged `value` either. That guard
+ *  was therefore unreachable here and was removed rather than kept as
+ *  untested dead code (this package's coverage-driven-refactor policy). */
 export function useSeededValue(value: string, knownMentions: MentionEntity[]): void {
   const [editor] = useLexicalComposerContext();
-  const lastSeeded = useRef<string | null>(null);
   const knownRef = useRef(knownMentions);
   knownRef.current = knownMentions;
   useEffect(() => {
     const current = serializeRichText(editor.getEditorState()).text;
     if (value === current) return; // user-typed → no reseed → caret preserved
-    if (value === lastSeeded.current) return; // StrictMode double-invoke guard
-    lastSeeded.current = value;
     setRichTextFromPlainText(editor, value, knownRef.current);
   }, [value, editor]);
 }

@@ -114,6 +114,24 @@ describe('RichTextInput', () => {
       expect(pill).toHaveAttribute('data-mention-kind', 'connector');
     });
 
+    it('insertMention falls back to the first configured trigger when mentionTriggerId matches none', () => {
+      const ref = createRef<RichTextInputHandle>();
+      render(
+        <RichTextInput
+          {...baseProps({
+            knownMentions: [slack],
+            triggers: [{ id: 'command', character: '/', anchor: 'line-start' }],
+            mentionTriggerId: 'mention', // no trigger with this id exists
+          })}
+          ref={ref}
+        />,
+      );
+      act(() => {
+        ref.current!.insertMention({ token: '@Slack', entity: slack });
+      });
+      expect(ref.current!.getText()).toBe('@Slack ');
+    });
+
     it("insertMention deletes the active mention-trigger query it's replacing", () => {
       const ref = createRef<RichTextInputHandle>();
       render(<RichTextInput {...baseProps({ knownMentions: [slack] })} ref={ref} />);
@@ -124,6 +142,15 @@ describe('RichTextInput', () => {
         ref.current!.insertMention({ token: '@Slack', entity: slack });
       });
       expect(ref.current!.getText()).toBe('hi @Slack ');
+    });
+
+    it('replaceActiveTrigger works as the very first action (no prior selection set)', () => {
+      const ref = createRef<RichTextInputHandle>();
+      render(<RichTextInput {...baseProps()} ref={ref} />);
+      act(() => {
+        ref.current!.replaceActiveTrigger('hello');
+      });
+      expect(ref.current!.getText()).toBe('hello');
     });
 
     it('replaceActiveTrigger drops the active trigger token and inserts text', () => {

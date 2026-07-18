@@ -8,7 +8,7 @@ import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $getRoot, $getSelection, $isRangeSelection } from 'lexical';
+import { $getRoot, $getSelection, $isRangeSelection, type RangeSelection } from 'lexical';
 import { DEFAULT_TEST_ID, DEFAULT_TRIGGERS, EDITOR_THEME } from '../../constants.js';
 import { setRichTextFromPlainText } from '../../deserialize.js';
 import { $createMentionNode, MentionNode } from '../../mention-node.js';
@@ -158,12 +158,17 @@ function EditorSurface(props: RichTextInputProps, ref: ForwardedRef<RichTextInpu
               $getRoot().selectEnd();
               sel = $getSelection();
             }
-            if (!$isRangeSelection(sel)) return;
+            // `$getRoot().selectEnd()` always establishes a collapsed
+            // RangeSelection — even an empty root selects at its own
+            // boundary — so `sel` is guaranteed to be one by this point.
+            // The cast documents that instead of an unreachable
+            // early-return branch no real document state can trigger.
+            const rangeSel = sel as RangeSelection;
             const mentionTrigger =
               triggersRef.current.find((t) => t.id === mentionTriggerIdRef.current) ??
               triggersRef.current[0];
             if (mentionTrigger) {
-              deleteActiveTrigger(sel, buildTriggerDeletionRegex(mentionTrigger));
+              deleteActiveTrigger(rangeSel, buildTriggerDeletionRegex(mentionTrigger));
             }
             const node = $createMentionNode({
               mentionId: insert.entity.id,
@@ -190,10 +195,12 @@ function EditorSurface(props: RichTextInputProps, ref: ForwardedRef<RichTextInpu
               $getRoot().selectEnd();
               sel = $getSelection();
             }
-            if (!$isRangeSelection(sel)) return;
+            // See the identical `selectEnd()` guarantee noted in
+            // `insertMention` above.
+            const rangeSel = sel as RangeSelection;
             // Drop whichever trigger's query is active, then insert the
             // plain text (e.g. a Tab-completed slash command's own text).
-            deleteActiveTrigger(sel, buildAnyTriggerDeletionRegex(triggersRef.current));
+            deleteActiveTrigger(rangeSel, buildAnyTriggerDeletionRegex(triggersRef.current));
             const active = $getSelection();
             if ($isRangeSelection(active)) active.insertText(text);
           },

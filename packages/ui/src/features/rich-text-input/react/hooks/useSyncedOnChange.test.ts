@@ -1,5 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
-import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  type ElementNode,
+  type TextNode,
+} from 'lexical';
 import { describe, expect, it, vi } from 'vitest';
 import type { MentionEntity } from '../../types.js';
 import { makeLexicalWrapper } from '../test-support/lexical-harness.js';
@@ -50,7 +56,7 @@ describe('useSyncedOnChange', () => {
     act(() => {
       editor.update(
         () => {
-          const t = $getRoot().getFirstChild()!.getFirstChild()!;
+          const t = $getRoot().getFirstChild<ElementNode>()!.getFirstChild<TextNode>()!;
           t.select(0, 0);
         },
         { discrete: true },

@@ -27,6 +27,23 @@ describe('useCaretFloatingLayerPosition', () => {
     expect(result.current.pos?.placement).toBe('above');
   });
 
+  it('a resize/scroll while open but with no caret yet is a safe no-op', () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    const { result } = renderHook(
+      ({ caret, open }: { caret: typeof CARET | null; open: boolean }) =>
+        useCaretFloatingLayerPosition(caret, open),
+      { initialProps: { caret: null as typeof CARET | null, open: true } },
+    );
+    expect(result.current.pos).toBeNull();
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(result.current.pos).toBeNull();
+  });
+
   it('does not compute when caret is present but open is false', () => {
     const { result, rerender } = renderHook(
       ({ caret, open }: { caret: typeof CARET | null; open: boolean }) =>
