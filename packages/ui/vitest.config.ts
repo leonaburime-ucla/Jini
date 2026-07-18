@@ -41,6 +41,12 @@ export default defineConfig({
         'src/features/settings-dialog/types.ts',
         'src/features/settings-dialog/tabs/*/types.ts',
         'src/features/settings-dialog/tabs/integrations/ports.ts',
+        // Same carve-out for source-config-list: types.ts is interface-only,
+        // and ports.ts here is ALSO interface-only (unlike
+        // features/observability/ports.ts above, it has no runtime binding
+        // helper) — verified with the same grep before excluding.
+        'src/features/source-config-list/types.ts',
+        'src/features/source-config-list/ports.ts',
       ],
     },
   },

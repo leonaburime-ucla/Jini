@@ -50,7 +50,7 @@ export function SourceConfigItemCard<TSource extends SourceConfigItem>({
   const [expanded, setExpanded] = useState(false);
   const label = sourceDisplayLabel(source, fieldSpecs);
   const trustOption = trustOptions?.find((option) => option.value === source.trust);
-  const showTrustSelect = capabilities.canSetTrust && Boolean(trustOptions && trustOptions.length > 0);
+  const editableTrustOptions = capabilities.canSetTrust && trustOptions && trustOptions.length > 0 ? trustOptions : null;
   const anyActionPending = removing || refreshing || settingTrust;
 
   return (
@@ -68,14 +68,19 @@ export function SourceConfigItemCard<TSource extends SourceConfigItem>({
           ) : null}
         </button>
         <div className="source-config-item-card-actions">
-          {showTrustSelect ? (
+          {editableTrustOptions ? (
             <select
               value={source.trust ?? ''}
               disabled={settingTrust}
               aria-label={t('Trust level for {name}', { name: label })}
               onChange={(event) => onTrustChange(event.target.value)}
             >
-              {(trustOptions ?? []).map((option) => (
+              {!source.trust ? (
+                <option value="" disabled hidden>
+                  {t('Select…')}
+                </option>
+              ) : null}
+              {editableTrustOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

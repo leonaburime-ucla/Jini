@@ -101,6 +101,12 @@ describe('SourceConfigItemCard', () => {
     expect(screen.queryByRole('combobox')).toBeNull();
   });
 
+  it('renders the trust select defaulted to empty when the source has no trust value yet', () => {
+    const source: SourceConfigItem = { id: 's1', fields: {} };
+    render(<SourceConfigItemCard {...baseProps({ source, trustOptions: TRUST_OPTIONS })} />);
+    expect(screen.getByRole('combobox')).toHaveValue('');
+  });
+
   it('renders a Refresh button only when capabilities.canRefresh is true, and calls onRefresh', async () => {
     const onRefresh = vi.fn();
     render(<SourceConfigItemCard {...baseProps({ onRefresh })} />);
@@ -150,6 +156,14 @@ describe('SourceConfigItemCard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'https://a.example' }));
     await userEvent.click(screen.getByRole('button', { name: 'Test' }));
     expect(onTest).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders an empty masked value when the source is missing a field spec\'s key entirely', async () => {
+    const source: SourceConfigItem = { id: 's1', fields: {} };
+    const { container } = render(<SourceConfigItemCard {...baseProps({ source, fieldSpecs: [URL_FIELD] })} />);
+    await userEvent.click(screen.getByRole('button', { name: 's1' }));
+    const value = container.querySelector('.source-config-item-card-fields dd');
+    expect(value?.textContent).toBe('');
   });
 
   it('passes the testResult through to the test control once expanded', async () => {

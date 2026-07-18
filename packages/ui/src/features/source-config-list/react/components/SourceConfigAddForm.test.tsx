@@ -90,4 +90,12 @@ describe('SourceConfigAddForm', () => {
     render(<SourceConfigAddForm {...baseProps({ submitError: 'Marketplace unreachable.' })} />);
     expect(screen.getByRole('alert')).toHaveTextContent('Marketplace unreachable.');
   });
+
+  it('defaults a field with no matching key in `values` to an empty string rather than throwing', () => {
+    // Defensive fallback for a host rendering this form directly with a values
+    // map that doesn't cover every field spec (the wired hook always seeds a
+    // complete draft, but this component doesn't assume its caller does).
+    render(<SourceConfigAddForm {...baseProps({ values: {} })} />);
+    expect(screen.getByLabelText('URL', { exact: false })).toHaveValue('');
+  });
 });

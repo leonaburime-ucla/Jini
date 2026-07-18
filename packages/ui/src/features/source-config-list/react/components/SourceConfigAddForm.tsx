@@ -42,7 +42,6 @@ export function SourceConfigAddForm({
   onSubmit,
 }: SourceConfigAddFormProps) {
   const t = useT();
-  const hasTrustOptions = Boolean(trustOptions && trustOptions.length > 0);
 
   return (
     <form
@@ -65,7 +64,7 @@ export function SourceConfigAddForm({
           />
         );
       })}
-      {hasTrustOptions ? (
+      {trustOptions && trustOptions.length > 0 ? (
         <label className="source-config-field" htmlFor="source-config-add-form-trust">
           <span className="source-config-field-label">{t('Trust level')}</span>
           <select
@@ -75,7 +74,12 @@ export function SourceConfigAddForm({
             aria-label={t('Trust level')}
             onChange={(event) => onTrustChange(event.target.value)}
           >
-            {(trustOptions ?? []).map((option) => (
+            {!trust ? (
+              <option value="" disabled hidden>
+                {t('Select…')}
+              </option>
+            ) : null}
+            {trustOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>

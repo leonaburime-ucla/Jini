@@ -82,6 +82,14 @@ describe('SourceConfigField', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('renders a select field with no options (host hasn\'t loaded them yet) without throwing', () => {
+    const spec: SourceFieldSpec = { key: 'protocol', label: 'Protocol', kind: 'select' };
+    render(<SourceConfigField spec={spec} value="" onChange={vi.fn()} />);
+    const select = screen.getByLabelText('Protocol') as HTMLSelectElement;
+    // Only the disabled placeholder option renders.
+    expect(select.options).toHaveLength(1);
+  });
+
   it('disables the input when disabled is set', () => {
     const spec: SourceFieldSpec = { key: 'url', label: 'URL', kind: 'url' };
     render(<SourceConfigField spec={spec} value="" disabled onChange={vi.fn()} />);

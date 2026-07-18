@@ -98,6 +98,25 @@ describe('SourceConfigList — MCP-server-shaped source', () => {
     expect((await dependencies.port.fetchSources())).toHaveLength(1);
   });
 
+  it('changes an existing item\'s trust level through its own per-item select', async () => {
+    const dependencies = mcpDependencies([{ id: 'a', fields: { url: 'https://mcp.example/a' }, trust: 'restricted' }]);
+    render(
+      <SourceConfigList<McpServerSource>
+        dependencies={dependencies}
+        fieldSpecs={MCP_FIELD_SPECS}
+        trustOptions={MCP_TRUST_OPTIONS}
+      />,
+    );
+    await screen.findByText('https://mcp.example/a');
+    const card = screen.getByTestId('source-config-item-card');
+    await userEvent.selectOptions(within(card).getByRole('combobox', { name: /Trust level for/ }), 'trusted');
+    await waitFor(() =>
+      expect(card.querySelector('.source-config-item-card-trust-badge')?.textContent).toBe('Trusted'),
+    );
+    const persisted = await dependencies.port.fetchSources();
+    expect(persisted[0]?.trust).toBe('trusted');
+  });
+
   it('refreshes and removes an item, and never renders a test control (this shape has no test capability)', async () => {
     const dependencies = mcpDependencies([{ id: 'a', fields: { url: 'https://mcp.example/a' } }]);
     render(<SourceConfigList<McpServerSource> dependencies={dependencies} fieldSpecs={MCP_FIELD_SPECS} />);

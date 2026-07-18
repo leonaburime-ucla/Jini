@@ -49,6 +49,18 @@ describe('SourceConfigListView', () => {
     expect(screen.queryByRole('heading')).toBeNull();
   });
 
+  it('renders only the title when subtitle is omitted', () => {
+    render(<SourceConfigListView {...baseProps({ title: 'MCP servers' })} />);
+    expect(screen.getByRole('heading', { name: 'MCP servers' })).toBeInTheDocument();
+    expect(screen.queryByText('Connect external tools.')).toBeNull();
+  });
+
+  it('renders only the subtitle when title is omitted', () => {
+    render(<SourceConfigListView {...baseProps({ subtitle: 'Connect external tools.' })} />);
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.getByText('Connect external tools.')).toBeInTheDocument();
+  });
+
   it('always renders the add form', () => {
     render(<SourceConfigListView {...baseProps()} />);
     expect(screen.getByLabelText('URL', { exact: false })).toBeInTheDocument();
@@ -92,5 +104,36 @@ describe('SourceConfigListView', () => {
     const pendingKeys = new Set(['refresh:a']);
     render(<SourceConfigListView {...baseProps({ sources, pendingKeys })} />);
     expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeInTheDocument();
+  });
+
+  it('wires each item card action callback to the right source id: refresh, trust-change, and test', async () => {
+    const sources: SourceConfigItem[] = [{ id: 'a', fields: { url: 'https://a.example' }, trust: 'restricted' }];
+    const onRefresh = vi.fn();
+    const onTrustChange = vi.fn();
+    const onTest = vi.fn();
+    render(
+      <SourceConfigListView
+        {...baseProps({
+          sources,
+          trustOptions: [
+            { value: 'restricted', label: 'Restricted' },
+            { value: 'trusted', label: 'Trusted' },
+          ],
+          onRefresh,
+          onTrustChange,
+          onTest,
+        })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(onRefresh).toHaveBeenCalledWith('a');
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /Trust level for/ }), 'trusted');
+    expect(onTrustChange).toHaveBeenCalledWith('a', 'trusted');
+
+    await userEvent.click(screen.getByRole('button', { name: /^https:\/\/a\.example/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Test' }));
+    expect(onTest).toHaveBeenCalledWith('a');
   });
 });
