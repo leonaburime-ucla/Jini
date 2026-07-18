@@ -14,6 +14,9 @@ export interface ResourceRowListViewProps {
   loading: boolean;
   error: string | null;
   errorLabel?: string;
+  /** A row-action failure — rendered as its own alert ALONGSIDE the row list (which stays visible and interactive), unlike `error`/`errorLabel` (the LOAD failure). */
+  actionError?: string | null;
+  actionErrorLabel?: string;
 
   sectionLabel: string;
   loadingLabel: string;
@@ -59,6 +62,8 @@ export function ResourceRowListView({
   loading,
   error,
   errorLabel,
+  actionError,
+  actionErrorLabel,
   sectionLabel,
   loadingLabel,
   emptyTitle,
@@ -103,6 +108,12 @@ export function ResourceRowListView({
       {error ? (
         <div className="resource-row-list-error" role="alert">
           {errorLabel ?? error}
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="resource-row-list-action-error" role="alert">
+          {actionErrorLabel ?? actionError}
         </div>
       ) : null}
 

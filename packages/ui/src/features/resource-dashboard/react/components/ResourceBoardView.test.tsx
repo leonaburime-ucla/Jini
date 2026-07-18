@@ -73,6 +73,24 @@ describe('ResourceBoardView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('raw error');
   });
 
+  it('renders an actionError banner ALONGSIDE the item list (not replacing it), using actionErrorLabel when given', () => {
+    render(<ResourceBoardView {...baseProps({ actionError: 'raw', actionErrorLabel: 'Translated action error' })} />);
+    expect(screen.getByText('Translated action error')).toBeInTheDocument();
+    // Unlike a LOAD error, the already-loaded items must stay visible.
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw actionError string when actionErrorLabel is omitted', () => {
+    render(<ResourceBoardView {...baseProps({ actionError: 'raw action error' })} />);
+    expect(screen.getAllByRole('alert').map((el) => el.textContent)).toContain('raw action error');
+  });
+
+  it('renders no actionError banner when actionError is null', () => {
+    render(<ResourceBoardView {...baseProps({ actionError: null })} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('shows emptyStateTitle when there are no items at all', () => {
     render(<ResourceBoardView {...baseProps({ items: [], kanbanColumns: [], hasAnyItems: false })} />);
     expect(screen.getByText('No items yet')).toBeInTheDocument();

@@ -70,6 +70,23 @@ describe('ResourceRowListView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('raw only');
   });
 
+  it('renders an actionError banner ALONGSIDE the row list (not replacing it), using actionErrorLabel when given', () => {
+    render(<ResourceRowListView {...baseProps({ actionError: 'raw', actionErrorLabel: 'Translated action error' })} />);
+    expect(screen.getByText('Translated action error')).toBeInTheDocument();
+    // Unlike a LOAD error, the already-loaded rows must stay visible.
+    expect(screen.getByText('Nightly digest')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw actionError string when actionErrorLabel is omitted', () => {
+    render(<ResourceRowListView {...baseProps({ actionError: 'raw action error' })} />);
+    expect(screen.getAllByRole('alert').map((el) => el.textContent)).toContain('raw action error');
+  });
+
+  it('renders no actionError banner when actionError is null', () => {
+    render(<ResourceRowListView {...baseProps({ actionError: null })} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('shows the loading label in the section head while loading', () => {
     render(<ResourceRowListView {...baseProps({ loading: true, rows: [] })} />);
     expect(screen.getByText('Loading…')).toBeInTheDocument();

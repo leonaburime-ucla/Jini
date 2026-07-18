@@ -8,6 +8,9 @@ export interface ResourceBoardViewProps<TBody = unknown> {
   loading: boolean;
   error: string | null;
   errorLabel?: string;
+  /** A single-item delete/duplicate failure — rendered as its own alert ABOVE the item list, unlike `error`/`errorLabel` (the LOAD failure, which replaces the list entirely) since the already-loaded items must stay visible and actionable while this is shown. */
+  actionError?: string | null;
+  actionErrorLabel?: string;
   /** Whether the port returned any item at all, BEFORE search filtering — distinguishes "nothing exists yet" (with a create CTA) from "search matched nothing" (DesignsTab's own two distinct empty states). */
   hasAnyItems: boolean;
   items: ResourceBoardItem<TBody>[];
@@ -73,6 +76,8 @@ export function ResourceBoardView<TBody = unknown>({
   loading,
   error,
   errorLabel,
+  actionError,
+  actionErrorLabel,
   hasAnyItems,
   items,
   kanbanColumns,
@@ -155,6 +160,12 @@ export function ResourceBoardView<TBody = unknown>({
       {error ? (
         <div className="resource-board-error" role="alert">
           {errorLabel ?? error}
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="resource-board-action-error" role="alert">
+          {actionErrorLabel ?? actionError}
         </div>
       ) : null}
 

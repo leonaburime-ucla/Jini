@@ -2342,6 +2342,61 @@ Uses the `react/{hooks,components}/` layout throughout (zero-React files at the 
   into this primitive's `dispatchRowAction`, same "host wraps its own confirmation" reasoning as
   DesignsTab's dropped `Dialog`.
 
+### Mutation error handling and run-history race/failure fix (2026-07-18 audit)
+
+A 2026-07-18 audit found two real, undisclosed behavior regressions (distinct from the
+deliberately-disclosed "Dropped" list above, which covers intentional simplifications, not bugs):
+
+1. **Resource mutations lost visible failure handling.** `useResourceBoard.ts`'s `remove`/
+   `duplicate` let a rejected `port.deleteItem`/`duplicateItem` propagate uncaught;
+   `ResourceBoard.tsx`'s `handleItemAction`/`onKanbanDelete` called them with a bare `void`, which
+   discards a promise's return value WITHOUT attaching a rejection handler — both an unhandled
+   rejection and, because nothing ever surfaced a message, a delete/duplicate could silently fail
+   with the item still shown and no explanation. Real OD `DesignsTab.tsx`'s own
+   `handleDuplicateProject` (lines 440-449) catches exactly this into a toast. Fixed by adding an
+   `actionError: string | null` field to `ResourceBoardController`, set (and cleared at the start
+   of the next call) inside `remove`/`duplicate`'s own `catch`, so both hook methods now always
+   resolve (never reject) while still surfacing a visible message. `ResourceBoardView.tsx` renders
+   it as its own `actionError`/`actionErrorLabel` banner ALONGSIDE the still-visible item list
+   (deliberately NOT reusing `error`/`errorLabel`, which is the LOAD failure and hides the whole
+   list — a mutation failure must not hide items that already loaded fine).
+   `useResourceRowList.ts`'s `dispatchRowAction` has an explicit, tested contract ("a rejection
+   propagates to the caller and does NOT reload") that a fix must not break; instead of catching
+   silently, it now records the same kind of `actionError` in its own `catch` and then RE-THROWS,
+   preserving that contract for a caller that awaits/catches directly while giving a
+   fire-and-forget caller (`ResourceRowList.tsx`'s `onRowAction`) a real value to render.
+   `ResourceRowList.tsx` was also changed to attach `.catch(() => {})` to the now-still-rethrown
+   promise — `void` alone does not prevent an unhandled rejection, it only discards the resolved
+   value. `ResourceRowListView.tsx` gained the matching `actionError`/`actionErrorLabel` banner.
+2. **Run-history loading lost real OD's cancellation and failure semantics.**
+   `useResourceRowList.ts`'s `fetchHistoryFor` had no `catch` at all — a rejected
+   `port.fetchRowHistory` was an unhandled rejection AND left `historyByRowId[id]` `undefined`
+   forever, which `ResourceRunHistoryList.tsx` renders as a permanent "Loading…" (its
+   `items === undefined` check). Separately, collapsing then re-expanding the SAME row before its
+   first fetch settled started a second, overlapping fetch for that id with no protection against
+   the OLDER one resolving after the newer one and overwriting fresh history with stale data. Exact
+   OD `TasksView.tsx` (lines ~1044-1062) catches a failure to an empty result and effectively
+   ignores stale responses. Fixed with a per-row request-generation counter
+   (`historyRequestSeqRef`): each `fetchHistoryFor(id)` call captures its own sequence number at
+   start, and both the success and failure branches (plus the loading-flag clear in `finally`) check
+   whether they're still the most recent request for that id before committing anything — a stale
+   response is silently discarded rather than applied. A genuine failure now commits an empty array
+   (matching OD) instead of leaving history stuck at `undefined`.
+
+Both fixes are covered by new mounted/hook tests, not just re-reading the source: `useResourceBoard.test.ts`
+gained `remove`/`duplicate` rejection regressions (`actionError` set, cleared on retry, item never
+optimistically removed on a rejected delete) and `ResourceBoard.test.tsx` gained end-to-end
+regressions clicking the real kebab-menu delete/duplicate actions against a rejecting fake port and
+asserting the translated banner renders while the existing items stay on screen.
+`useResourceRowList.test.ts` gained a rejected-`fetchRowHistory`-commits-empty-array regression, a
+genuine overlapping-same-row race regression (older response resolves after the newer one; asserts
+the newer data survives), and `dispatchRowAction` `actionError` regressions; `ResourceRowList.test.tsx`
+gained an end-to-end regression clicking a real row action against a rejecting `onRowAction` and
+asserting the translated banner renders without hiding the row. `ResourceBoardView.test.tsx`/
+`ResourceRowListView.test.tsx` gained direct prop-level tests for the new `actionError`/
+`actionErrorLabel` props (present, absent, falls back to raw string, renders alongside — not instead
+of — the list).
+
 ### Design choices flagged for reviewers
 
 - **`isActionPending`/`pendingActionKey`/`withPendingAction`/`withoutPendingAction` are re-derived

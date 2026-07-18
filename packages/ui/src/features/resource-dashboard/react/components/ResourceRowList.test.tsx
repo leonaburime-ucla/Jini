@@ -117,6 +117,24 @@ describe('ResourceRowList', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Failed to load items.'));
   });
 
+  /**
+   * Regression, end-to-end through the real orchestrator: before this fix,
+   * `onRowAction`'s `void list.dispatchRowAction(...)` call discarded a
+   * rejection with no handler at all — an unhandled rejection AND no
+   * visible feedback. The row must stay on screen (this isn't a load
+   * failure) while a translated, visible action-error banner appears.
+   */
+  it('surfaces a translated, visible error (without hiding the row list) when onRowAction rejects', async () => {
+    const dependencies = fakeDependencies();
+    const onRowAction = vi.fn().mockRejectedValue(new Error('run failed'));
+    render(<ResourceRowList dependencies={dependencies} title="Automations" statusOptions={STATUS_OPTIONS} onRowAction={onRowAction} />);
+    await waitFor(() => expect(screen.getByText('Nightly digest')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(screen.getByText('Failed to complete action.')).toBeInTheDocument());
+    // The row is still there — the action failed, so nothing was reloaded away.
+    expect(screen.getByText('Nightly digest')).toBeInTheDocument();
+  });
+
   it('re-fetches when refreshToken changes', async () => {
     const dependencies = fakeDependencies();
     const fetchSpy = dependencies.port.fetchRows as ReturnType<typeof vi.fn>;

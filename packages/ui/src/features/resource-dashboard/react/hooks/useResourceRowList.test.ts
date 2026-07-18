@@ -149,6 +149,59 @@ describe('useResourceRowList', () => {
       await waitFor(() => expect(fetchRowHistory).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(result.current.historyByRowId['a']).toEqual([]));
     });
+
+    /**
+     * Regression: a rejected `fetchRowHistory` had no `catch` at all — the
+     * rejection was unhandled AND `historyByRowId[id]` stayed `undefined`
+     * forever, which `ResourceRunHistoryList.tsx` renders as a permanent
+     * "Loading…" (its `items === undefined` check). Real OD
+     * `TasksView.tsx`'s history fetch catches a failure to an empty result;
+     * this must too.
+     */
+    it('catches a rejected fetchRowHistory to an empty result instead of leaving history undefined forever', async () => {
+      const fetchRowHistory = vi.fn().mockRejectedValue(new Error('history down'));
+      const port = fakePort({ fetchRowHistory });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+      await act(async () => {
+        result.current.toggleExpand('a');
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(result.current.historyByRowId['a']).toEqual([]));
+      expect(result.current.historyLoadingRowId).toBeNull();
+    });
+
+    /**
+     * Regression: collapsing and re-expanding the SAME row before the first
+     * fetch settles starts a second, overlapping `fetchRowHistory` call for
+     * that id. If the OLDER call resolves AFTER the newer one, it must not
+     * overwrite the newer, already-committed history with stale data.
+     */
+    it('does not let a stale, older response for the SAME row overwrite a newer response that already resolved', async () => {
+      let resolveFirst!: (items: ResourceRunHistoryItem[]) => void;
+      const RUN_2: ResourceRunHistoryItem = { id: 'run-2', status: 'succeeded', startedAtLabel: 'later' };
+      const fetchRowHistory = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<ResourceRunHistoryItem[]>((resolve) => (resolveFirst = resolve)))
+        .mockResolvedValueOnce([RUN_2]);
+      const port = fakePort({ fetchRowHistory });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+
+      act(() => result.current.toggleExpand('a')); // starts the slow FIRST fetch for 'a'
+      act(() => result.current.toggleExpand('a')); // collapses (no new fetch)
+      act(() => result.current.toggleExpand('a')); // re-expands: starts the SECOND, newer fetch for 'a', which resolves immediately
+      await waitFor(() => expect(result.current.historyByRowId['a']).toEqual([RUN_2]));
+
+      // The first (older) fetch finally resolves now, well after the second
+      // already committed its result.
+      await act(async () => {
+        resolveFirst([RUN_1]);
+        await Promise.resolve();
+      });
+      // Must still be the NEWER result, not overwritten by the stale one.
+      expect(result.current.historyByRowId['a']).toEqual([RUN_2]);
+      expect(result.current.historyLoadingRowId).toBeNull();
+    });
   });
 
   describe('isRowBusy / dispatchRowAction', () => {
@@ -195,6 +248,52 @@ describe('useResourceRowList', () => {
       ).rejects.toThrow('boom');
       expect(fetchRows).toHaveBeenCalledTimes(1);
       expect(result.current.isRowBusy('a')).toBe(false);
+    });
+
+    /**
+     * Regression: `dispatchRowAction` still re-throws (proven above — that
+     * contract is unchanged), but the ORIGINAL bug was that
+     * `ResourceRowList.tsx`'s orchestrator fired this with a bare `void`,
+     * which discards the returned promise without a rejection handler —
+     * both an unhandled rejection AND no visible error anywhere. This
+     * asserts the hook itself now ALSO records a visible `actionError`
+     * alongside the still-propagating rejection, so a fire-and-forget
+     * caller has something real to render.
+     */
+    it('sets actionError when run rejects, in addition to still propagating the rejection', async () => {
+      const port = fakePort({ fetchRows: vi.fn().mockResolvedValue([ROW_A]) });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.actionError).toBeNull();
+      let caught: unknown;
+      await act(async () => {
+        try {
+          await result.current.dispatchRowAction('a', () => Promise.reject(new Error('boom')));
+        } catch (err) {
+          caught = err;
+        }
+      });
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe('boom');
+      expect(result.current.actionError).toBe('Failed to complete action.');
+    });
+
+    it('clears a prior actionError at the start of the next dispatchRowAction call', async () => {
+      const port = fakePort({ fetchRows: vi.fn().mockResolvedValue([ROW_A]) });
+      const { result } = renderHook(() => useResourceRowList({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => {
+        try {
+          await result.current.dispatchRowAction('a', () => Promise.reject(new Error('boom')));
+        } catch {
+          // expected — asserted in the previous test; this test only cares about the actionError side-channel.
+        }
+      });
+      expect(result.current.actionError).toBe('Failed to complete action.');
+      await act(async () => {
+        await result.current.dispatchRowAction('a', () => {});
+      });
+      expect(result.current.actionError).toBeNull();
     });
 
     it('refreshes the expanded row\'s history after a successful action on that same row', async () => {

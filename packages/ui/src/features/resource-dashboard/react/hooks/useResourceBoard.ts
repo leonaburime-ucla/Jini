@@ -17,6 +17,8 @@ const ITEM_ACTION_KIND = 'item-action';
 const BULK_DELETE_KIND = 'bulk-delete';
 const BULK_DELETE_SCOPE = '__bulk__';
 const LOAD_FAILED_MESSAGE = 'Failed to load items.';
+const REMOVE_FAILED_MESSAGE = 'Failed to delete item.';
+const DUPLICATE_FAILED_MESSAGE = 'Failed to duplicate item.';
 
 export interface UseResourceBoardParams<TItem extends ResourceBoardItem> {
   port: ResourceBoardPort<TItem>;
@@ -61,6 +63,17 @@ export interface ResourceBoardController<TItem extends ResourceBoardItem> {
   reload: () => Promise<void>;
   remove: (id: string) => Promise<void>;
   duplicate: (id: string) => Promise<void>;
+  /**
+   * Set when a single-item `remove`/`duplicate` rejects or otherwise fails
+   * (as opposed to `error`, which is the LOAD failure and hides the whole
+   * item list — a delete/duplicate failure must stay visible ALONGSIDE the
+   * still-present items, mirroring the origin `DesignsTab.tsx`'s
+   * `handleDuplicateProject` toast-on-catch). Cleared at the start of the
+   * next `remove`/`duplicate` call. `null` when no mutation has failed (or
+   * bulk delete, which already reports its own per-item outcome counts and
+   * never rejects — see `bulkDelete`).
+   */
+  actionError: string | null;
 }
 
 /**
@@ -84,6 +97,7 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
   const [items, setItems] = useState<TItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<string | undefined>(params.initialSort);
   const [selectMode, setSelectMode] = useState(false);
@@ -174,11 +188,18 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
   const remove = useCallback(
     async (id: string) => {
       setPendingKeys((current) => withPendingAction(current, id, ITEM_ACTION_KIND));
+      setActionError(null);
       try {
         const ok = await port.deleteItem(id);
         // Selection pruning for a removed id is handled by the `items`-watching
         // effect above, so a single `setItems` call here is sufficient.
         if (ok) setItems((current) => current.filter((item) => item.id !== id));
+      } catch {
+        // A rejection here used to propagate silently to a caller that
+        // discarded the promise with `void` (see `ResourceBoard.tsx`) — no
+        // visible error, no reload, item still shown as present. Surface it
+        // instead, matching the origin's own catch-and-report shape.
+        setActionError(REMOVE_FAILED_MESSAGE);
       } finally {
         setPendingKeys((current) => withoutPendingAction(current, id, ITEM_ACTION_KIND));
         setOpenMenuId((current) => (current === id ? null : current));
@@ -191,9 +212,12 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
     async (id: string) => {
       if (!port.duplicateItem) return;
       setPendingKeys((current) => withPendingAction(current, id, ITEM_ACTION_KIND));
+      setActionError(null);
       try {
         const created = await port.duplicateItem(id);
         if (created) setItems((current) => [...current, created]);
+      } catch {
+        setActionError(DUPLICATE_FAILED_MESSAGE);
       } finally {
         setPendingKeys((current) => withoutPendingAction(current, id, ITEM_ACTION_KIND));
         setOpenMenuId((current) => (current === id ? null : current));
@@ -242,6 +266,7 @@ export function useResourceBoard<TItem extends ResourceBoardItem>(params: UseRes
   return {
     loading,
     error,
+    actionError,
     totalCount: items.length,
     query,
     setQuery,

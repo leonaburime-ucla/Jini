@@ -113,6 +113,8 @@ export function ResourceBoard<TItem extends ResourceBoardItem<TBody>, TBody = un
       loading={board.loading}
       error={board.error}
       {...(board.error ? { errorLabel: t(board.error) } : {})}
+      actionError={board.actionError}
+      {...(board.actionError ? { actionErrorLabel: t(board.actionError) } : {})}
       hasAnyItems={board.totalCount > 0}
       items={board.visibleItems}
       kanbanColumns={kanbanColumns}

@@ -301,6 +301,45 @@ describe('useResourceBoard', () => {
       });
       expect(result.current.isItemBusy('a')).toBe(false);
     });
+
+    /**
+     * Regression: a rejected `deleteItem` used to propagate all the way out
+     * of `remove()` uncaught — `ResourceBoard.tsx` then discarded that
+     * promise with `void`, so the failure was both an unhandled rejection
+     * AND invisible to the user (the item just silently stayed put with no
+     * explanation). `remove()` must now resolve (never reject) and surface
+     * the failure via `actionError` instead.
+     */
+    it('sets actionError and does not throw when deleteItem rejects', async () => {
+      const port = fakePort({
+        fetchItems: vi.fn().mockResolvedValue([ITEM_A]),
+        deleteItem: vi.fn().mockRejectedValue(new Error('network down')),
+      });
+      const { result } = renderHook(() => useResourceBoard({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => {
+        await result.current.remove('a');
+      });
+      expect(result.current.actionError).toBe('Failed to delete item.');
+      // The item is genuinely still there — the rejection means the delete
+      // never actually happened, so it must not be optimistically removed.
+      expect(result.current.visibleItems.map((i) => i.id)).toEqual(['a']);
+    });
+
+    it('clears a prior actionError at the start of the next remove() call', async () => {
+      const deleteItem = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(true);
+      const port = fakePort({ fetchItems: vi.fn().mockResolvedValue([ITEM_A, ITEM_B]), deleteItem });
+      const { result } = renderHook(() => useResourceBoard({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => {
+        await result.current.remove('a');
+      });
+      expect(result.current.actionError).toBe('Failed to delete item.');
+      await act(async () => {
+        await result.current.remove('b');
+      });
+      expect(result.current.actionError).toBeNull();
+    });
   });
 
   describe('duplicate', () => {
@@ -335,6 +374,37 @@ describe('useResourceBoard', () => {
         await result.current.duplicate('a');
       });
       expect(result.current.visibleItems).toHaveLength(1);
+    });
+
+    /** Regression, same shape as `remove()`'s: `DesignsTab.tsx`'s real `handleDuplicateProject` catches a duplicate failure into a toast; this port-level equivalent must not reject uncaught nor stay silent. */
+    it('sets actionError and does not throw when duplicateItem rejects', async () => {
+      const port = fakePort({
+        fetchItems: vi.fn().mockResolvedValue([ITEM_A]),
+        duplicateItem: vi.fn().mockRejectedValue(new Error('network down')),
+      });
+      const { result } = renderHook(() => useResourceBoard({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => {
+        await result.current.duplicate('a');
+      });
+      expect(result.current.actionError).toBe('Failed to duplicate item.');
+      expect(result.current.visibleItems).toHaveLength(1);
+    });
+
+    it('clears a prior actionError at the start of the next duplicate() call', async () => {
+      const duplicated: ResourceBoardItem = { id: 'a-copy', title: 'Alpha copy' };
+      const duplicateItem = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(duplicated);
+      const port = fakePort({ fetchItems: vi.fn().mockResolvedValue([ITEM_A]), duplicateItem });
+      const { result } = renderHook(() => useResourceBoard({ port }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => {
+        await result.current.duplicate('a');
+      });
+      expect(result.current.actionError).toBe('Failed to duplicate item.');
+      await act(async () => {
+        await result.current.duplicate('a');
+      });
+      expect(result.current.actionError).toBeNull();
     });
   });
 

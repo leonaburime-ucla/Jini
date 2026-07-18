@@ -174,6 +174,42 @@ describe('ResourceBoard', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Failed to load items.'));
   });
 
+  /**
+   * Regression, end-to-end through the real orchestrator (not just the
+   * hook): `handleItemAction` fires `void board.remove(id)` for a 'delete'
+   * menu action — before this fix that `void` silently discarded a
+   * rejection with no visible feedback at all. The already-loaded items
+   * must stay on screen (unlike the load-failure banner above, which
+   * replaces the whole list) while a translated action-error banner appears.
+   */
+  it('surfaces a translated, visible error (without hiding existing items) when a native delete rejects', async () => {
+    const dependencies = createFakeResourceBoardDependencies({ items: seedItems() });
+    vi.spyOn(dependencies.port, 'deleteItem').mockRejectedValue(new Error('network down'));
+    render(<ResourceBoard dependencies={dependencies} statusOptions={STATUS_OPTIONS} onOpenItem={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    await userEvent.click(screen.getAllByRole('button', { name: 'More' })[0]!);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete item.')).toBeInTheDocument());
+    // Both items are still visible — the delete never actually happened.
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+
+  it('surfaces a translated, visible error when a native duplicate rejects', async () => {
+    const dependencies = createFakeResourceBoardDependencies({ items: seedItems() });
+    // `duplicateItem` is optional on the port type (a host without a
+    // duplicate concept omits it entirely), so `vi.spyOn` needs a
+    // non-optional view of it — the fake always wires it by default here.
+    vi.spyOn(dependencies.port as Required<typeof dependencies.port>, 'duplicateItem').mockRejectedValue(
+      new Error('network down'),
+    );
+    render(<ResourceBoard dependencies={dependencies} statusOptions={STATUS_OPTIONS} onOpenItem={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Beta')).toBeInTheDocument());
+    await userEvent.click(screen.getAllByRole('button', { name: 'More' })[1]!);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }));
+    await waitFor(() => expect(screen.getByText('Failed to duplicate item.')).toBeInTheDocument());
+  });
+
   it('re-fetches when refreshToken changes', async () => {
     const dependencies = createFakeResourceBoardDependencies({ items: seedItems() });
     const fetchSpy = vi.spyOn(dependencies.port, 'fetchItems');

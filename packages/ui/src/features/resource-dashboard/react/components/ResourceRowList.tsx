@@ -67,6 +67,8 @@ export function ResourceRowList<TRow extends ResourceRowItem>({
       loading={list.loading}
       error={list.error}
       {...(list.error ? { errorLabel: t(list.error) } : {})}
+      actionError={list.actionError}
+      {...(list.actionError ? { actionErrorLabel: t(list.actionError) } : {})}
       sectionLabel={t('Your items')}
       loadingLabel={t('Loading…')}
       emptyTitle={t('Nothing here yet')}
@@ -85,7 +87,14 @@ export function ResourceRowList<TRow extends ResourceRowItem>({
       historyLoadingLabel={t('Loading…')}
       historyEmptyLabel={t('No runs yet.')}
       onToggleExpand={list.toggleExpand}
-      onRowAction={(id, kind) => void list.dispatchRowAction(id, () => onRowAction(id, kind))}
+      onRowAction={(id, kind) => {
+        // `dispatchRowAction` still re-throws on a `run()` rejection (its
+        // documented "propagates to the caller" contract), so this
+        // fire-and-forget call site must attach its own catch — otherwise
+        // the rethrow becomes an unhandled promise rejection even though
+        // `list.actionError` already captured a visible message for it.
+        list.dispatchRowAction(id, () => onRowAction(id, kind)).catch(() => {});
+      }}
       {...(onHistoryItemAction ? { onHistoryItemAction } : {})}
     />
   );
