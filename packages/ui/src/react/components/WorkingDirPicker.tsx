@@ -1,7 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Icon } from './Icon';
 
-interface Props {
+export type WorkingDirPlacement = 'down' | 'up';
+
+export type WorkingDirLabels = Partial<{
+  missing: string;
+  hint: string;
+  trigger: string;
+  replace: string;
+  pick: string;
+  recent: string;
+  recentEmpty: string;
+  clear: string;
+}>;
+
+export interface WorkingDirPickerProps {
   /**
    * Currently selected local working directory shown inline with a clear
    * button, or null to show only the "select" label (e.g. when the selection
@@ -25,23 +38,14 @@ interface Props {
    * `'up'` suits a composer whose trigger sits at the bottom of the
    * viewport, so a downward panel would be clipped.
    */
-  placement?: 'down' | 'up';
+  placement?: WorkingDirPlacement;
   /** Fired when the panel opens, so the host can re-validate freshness. */
   onOpen?: () => void;
   /** Copy — all host-supplied, no built-in i18n. */
-  labels?: Partial<{
-    missing: string;
-    hint: string;
-    trigger: string;
-    replace: string;
-    pick: string;
-    recent: string;
-    recentEmpty: string;
-    clear: string;
-  }>;
+  labels?: WorkingDirLabels;
 }
 
-const DEFAULT_LABELS = {
+export const DEFAULT_WORKING_DIR_LABELS = {
   missing: 'Directory no longer exists',
   hint: 'Select a working directory',
   trigger: 'Working directory',
@@ -52,37 +56,50 @@ const DEFAULT_LABELS = {
   clear: 'Clear',
 };
 
-function basename(dir: string): string {
+export type ResolvedWorkingDirLabels = typeof DEFAULT_WORKING_DIR_LABELS;
+
+/** Merge host label overrides onto the built-in English defaults. */
+export function resolveWorkingDirLabels(labels?: WorkingDirLabels): ResolvedWorkingDirLabels {
+  return { ...DEFAULT_WORKING_DIR_LABELS, ...labels };
+}
+
+/** Last path segment of a `/`- or `\`-separated dir; the whole input if empty. */
+export function basename(dir: string): string {
   return dir.split(/[/\\]/).filter(Boolean).pop() ?? dir;
 }
 
+export interface UseDismissablePanelResult {
+  /** Whether the panel is currently open. */
+  open: boolean;
+  /** Attach to the outer wrapper; an outside pointer press dismisses. */
+  wrapRef: MutableRefObject<HTMLDivElement | null>;
+  /** Flip open/closed; fires `onOpen` only on the closed→open edge. */
+  toggle: () => void;
+  /** Close the panel. */
+  close: () => void;
+}
+
 /**
- * Working-directory picker: a borderless trigger that opens a panel with
- * "Choose folder" and a "Recent folders" submenu. Layout is left to the host
- * via `className`; this component owns only the open/close/keyboard state.
+ * Owns the panel's open/closed boolean plus the "click outside or press
+ * Escape to dismiss" behavior. While open, it listens on `document` for a
+ * pointer press outside `wrapRef` or an Escape keypress and closes.
+ * `toggle` flips the state and invokes `onOpen` only on the closed→open
+ * transition. Exported so the behavior is testable without a render.
  */
-export function WorkingDirPicker({
-  workingDir,
-  recentDirs,
-  onPickDirectory,
-  onSelectRecent,
-  onClear,
-  className,
-  placement = 'down',
-  invalid = false,
-  onOpen,
-  labels,
-}: Props) {
-  const t = { ...DEFAULT_LABELS, ...labels };
+export function useDismissablePanel(onOpen?: () => void): UseDismissablePanelResult {
   const [open, setOpen] = useState(false);
-  const [recentOpen, setRecentOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
+  const close = useCallback(() => setOpen(false), []);
+  const toggle = useCallback(() => {
+    setOpen((v) => {
+      if (!v) onOpen?.();
+      return !v;
+    });
+  }, [onOpen]);
+
   useEffect(() => {
-    if (!open) {
-      setRecentOpen(false);
-      return;
-    }
+    if (!open) return;
     function onPointer(event: MouseEvent) {
       if (wrapRef.current?.contains(event.target as Node)) return;
       setOpen(false);
@@ -98,6 +115,139 @@ export function WorkingDirPicker({
     };
   }, [open]);
 
+  return { open, wrapRef, toggle, close };
+}
+
+export interface UseRecentFlyoutResult {
+  /** Whether the "Recent folders" flyout is expanded. */
+  recentOpen: boolean;
+  /** Expand the flyout. */
+  show: () => void;
+  /** Collapse the flyout. */
+  hide: () => void;
+  /** Toggle the flyout. */
+  toggle: () => void;
+}
+
+/**
+ * Owns the "Recent folders" flyout's open boolean. Auto-collapses whenever the
+ * parent panel closes (`panelOpen` goes false), matching the original's
+ * single-effect reset. Exported for isolated testing.
+ */
+export function useRecentFlyout(panelOpen: boolean): UseRecentFlyoutResult {
+  const [recentOpen, setRecentOpen] = useState(false);
+  useEffect(() => {
+    if (!panelOpen) setRecentOpen(false);
+  }, [panelOpen]);
+  const show = useCallback(() => setRecentOpen(true), []);
+  const hide = useCallback(() => setRecentOpen(false), []);
+  const toggle = useCallback(() => setRecentOpen((v) => !v), []);
+  return { recentOpen, show, hide, toggle };
+}
+
+export interface UseWorkingDirPickerInput {
+  onPickDirectory: () => void;
+  onSelectRecent: (dir: string) => void;
+  // `| undefined` (not just `?`) so the component can forward its own optional
+  // props straight through under `exactOptionalPropertyTypes`.
+  onClear?: (() => void) | undefined;
+  onOpen?: (() => void) | undefined;
+  labels?: WorkingDirLabels | undefined;
+}
+
+export interface UseWorkingDirPickerResult {
+  open: boolean;
+  recentOpen: boolean;
+  wrapRef: MutableRefObject<HTMLDivElement | null>;
+  labels: ResolvedWorkingDirLabels;
+  toggle: () => void;
+  /** Close the panel, then open the native folder picker. */
+  pick: () => void;
+  /** Forward a recent dir to the host, then close the panel. */
+  selectRecent: (dir: string) => void;
+  /** Clear the selection (if a handler is supplied), then close the panel. */
+  clear: () => void;
+  showRecent: () => void;
+  hideRecent: () => void;
+  toggleRecent: () => void;
+}
+
+/**
+ * Composes {@link useDismissablePanel} and {@link useRecentFlyout} and builds
+ * the picker's action handlers (each closes the panel and forwards to the host
+ * callback). `clear` tolerates a missing `onClear` — a defensive guard the
+ * dumb component never reaches (it only renders the clear button when
+ * `onClear` is set), but reachable directly through this hook.
+ * {@link WorkingDirPicker} is the dumb consumer of this result.
+ */
+export function useWorkingDirPicker(input: UseWorkingDirPickerInput): UseWorkingDirPickerResult {
+  const { onPickDirectory, onSelectRecent, onClear, onOpen, labels } = input;
+  const panel = useDismissablePanel(onOpen);
+  const flyout = useRecentFlyout(panel.open);
+  const resolved = resolveWorkingDirLabels(labels);
+
+  const pick = useCallback(() => {
+    panel.close();
+    onPickDirectory();
+  }, [onPickDirectory, panel]);
+
+  const selectRecent = useCallback((dir: string) => {
+    onSelectRecent(dir);
+    panel.close();
+  }, [onSelectRecent, panel]);
+
+  const clear = useCallback(() => {
+    onClear?.();
+    panel.close();
+  }, [onClear, panel]);
+
+  return {
+    open: panel.open,
+    recentOpen: flyout.recentOpen,
+    wrapRef: panel.wrapRef,
+    labels: resolved,
+    toggle: panel.toggle,
+    pick,
+    selectRecent,
+    clear,
+    showRecent: flyout.show,
+    hideRecent: flyout.hide,
+    toggleRecent: flyout.toggle,
+  };
+}
+
+/**
+ * Working-directory picker: a borderless trigger that opens a panel with
+ * "Choose folder" and a "Recent folders" submenu. Layout is left to the host
+ * via `className`; all open/close/keyboard state lives in
+ * {@link useWorkingDirPicker}. This component is a dumb render.
+ */
+export function WorkingDirPicker({
+  workingDir,
+  recentDirs,
+  onPickDirectory,
+  onSelectRecent,
+  onClear,
+  className,
+  placement = 'down',
+  invalid = false,
+  onOpen,
+  labels,
+}: WorkingDirPickerProps) {
+  const {
+    open,
+    recentOpen,
+    wrapRef,
+    labels: t,
+    toggle,
+    pick,
+    selectRecent,
+    clear,
+    showRecent,
+    hideRecent,
+    toggleRecent,
+  } = useWorkingDirPicker({ onPickDirectory, onSelectRecent, onClear, onOpen, labels });
+
   return (
     <div
       ref={wrapRef}
@@ -111,12 +261,7 @@ export function WorkingDirPicker({
           data-testid="working-dir-trigger"
           aria-expanded={open}
           title={invalid ? t.missing : (workingDir ?? t.hint)}
-          onClick={() =>
-            setOpen((v) => {
-              if (!v) onOpen?.();
-              return !v;
-            })
-          }
+          onClick={toggle}
         >
           <Icon name="folder" size={13} className="jini-working-dir-trigger-icon" />
           <span className="jini-working-dir-trigger-label">
@@ -137,10 +282,7 @@ export function WorkingDirPicker({
             role="menuitem"
             className="jini-working-dir-item"
             data-testid="working-dir-pick"
-            onClick={() => {
-              setOpen(false);
-              onPickDirectory();
-            }}
+            onClick={pick}
           >
             <Icon name="folder" size={14} className="jini-working-dir-item-icon" />
             <span>{workingDir ? t.replace : t.pick}</span>
@@ -148,8 +290,8 @@ export function WorkingDirPicker({
 
           <div
             className="jini-working-dir-submenu-row"
-            onMouseEnter={() => setRecentOpen(true)}
-            onMouseLeave={() => setRecentOpen(false)}
+            onMouseEnter={showRecent}
+            onMouseLeave={hideRecent}
           >
             <button
               type="button"
@@ -158,7 +300,7 @@ export function WorkingDirPicker({
               aria-haspopup="menu"
               aria-expanded={recentOpen}
               data-testid="working-dir-recent"
-              onClick={() => setRecentOpen((v) => !v)}
+              onClick={toggleRecent}
             >
               <Icon name="history" size={14} className="jini-working-dir-item-icon" />
               <span>{t.recent}</span>
@@ -180,10 +322,7 @@ export function WorkingDirPicker({
                       role="menuitem"
                       className="jini-working-dir-recent-item"
                       title={dir}
-                      onClick={() => {
-                        onSelectRecent(dir);
-                        setOpen(false);
-                      }}
+                      onClick={() => selectRecent(dir)}
                     >
                       <Icon name="folder" size={13} className="jini-working-dir-item-icon" />
                       <span className="jini-working-dir-recent-name">{basename(dir)}</span>
@@ -201,10 +340,7 @@ export function WorkingDirPicker({
               role="menuitem"
               className="jini-working-dir-item"
               data-testid="working-dir-clear"
-              onClick={() => {
-                onClear();
-                setOpen(false);
-              }}
+              onClick={clear}
             >
               <Icon name="close" size={14} className="jini-working-dir-item-icon" />
               <span>{t.clear}</span>

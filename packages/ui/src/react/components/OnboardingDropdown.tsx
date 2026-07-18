@@ -17,13 +17,36 @@
 //    text talked about "text models", which was itself a leftover from the
 //    one call site it happened to serve, not a generic empty state).
 // See packages/ui/source-map.md.
+//
+// Shape: this module follows the package's "dumb component + co-located
+// testable hooks" pattern (see `TooltipLayer.tsx`). All state, refs,
+// effects, and DOM measurement live in exported hooks
+// ({@link useOnboardingDropdown}, {@link useOnboardingDropdownPlacement});
+// all branchy derivations live in exported pure helpers
+// ({@link resolveOnboardingSelectedValues}, {@link resolveOnboardingTriggerLabel},
+// {@link filterOnboardingOptions}, {@link resolveOnboardingMenuMetrics},
+// {@link onboardingEmptyMessageKey}). `OnboardingDropdown` is the dumb
+// consumer that only renders.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties, RefObject } from 'react';
 import { useT } from '../../features/i18n/index.js';
 import { Icon } from './Icon.js';
 
-const ONBOARDING_DROPDOWN_OPEN_EVENT = 'jini-ui:onboarding-dropdown-open';
+export const ONBOARDING_DROPDOWN_OPEN_EVENT = 'jini-ui:onboarding-dropdown-open';
+
+/** Vertical space (px) below the trigger under which the menu prefers to flip up. */
+export const ONBOARDING_MENU_FLIP_THRESHOLD = 260;
+/** Menu height (px) clamp: never taller than this. */
+export const ONBOARDING_MENU_MAX_HEIGHT = 240;
+/** Menu height (px) clamp: never shorter than this. */
+export const ONBOARDING_MENU_MIN_HEIGHT = 48;
+/** Padding (px) subtracted from the available space when sizing the menu. */
+export const ONBOARDING_MENU_VIEWPORT_PADDING = 16;
+/** Viewport height (px) assumed when neither `innerHeight` nor `clientHeight` is available. */
+export const ONBOARDING_MENU_FALLBACK_VIEWPORT = 720;
+
+export type OnboardingDropdownPlacement = 'bottom' | 'top';
 
 export interface OnboardingDropdownOption {
   value: string;
@@ -34,7 +57,7 @@ interface OnboardingDropdownBaseProps {
   label: string;
   placeholder: string;
   options: OnboardingDropdownOption[];
-  placement?: 'bottom' | 'top';
+  placement?: OnboardingDropdownPlacement;
   searchable?: boolean;
   searchPlaceholder?: string;
   sourceTone?: string;
@@ -53,61 +76,129 @@ export type OnboardingDropdownProps =
       multiple: true;
     });
 
-export function OnboardingDropdown(props: OnboardingDropdownProps) {
-  const t = useT();
-  const {
-    label,
-    placeholder,
-    value,
-    options,
-    placement = 'bottom',
-    multiple = false,
-    searchable = false,
-    searchPlaceholder,
-    sourceTone,
-    className,
-  } = props;
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [resolvedPlacement, setResolvedPlacement] = useState(placement);
-  const [menuMaxHeight, setMenuMaxHeight] = useState(240);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const dropdownIdRef = useRef(`onboarding-dropdown-${Math.random().toString(36).slice(2)}`);
-  const selectedValues = Array.isArray(value) ? value : value ? [value] : [];
-  const selectedOptions = options.filter((option) => selectedValues.includes(option.value));
-  const selectedOption = selectedOptions[0];
-  const hasValue = selectedOptions.length > 0;
+// ---------------------------------------------------------------------------
+// Pure helpers (module-level, no React) — each isolates one branchy decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize the polymorphic `value` prop into a flat array of selected values.
+ * An array passes through; a non-empty string becomes a singleton; an empty
+ * string (or otherwise falsy value) becomes an empty selection.
+ */
+export function resolveOnboardingSelectedValues(value: string | string[]): string[] {
+  return Array.isArray(value) ? value : value ? [value] : [];
+}
+
+/**
+ * Compute the trigger's visible label. In multiple mode it joins every
+ * selected option's label; in single mode it uses the first selected label.
+ * Falls back to `placeholder` when nothing resolves.
+ */
+export function resolveOnboardingTriggerLabel(
+  selectedOptions: OnboardingDropdownOption[],
+  multiple: boolean,
+  placeholder: string,
+): string {
   const selectedLabel = multiple
     ? selectedOptions.map((option) => option.label).join(', ')
-    : selectedOption?.label;
-  const triggerLabel = selectedLabel || placeholder;
+    : selectedOptions[0]?.label;
+  return selectedLabel || placeholder;
+}
+
+/**
+ * Filter the option list for the menu. When not searchable, or when the query
+ * is blank, every option is returned. Otherwise options are matched
+ * case-insensitively against their `label` and `value`.
+ */
+export function filterOnboardingOptions(
+  options: OnboardingDropdownOption[],
+  query: string,
+  searchable: boolean,
+): OnboardingDropdownOption[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleOptions =
-    searchable && normalizedQuery
-      ? options.filter((option) =>
-          `${option.label} ${option.value}`.toLowerCase().includes(normalizedQuery),
-        )
-      : options;
-  const emptyMessage = searchable ? t('No matches') : t('No options available');
+  if (!searchable || !normalizedQuery) return options;
+  return options.filter((option) =>
+    `${option.label} ${option.value}`.toLowerCase().includes(normalizedQuery),
+  );
+}
+
+/** The (untranslated) empty-state key for the current field mode. */
+export function onboardingEmptyMessageKey(searchable: boolean): string {
+  return searchable ? 'No matches' : 'No options available';
+}
+
+export interface OnboardingDropdownMenuMetrics {
+  placement: OnboardingDropdownPlacement;
+  maxHeight: number;
+}
+
+/**
+ * Decide where the menu opens and how tall it may be, given the trigger's
+ * bounding rect and the viewport height. Prefers the caller's requested
+ * placement, but flips to `top` when the space below the trigger is tight
+ * (< {@link ONBOARDING_MENU_FLIP_THRESHOLD}) and there is more room above.
+ * The height is clamped to
+ * [{@link ONBOARDING_MENU_MIN_HEIGHT}, {@link ONBOARDING_MENU_MAX_HEIGHT}].
+ */
+export function resolveOnboardingMenuMetrics(
+  rect: { top: number; bottom: number },
+  viewportHeight: number,
+  requestedPlacement: OnboardingDropdownPlacement,
+): OnboardingDropdownMenuMetrics {
+  const spaceBelow = viewportHeight - rect.bottom;
+  const spaceAbove = rect.top;
+  const placement =
+    requestedPlacement === 'top' || (spaceBelow < ONBOARDING_MENU_FLIP_THRESHOLD && spaceAbove > spaceBelow)
+      ? 'top'
+      : 'bottom';
+  const availableSpace = placement === 'top' ? spaceAbove : spaceBelow;
+  const maxHeight = Math.max(
+    ONBOARDING_MENU_MIN_HEIGHT,
+    Math.min(ONBOARDING_MENU_MAX_HEIGHT, availableSpace - ONBOARDING_MENU_VIEWPORT_PADDING),
+  );
+  return { placement, maxHeight };
+}
+
+/** Read the current viewport height with progressive fallbacks. */
+export function readOnboardingViewportHeight(): number {
+  return (
+    window.innerHeight ||
+    document.documentElement.clientHeight ||
+    ONBOARDING_MENU_FALLBACK_VIEWPORT
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Measure the trigger and derive the menu's resolved placement + max height
+ * whenever the menu is open, keeping it in sync with `resize`/`scroll`. All
+ * arithmetic is delegated to {@link resolveOnboardingMenuMetrics}; this hook
+ * only owns the DOM measurement and the listener lifecycle. Measurement is a
+ * no-op until the ref is attached, so consumers that open before the field
+ * mounts (or exercise the hook in isolation) never dereference a null node.
+ */
+export function useOnboardingDropdownPlacement(
+  rootRef: RefObject<HTMLDivElement | null>,
+  open: boolean,
+  placement: OnboardingDropdownPlacement,
+  optionCount: number,
+): OnboardingDropdownMenuMetrics {
+  const [metrics, setMetrics] = useState<OnboardingDropdownMenuMetrics>({
+    placement,
+    maxHeight: ONBOARDING_MENU_MAX_HEIGHT,
+  });
 
   useLayoutEffect(() => {
     if (!open) return;
 
     function measureMenu() {
-      // The wrapper div below is unconditionally rendered, so by the time
-      // this effect runs (gated on `open`, after the initial render commits)
-      // the ref is always attached.
-      const rect = rootRef.current!.getBoundingClientRect();
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
-      const spaceBelow = viewportHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      const nextPlacement =
-        placement === 'top' || (spaceBelow < 260 && spaceAbove > spaceBelow)
-          ? 'top'
-          : 'bottom';
-      const availableSpace = nextPlacement === 'top' ? spaceAbove : spaceBelow;
-      setResolvedPlacement(nextPlacement);
-      setMenuMaxHeight(Math.max(48, Math.min(240, availableSpace - 16)));
+      const node = rootRef.current;
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      setMetrics(resolveOnboardingMenuMetrics(rect, readOnboardingViewportHeight(), placement));
     }
 
     measureMenu();
@@ -117,7 +208,73 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
       window.removeEventListener('resize', measureMenu);
       window.removeEventListener('scroll', measureMenu, true);
     };
-  }, [open, placement, options.length]);
+  }, [open, placement, optionCount, rootRef]);
+
+  return metrics;
+}
+
+export interface UseOnboardingDropdownResult {
+  /** Whether the menu is currently open. */
+  open: boolean;
+  /** Current search query (only meaningful when `searchable`). */
+  query: string;
+  /** Update the search query. */
+  setQuery: (value: string) => void;
+  /** Toggle the menu; opening broadcasts the single-open peer event. */
+  toggleOpen: () => void;
+  /** Attach to the field root; used for click-outside detection + measurement. */
+  rootRef: RefObject<HTMLDivElement | null>;
+  /** Placement after viewport-aware flip. */
+  resolvedPlacement: OnboardingDropdownPlacement;
+  /** Menu max height (px) after clamping to available space. */
+  menuMaxHeight: number;
+  /** Flat list of currently selected values. */
+  selectedValues: string[];
+  /** Whether any option is selected. */
+  hasValue: boolean;
+  /** The label shown on the trigger button. */
+  triggerLabel: string;
+  /** Options to render in the menu (query-filtered when searchable). */
+  visibleOptions: OnboardingDropdownOption[];
+  /** Translated empty-state copy for the current mode. */
+  emptyMessage: string;
+  /**
+   * Apply an option click: in multiple mode this toggles the value (staying
+   * open); in single mode it selects and closes.
+   */
+  selectOption: (option: OnboardingDropdownOption, selected: boolean) => void;
+}
+
+/**
+ * All of the dropdown's behavior — open/query state, the field ref, the
+ * viewport-aware placement, the click-outside/Escape dismissal, the query
+ * reset on close, the single-open-at-a-time peer coordination, and the
+ * select/toggle logic — with no rendering. Exported (with the pure helpers
+ * above) so the logic is testable in isolation; `OnboardingDropdown` is the
+ * dumb consumer.
+ */
+export function useOnboardingDropdown(props: OnboardingDropdownProps): UseOnboardingDropdownResult {
+  const t = useT();
+  const {
+    placeholder,
+    value,
+    options,
+    placement = 'bottom',
+    multiple = false,
+    searchable = false,
+  } = props;
+
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const dropdownIdRef = useRef(`onboarding-dropdown-${Math.random().toString(36).slice(2)}`);
+
+  const { placement: resolvedPlacement, maxHeight: menuMaxHeight } = useOnboardingDropdownPlacement(
+    rootRef,
+    open,
+    placement,
+    options.length,
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -161,7 +318,7 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
     };
   }, []);
 
-  function toggleOpen() {
+  const toggleOpen = useCallback(() => {
     setOpen((current) => {
       const nextOpen = !current;
       if (nextOpen) {
@@ -173,7 +330,80 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
       }
       return nextOpen;
     });
+  }, []);
+
+  const selectedValues = resolveOnboardingSelectedValues(value);
+  const selectedOptions = options.filter((option) => selectedValues.includes(option.value));
+  const hasValue = selectedOptions.length > 0;
+  const triggerLabel = resolveOnboardingTriggerLabel(selectedOptions, multiple, placeholder);
+  const visibleOptions = filterOnboardingOptions(options, query, searchable);
+  const emptyMessage = t(onboardingEmptyMessageKey(searchable));
+
+  function selectOption(option: OnboardingDropdownOption, selected: boolean) {
+    if (props.multiple) {
+      props.onChange(
+        selected
+          ? selectedValues.filter((selectedValue) => selectedValue !== option.value)
+          : [...selectedValues, option.value],
+      );
+      return;
+    }
+    props.onChange(option.value);
+    setOpen(false);
   }
+
+  return {
+    open,
+    query,
+    setQuery,
+    toggleOpen,
+    rootRef,
+    resolvedPlacement,
+    menuMaxHeight,
+    selectedValues,
+    hasValue,
+    triggerLabel,
+    visibleOptions,
+    emptyMessage,
+    selectOption,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dumb component
+// ---------------------------------------------------------------------------
+
+/**
+ * Searchable/multi-select onboarding dropdown. All behavior lives in
+ * {@link useOnboardingDropdown}; this component only renders the field,
+ * trigger, and (when open) the menu.
+ */
+export function OnboardingDropdown(props: OnboardingDropdownProps) {
+  const {
+    label,
+    placeholder,
+    multiple = false,
+    searchable = false,
+    searchPlaceholder,
+    sourceTone,
+    className,
+  } = props;
+
+  const {
+    open,
+    query,
+    setQuery,
+    toggleOpen,
+    rootRef,
+    resolvedPlacement,
+    menuMaxHeight,
+    selectedValues,
+    hasValue,
+    triggerLabel,
+    visibleOptions,
+    emptyMessage,
+    selectOption,
+  } = useOnboardingDropdown(props);
 
   return (
     <div
@@ -243,18 +473,7 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
                   className={`onboarding-view__select-option${selected ? ' is-selected' : ''}`}
                   role="option"
                   aria-selected={selected}
-                  onClick={() => {
-                    if (props.multiple) {
-                      props.onChange(
-                        selected
-                          ? selectedValues.filter((selectedValue) => selectedValue !== option.value)
-                          : [...selectedValues, option.value],
-                      );
-                      return;
-                    }
-                    props.onChange(option.value);
-                    setOpen(false);
-                  }}
+                  onClick={() => selectOption(option, selected)}
                 >
                   <span>{option.label}</span>
                   {selected ? <Icon name="check" size={15} /> : null}

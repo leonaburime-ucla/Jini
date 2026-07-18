@@ -1,8 +1,26 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RefObject } from 'react';
 import { I18nProvider } from '../../features/i18n/index.js';
-import { OnboardingDropdown } from './OnboardingDropdown.js';
+import {
+  OnboardingDropdown,
+  ONBOARDING_DROPDOWN_OPEN_EVENT,
+  ONBOARDING_MENU_FALLBACK_VIEWPORT,
+  ONBOARDING_MENU_MAX_HEIGHT,
+  ONBOARDING_MENU_MIN_HEIGHT,
+  filterOnboardingOptions,
+  onboardingEmptyMessageKey,
+  readOnboardingViewportHeight,
+  resolveOnboardingMenuMetrics,
+  resolveOnboardingSelectedValues,
+  resolveOnboardingTriggerLabel,
+  useOnboardingDropdown,
+  useOnboardingDropdownPlacement,
+  type OnboardingDropdownOption,
+  type OnboardingDropdownProps,
+  type UseOnboardingDropdownResult,
+} from './OnboardingDropdown.js';
 
 const OPTIONS = [
   { value: 'a', label: 'Alpha' },
@@ -315,5 +333,318 @@ describe('OnboardingDropdown', () => {
     );
     await userEvent.click(screen.getByRole('button'));
     expect(screen.getByText('Aucune option disponible')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure helpers — tested directly at their seam.
+// ---------------------------------------------------------------------------
+
+describe('resolveOnboardingSelectedValues', () => {
+  it('passes an array through unchanged', () => {
+    const input = ['a', 'b'];
+    expect(resolveOnboardingSelectedValues(input)).toBe(input);
+  });
+
+  it('wraps a non-empty string in a singleton array', () => {
+    expect(resolveOnboardingSelectedValues('a')).toEqual(['a']);
+  });
+
+  it('returns an empty array for an empty string', () => {
+    expect(resolveOnboardingSelectedValues('')).toEqual([]);
+  });
+});
+
+describe('resolveOnboardingTriggerLabel', () => {
+  const options: OnboardingDropdownOption[] = [
+    { value: 'a', label: 'Alpha' },
+    { value: 'b', label: 'Beta' },
+  ];
+
+  it('joins every selected label in multiple mode', () => {
+    expect(resolveOnboardingTriggerLabel(options, true, 'Pick')).toBe('Alpha, Beta');
+  });
+
+  it('uses the first selected label in single mode', () => {
+    expect(resolveOnboardingTriggerLabel(options, false, 'Pick')).toBe('Alpha');
+  });
+
+  it('falls back to the placeholder when nothing is selected (single)', () => {
+    expect(resolveOnboardingTriggerLabel([], false, 'Pick')).toBe('Pick');
+  });
+
+  it('falls back to the placeholder when nothing is selected (multiple)', () => {
+    expect(resolveOnboardingTriggerLabel([], true, 'Pick')).toBe('Pick');
+  });
+});
+
+describe('filterOnboardingOptions', () => {
+  const options: OnboardingDropdownOption[] = [
+    { value: 'a', label: 'Alpha' },
+    { value: 'b', label: 'Beta' },
+    { value: 'c', label: 'Gamma' },
+  ];
+
+  it('returns every option when not searchable', () => {
+    expect(filterOnboardingOptions(options, 'alp', false)).toBe(options);
+  });
+
+  it('returns every option when the query is blank whitespace', () => {
+    expect(filterOnboardingOptions(options, '   ', true)).toBe(options);
+  });
+
+  it('matches case-insensitively against the label', () => {
+    expect(filterOnboardingOptions(options, 'ALP', true)).toEqual([{ value: 'a', label: 'Alpha' }]);
+  });
+
+  it('matches against the value as well as the label', () => {
+    expect(filterOnboardingOptions(options, 'c', true)).toEqual([{ value: 'c', label: 'Gamma' }]);
+  });
+});
+
+describe('onboardingEmptyMessageKey', () => {
+  it('returns the no-matches key when searchable', () => {
+    expect(onboardingEmptyMessageKey(true)).toBe('No matches');
+  });
+
+  it('returns the no-options key when not searchable', () => {
+    expect(onboardingEmptyMessageKey(false)).toBe('No options available');
+  });
+});
+
+describe('resolveOnboardingMenuMetrics', () => {
+  it('honors an explicit top placement regardless of space', () => {
+    const metrics = resolveOnboardingMenuMetrics({ top: 10, bottom: 30 }, 500, 'top');
+    expect(metrics.placement).toBe('top');
+    // availableSpace = spaceAbove = 10 → clamped up to the minimum height.
+    expect(metrics.maxHeight).toBe(ONBOARDING_MENU_MIN_HEIGHT);
+  });
+
+  it('flips to top when space below is tight and there is more room above', () => {
+    const metrics = resolveOnboardingMenuMetrics({ top: 400, bottom: 420 }, 500, 'bottom');
+    expect(metrics.placement).toBe('top');
+  });
+
+  it('stays at the bottom when there is ample room below', () => {
+    const metrics = resolveOnboardingMenuMetrics({ top: 10, bottom: 30 }, 500, 'bottom');
+    expect(metrics.placement).toBe('bottom');
+    // availableSpace = 500 - 30 = 470 → clamped down to the maximum height.
+    expect(metrics.maxHeight).toBe(ONBOARDING_MENU_MAX_HEIGHT);
+  });
+
+  it('stays at the bottom when space below is tight but not larger above', () => {
+    // spaceBelow = 250 (< 260) but spaceAbove = 100 is NOT greater → no flip.
+    const metrics = resolveOnboardingMenuMetrics({ top: 100, bottom: 250 }, 500, 'bottom');
+    expect(metrics.placement).toBe('bottom');
+  });
+
+  it('returns an intermediate clamped height between the min and max', () => {
+    // spaceBelow = 200 → availableSpace - 16 = 184, within [48, 240].
+    const metrics = resolveOnboardingMenuMetrics({ top: 10, bottom: 100 }, 300, 'bottom');
+    expect(metrics.maxHeight).toBe(184);
+  });
+});
+
+describe('readOnboardingViewportHeight', () => {
+  afterEach(() => {
+    Object.defineProperty(window, 'innerHeight', { value: 500, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, 'clientHeight', { value: 500, configurable: true });
+  });
+
+  it('prefers window.innerHeight', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 640, writable: true, configurable: true });
+    expect(readOnboardingViewportHeight()).toBe(640);
+  });
+
+  it('falls back to documentElement.clientHeight', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 0, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, 'clientHeight', { value: 480, configurable: true });
+    expect(readOnboardingViewportHeight()).toBe(480);
+  });
+
+  it('falls back to the fixed fallback viewport when both are unavailable', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 0, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, 'clientHeight', { value: 0, configurable: true });
+    expect(readOnboardingViewportHeight()).toBe(ONBOARDING_MENU_FALLBACK_VIEWPORT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hooks — tested via renderHook / a mounted harness at their seam.
+// ---------------------------------------------------------------------------
+
+describe('useOnboardingDropdownPlacement', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerHeight', { value: 500, writable: true, configurable: true });
+    mockRect({ top: 10, bottom: 30 });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function attachedRef(): RefObject<HTMLDivElement | null> {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    return { current: el };
+  }
+
+  it('starts at the requested placement and the max height while closed', () => {
+    const rootRef = attachedRef();
+    const { result } = renderHook(() => useOnboardingDropdownPlacement(rootRef, false, 'bottom', 3));
+    expect(result.current.placement).toBe('bottom');
+    expect(result.current.maxHeight).toBe(ONBOARDING_MENU_MAX_HEIGHT);
+  });
+
+  it('measures the trigger once open and resolves the placement', () => {
+    mockRect({ top: 400, bottom: 420 });
+    const rootRef = attachedRef();
+    const { result } = renderHook(() => useOnboardingDropdownPlacement(rootRef, true, 'bottom', 3));
+    // spaceBelow = 500 - 420 = 80 (< 260), spaceAbove = 400 > 80 → flips to top.
+    expect(result.current.placement).toBe('top');
+  });
+
+  it('re-measures when a resize event fires', () => {
+    const rootRef = attachedRef();
+    const { result } = renderHook(() => useOnboardingDropdownPlacement(rootRef, true, 'bottom', 3));
+    expect(result.current.placement).toBe('bottom');
+    mockRect({ top: 400, bottom: 420 });
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(result.current.placement).toBe('top');
+  });
+
+  it('is a graceful no-op when the ref is unattached', () => {
+    const detached: RefObject<HTMLDivElement | null> = { current: null };
+    const { result } = renderHook(() => useOnboardingDropdownPlacement(detached, true, 'top', 3));
+    // No node to measure → the initial metrics stand and nothing throws.
+    expect(result.current.placement).toBe('top');
+    expect(result.current.maxHeight).toBe(ONBOARDING_MENU_MAX_HEIGHT);
+  });
+
+  it('tears down its resize/scroll listeners on unmount', () => {
+    const rootRef = attachedRef();
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+    const { unmount } = renderHook(() => useOnboardingDropdownPlacement(rootRef, true, 'bottom', 3));
+    unmount();
+    expect(removeSpy).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+  });
+});
+
+describe('useOnboardingDropdown', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerHeight', { value: 500, writable: true, configurable: true });
+    mockRect({ top: 10, bottom: 30 });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const OPTS: OnboardingDropdownOption[] = [
+    { value: 'a', label: 'Alpha' },
+    { value: 'b', label: 'Beta' },
+  ];
+
+  function baseProps(overrides: Partial<OnboardingDropdownProps> = {}): OnboardingDropdownProps {
+    return {
+      label: 'Team',
+      placeholder: 'Pick',
+      options: OPTS,
+      value: '',
+      onChange: () => {},
+      ...overrides,
+    } as OnboardingDropdownProps;
+  }
+
+  // Render the hook inside a real host so its internal `rootRef` is attached
+  // to a mounted node — the placement layout-effect measures that node when
+  // the menu opens.
+  function renderDropdownHook(props: OnboardingDropdownProps) {
+    const result = { current: null as unknown as UseOnboardingDropdownResult };
+    function Harness() {
+      const value = useOnboardingDropdown(props);
+      result.current = value;
+      return <div ref={value.rootRef} />;
+    }
+    const utils = render(<Harness />);
+    return { result, ...utils };
+  }
+
+  it('toggles open and broadcasts the single-open peer event only when opening', () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+    const { result } = renderDropdownHook(baseProps());
+
+    expect(result.current.open).toBe(false);
+    act(() => result.current.toggleOpen());
+    expect(result.current.open).toBe(true);
+    const openEvents = dispatchSpy.mock.calls.filter(
+      ([event]) => (event as Event).type === ONBOARDING_DROPDOWN_OPEN_EVENT,
+    );
+    expect(openEvents).toHaveLength(1);
+    expect((openEvents[0]![0] as CustomEvent<string>).detail).toMatch(/^onboarding-dropdown-/);
+
+    act(() => result.current.toggleOpen());
+    expect(result.current.open).toBe(false);
+    // Closing must not broadcast another open event.
+    const afterCloseOpenEvents = dispatchSpy.mock.calls.filter(
+      ([event]) => (event as Event).type === ONBOARDING_DROPDOWN_OPEN_EVENT,
+    );
+    expect(afterCloseOpenEvents).toHaveLength(1);
+  });
+
+  it('resets the query whenever the menu closes', () => {
+    const { result } = renderDropdownHook(baseProps({ searchable: true }));
+    act(() => result.current.toggleOpen());
+    act(() => result.current.setQuery('alp'));
+    expect(result.current.query).toBe('alp');
+    act(() => result.current.toggleOpen());
+    expect(result.current.query).toBe('');
+  });
+
+  it('single-select: selectOption calls onChange with the raw value and closes', () => {
+    const onChange = vi.fn();
+    const { result } = renderDropdownHook(baseProps({ value: '', onChange }));
+    act(() => result.current.toggleOpen());
+    act(() => result.current.selectOption({ value: 'b', label: 'Beta' }, false));
+    expect(onChange).toHaveBeenCalledWith('b');
+    expect(result.current.open).toBe(false);
+  });
+
+  it('multi-select: selectOption adds an unselected value and stays open', () => {
+    const onChange = vi.fn();
+    const { result } = renderDropdownHook(baseProps({ multiple: true, value: ['a'], onChange }));
+    act(() => result.current.toggleOpen());
+    act(() => result.current.selectOption({ value: 'b', label: 'Beta' }, false));
+    expect(onChange).toHaveBeenCalledWith(['a', 'b']);
+    expect(result.current.open).toBe(true);
+  });
+
+  it('multi-select: selectOption removes an already-selected value', () => {
+    const onChange = vi.fn();
+    const { result } = renderDropdownHook(baseProps({ multiple: true, value: ['a', 'b'], onChange }));
+    act(() => result.current.selectOption({ value: 'a', label: 'Alpha' }, true));
+    expect(onChange).toHaveBeenCalledWith(['b']);
+  });
+
+  it('closes when a peer dropdown broadcasts a different id', () => {
+    const { result } = renderDropdownHook(baseProps());
+    act(() => result.current.toggleOpen());
+    expect(result.current.open).toBe(true);
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(ONBOARDING_DROPDOWN_OPEN_EVENT, { detail: 'some-other-dropdown' }),
+      );
+    });
+    expect(result.current.open).toBe(false);
+  });
+
+  it('derives selection-driven state (values, hasValue, trigger label)', () => {
+    const { result } = renderDropdownHook(baseProps({ value: 'b' }));
+    expect(result.current.selectedValues).toEqual(['b']);
+    expect(result.current.hasValue).toBe(true);
+    expect(result.current.triggerLabel).toBe('Beta');
   });
 });

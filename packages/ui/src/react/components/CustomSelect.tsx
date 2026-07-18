@@ -2,9 +2,14 @@
 // porting (see packages/ui/source-map.md) — shipped anyway since it's small,
 // self-contained, and correct; a host may still find it useful as a select
 // primitive with grouped options and optional portal-rendered menu.
+//
+// Shape: this file follows the "dumb component + co-located testable hook(s)"
+// pattern (see TooltipLayer.tsx). Every seam is exported: pure helpers, the
+// `useCustomSelect` hook that owns all state/refs/effects/handlers, the
+// `CustomSelectOptionButton` leaf, and the dumb `CustomSelect` render.
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
@@ -21,7 +26,7 @@ export interface CustomSelectGroup {
 
 export type CustomSelectItem = CustomSelectOption | CustomSelectGroup;
 
-interface Props {
+export interface CustomSelectProps {
   value: string;
   options: CustomSelectItem[];
   onChange: (value: string) => void;
@@ -37,44 +42,200 @@ interface Props {
   onFocus?: () => void;
 }
 
-interface FlatOption extends CustomSelectOption {
+/** A single option after grouped items are flattened; `group` records the
+ * originating group label (absent for top-level options). */
+export interface CustomSelectFlatOption extends CustomSelectOption {
   group?: string;
 }
 
-interface MenuPosition {
+/** Portal-menu geometry, in viewport pixels. */
+export interface CustomSelectMenuPosition {
   top: number;
   left: number;
   width: number;
   maxHeight: number;
 }
 
-function isGroup(item: CustomSelectItem): item is CustomSelectGroup {
+/** Space between the trigger and the menu. */
+export const CUSTOM_SELECT_MENU_GAP = 4;
+/** Minimum distance the menu keeps from any viewport edge. */
+export const CUSTOM_SELECT_VIEWPORT_PAD = 12;
+/** Floor for the menu's computed max-height. */
+export const CUSTOM_SELECT_MIN_MENU_HEIGHT = 160;
+/** Ceiling for the menu's computed max-height. */
+export const CUSTOM_SELECT_MAX_MENU_HEIGHT = 300;
+/** When the space below the trigger is under this, the menu may flip above. */
+export const CUSTOM_SELECT_FLIP_THRESHOLD = 180;
+
+/** Type guard: is this item a group (has nested `options`) rather than a leaf? */
+export function isCustomSelectGroup(item: CustomSelectItem): item is CustomSelectGroup {
   return 'options' in item;
 }
 
-function flattenOptions(items: CustomSelectItem[]): FlatOption[] {
+/** Flatten grouped/ungrouped items into a single ordered list, tagging each
+ * option that came from a group with its group label. */
+export function flattenCustomSelectOptions(items: CustomSelectItem[]): CustomSelectFlatOption[] {
   return items.flatMap((item) =>
-    isGroup(item)
+    isCustomSelectGroup(item)
       ? item.options.map((option) => ({ ...option, group: item.label }))
       : [item],
   );
 }
 
-export function CustomSelect({
+/** Pure geometry: given the trigger's rect and the viewport, compute where the
+ * portal menu should sit (flipping above the trigger when space below is
+ * tight). Extracted from the hook so the branching math is unit-testable. */
+export function computeCustomSelectMenuPosition(
+  rect: { top: number; bottom: number; left: number; width: number },
+  viewport: { width: number; height: number },
+): CustomSelectMenuPosition {
+  const gap = CUSTOM_SELECT_MENU_GAP;
+  const viewportPad = CUSTOM_SELECT_VIEWPORT_PAD;
+  const below = viewport.height - rect.bottom - viewportPad;
+  const above = rect.top - viewportPad;
+  const maxHeight = Math.max(
+    CUSTOM_SELECT_MIN_MENU_HEIGHT,
+    Math.min(CUSTOM_SELECT_MAX_MENU_HEIGHT, Math.max(below, above) - gap),
+  );
+  const openAbove = below < CUSTOM_SELECT_FLIP_THRESHOLD && above > below;
+  return {
+    top: openAbove ? Math.max(viewportPad, rect.top - maxHeight - gap) : rect.bottom + gap,
+    left: Math.min(
+      Math.max(viewportPad, rect.left),
+      Math.max(viewportPad, viewport.width - rect.width - viewportPad),
+    ),
+    width: rect.width,
+    maxHeight,
+  };
+}
+
+/** Pure keyboard-nav math: the value the active option should move to when the
+ * user presses Down (`1`) or Up (`-1`), wrapping around the enabled options.
+ * Returns `null` when there is nothing enabled to move to. */
+export function nextCustomSelectActiveValue(
+  enabledOptions: CustomSelectFlatOption[],
+  activeValue: string,
+  direction: 1 | -1,
+): string | null {
+  if (!enabledOptions.length) return null;
+  const currentIndex = enabledOptions.findIndex((option) => option.value === activeValue);
+  const nextIndex =
+    currentIndex < 0
+      ? 0
+      : (currentIndex + direction + enabledOptions.length) % enabledOptions.length;
+  return enabledOptions[nextIndex]!.value;
+}
+
+/** Pure: which option should be active when the menu opens — the current value
+ * if it maps to an enabled option, else the first enabled option, else none. */
+export function resolveInitialCustomSelectActiveValue(
+  flatOptions: CustomSelectFlatOption[],
+  enabledOptions: CustomSelectFlatOption[],
+  value: string,
+): string {
+  const selectedOption = flatOptions.find((option) => option.value === value && !option.disabled);
+  return selectedOption?.value ?? enabledOptions[0]?.value ?? '';
+}
+
+export interface CustomSelectActiveReconcileInput {
+  open: boolean;
+  value: string;
+  wasOpen: boolean;
+  activeSourceValue: string;
+  flatOptions: CustomSelectFlatOption[];
+  enabledOptions: CustomSelectFlatOption[];
+}
+
+export interface CustomSelectActiveReconcileResult {
+  /** New value for the `wasOpen` ref. */
+  wasOpen: boolean;
+  /** New value for the `activeSourceValue` ref. */
+  activeSourceValue: string;
+  /** When defined, the active value should be set to this; when `undefined`,
+   * the active value is left untouched. */
+  nextActiveValue?: string;
+}
+
+/** Pure decision for the open/value effect: how to reconcile the active option
+ * (and the two tracking refs) when `open` or `value` changes. Kept out of the
+ * effect so its "already reconciled" guard is directly unit-testable — that
+ * branch is unreachable through the effect's `[open, value]` dependency flow. */
+export function reconcileCustomSelectActiveValue(
+  input: CustomSelectActiveReconcileInput,
+): CustomSelectActiveReconcileResult {
+  const { open, value, wasOpen, activeSourceValue, flatOptions, enabledOptions } = input;
+  if (!open) {
+    return { wasOpen: false, activeSourceValue: value };
+  }
+  if (wasOpen && activeSourceValue === value) {
+    return { wasOpen, activeSourceValue };
+  }
+  return {
+    wasOpen: true,
+    activeSourceValue: value,
+    nextActiveValue: resolveInitialCustomSelectActiveValue(flatOptions, enabledOptions, value),
+  };
+}
+
+/** Pure: is a pointerdown target inside the trigger or the (possibly absent)
+ * menu? Used to decide whether an outside click should close the menu. */
+export function isCustomSelectEventInside(
+  target: Node,
+  button: HTMLElement | null,
+  menu: HTMLElement | null,
+): boolean {
+  return Boolean(button?.contains(target)) || Boolean(menu?.contains(target));
+}
+
+export interface UseCustomSelectParams {
+  value: string;
+  options: CustomSelectItem[];
+  onChange: (value: string) => void;
+  portal: boolean;
+  placeholder?: string | undefined;
+}
+
+export interface UseCustomSelectResult {
+  /** Colon-free id prefix for the trigger/menu/option ids. */
+  idBase: string;
+  buttonRef: MutableRefObject<HTMLButtonElement | null>;
+  menuRef: MutableRefObject<HTMLDivElement | null>;
+  open: boolean;
+  activeValue: string;
+  position: CustomSelectMenuPosition | null;
+  /** Label to show on the trigger (selected option, else placeholder, else value). */
+  selectedLabel: string;
+  /** Maps each option value to its stable DOM id. */
+  optionIdByValue: Map<string, string>;
+  /** `aria-activedescendant` for the trigger, or `undefined` when none. */
+  activeOptionId: string | undefined;
+  /** Recompute the portal menu position from the live trigger rect. */
+  updatePosition: () => void;
+  /** Commit a value (ignoring missing/disabled), close, and refocus the trigger. */
+  choose: (nextValue: string) => void;
+  /** Set the active (highlighted) option value. */
+  setActiveValue: (value: string) => void;
+  /** Toggle the menu open/closed. */
+  toggleOpen: () => void;
+  /** Full keyboard handler for the trigger button. */
+  onButtonKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+}
+
+/**
+ * All of CustomSelect's behavior — ids, refs, open/active/position state, the
+ * portal-positioning effect, the open/value active-option reconciliation
+ * effect, the outside-click + scroll/resize effect, and the choose/keyboard
+ * handlers — with no rendering. Exported (with the pure helpers above) so the
+ * logic is testable in isolation from the DOM; `CustomSelect` is the dumb
+ * consumer.
+ */
+export function useCustomSelect({
   value,
   options,
   onChange,
-  ariaLabel,
-  labelledBy,
-  className,
-  triggerClassName,
-  menuClassName,
-  disabled = false,
+  portal,
   placeholder,
-  portal = true,
-  title,
-  onFocus,
-}: Props) {
+}: UseCustomSelectParams): UseCustomSelectResult {
   const reactId = useId();
   const idBase = reactId.replace(/:/g, '');
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -83,9 +244,9 @@ export function CustomSelect({
   const activeSourceValueRef = useRef(value);
   const [open, setOpen] = useState(false);
   const [activeValue, setActiveValue] = useState(value);
-  const [position, setPosition] = useState<MenuPosition | null>(null);
+  const [position, setPosition] = useState<CustomSelectMenuPosition | null>(null);
 
-  const flatOptions = useMemo(() => flattenOptions(options), [options]);
+  const flatOptions = useMemo(() => flattenCustomSelectOptions(options), [options]);
   const selected = flatOptions.find((option) => option.value === value);
   const selectedLabel = selected?.label ?? placeholder ?? value;
   const enabledOptions = useMemo(
@@ -105,21 +266,12 @@ export function CustomSelect({
   const updatePosition = useCallback(() => {
     if (!buttonRef.current) return;
     const rect = buttonRef.current.getBoundingClientRect();
-    const gap = 4;
-    const viewportPad = 12;
-    const below = window.innerHeight - rect.bottom - viewportPad;
-    const above = rect.top - viewportPad;
-    const maxHeight = Math.max(160, Math.min(300, Math.max(below, above) - gap));
-    const openAbove = below < 180 && above > below;
-    setPosition({
-      top: openAbove ? Math.max(viewportPad, rect.top - maxHeight - gap) : rect.bottom + gap,
-      left: Math.min(
-        Math.max(viewportPad, rect.left),
-        Math.max(viewportPad, window.innerWidth - rect.width - viewportPad),
-      ),
-      width: rect.width,
-      maxHeight,
-    });
+    setPosition(
+      computeCustomSelectMenuPosition(rect, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }),
+    );
   }, []);
 
   useEffect(() => {
@@ -132,23 +284,24 @@ export function CustomSelect({
   }, [open, portal, updatePosition]);
 
   useEffect(() => {
-    if (!open) {
-      wasOpenRef.current = false;
-      activeSourceValueRef.current = value;
-      return;
-    }
-    if (wasOpenRef.current && activeSourceValueRef.current === value) return;
-    const selectedOption = flatOptionsRef.current.find((option) => option.value === value && !option.disabled);
-    setActiveValue(selectedOption?.value ?? enabledOptionsRef.current[0]?.value ?? '');
-    wasOpenRef.current = true;
-    activeSourceValueRef.current = value;
+    const result = reconcileCustomSelectActiveValue({
+      open,
+      value,
+      wasOpen: wasOpenRef.current,
+      activeSourceValue: activeSourceValueRef.current,
+      flatOptions: flatOptionsRef.current,
+      enabledOptions: enabledOptionsRef.current,
+    });
+    wasOpenRef.current = result.wasOpen;
+    activeSourceValueRef.current = result.activeSourceValue;
+    if (result.nextActiveValue !== undefined) setActiveValue(result.nextActiveValue);
   }, [open, value]);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      if (isCustomSelectEventInside(target, buttonRef.current, menuRef.current)) return;
       setOpen(false);
     };
     const onScrollOrResize = () => {
@@ -162,7 +315,7 @@ export function CustomSelect({
       window.removeEventListener('resize', onScrollOrResize);
       window.removeEventListener('scroll', onScrollOrResize, true);
     };
-  }, [open, portal]);
+  }, [open, portal, updatePosition]);
 
   const choose = (nextValue: string) => {
     const next = flatOptions.find((option) => option.value === nextValue);
@@ -173,14 +326,11 @@ export function CustomSelect({
   };
 
   const moveActive = (direction: 1 | -1) => {
-    if (!enabledOptions.length) return;
-    const currentIndex = enabledOptions.findIndex((option) => option.value === activeValue);
-    const nextIndex =
-      currentIndex < 0
-        ? 0
-        : (currentIndex + direction + enabledOptions.length) % enabledOptions.length;
-    setActiveValue(enabledOptions[nextIndex]!.value);
+    const next = nextCustomSelectActiveValue(enabledOptions, activeValue, direction);
+    if (next !== null) setActiveValue(next);
   };
+
+  const toggleOpen = () => setOpen((current) => !current);
 
   const onButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -208,6 +358,61 @@ export function CustomSelect({
     }
   };
 
+  return {
+    idBase,
+    buttonRef,
+    menuRef,
+    open,
+    activeValue,
+    position,
+    selectedLabel,
+    optionIdByValue,
+    activeOptionId,
+    updatePosition,
+    choose,
+    setActiveValue,
+    toggleOpen,
+    onButtonKeyDown,
+  };
+}
+
+/**
+ * Accessible custom `<select>` replacement with grouped options, full keyboard
+ * navigation, and an optional portal-rendered menu. All behavior lives in
+ * {@link useCustomSelect}; this component only wires the hook's state to the
+ * trigger button and the listbox menu.
+ */
+export function CustomSelect({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  labelledBy,
+  className,
+  triggerClassName,
+  menuClassName,
+  disabled = false,
+  placeholder,
+  portal = true,
+  title,
+  onFocus,
+}: CustomSelectProps) {
+  const {
+    idBase,
+    buttonRef,
+    menuRef,
+    open,
+    activeValue,
+    position,
+    selectedLabel,
+    optionIdByValue,
+    activeOptionId,
+    choose,
+    setActiveValue,
+    toggleOpen,
+    onButtonKeyDown,
+  } = useCustomSelect({ value, options, onChange, portal, placeholder });
+
   const menu = (
     <div
       ref={menuRef}
@@ -231,12 +436,12 @@ export function CustomSelect({
       }
     >
       {options.map((item) => {
-        if (isGroup(item)) {
+        if (isCustomSelectGroup(item)) {
           return (
             <div className="jini-select-group" key={`group:${item.label}`}>
               <div className="jini-select-group-label">{item.label}</div>
               {item.options.map((option) => (
-                <SelectOptionButton
+                <CustomSelectOptionButton
                   key={option.value}
                   option={option}
                   selected={option.value === value}
@@ -250,7 +455,7 @@ export function CustomSelect({
           );
         }
         return (
-          <SelectOptionButton
+          <CustomSelectOptionButton
             key={item.value}
             option={item}
             selected={item.value === value}
@@ -280,7 +485,7 @@ export function CustomSelect({
         aria-label={`${ariaLabel}: ${selectedLabel}`}
         disabled={disabled}
         title={title}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleOpen}
         onKeyDown={onButtonKeyDown}
         onFocus={onFocus}
       >
@@ -294,7 +499,9 @@ export function CustomSelect({
   );
 }
 
-function SelectOptionButton({
+/** One row in the listbox: a selectable option button that reports hover
+ * (activation) and click (choice) back to {@link CustomSelect}. */
+export function CustomSelectOptionButton({
   option,
   selected,
   active,

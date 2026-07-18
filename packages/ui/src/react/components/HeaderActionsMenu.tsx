@@ -3,7 +3,15 @@
 // (divided into visually-separated groups, empty groups skipped). Closes on
 // outside click or Escape.
 
-import { Fragment, useEffect, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react';
 
 import { Icon, type IconName } from './Icon';
 
@@ -25,19 +33,97 @@ export interface HeaderActionsMenuProps {
   label: string;
 }
 
-export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+// ---------------------------------------------------------------------------
+// Pure helpers — no React, directly unit-testable.
+// ---------------------------------------------------------------------------
 
+/** Drops empty groups so only groups with at least one action render. */
+export function filterVisibleActionGroups(groups: HeaderMenuAction[][]): HeaderMenuAction[][] {
+  return groups.filter((group) => group.length > 0);
+}
+
+/** The single key that dismisses the menu. */
+export function isHeaderMenuDismissKey(key: string): boolean {
+  return key === 'Escape';
+}
+
+/**
+ * Whether a pointer event landed outside the menu (and should therefore close
+ * it). A missing container never counts as "outside".
+ */
+export function isOutsideHeaderMenu(
+  container: HTMLElement | null,
+  target: EventTarget | null,
+): boolean {
+  if (!container) return false;
+  return !container.contains(target as Node | null);
+}
+
+/** ARIA role: plain menuitem, or checkbox semantics when the item is a toggle. */
+export function headerMenuItemRole(active: boolean | undefined): 'menuitem' | 'menuitemcheckbox' {
+  return active === undefined ? 'menuitem' : 'menuitemcheckbox';
+}
+
+/** `aria-checked` value: only meaningful (and only set) for toggle items. */
+export function headerMenuItemAriaChecked(active: boolean | undefined): boolean | undefined {
+  return active === undefined ? undefined : active;
+}
+
+/** The icon to render — the spinner while loading, otherwise the item's icon. */
+export function headerMenuItemIcon(item: HeaderMenuAction): IconName {
+  return item.loading ? 'spinner' : item.icon;
+}
+
+/** Disabled while explicitly disabled or loading. */
+export function headerMenuItemDisabled(item: HeaderMenuAction): boolean {
+  return Boolean(item.disabled || item.loading);
+}
+
+/** `aria-busy` value: `true` while loading, otherwise unset. */
+export function headerMenuItemBusy(item: HeaderMenuAction): true | undefined {
+  return item.loading || undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Hooks — every stateful/effectful seam, exported for isolated testing.
+// ---------------------------------------------------------------------------
+
+export interface HeaderActionsMenuDisclosure {
+  open: boolean;
+  toggle: () => void;
+  close: () => void;
+}
+
+/** Open/close state for the popover with stable toggle/close callbacks. */
+export function useHeaderActionsMenuDisclosure(): HeaderActionsMenuDisclosure {
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const close = useCallback(() => setOpen(false), []);
+  return { open, toggle, close };
+}
+
+/** Memoized list of non-empty groups. */
+export function useVisibleActionGroups(groups: HeaderMenuAction[][]): HeaderMenuAction[][] {
+  return useMemo(() => filterVisibleActionGroups(groups), [groups]);
+}
+
+/**
+ * While `open`, closes the menu on an outside `mousedown` or an Escape keydown.
+ * Listeners are only attached while open and torn down on close/unmount.
+ */
+export function useHeaderActionsMenuDismiss(params: {
+  open: boolean;
+  onDismiss: () => void;
+  containerRef: MutableRefObject<HTMLElement | null>;
+}): void {
+  const { open, onDismiss, containerRef } = params;
   useEffect(() => {
     if (!open) return undefined;
     function onPointerDown(event: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
+      if (isOutsideHeaderMenu(containerRef.current, event.target)) onDismiss();
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (isHeaderMenuDismissKey(event.key)) onDismiss();
     }
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -45,17 +131,45 @@ export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [open, onDismiss, containerRef]);
+}
 
-  const visibleGroups = groups.filter((group) => group.length > 0);
+export interface UseHeaderActionsMenuResult {
+  open: boolean;
+  toggle: () => void;
+  close: () => void;
+  containerRef: MutableRefObject<HTMLDivElement | null>;
+  visibleGroups: HeaderMenuAction[][];
+}
+
+/**
+ * Composes the menu's whole behavior — disclosure, the visible-group filter,
+ * and the outside/Escape dismissal — so {@link HeaderActionsMenu} is a dumb
+ * render.
+ */
+export function useHeaderActionsMenu(groups: HeaderMenuAction[][]): UseHeaderActionsMenuResult {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { open, toggle, close } = useHeaderActionsMenuDisclosure();
+  const visibleGroups = useVisibleActionGroups(groups);
+  useHeaderActionsMenuDismiss({ open, onDismiss: close, containerRef });
+  return { open, toggle, close, containerRef, visibleGroups };
+}
+
+// ---------------------------------------------------------------------------
+// Component — dumb render, all logic delegated above.
+// ---------------------------------------------------------------------------
+
+export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
+  const { open, toggle, close, containerRef, visibleGroups } = useHeaderActionsMenu(groups);
+
   if (visibleGroups.length === 0) return null;
 
   return (
-    <div className="jini-header-actions-menu" ref={wrapRef}>
+    <div className="jini-header-actions-menu" ref={containerRef}>
       <button
         type="button"
         className="jini-header-actions-menu-trigger"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
@@ -75,18 +189,18 @@ export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
                 <button
                   key={item.id}
                   type="button"
-                  role={item.active === undefined ? 'menuitem' : 'menuitemcheckbox'}
-                  aria-checked={item.active === undefined ? undefined : item.active}
+                  role={headerMenuItemRole(item.active)}
+                  aria-checked={headerMenuItemAriaChecked(item.active)}
                   className="jini-header-actions-menu-item"
-                  disabled={item.disabled || item.loading}
-                  aria-busy={item.loading || undefined}
+                  disabled={headerMenuItemDisabled(item)}
+                  aria-busy={headerMenuItemBusy(item)}
                   onClick={() => {
                     item.onClick();
-                    setOpen(false);
+                    close();
                   }}
                 >
                   <span className="jini-header-actions-menu-item-icon" aria-hidden>
-                    <Icon name={item.loading ? 'spinner' : item.icon} size={15} />
+                    <Icon name={headerMenuItemIcon(item)} size={15} />
                   </span>
                   <span className="jini-header-actions-menu-item-label">{item.label}</span>
                   {item.active ? (

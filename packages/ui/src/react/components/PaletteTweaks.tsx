@@ -1,8 +1,14 @@
 // NOTE: verified zero real consumers in the vendored source snapshot before
 // porting (see packages/ui/source-map.md) — shipped anyway since it's small,
 // self-contained, and correct.
+//
+// Structure follows the "dumb component + co-located testable hook(s)"
+// pattern (see TooltipLayer.tsx): pure derivations are module-level helpers,
+// all state/effects/callbacks live in exported hooks, and `PaletteTweaks`
+// itself is a pure render. Everything is exported so each seam is unit- or
+// hook-testable in isolation.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Icon } from './Icon';
 
 export type PaletteId =
@@ -12,9 +18,16 @@ export type PaletteId =
   | 'risograph'
   | 'mono-noir';
 
-type Swatch = { id: PaletteId; label: string; stripe: string[] };
+/** A hover target inside the picker: a palette, the "original" row, or none. */
+export type PaletteHoverTarget = PaletteId | 'original' | null;
 
-const PALETTES: Swatch[] = [
+export interface PaletteSwatch {
+  id: PaletteId;
+  label: string;
+  stripe: string[];
+}
+
+export const PALETTE_TWEAKS_SWATCHES: PaletteSwatch[] = [
   { id: 'coral',       label: 'Coral - default', stripe: ['#ff5a3c', '#ff7a5c', '#fde2d6', '#171717'] },
   { id: 'electric',    label: 'Electric',        stripe: ['#7c3aed', '#a855f7', '#e9d5ff', '#171717'] },
   { id: 'acid-forest', label: 'Acid forest',     stripe: ['#16a34a', '#22c55e', '#bbf7d0', '#0f1d14'] },
@@ -22,17 +35,100 @@ const PALETTES: Swatch[] = [
   { id: 'mono-noir',   label: 'Mono noir',       stripe: ['#0a0a0a', '#262626', '#e5e5e5', '#fafafa'] },
 ];
 
-type Props = {
+export interface PaletteTweaksProps {
   open: boolean;
   selected: PaletteId | null;
   onChange: (id: PaletteId | null) => void;
   onPreview: (id: PaletteId | null) => void;
   onClose: () => void;
-};
+}
 
-export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: Props) {
+// --- Pure derivations (module-level, directly unit-testable) --------------
+
+/**
+ * The palette to preview for a given hover target: the "original" row previews
+ * nothing (`null`), leaving the row (target `null`) restores the current
+ * `selected` preview, and hovering a palette previews that palette.
+ */
+export function resolvePalettePreview(
+  target: PaletteHoverTarget,
+  selected: PaletteId | null,
+): PaletteId | null {
+  if (target === 'original') return null;
+  if (target === null) return selected;
+  return target;
+}
+
+/**
+ * The next selection when a palette row is clicked: clicking the already
+ * selected palette deselects it (back to `null`), otherwise it selects it.
+ */
+export function nextPaletteSelection(
+  selected: PaletteId | null,
+  id: PaletteId,
+): PaletteId | null {
+  return selected === id ? null : id;
+}
+
+/** The `className` for a picker row, given its selected/hovered state. */
+export function paletteItemClassName(state: {
+  selected: boolean;
+  hovered: boolean;
+}): string {
+  return `palette-tweaks-item${state.selected ? ' selected' : ''}${state.hovered ? ' hovered' : ''}`;
+}
+
+// --- Hooks (co-located, exported) -----------------------------------------
+
+export interface UsePaletteHoverResult {
+  /** The currently hovered target, or `null` when nothing is hovered. */
+  hovered: PaletteHoverTarget;
+  /** Set the hovered target and emit the corresponding preview. */
+  setHover: (target: PaletteHoverTarget) => void;
+}
+
+/**
+ * Owns the picker's hover state and the preview side effect. Setting a hover
+ * target emits the resolved preview; closing the picker (`open` -> false)
+ * clears the hover and cancels any active preview.
+ */
+export function usePaletteHover(options: {
+  open: boolean;
+  selected: PaletteId | null;
+  onPreview: (id: PaletteId | null) => void;
+}): UsePaletteHoverResult {
+  const { open, selected, onPreview } = options;
+  const [hovered, setHovered] = useState<PaletteHoverTarget>(null);
+
+  const setHover = useCallback(
+    (target: PaletteHoverTarget) => {
+      setHovered(target);
+      onPreview(resolvePalettePreview(target, selected));
+    },
+    [onPreview, selected],
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setHovered(null);
+      onPreview(null);
+    }
+  }, [open, onPreview]);
+
+  return { hovered, setHover };
+}
+
+/**
+ * Wires up dismiss behavior while the picker is `open`: a `mousedown` outside
+ * the returned `rootRef` element, or pressing `Escape`, calls `onClose`.
+ * Returns the ref to attach to the picker's root element.
+ */
+export function usePaletteDismiss(options: {
+  open: boolean;
+  onClose: () => void;
+}): MutableRefObject<HTMLDivElement | null> {
+  const { open, onClose } = options;
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [hovered, setHovered] = useState<PaletteId | 'original' | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -52,22 +148,19 @@ export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: 
     };
   }, [open, onClose]);
 
-  useEffect(() => {
-    if (!open) {
-      setHovered(null);
-      onPreview(null);
-    }
-  }, [open, onPreview]);
+  return rootRef;
+}
 
-  const setHover = useCallback(
-    (id: PaletteId | 'original' | null) => {
-      setHovered(id);
-      if (id === 'original') onPreview(null);
-      else if (id === null) onPreview(selected);
-      else onPreview(id);
-    },
-    [onPreview, selected],
-  );
+// --- Dumb component --------------------------------------------------------
+
+/**
+ * Curated theme-palette picker. All state/effects live in
+ * {@link usePaletteHover} and {@link usePaletteDismiss}; the row derivations
+ * are module-level helpers. This component is a pure render.
+ */
+export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: PaletteTweaksProps) {
+  const rootRef = usePaletteDismiss({ open, onClose });
+  const { hovered, setHover } = usePaletteHover({ open, selected, onPreview });
 
   if (!open) return null;
   const isOriginal = selected === null;
@@ -82,7 +175,7 @@ export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: 
         <li
           role="option"
           aria-selected={isOriginal}
-          className={`palette-tweaks-item${isOriginal ? ' selected' : ''}${hovered === 'original' ? ' hovered' : ''}`}
+          className={paletteItemClassName({ selected: isOriginal, hovered: hovered === 'original' })}
           onMouseEnter={() => setHover('original')}
           onMouseLeave={() => setHover(null)}
           onClick={() => { onChange(null); onClose(); }}
@@ -97,7 +190,7 @@ export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: 
             </span>
           ) : null}
         </li>
-        {PALETTES.map((p) => {
+        {PALETTE_TWEAKS_SWATCHES.map((p) => {
           const isSelected = selected === p.id;
           const isHovered = hovered === p.id;
           return (
@@ -105,11 +198,11 @@ export function PaletteTweaks({ open, selected, onChange, onPreview, onClose }: 
               key={p.id}
               role="option"
               aria-selected={isSelected}
-              className={`palette-tweaks-item${isSelected ? ' selected' : ''}${isHovered ? ' hovered' : ''}`}
+              className={paletteItemClassName({ selected: isSelected, hovered: isHovered })}
               onMouseEnter={() => setHover(p.id)}
               onMouseLeave={() => setHover(null)}
               onClick={() => {
-                onChange(isSelected ? null : p.id);
+                onChange(nextPaletteSelection(selected, p.id));
                 onClose();
               }}
             >

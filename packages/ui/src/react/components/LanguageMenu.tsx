@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react';
 import { Icon } from './Icon';
 
 export interface LocaleOption {
@@ -6,7 +13,7 @@ export interface LocaleOption {
   label: string;
 }
 
-interface Props {
+export interface LanguageMenuProps {
   /** Supported locales and their display labels — host-supplied, not hardcoded. */
   locales: LocaleOption[];
   locale: string;
@@ -15,6 +22,126 @@ interface Props {
   placement?: 'up' | 'down';
   align?: 'start' | 'end';
 }
+
+// ---------------------------------------------------------------------------
+// Pure helpers — no React, directly unit-testable.
+// ---------------------------------------------------------------------------
+
+/** The label for the active locale, falling back to the raw code when unknown. */
+export function resolveActiveLocaleLabel(locales: LocaleOption[], locale: string): string {
+  return locales.find((l) => l.code === locale)?.label ?? locale;
+}
+
+/** The single key that dismisses the menu. */
+export function isLanguageMenuDismissKey(key: string): boolean {
+  return key === 'Escape';
+}
+
+/**
+ * Whether a pointer event landed outside the menu (and should therefore close
+ * it). A missing container never counts as "outside" — matching the original
+ * `if (!wrapRef.current) return;` guard, which took no action without a node.
+ */
+export function isOutsideLanguageMenu(
+  container: HTMLElement | null,
+  target: EventTarget | null,
+): boolean {
+  if (!container) return false;
+  return !container.contains(target as Node | null);
+}
+
+export function languageMenuPillClassName(compact: boolean): string {
+  return `foot-pill lang-pill${compact ? ' lang-pill--compact' : ''}`;
+}
+
+export function languageMenuPopoverClassName(
+  placement: 'up' | 'down',
+  compact: boolean,
+  align: 'start' | 'end',
+): string {
+  return `lang-menu-popover lang-menu-popover--${placement}${
+    compact ? ' lang-menu-popover--compact' : ''
+  } lang-menu-popover--align-${align}`;
+}
+
+export function languageMenuItemClassName(active: boolean): string {
+  return `lang-menu-item${active ? ' active' : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Hooks — every stateful/effectful seam, exported for isolated testing.
+// ---------------------------------------------------------------------------
+
+export interface LanguageMenuDisclosure {
+  open: boolean;
+  toggle: () => void;
+  close: () => void;
+}
+
+/** Open/close state for the popover with stable toggle/close callbacks. */
+export function useLanguageMenuDisclosure(): LanguageMenuDisclosure {
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const close = useCallback(() => setOpen(false), []);
+  return { open, toggle, close };
+}
+
+/** Memoized active-locale label derived from the (host-supplied) locale list. */
+export function useActiveLocaleLabel(locales: LocaleOption[], locale: string): string {
+  return useMemo(() => resolveActiveLocaleLabel(locales, locale), [locales, locale]);
+}
+
+/**
+ * While `open`, closes the menu on an outside `mousedown` or an Escape keydown.
+ * Listeners are only attached while open and torn down on close/unmount.
+ */
+export function useLanguageMenuDismiss(params: {
+  open: boolean;
+  onDismiss: () => void;
+  containerRef: MutableRefObject<HTMLElement | null>;
+}): void {
+  const { open, onDismiss, containerRef } = params;
+  useEffect(() => {
+    if (!open) return undefined;
+    function onPointerDown(event: MouseEvent) {
+      if (isOutsideLanguageMenu(containerRef.current, event.target)) onDismiss();
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (isLanguageMenuDismissKey(event.key)) onDismiss();
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onDismiss, containerRef]);
+}
+
+export interface UseLanguageMenuResult {
+  open: boolean;
+  toggle: () => void;
+  close: () => void;
+  containerRef: MutableRefObject<HTMLDivElement | null>;
+  activeLabel: string;
+}
+
+/**
+ * Composes the menu's whole behavior — disclosure, the active-locale label, and
+ * the outside/Escape dismissal — behind one hook so {@link LanguageMenu} is a
+ * dumb render.
+ */
+export function useLanguageMenu(locales: LocaleOption[], locale: string): UseLanguageMenuResult {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { open, toggle, close } = useLanguageMenuDisclosure();
+  const activeLabel = useActiveLocaleLabel(locales, locale);
+  useLanguageMenuDismiss({ open, onDismiss: close, containerRef });
+  return { open, toggle, close, containerRef, activeLabel };
+}
+
+// ---------------------------------------------------------------------------
+// Component — dumb render, all logic delegated above.
+// ---------------------------------------------------------------------------
 
 /**
  * Compact language switcher rendered as a small pill that expands into a
@@ -30,38 +157,18 @@ export function LanguageMenu({
   compact = false,
   placement = 'up',
   align = 'start',
-}: Props) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const activeLabel = locales.find((l) => l.code === locale)?.label ?? locale;
-
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (!wrapRef.current) return;
-      if (wrapRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
-    }
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+}: LanguageMenuProps) {
+  const { open, toggle, close, containerRef, activeLabel } = useLanguageMenu(locales, locale);
 
   return (
-    <div className="lang-menu-wrap" ref={wrapRef}>
+    <div className="lang-menu-wrap" ref={containerRef}>
       <button
         type="button"
-        className={`foot-pill lang-pill${compact ? ' lang-pill--compact' : ''}`}
+        className={languageMenuPillClassName(compact)}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={compact ? activeLabel : undefined}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         title={activeLabel}
       >
         <Icon name="languages" size={compact ? 20 : 12} />
@@ -73,12 +180,7 @@ export function LanguageMenu({
         )}
       </button>
       {open ? (
-        <div
-          className={`lang-menu-popover lang-menu-popover--${placement}${
-            compact ? ' lang-menu-popover--compact' : ''
-          } lang-menu-popover--align-${align}`}
-          role="menu"
-        >
+        <div className={languageMenuPopoverClassName(placement, compact, align)} role="menu">
           {locales.map(({ code, label }) => {
             const active = locale === code;
             return (
@@ -87,10 +189,10 @@ export function LanguageMenu({
                 type="button"
                 role="menuitemradio"
                 aria-checked={active}
-                className={`lang-menu-item${active ? ' active' : ''}`}
+                className={languageMenuItemClassName(active)}
                 onClick={() => {
                   onLocaleChange(code);
-                  setOpen(false);
+                  close();
                 }}
               >
                 <span className="lang-menu-label">{label}</span>
