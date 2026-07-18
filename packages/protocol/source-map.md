@@ -30,3 +30,40 @@ itself. Practical effect on this file: `GENERIC_ERROR_CODES` includes
 not-yet-upstream `browser-actions`/`agent-tools` work — `common.ts` and the
 rest of `errors.ts`'s kept codes are verified byte-identical to true upstream.
 Not reverted; it's a reasonable generic tool-boundary code either way.
+
+## Addendum: `registry.ts` (2026-07-17)
+
+Sourced from `leonaburime-ucla/open-design`'s `packages/registry-protocol`
+(cloned fresh to `/tmp/od-source` for this task; `src/schemas.ts` +
+`src/backend.ts` + `src/index.ts`, 3 files, ~199 LOC total), per
+`docs/jini-port/recon/r2-packages.md` §14: "zero OD coupling... pure zod
+schemas... Classification: PURE-TS. Drop-in." Verified independently before
+porting: `grep -niE "open[- ]design|OD_"` across all three source files and
+the package's own test file returned zero matches.
+
+| Jini file | Origin file(s) | Transform |
+|---|---|---|
+| `src/registry.ts` | `packages/registry-protocol/src/schemas.ts` + `src/backend.ts` | Combined into one file (the origin split schemas/backend across two files for its own build reasons — an `esbuild` CJS/ESM dual-publish setup this package doesn't share); every schema, inferred type, and the `RegistryBackend`/`RegistryBackendFactory` interfaces ported verbatim, zero renames, zero dropped fields. Folded into the existing file-per-domain barrel convention (`run.ts`/`events.ts`/`errors.ts`/`common.ts`) rather than a separate package — per the task brief, ~199 LOC of pure wire-type schemas doesn't justify its own build/publish surface, and it is "the same *kind* of thing protocol already holds." |
+
+Added as a new file inside the **existing, already-locked** `@jini/protocol`
+package (extraction-plan.md §3) — unlike the `@jini/deploy`/`@jini/diagnostics`/
+`@jini/metatool` situations elsewhere in this porting effort, this addition
+needs no separate sign-off: it doesn't create a new package or expand the
+locked §3 package set, it only adds one file's worth of exports to a package
+whose charter ("pure wire types... + token TYPE decls") already covers this
+content by kind.
+
+**Dependency added:** `zod` (`^3.25.76`, matching the origin package's pinned
+version) — `@jini/protocol`'s existing four files (`common`/`errors`/`events`/
+`run`) are hand-written plain TypeScript interfaces with no runtime schema
+validation; this is the first file in the package to use zod, so it is now a
+real runtime dependency of `@jini/protocol` (previously the package had none).
+
+**Not ported:** `packages/registry-protocol/esbuild.config.mjs` (build
+tooling specific to the origin package's own separate-publish setup — this
+package builds via the shared `tsc -p tsconfig.json` convention every other
+`@jini/*` package uses, per the task's package.json/tsconfig.json template
+instruction) and `tsconfig.tests.json` (a second tsconfig the origin needed
+only because its `tests/` directory lives outside `src/`; this port's test
+file sits beside its source file, matching every other file in this package,
+so no second tsconfig is needed).

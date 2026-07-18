@@ -1,0 +1,116 @@
+/**
+ * @module MessageRow
+ *
+ * Renders one `ChatMessage` — a dumb, props-in/JSX-out composition of this
+ * package's own leaves (`<Markdown>`, `<ToolCard>` via `useToolTimeline`,
+ * `<QuestionForm>` via `splitOnQuestionForms`). Unlike `ToolCard`/
+ * `QuestionForm`/`TodoCard`/`NextStepActions`, this component is NOT a
+ * direct port of an OD file: the two source branches this package was built
+ * from (`refactor/web-chat-pane-slice`, `refactor/web-chat-composer-slice-pr`)
+ * decompose `ChatPane.tsx`/`ChatComposer.tsx`, not `AssistantMessage.tsx`
+ * (3,317 lines) — that god-component's own vertical-slice extraction is a
+ * separate, not-yet-dispatched task (see
+ * `docs/jini-port/recon/r4b-webui-design.md` §3's suggested "AssistantMessage
+ * first" ordering, which this task's sources don't cover). This is
+ * therefore a fresh, reasonable v1 composition of the already-ported leaves,
+ * not a byte-for-byte port — text and question-forms interleave in original
+ * order (via `splitOnQuestionForms`), but tool cards currently render as one
+ * block after the text rather than fully interleaved at their original
+ * position in the event stream (`AssistantMessage.tsx`'s real interleaving
+ * logic — `deriveFileOps`/`stripTodoToolGroups`/etc. — is a TODO follow-up
+ * once that god-component gets its own extraction task).
+ */
+import type { ReactNode } from 'react';
+import type { ChatAttachment, ChatMessage } from '@jini/chat-core';
+import { splitOnQuestionForms, stripArtifact } from '@jini/chat-core';
+import { useToolTimeline } from '../hooks/useToolTimeline.js';
+import { useT } from '../hooks/context.js';
+import { Markdown } from './Markdown.js';
+import { ToolCard } from './ToolCard.js';
+import { QuestionForm } from './QuestionForm.js';
+
+export interface MessageRowProps {
+  message: ChatMessage;
+  /** Whether this message's own run is still streaming. */
+  runStreaming?: boolean;
+  runSucceeded?: boolean;
+  /** Whether this message's question-form (if any) is still the active/answerable one. */
+  questionFormInteractive?: boolean;
+  questionFormSubmittedAnswers?: Record<string, string | string[]>;
+  onQuestionFormSubmit?: (text: string, answers: Record<string, string | string[]>) => void;
+  projectFileNames?: Set<string>;
+  onRequestOpenFile?: (name: string) => void;
+  /** Host-supplied renderer for a `ChatAttachment` chip. Falls back to a plain filename chip. */
+  renderAttachment?: (attachment: ChatAttachment) => ReactNode;
+}
+
+export function MessageRow({
+  message,
+  runStreaming = false,
+  runSucceeded = false,
+  questionFormInteractive = false,
+  questionFormSubmittedAnswers,
+  onQuestionFormSubmit,
+  projectFileNames,
+  onRequestOpenFile,
+  renderAttachment,
+}: MessageRowProps) {
+  const t = useT();
+  const timeline = useToolTimeline(message.events, { runStreaming, runSucceeded });
+
+  if (message.role === 'user') {
+    return (
+      <div className="jini-message jini-message-user" data-message-id={message.id}>
+        {message.attachments && message.attachments.length > 0 ? (
+          <div className="jini-message-attachments">
+            {message.attachments.map((a) => (
+              <span key={a.path} className="jini-message-attachment-chip">
+                {renderAttachment ? renderAttachment(a) : a.name}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="jini-message-content">{message.content}</div>
+      </div>
+    );
+  }
+
+  const visibleContent = stripArtifact(message.content);
+  const segments = splitOnQuestionForms(visibleContent);
+
+  return (
+    <div className="jini-message jini-message-assistant" data-message-id={message.id} data-run-status={message.runStatus}>
+      {message.agentName ? <div className="jini-message-agent">{message.agentName}</div> : null}
+      {segments.map((segment, i) =>
+        segment.kind === 'text' ? (
+          segment.text.trim() ? (
+            <div className="jini-message-content" key={i}>
+              <Markdown>{segment.text}</Markdown>
+            </div>
+          ) : null
+        ) : (
+          <QuestionForm
+            key={i}
+            form={segment.form}
+            interactive={questionFormInteractive}
+            {...(questionFormSubmittedAnswers !== undefined ? { submittedAnswers: questionFormSubmittedAnswers } : {})}
+            {...(onQuestionFormSubmit !== undefined ? { onSubmit: onQuestionFormSubmit } : {})}
+          />
+        ),
+      )}
+      {timeline.rows.length > 0 ? (
+        <div className="jini-message-tools">
+          {timeline.rows.map((row) => (
+            <ToolCard key={row.id} use={row.use} result={row.result} runStreaming={runStreaming} runSucceeded={runSucceeded} {...(projectFileNames !== undefined ? { projectFileNames } : {})} {...(onRequestOpenFile !== undefined ? { onRequestOpenFile } : {})} />
+          ))}
+        </div>
+      ) : null}
+      {message.runStatus === 'failed' ? <div className="jini-message-error">{t('This turn failed.')}</div> : null}
+      {message.runStatus === 'running' && !visibleContent.trim() && timeline.rows.length === 0 ? (
+        <div className="jini-message-pending" aria-live="polite">
+          {t('Thinking…')}
+        </div>
+      ) : null}
+    </div>
+  );
+}
