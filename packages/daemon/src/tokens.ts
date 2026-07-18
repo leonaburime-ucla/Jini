@@ -10,6 +10,8 @@
 import { token } from '@jini/core';
 import type { EventLog } from './event-log.js';
 import type { RunLifecycle } from './run-lifecycle.js';
+import type { ArtifactStore } from './artifacts/store.js';
 
 export const RunLifecycleToken = token<RunLifecycle>('jini.runLifecycle');
 export const EventLogToken = token<EventLog>('jini.eventLog');
+export const ArtifactStoreToken = token<ArtifactStore>('jini.artifactStore');
