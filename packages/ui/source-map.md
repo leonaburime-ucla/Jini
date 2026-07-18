@@ -2095,3 +2095,344 @@ are missing"), ran `pnpm install` once at the repo root — this genuinely
 qualified as the documented exception, not a shortcut.
 
 ---
+---
+
+## Section: `features/memory/` — MemorySection vertical-slice port (2026-07-18)
+
+### Source
+
+**PR #5228**, `nexu-io/open-design`, "refactor(web): decompose MemorySection into a
+features/memory vertical slice" —
+<https://github.com/nexu-io/open-design/pull/5228> — closed 2026-07-15 **without
+merging**, authored by this project's own owner. Pinned at commit
+`d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d` (verified: `git fetch
+https://github.com/nexu-io/open-design.git refs/pull/5228/head` resolves to this
+exact SHA). Primary source read in full at that commit:
+`apps/web/src/features/memory/`, `apps/web/src/providers/memory/`,
+`apps/web/tests/features/memory/`.
+
+### What happened, plainly
+
+The decomposition itself did **not** create bugs. Extensive automated review (many
+rounds, over an extended review cycle) found a long sequence of real
+async/state-correctness bugs — malformed-response trust, concurrency races,
+missing error handling, stale state on retry — but the PR author independently
+verified via `git show` against the original 2,636-line pre-refactor
+`MemorySection.tsx` that **every one of those bug classes already existed
+byte-for-byte in the monolith**. The decomposition didn't introduce them, it
+exposed pre-existing ones that had zero test coverage (the original file's 29
+tests were 100% happy-path — no test for a failed fetch, a malformed response, two
+operations racing, or a retry). The author fixed round after round of these as
+they were found, and closed the PR because the review process felt endless, not
+because a reviewer or maintainer rejected the underlying approach — the
+maintainer's own last comment explicitly agrees the bugs were pre-existing and
+only asks that the PR's own remaining loose ends be closed before merging.
+
+One specific bug was still open and unfixed when the PR was closed: `fetchMemoryList()`
+in the pinned source's `providers/memory/entries.ts` validated only that the
+`entries` field was present on a 2xx response, even though
+`useMemoryConfig.hydrate()` (`enabled`) and `useMemoryEntries.reload()`
+(`rootDir`/`index`) all consumed other fields off that same response with no
+fallback. A malformed `200` like `{ entries: [] }` passed validation and then
+silently hydrated those fields to `undefined` instead of surfacing a broken
+response. **Fixed as part of this port** — see "The `fetchMemoryList()` fix"
+below.
+
+### Standing flag for later
+
+Open Design's own live version of this component (the still-monolithic
+`components/MemorySection.tsx` on its current `main`) likely still has these bugs
+today, since the fix never merged there. If Open Design revisits this component
+in the future, PR #5228's later commits (and this Jini port, which carries the
+fixes forward plus the one additional fix made here) are a ready-made reference
+for what a corrected version looks like.
+
+A broader CI/CD gate generalizing the exact bug taxonomy found here
+(malformed-success responses, races, missing error handling, stale state on
+retry) as a standard requirement for future async-heavy ports is tracked as a
+**separate follow-up**, not part of this task's scope.
+
+### Where it landed, and why (`packages/ui/src/features/memory/`, not `chat-react`)
+
+Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map and
+`packages/ui/README.md`'s scope boundary: Memory is a settings/data-management
+surface (saved facts/preferences, an editable index, connector-sourced
+suggestions) — the same shape as the already-shipped `features/connectors/` and
+`features/settings-dialog/`, not a conversation surface. It lands alongside them
+in `@jini/ui`, using the **new** `types.ts`/`constants.ts`/`rules.ts`/`ports.ts`/
+`dependencies.ts`/`formatters.ts`/`async-commit-guard.ts`/`index.ts` at the
+feature's top level, `hooks/`+`components/` under a `react/` subfolder — the
+layout decided 2026-07-17, matching `features/viewer-shell/`/`features/asset-grid/`/
+`features/sketch-editor/`, not `features/connectors/`'s older flat layout.
+
+### The connector-reconciliation-reducer decision (the "third piece")
+
+The task brief's third sought piece — "connector-reconciliation reducers" — does
+**not** come from PR #5228. Its real origin is Open Design's `main`-branch
+`apps/web/src/components/connectors-state.ts` (confirmed by cloning
+`https://github.com/leonaburime-ucla/open-design.git` at its default `main`
+branch and reading `connectors-state.ts` directly, since `codex/connector-memory-settings`,
+the branch originally suspected to hold this, diffs empty against current `main`
+— i.e. that logic already lives on `main` by some other route). Its 4 functions
+— `connectorAuthSnapshotChanged`/`hasConnectorStatusChanges`/`mergeConnectorCatalog`/
+`applyConnectorStatuses` — are a **separate, shared/generic** connector-list
+reconciliation module OD's `MemorySection.tsx` monolith imports directly
+(`import { hasConnectorStatusChanges } from './connectors-state'`), distinct from
+PR #5228's own Memory-local `mergeMemoryConnector`/`upsertMemoryConnector`/
+`applyMemoryConnectorStatus(es)`/`connectorStatusesChanged` (which the PR's own
+`rules.ts` comment calls "convenience duplication" of the shared module, kept
+slice-local per the PR's own stated slice conventions).
+
+Direct line-by-line comparison found `@jini/ui`'s `features/connectors/rules.ts`
+**already ships the generified port of `connectors-state.ts`** — from the
+`ConnectorsBrowser.tsx` canary task (2026-07-17), see that section above —
+as `mergeConnectors`/`applyConnectorStatuses`/`hasConnectorStatusChanges`/
+`connectorAuthSnapshotChanged`, operating on the generic `Connector`/
+`ConnectorStatusMap` types instead of OD's `ConnectorDetail`. Their logic is
+identical to `connectors-state.ts`'s (verified field-by-field), and `mergeConnectors`
+already subsumes what PR #5228's `mergeMemoryConnector`+`upsertMemoryConnector`
+did (single-connector merge + array upsert in one pass). This is exactly the
+overlap `god-components-extraction-plan.md`'s Consolidation map flagged in
+advance: *"Memory slice's connector reducers... substantially overlap
+`features/connectors`'... check whether it can import these directly instead of
+re-deriving equivalents."*
+
+**Decision**: `features/memory/rules.ts` imports `mergeConnectors`/
+`applyConnectorStatuses`/`hasConnectorStatusChanges` from `../connectors` and
+re-exposes two thin, Memory-specific conveniences over them
+(`upsertMemoryConnector` = `mergeConnectors(current, next ? [next] : [])`;
+`applyMemoryConnectorStatus` = the 1-item form of `applyConnectorStatuses`, used
+by the synthetic not-yet-detailed catalogue row). Only `connectorWithPendingAuthorization`
+(no equivalent in `features/connectors`) is genuinely new Memory-local logic.
+Memory's own connector type is `Connector` from `features/connectors/types.ts`
+directly (not a third near-duplicate of `ConnectorDetail`) — its shape already
+matches (id/name/provider/category/status/accountLabel/lastError/tools/toolCount/
+toolsNextCursor/toolsHasMore/logoUrl).
+
+### The `fetchMemoryList()` fix
+
+`dependencies.ts`'s `fetchMemoryList()` now validates `entries`/`rootDir`/`index`/
+`enabled` are all present on a 2xx response (throwing `"Memory list request
+succeeded without a '<field>' field"` if any is missing), matching the pattern
+already used by the pinned source's own `fetchMemoryEntry()` (which the PR had
+already fixed earlier in its history: only a genuine 404 maps to `null`, and a
+successful-but-field-missing response throws via `requiredNonNullField` rather
+than silently returning something falsy-but-plausible). The four per-hook flags
+(`chatExtractionEnabled`/`profileEnabled`/`rewriteEnabled`/`verifyEnabled`) are
+**deliberately not** added to the required set — `useMemoryConfig.hydrate()`
+already treats their absence as legitimate legacy-default behavior
+(`list.xEnabled !== false`), a design choice already present and already
+documented in the pinned source; validating them as required would be a
+*behavior* change, not a bug fix.
+
+Before/after, `dependencies.ts`:
+```ts
+// BEFORE (the pinned source, still-open bug)
+export async function fetchMemoryList(): Promise<MemoryListResponse> {
+  const resp = await fetch('/api/memory');
+  if (!resp.ok) throw new Error(`Memory list request failed (${resp.status})`);
+  const json = (await resp.json()) as MemoryListResponse;
+  requiredField(json, 'entries', 'Memory list request');
+  return json;
+}
+
+// AFTER (this port's fix)
+export async function fetchMemoryList(): Promise<MemoryListResponse> {
+  const resp = await fetch('/api/memory');
+  if (!resp.ok) throw new Error(`Memory list request failed (${resp.status})`);
+  const json = (await resp.json()) as MemoryListResponse;
+  requiredField(json, 'entries', 'Memory list request');
+  requiredField(json, 'rootDir', 'Memory list request');
+  requiredField(json, 'index', 'Memory list request');
+  requiredField(json, 'enabled', 'Memory list request');
+  return json;
+}
+```
+Regression coverage: `dependencies.test.ts`'s `fetchMemoryList` describe block
+parametrizes over all 4 newly-required fields (each rejected when absent), plus
+an explicit test reproducing the exact bug-report payload (`{ entries: [] }`
+alone) and a test proving the 4 per-hook flags are still NOT required.
+
+### Transport binding: real HTTP, not a fake — a deliberate deviation from the connectors canary's precedent
+
+`features/connectors/dependencies.ts` ships a **fake** in-memory double for its
+main data port by design (the real transport is a specific third-party
+OAuth-catalog vendor's API shape, which a product-neutral package shouldn't
+assume). Memory's `/api/memory*` surface is different: a plain, generic
+list/tree/entry-CRUD + config-PATCH + extraction-history-CRUD REST contract with
+no third-party vendor coupling, and the task's own bug-fix/regression-test
+requirement only makes sense against a real, testable adapter. So
+`memoryConfigPort`/`memoryEntriesPort`/`memoryExtractionsPort` bind **real**
+`fetch`-based adapters (ported from the pinned source's `providers/memory/{config,entries,extractions}.ts`,
+with the `fetchMemoryList` fix applied) as this package's default — a disclosed,
+deliberate difference from the connectors canary's fake-only convention, not an
+oversight.
+
+`memoryConnectorsPort`, by contrast, keeps the fake-by-default convention:
+`fetchMemoryConnectors`/`fetchConnectorStatuses`/`connectConnector`/
+`suggestConnectorMemories` all depend on the same kind of vendor-specific
+OAuth-catalog discovery transport `features/connectors` already declines to ship
+for real, so `createFakeMemoryConnectorsPort()` (an in-memory catalogue double,
+same shape as `createFakeConnectorsPort`) is the default. `saveMemoryEntry` on
+this same port is the **real** HTTP adapter, though — saving a connector
+suggestion is an ordinary memory write, not a connector-transport concern, so it
+reuses the entries cluster's real binding rather than being faked too.
+`readPendingConnectorAuthIds`/`writePendingConnectorAuthIds` (sessionStorage) and
+`notifyConnectorsChanged` (a same-page `CustomEvent`, `jini:memory-connectors-changed`
+— the pinned source's cross-tab broadcast mechanism, out of scope for this
+slice, same carve-out `features/connectors` already made for its own
+`connectors-events.ts`) are real, SSR-guarded browser-only bridges, matching
+`features/connectors`' own real-bridge-for-generic-browser-APIs convention.
+
+### `MemoryHooksPanel` folded in from a separate OD file
+
+The pinned source's `MemoryHowPanel.tsx` imports `MemoryHooksPanel` from OD's
+**separate** `components/MemoryHooksPanel.tsx` (not part of `features/memory/`,
+single consumer). Ported into this slice as
+`react/components/MemoryHooksPanel.tsx` rather than left as a dangling
+cross-package import — it has no other consumer in OD's tree and no reason to
+live outside this feature in Jini. Its `.module.css` import was dropped (no
+CSS-module build step in this package yet, same as every other component in
+this package's earlier flat-group porting task) and flattened to plain
+`memory-hooks-panel*` class names; its `useT()` dictionary keys were converted
+to plain-English keys per this package's i18n convention (see below).
+
+### `renderMarkdown`: a scoped-down local reimplementation, not the real `runtime/markdown.tsx`
+
+`MemoryEntryCard.tsx`'s saved-memory preview needs to render a memory body's
+Markdown. The pinned source's real `runtime/markdown.tsx` (2,881 lines) is
+chat/artifact-rendering territory this package's own README already scopes out
+to `@jini/chat-react`/`@jini/renderers-react` (see the "i18n/observability/utils
+sweep" section above: "Deferred, not yet ported"). Rather than drop the feature
+or take on that whole file, `react/render-markdown.tsx` is a ~20-line local
+reimplementation covering just this one need — GFM Markdown → HTML via
+`micromark`/`micromark-extension-gfm` (already real dependencies of this
+package, added earlier for `utils/markdown-scroll-sync.ts`). `micromark`
+escapes raw HTML in its input by default (`allowDangerousHtml` is not set), so
+this is XSS-safe without a separate sanitizer pass — proven by a real test
+asserting a `<script>`/event-handler payload embedded in memory-body Markdown
+renders as inert text, not live markup.
+
+### `copyToClipboard` semantics changed under the port — adapted, not ignored
+
+`useMemoryEntries.hooks.ts`'s `onCopyPath` in the pinned source relied on
+`copyToClipboard` **rejecting** when both the Clipboard API and its
+`execCommand('copy')` fallback fail, catching that rejection to avoid a false
+"copied" flash. `@jini/ui`'s own `utils/copy-to-clipboard.ts` (ported earlier,
+2026-07-16) has a different, already-shipped contract: it **never rejects** —
+it resolves `false` on total failure, having already implemented the same
+Clipboard-API-then-`execCommand`-fallback chain internally. `onCopyPath` was
+adapted to check the boolean return instead of catching a throw, preserving the
+original intent (never claim success on a total failure) against the actual
+contract of the utility this package already ships, rather than silently
+becoming dead code (a `catch` block that could never fire).
+
+### i18n
+
+Every user-facing string across all 8 components routes through `useT()`,
+following this package's "the English string itself is the key" convention
+(`t('Connect')`, not `t('settings.memoryX')`) — the pinned source's OD dictionary
+keys are product content and were not ported; every `t(...)` call site below
+uses a plain-English default chosen from surrounding context (there was no OD
+dictionary available to port the actual translated copy from, since that
+content is explicitly out of scope per this package's own established i18n
+policy). `constants.ts`'s `STARTERS` array changed shape accordingly — plain
+`name`/`description`/`body` strings instead of dictionary-key fields — since the
+manual editor's starter chips now call `t(starter.name)` etc. directly at the
+render site, matching how every other pure-data module in this package already
+defers translation to the call site (`rules.ts`'s `statusLabel()` precedent,
+noted in the connectors section above).
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/\|open-design\.ai\|openDesignDesktop"`
+across every file in `features/memory/`: **clean, zero matches** (two
+provenance-comment leaks initially found during a self-review pass — a literal
+`Open Design` in `rules.ts`'s comment and a literal `@open-design/` in
+`types.ts`'s comment — were caught and reworded to `OD`, matching the
+established convention already used elsewhere in this package, e.g.
+`features/connectors/dependencies.ts`'s "OD's real implementation calls
+`providers/registry`"). A second pass for the lowercase lookalikes this
+package's earlier sections also checked (`od-*` class prefixes, `composio`)
+found one real hit: the pinned source's hardcoded `provider: 'composio'` for a
+synthetic not-yet-detailed connector catalogue row — replaced with a neutral
+`DEFAULT_CONNECTOR_PROVIDER` constant (`'connector-catalog'`), documented in
+`constants.ts` with the same reasoning `ConnectorLogo`'s Composio-CDN-slug drop
+used in the connectors canary section above.
+
+### What's intentionally not ported (host-owned, or genuinely out of scope)
+
+- **The orchestrator itself.** Unlike the `ConnectorsBrowser.tsx` canary (which
+  shipped its own full orchestrator inside the slice), PR #5228's diff never
+  included OD's `components/MemorySection.tsx` — that 2,636-line file stays the
+  host's own composition root, importing this slice's pieces through its
+  barrel. This port ships exactly what PR #5228 shipped: ports + dependencies +
+  hooks + dumb components + barrel, no orchestrator.
+- **The two OAuth browser subscriptions** (the mid-authorization status poll,
+  the popup-callback message listener) and **the SSE event stream**
+  (`/api/memory/events`). All three open accumulating browser subscriptions;
+  the pinned source's own `useMemoryConnectors.hooks.ts` file-header comment
+  already documents that a single-instance host orchestrator must own these and
+  drive the hook's exposed `refreshConnectorStatuses()`/`applyExtractionEvent()`
+  — this port preserves that exact seam rather than inventing a different one.
+  `ports.ts` correctly never declared these as slice responsibilities in the
+  first place.
+- **`isTrustedConnectorCallbackOrigin`/`subscribeConnectorCallback`/
+  `subscribeConnectorStatusPolling`** (the pinned source's
+  `providers/memory/connector-auth.ts`) — same reasoning: these back the two
+  host-owned OAuth subscriptions above, not a slice-owned port method.
+
+### Test/typecheck/coverage results
+
+- `pnpm --filter @jini/ui typecheck`: green (zero errors).
+- `pnpm --filter @jini/ui exec vitest run src/features/memory`: **423 tests, 21
+  files, all green** — `async-commit-guard` (4), `rules` (12), `formatters`
+  (38), `dependencies` (30, including the full `fetchMemoryList()` bug-fix
+  regression suite), `index` (3, this feature's own barrel completeness
+  smoke test), the extraction-history store (46, direct unit tests of the
+  pure concurrency-ordering rules), 6 hook test files (`useMemoryFlash` 7,
+  `useMemoryNavigation` 10, `useMemoryConfig` 33, `useMemoryEntries` 46,
+  `useMemoryExtractions` 27, `useMemoryConnectors` 61), and 9 component test
+  files (`MemoryHooksPanel` 6, `MemoryHowPanel` 4, `MemoryEntryCard` 8,
+  `MemoryExtractionCard` 9, `MemoryList` 11, `MemoryAdvancedModal` 15,
+  `MemoryManualEditor` 15, `MemoryConnectedPanel` 32, `render-markdown` 6).
+  Every hook has a mounted `renderHook` test against a hand-written fake
+  port; every component has both a `@testing-library/react` mount test and a
+  real `I18nProvider`-mounted French-dictionary translation-proof test.
+- **Coverage (v8, `json-summary`/`json` reporters): 100% on all 4 metrics —
+  statements, branches, functions, lines — aggregate (2616/2616 statements,
+  993/993 branches, 120/120 functions, 2616/2616 lines) AND every individual
+  file**, clearing the ≥99%-with-100%-as-the-goal bar with no `/* v8 ignore */`
+  anywhere. Reached via the classify-then-fix loop: every initially-uncovered
+  branch was genuinely reachable and got a real test (a `requiredNonNullField`
+  present-but-null case, a connector with no `accountLabel`, a blocked
+  `sessionStorage` write, the editor scroll/focus effect — driven by
+  attaching real DOM elements to the hook's returned refs before triggering
+  it, rather than writing it off as hook-level-untestable, a suggestion's
+  `toolTitle`-only source-label fallback) — except one real dead branch,
+  found in `useMemoryExtractions.hooks.ts`'s `reloadExtractions()`: a
+  `try/catch/finally` whose bare `catch {}` never itself throws carried a
+  structurally-unreachable "exception during catch, before finally" edge
+  that no test could ever satisfy. Refactored away (not suppressed) per this
+  project's coverage policy — replaced the `finally` with an explicit
+  `endReload()` call at each of the 3 return points, behavior-preserving.
+- Full monorepo `pnpm -r --no-bail run typecheck`: 7 pass, 9 fail — every
+  failure pre-existing and unrelated (stub packages with no `tsconfig.json`
+  at all: `agent-runtime`/`chat-react`/`cli`/`http`/`node-host`/
+  `renderers-react`/`sqlite`; `daemon`/`deploy` failing only on unbuilt
+  `@jini/protocol`/`@jini/core` `dist/` resolution, per this checkout not
+  having run `pnpm -r run build`) — the same set of pre-existing breakages
+  every prior section in this file has already documented. `@jini/ui` itself,
+  `@jini/core`, `@jini/protocol`, `@jini/platform`, `@jini/sidecar`,
+  `@jini/chat-core`, and `automation/project-runner` all typecheck clean.
+- Purity grep (`Open Design`/`OD_`/`--od-stamp`/`/tmp/open-design`/
+  `@open-design/`/`open-design.ai`/`openDesignDesktop`, plus the stricter
+  lowercase `od-`/`composio` self-imposed pass) across every file in
+  `features/memory/`: **clean, zero matches** — two provenance-comment leaks
+  (a literal `Open Design` and two literal `@open-design/contracts`
+  mentions, all in doc comments explaining what was ported *from*, none in
+  actual code) were caught during self-review and reworded to `OD`, matching
+  this package's established convention.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged, no boundary violations
+  introduced.
