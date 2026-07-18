@@ -123,6 +123,19 @@ Real content has landed in several parallel passes — see
   `docs/jini-port/god-components-extraction-plan.md` item 5. Uses the NEW
   `react/{hooks,components}` layout (this is the first feature built with it
   from scratch). See `packages/ui/source-map.md`.
+- `src/features/tab-strip/` — a consolidated draggable/reorderable tab-strip
+  primitive (2026-07-18), per `docs/jini-port/god-components-extraction-plan.md`'s
+  Consolidation map §A `features/tab-strip/` row: `WorkspaceTabsBar.tsx`'s
+  workspace-tab strip and `FileWorkspace.tsx`'s independently-reimplemented
+  inline `Tab` component (r6 confirms these are two divergent
+  implementations of the same interaction, not shared even within OD's own
+  codebase) both design into ONE generic primitive (`TabStrip`/
+  `TabStripItem`/`useTabStripDragReorder`) rather than porting either
+  verbatim — drag-to-reorder (with a `'live'`-vs-`'onDrop'` reorder-timing
+  option and pinned-tab drop-edge coercion), active/close-button
+  affordances, host-injected tab content. A dual-shape test proves both
+  source interaction shapes work correctly through the same code paths, not
+  just that they compile. See `packages/ui/source-map.md`.
 - `src/features/list-detail-panel/` — a generic `ListDetailPanel<TItem>`
   master-detail (list+preview) navigator shell, ported from
   `DesignSystemsTab.tsx` (2026-07-18), per
@@ -176,7 +189,8 @@ Real content has landed in several parallel passes — see
   consumes the math, not the math itself).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
-`mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
-(cross-package routing) of the extraction plan are not started. The
-god-components-extraction-plan.md list beyond the features enumerated above
-is also not started.
+`mcp-config`, `rich-text-input`) and section C (cross-package routing) of
+the extraction plan are not started. `workspace-tabs` (renamed `tab-strip`,
+see the Consolidation map's naming-reconciliation note) is now landed, per
+above — no longer in this "not started" list. The god-components-extraction-plan.md
+list beyond the features enumerated above is also not started.
