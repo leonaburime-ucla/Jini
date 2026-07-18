@@ -36,7 +36,11 @@ importers:
 
   integrations/open-design: {}
 
-  packages/agent-runtime: {}
+  packages/agent-runtime:
+    dependencies:
+      '@jini/platform':
+        specifier: workspace:*
+        version: link:../platform
 
   packages/chat-core: {}
 
