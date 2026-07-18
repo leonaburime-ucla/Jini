@@ -41,6 +41,10 @@ export default defineConfig({
         'src/features/settings-dialog/types.ts',
         'src/features/settings-dialog/tabs/*/types.ts',
         'src/features/settings-dialog/tabs/integrations/ports.ts',
+        // list-detail-panel/types.ts is pure `interface` declarations, zero
+        // runtime statements (verified via the same
+        // `grep -nE '^(export )?(const|function|class|let|var) '` check).
+        'src/features/list-detail-panel/types.ts',
       ],
     },
   },

@@ -1,0 +1,119 @@
+# `@jini/cli` — provenance and classification
+
+Origin: `leonaburime-ucla/open-design`, branch `main`, commit
+`ab453241247865ebb2cd9259b37286282506fe65` (2026-07-02), cloned fresh into
+`/tmp/od-source` for this task (the in-repo
+`integrations/open-design/reference/` snapshot is a frozen extraction-time
+copy and is explicitly unreliable for structural claims per that directory's
+own `README.md`).
+
+Read in full, start to finish, before any code was written:
+`apps/daemon/src/cli.ts` (9,885 lines on this commit — the task brief's
+"10,175 lines" figure was from a different commit/branch; this is the real
+number on the branch this task was told to clone), plus every satellite file
+it imports: `apps/daemon/src/daemon-url.ts` (119 lines),
+`apps/daemon/src/artifacts-cli.ts` (152), `apps/daemon/src/handoff-cli.ts`
+(176), `apps/daemon/src/codex-cli.ts` (121),
+`apps/daemon/src/tools-connectors-cli.ts` (2,830),
+`apps/daemon/src/tools-design-systems-cli.ts` (160),
+`apps/daemon/src/tools-live-artifacts-cli.ts` (312),
+`apps/daemon/src/export-cli-request.ts` (57),
+`apps/daemon/src/export-cli-routing.ts` (15),
+`apps/daemon/src/research/cli-args.ts` (15),
+`apps/daemon/src/design-systems-cli-help.ts` (20),
+`apps/daemon/src/brands-cli-help.ts` (43). There is no `apps/daemon/src/cli-help/`
+directory and no committed `dist/cli/` tree on this branch/commit — searched
+for both, neither exists. The "additional command groups visible in a
+compiled `dist/cli/` tree" mentioned in the task brief (`automation`, `share`,
+`ui`, `core`, `memory`, `brand`, `library`, `project`, `system`, `figma`,
+`templates`) are **all present as source in `cli.ts` itself** (dispatched via
+the top-level `SUBCOMMAND_MAP`, cli.ts:308-342) — no separate dist artifact
+was needed to find them.
+
+Per extraction-plan.md §3's one-line spec for `@jini/cli`: "CLI transport
+(HTTP-client mode default; in-proc enters via identical app-service+principal
+path)". Per §2.1, the kernel has **no** `Project`, `Conversation`, `Brand`,
+`DesignSystem`, `Plugin`/marketplace, or `Automation` nouns — only `Run`,
+`Agent`, `Tool`, `EventLog`, `Principal`. That single fact drives almost every
+verdict below: OD's `cli.ts` is a thin HTTP client over OD's *product* API
+(`/api/projects/:id/...`), and the overwhelming majority of its ~9,900 lines
+existieren only because OD's product surface is large — not because CLI
+transport is large. The generic slice this task actually ports is the part
+that has nothing to do with what a "project" or a "plugin" is.
+
+## Classification table
+
+Verdict legend: **GENERIC** = ported into `packages/cli/src/`. **OD** =
+explicitly not ported (product-specific). **UNCLEAR** = open question, not
+ported, needs Coordinator/Software-Architect sign-off.
+
+| Subcommand group / helper | OD source file : function(s) | Verdict | Reasoning |
+|---|---|---|---|
+| `parseFlags` | `cli.ts:1031` `parseFlags` | **GENERIC** | Pure `--flag value` / `--flag=value` / boolean-flag parser. Zero OD nouns; takes caller-supplied `string`/`boolean` Sets. Ported near-verbatim as `parseFlags`. |
+| `positionalArgs` / `collectCliPositionals` | `cli.ts:1082` `positionalArgs`, `cli.ts:5625` `collectCliPositionals` | **GENERIC** | Two near-duplicate positional-arg extractors (the second adds `--` separator handling). Merged into one `positionalArgs` with a `stopAtDoubleDash` option — OD itself never unified them, but there is no reason for `@jini/cli` to carry the duplication forward. |
+| daemon-URL resolution | `daemon-url.ts` `resolveDaemonUrl` + `cli.ts:1098` `cliDaemonUrl`/`cliDaemonBaseUrl` | **GENERIC** (pattern only) | The *resolution order* — explicit flag → env var → IPC/discovery probe → default — is exactly the generic "how does a CLI find its daemon" concern `@jini/cli` needs. The *implementation* is not portable as-is: it hardcodes `OD_DAEMON_URL`/`OD_SIDECAR_IPC_PATH`, imports `@open-design/sidecar` + `SIDECAR_ENV`/`SIDECAR_MESSAGES` (OD's own sidecar IPC protocol, not `@jini/sidecar`'s), and falls back to spawning `pnpm exec tools-dev status --json` (an OD monorepo-specific dev script). Ported as `resolveDaemonUrl` with the same 4-step order but a caller-injected discovery function (no IPC protocol assumed) and a caller-supplied env var name (defaults to none) — `@jini/sidecar`'s actual NDJSON-IPC surface (see `packages/sidecar/source-map.md`) was not wired in this pass; see "Deferred" below. |
+| `surfaceFetchError` | `cli.ts:1007` | **GENERIC** | Formats a `fetch()` rejection (network-unreachable, sandbox-denied) into a stderr line + an `EPERM`/`ENETUNREACH` sandbox hint. No OD nouns beyond the word "Open Design" in the hint string, which is generalized to a caller-supplied product name (defaults to nothing). |
+| `exitWithStructuredError` / `structuredHttpFailure` / `normalizeRecoverableErrorCode` / `structuredErrorData` | `cli.ts:1476-1538` | **GENERIC** (mechanism); OD (default code table) | The *mechanism* — map an error `code` to a stable exit code, write a `{ error: { code, message, data } }` envelope to stderr — is exactly the "structured error/exit-code handling" the task brief calls out as locked scope. OD's own `RECOVERABLE_EXIT_CODES` table (`cli.ts:284-298`) is product-specific (`plugin-not-found`, `snapshot-not-found`, `desktop-import-token-rejected`, …) and was **not** ported verbatim; `@jini/cli` ships a small generic default table (`daemon-not-running`, `missing-input`, `invalid-flag`) and lets a pack register additional `code → exitCode` entries, mirroring how `@jini/core`'s `PackContainer` scopes what a pack can see rather than exposing one global mutable map. |
+| `postJsonToDaemon` | `cli.ts:5672` | **GENERIC** | `fetch(POST) → parse JSON → map daemon error envelope through the structured-error path` is pure HTTP-client-mode transport plumbing, reusable by any pack's `cli` registrar. Ported, generalized to accept the caller's own exit-code table instead of reading the module-level `RECOVERABLE_EXIT_CODES`. |
+| `readPromptFromFlags` | `cli.ts:9225` (also duplicated/near-duplicated at `cli.ts:9229` inline in `automation`, `readMemoryPromptFile` at `cli.ts:8469`, and the `body`/`body-file` variant `readMemoryBodyFromFlags` at unread call site) | **GENERIC** | The `--prompt <text>` / `--prompt-file <path>` / `--prompt-file -` (stdin) convention recurs verbatim across `brand create`, `project create-design-system`, `run start`, `run redesign`, `files version-create`, `automation source ingest`, `memory rule add` — a real, repeated CLI convention with zero OD nouns in its own logic. Ported once as `readPromptFromFlags`; the OD callers each additionally support a `--body`/`--body-file` synonym pair, which was not ported (that naming choice is caller-specific, not part of the primitive). |
+| Root dispatcher shape (`SUBCOMMAND_MAP`, first-non-flag-token routing) | `cli.ts:308-342`, `488-494` | **GENERIC** (pattern only) | "Look at the first positional arg, dispatch to a registered handler, fall through to root help" is the generic shape `@jini/cli`'s pack-registrar (`cli?: (reg, services) => void` per `packages/core/src/pack.ts`) needs. OD's actual `SUBCOMMAND_MAP` object (33 entries, all OD command names) was not ported — only the registrar pattern (`CommandRegistry.add(name, handler)` + `CommandRegistry.dispatch(argv)`) it implies. |
+| Help-text rendering | `printRootHelp` (`cli.ts:530`) + every per-command `print*Help` function | **GENERIC** (pattern only); OD (content) | Every OD help string is 100% product content (mentions "od media generate", "Open Design daemon", plugin marketplace, …) and was not ported. What's generic is the *shape*: each command owns a `usage()` string, the root dispatcher aggregates them into a `--help`/no-args fallback. Ported as a minimal `renderUsage(lines: string[])` helper plus the convention that a registered command supplies its own usage text — no baked-in text. |
+| `export` | `cli.ts:379` `runExport` + `export-cli-request.ts` + `export-cli-routing.ts` | OD | PDF/image/PPTX rasterization through OD's desktop Chromium renderer, `@open-design/contracts` `EXPORT_FORMATS`, project-scoped `/api/projects/:id/export/*` routes. No generic-engine equivalent exists (`@jini/deploy`'s `DeployTarget` is a different concern — publishing, not rendering). |
+| `amr` | `cli.ts:625` `runAmr` | OD | OD's "Vela"/AMR wallet + account integration (`/api/integrations/vela/*`). Pure OD product feature. |
+| `research search` | `cli.ts:692` `runResearch`/`runResearchSearch` + `research/cli-args.ts` | OD | Proxies Tavily search through `/api/research/search`. `research/cli-args.ts`'s `splitResearchSubcommand` is a trivial 10-line helper fully subsumed by the generic dispatcher pattern above — not separately portable. |
+| `artifacts` | `cli.ts:749` `runArtifacts` + `artifacts-cli.ts` (152 lines) | OD | OD's normal-artifact creation flow (`/api/projects/:id/artifacts` via `postCreateArtifactRequest`), project/name/manifest-scoped. |
+| `media generate` / `media wait` | `cli.ts:772-1005` | OD | OD's image/video/audio generation dispatcher. **Explicit overlap note**: `@jini/media` is being built as its own package in parallel — this group's eventual generic home (if any) is that package, not `@jini/cli`. Not ported here either way. |
+| `mcp` / `mcp install` | `cli.ts:1148-1465` | **UNCLEAR** | MCP (Model Context Protocol) itself is a real, non-OD-specific, standardized protocol — a generic "`@jini/cli` runs a stdio MCP server proxying to the daemon" feature is plausible. But this implementation's actual tool surface (`list_projects`, `get_artifact`, `get_project`, `get_file`, `search_files`, `create_artifact` — all defined in `./mcp.js`, not read in this pass since it's not `cli.ts` itself) is entirely OD's project/file model. `mcp install <agent>` (`runMcpInstall`, `resolveMcpLaunchSpec`, `mcp-agent-install.ts`) wires a coding agent's *own* config to point at this OD-shaped server. Verdict left open rather than guessed: whoever picks this up next should decide whether "`@jini/cli` can host a generic MCP server for an arbitrary pack's tools" is worth building now, versus deferring until a second MCP-consuming pack exists (extraction-plan §7's two-consumer rule). |
+| `plugin` (all ~40 subcommands: `list/search/stats/sources/info/manifest/install/upgrade/uninstall/apply/duplicate/canon/diff/doctor/replay/trust/snapshots/simulate/verify/events/run/scaffold/validate/pack/candidates/login/whoami/export/publish/publish-repo/open-design-pr/yank`) | `cli.ts:1540-4634` (largest single group, ~3,100 lines) | OD | OD's plugin marketplace + capability-grant + GitHub-backed community-catalog ecosystem. Hardcodes `nexu-io/open-design` as the upstream PR target (`runPluginOpenDesignPr`), shells out to `gh` for repo publishing (`execGhBuffered`/`spawnGhPassthrough`/`runPluginPublishRepo`). This is a real product ecosystem (registries, trust tiers, capability grants, snapshot replay), not a generic engine concern — matches the task brief's own strong-candidate call. |
+| `marketplace` | `cli.ts:2015-2240` | OD | Federated plugin-catalog registration/search/trust, same ecosystem as `plugin`. |
+| `ui` (`list/show/respond/revoke/prefill`) | `cli.ts:4640-4879` | OD | OD's GenUI surface inbox — form/choice/confirmation/oauth-prompt surfaces scoped to a `runId`/`projectId`. Not a kernel concept (`ToolExecutor`'s `ExecutionDelegate` per extraction-plan §2.5 is the closest kernel analog, but it's a callback contract, not a CLI surface). |
+| `share` | `cli.ts:4950-5037` | OD | Social-share link builder for the OD repo / a deployed OD project (`/api/social-share`). |
+| `figma` | `cli.ts:5039-5156` | OD | Figma-file import into an OD project, including `.fig` offline decode and an OAuth migration-scenario run via `pluginId: 'od-figma-migration'`. |
+| `brand` / `brands` (`list/create/extract/continue/preview/finalize/extract-from-html/get/show/delete/remove`) | `cli.ts:5192-5607` + `brands-cli-help.ts` | OD | OD's Brands library — extraction pipeline that registers a `user:<id>` design system under the hood. |
+| `project` (`create/create-design-system/duplicate/import/import-folder/list/info/delete/editors/open-in/handoff`) | `cli.ts:5709-5977` + `handoff-cli.ts` | OD | Every verb is scoped to OD's `Project` entity, which extraction-plan §2.1 explicitly excludes from the kernel ("NO projects... in the kernel"). `handoff` additionally imports `@open-design/contracts/api/handoff` types. |
+| `run` (`start/list/info/cancel/watch/redesign/result-package`) | `cli.ts:5979-6226` | OD (bodies); see UNCLEAR row below for the streaming *pattern* | Every request body carries `projectId`/`skillId`/`pluginId`/`conversationId`/`designSystemId` — OD product nouns, not `@jini/protocol`'s `Run`. Not portable as-is. |
+| `shell` | `cli.ts:6228-6348` | OD | Interactive PTY attached to a *project's* working directory (`/api/projects/:id/terminals`), raw-mode TTY bridging. Project-scoped, not a kernel concern. |
+| `files` (`list/read/write/upload/delete/diff/versions/version-read/version-create/version-restore`) | `cli.ts:6350-6749` | OD | OD's project file/workspace + HTML-version-history domain. The unified-diff algorithm (`createUnifiedDiff`, `diffLineBody`, LCS-based) is generic *code* but operationally pointless to extract on its own — it only exists to diff two project files fetched from OD-specific routes. |
+| `templates` | `cli.ts:6751-6910` | OD | OD's saved-project-template store (`NewProjectPanel`/`ExamplesTab` mirror), `/api/templates`. |
+| `conversation` / `chat` | `cli.ts:6912-7073` | OD | OD's `Conversation` entity (also excluded from the kernel by §2.1), including Side-Chat fork/seed semantics. |
+| `daemon start` | `cli.ts:7091-7122`, `7232-7261` | OD | Boots the *entire* OD desktop daemon (browser auto-open, `startDaemonRuntime` from `daemon-startup.js`, `OD_PORT`/`OD_BIND_HOST` env vars). This is OD's product bootstrap, not a generic "start `@jini/daemon`" concern — `@jini/node-host`'s `createLocalNodeDaemon` (per extraction-plan §2.4) is the actual generic analog, and it is not a CLI subcommand in this codebase's design (it's a composition preset a consumer calls from code). |
+| `daemon db` (`status/verify/vacuum`) | `cli.ts:7124-7230` | OD | Introspects OD's own SQLite schema (plugin/snapshot tables specifically named in the help text). `@jini/sqlite`'s conformance suite (extraction-plan §8 task 8) is the generic-engine equivalent of "is my DB healthy," and it doesn't exist as a CLI surface here. |
+| `daemon status` / `daemon stop` (bare, no `db`) | `cli.ts:7263-7293`, aliased as bare `status` at `cli.ts:7965` | **UNCLEAR** | The *pattern* — "hit a health endpoint, print `{bindHost, port, version, pid}`-shaped status; POST a shutdown endpoint" — is a plausible generic `@jini/cli` "daemon" command once `@jini/http` defines an equivalent route. Today `@jini/http` is a stub (`packages/http/src/index.ts` is a one-line placeholder) with no `/status`/`/shutdown` route to call, and OD's actual response fields (`installedPlugins`, `bindHost`) are OD-shaped. Not portable today; flagged rather than guessed at. |
+| `atoms` (`list/show/info`) | `cli.ts:7307-7384` | OD | OD's first-party design-atom catalog + bundled `SKILL.md` bodies. |
+| `library` (`list/get/rm/search/import/apply/edit-as-page/figma/sync/pair`) | `cli.ts:7416-7632` | OD | OD's design-asset library (images/design-systems/fonts captured via the browser-extension "Clipper"), `/api/library/*`. |
+| `skills` / `craft` / `design-systems` (incl. `download/import-local/import-github/import-shadcn/rebuild-token-contract/rename`) | `cli.ts:7634-7963` + `design-systems-cli-help.ts` + `tools-design-systems-cli.ts` | OD | OD's skill/craft/design-system library and pull-layer file access. `tools-design-systems-cli.ts` (`od tools design-systems read`) is the agent-runtime-invoked sibling of the same feature. |
+| `status` (bare alias) | `cli.ts:7965-7968` | **UNCLEAR** | Pure alias of `daemon status` — see that row. |
+| `diagnostics export` | `cli.ts:7980-8041` | OD | Bundles daemon/web/desktop logs + machine info via `@open-design/diagnostics`, mirrors Settings → About → Export diagnostics. |
+| `version` | `cli.ts:8043-8062` | **UNCLEAR** | Same shape as `daemon status`: hits `/api/version`, prints a string. Trivial to build generically once `@jini/http` has a version route; not portable today for the same "nothing to call" reason. |
+| `doctor` | `cli.ts:8081-8188` | OD | Composite health check purpose-built for OD: daemon status + every installed plugin's doctor + skills/design-systems/atoms inventory. |
+| `config` (`list/get/set/unset`) | `cli.ts:8190-8301` | OD | Wraps OD's own `/api/app-config` — provider API keys, "orbit settings," "pet config" per the source comment. Generic-shaped (GET/PUT a key-value bag) but the store itself is OD's app settings, not a kernel concept; `@jini/core`'s token/bindings system is the engine's actual generic configuration mechanism, and it's compile-time/composition-time, not a runtime CLI-editable bag. |
+| `memory` (`tree/profile/rule/verify/config`) | `cli.ts:8311-9082` (~770 lines) | OD | OD's editable markdown memory tree injected into agent prompts — a specific product feature, not `@jini/daemon`'s `EventLog`/`RunLifecycle`. |
+| `automation` (`template/source/proposal/list/get/create/update/run/runs/crystallize-run/pause/resume/delete`) | `cli.ts:9083-9885` (tail of file, ~800 lines) | OD | OD's Automations/routines feature (`/api/routines`, `/api/automation-*`). Unrelated to `automation/` at the Jini repo root (that's the AI-dev-shop control plane; this is OD's scheduled-agent-run product feature — exactly the kind of same-word-different-domain collision extraction-plan §12 C5 warns about). |
+| `tools connectors` / `tools design-systems` / `tools live-artifacts` (`od tools ...`) | `cli.ts:496-525` dispatch + `tools-connectors-cli.ts` (2,830 lines) + `tools-design-systems-cli.ts` + `tools-live-artifacts-cli.ts` | OD | Agent-runtime-invoked wrapper commands (env vars `OD_NODE_BIN`/`OD_BIN`/`OD_DAEMON_URL`/`OD_TOOL_TOKEN`) for OD's connector/design-system/live-artifact tool surfaces. |
+| `mcp live-artifacts` | `cli.ts:477-486` + `mcp-live-artifacts-server.js` (not read; out of scope, not `cli.ts`) | OD | Same live-artifacts domain as above, exposed as an MCP server. |
+| codex MCP install wrapper | `codex-cli.ts` (121 lines) | OD | Thin `codex mcp add/remove/get` shell-out backing OD's Settings-panel "Install to Codex" toggle. Product UI plumbing, not CLI transport. |
+| `execGhBuffered` / `spawnGhPassthrough` / `execFileBuffered` / `spawnPassthrough` (GitHub CLI process helpers) | `cli.ts:1888-1944` | OD | Named in the task brief as a "shared infra" candidate, but on inspection every call site is plugin-publishing (`plugin login/whoami/publish-repo/open-design-pr`) — there is no generic-transport caller. `execFileBuffered`/`spawnPassthrough` (the non-`gh`-specific halves) are marginally reusable "run a child process, buffer output" utilities, but nothing in the GENERIC bucket needs to shell out to a subprocess, so they were left with their only real caller (`plugin`) rather than extracted speculatively. |
+
+## Deferred (explicit follow-ups, not silently dropped)
+
+1. **Real daemon-URL discovery.** `resolveDaemonUrl` in this package accepts an injected `discover(env, timeoutMs) => Promise<string | null>` callback instead of assuming `@jini/sidecar`'s wire protocol; no adapter wiring `@jini/sidecar`'s actual NDJSON-IPC surface (`packages/sidecar/source-map.md`) to that callback was built in this pass. A follow-up should add a `packages/sidecar`-backed default discovery function once `@jini/sidecar`'s status-snapshot message shape is confirmed stable.
+2. **`daemon status` / `daemon stop` / `version`** (the three UNCLEAR rows): buildable as real generic `@jini/cli` commands once `@jini/http` (currently a stub) defines equivalent routes. Left unbuilt rather than built against routes that don't exist.
+3. **`mcp` bucket**: left as an open question per the UNCLEAR row above; needs a decision on whether a generic MCP-hosting feature belongs in `@jini/cli` before a second consumer exists (extraction-plan §7 two-consumer rule).
+4. **`run watch`'s SSE→NDJSON streaming shape** (`streamRunEvents`, `cli.ts:6195-6226`): the mechanics (GET an SSE endpoint, translate frames to one-NDJSON-line-per-event on stdout, stop at a terminal `'end'` event) are a clean pattern that should inform a future generic `jini run watch <runId>` once `@jini/http` exposes a route over `@jini/daemon`'s `EventLog`. Not built now — there is no route to call — but recorded here so the next person doesn't have to re-derive the shape from OD's implementation.
+5. **The OD-PRODUCT-SPECIFIC bucket itself** — none of it was ported, per the task's explicit instruction. This table exists so a future task porting `@jini/projects` (or whatever the eventual "project" pack turns out to be named — no such package is in the locked §3 set as of this writing) has a ready-made map of exactly which `cli.ts` verbs it would need to re-home, rather than re-reading the 9,885-line source from scratch.
+
+## What was ported
+
+See `packages/cli/src/`: `flags.ts` (`parseFlags`, `positionalArgs`), `daemon-url.ts`
+(`resolveDaemonUrl`), `errors.ts` (`exitWithStructuredError`, `structuredHttpFailure`,
+`CliExitCodes` default table), `http.ts` (`postJsonToDaemon`, `surfaceFetchError`),
+`prompt.ts` (`readPromptFromFlags`), `usage.ts` (`renderUsage`), `command-registry.ts`
+(`CommandRegistry`, the `SUBCOMMAND_MAP`-shaped dispatcher), `tokens.ts` (`CliTransportToken`
+etc., following `packages/daemon/src/tokens.ts`'s naming precedent), `index.ts` (barrel).
+
+## Dependencies
+
+`@jini/core` (workspace) for `token()` — see `src/tokens.ts`. No `@open-design/*`
+package is imported anywhere in `packages/cli/src/` (verified by `pnpm guard`'s
+OD-noun/import lint, extraction-plan §7). Node built-ins only
+(`node:process`, `node:fs/promises` for `readPromptFromFlags`'s file-read path).

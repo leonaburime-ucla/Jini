@@ -1,0 +1,592 @@
+// Feature-local hook for the memory-connectors cluster: the connector
+// list/status catalogue, per-connector OAuth connect flow, the mid-authorization
+// status poll, selection, and the scan → suggest → save loop that turns
+// connected-app content into memory entries.
+//
+// WHY ONE HOOK (design rationale, kept here so a future reader doesn't
+// re-litigate it): the tempting split is "auth vs. list", but that is a bad
+// seam. `refreshConnectorStatuses` writes the list domain (`connectors`,
+// `connectorStatuses`) AND the auth domain (`pendingConnectorAuthIds`,
+// `connectorConnectErrors`) in one pass, and the selection-reconcile effect
+// keys off `connected` status — the exact thing the auth flow transitions. So
+// auth↔list is bidirectional coupling over shared mutable state. Splitting there
+// would thread setters across the boundary in both directions (routed through
+// a host, since no hook may import another), i.e. relocate state across a
+// seam and pay indirection for it — which is the "state relocation" disease
+// this refactor exists to cure. Testability doesn't force the split either:
+// the single hook already takes an injected port + coordination, so it
+// unit-tests with a fake. If this ever earns a split, cut out SCAN/SUGGEST/SAVE
+// (it only *reads* `selectedConnectedConnectorIds` and coordinates outward to
+// `reload`/`reloadExtractions` — a clean, one-directional seam), not auth.
+//
+// WHERE THE EFFECTS LIVE (and why): a hook effect that opens an EXTERNAL,
+// ACCUMULATING subscription (setInterval / addEventListener / EventSource) is a
+// hazard if the hook is ever instantiated by more than one component — you get
+// two pollers, two listeners, and silent double-fires. So those do NOT live
+// here. The two OAuth subscriptions (the mid-auth status poll + the popup
+// callback message) are owned by a host orchestrator, which is structurally a
+// single instance; it drives this hook's exposed `refreshConnectorStatuses`
+// through its own provider bridges. This hook keeps only INTERNAL-STATE
+// effects (a ref sync, a selection reconcile, a pending-auth persist) — those
+// can't accumulate or surprise, no matter how many instances exist. Same
+// reasoning that keeps the SSE stream out of this hook, applied consistently.
+// (Today the hook is single-consumer per the slice's feature-local rule, so
+// this is defence-in-depth, not a live bug.)
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { applyConnectorStatuses, hasConnectorStatusChanges } from '../../../connectors/index.js';
+import type { Connector, ConnectorStatusMap } from '../../../connectors/index.js';
+import { memoryConnectorsPort } from '../../dependencies.js';
+import type { MemoryConnectorsPort } from '../../ports.js';
+import { createAsyncCommitGuard } from '../../async-commit-guard.js';
+import type { ConnectorMemoryAttempt, MemoryExtractionRecord, MemorySuggestion } from '../../types.js';
+import { DEFAULT_CONNECTOR_PROVIDER, MEMORY_CONNECTOR_APP_IDS, MEMORY_CONNECTOR_APP_LABELS } from '../../constants.js';
+import {
+  applyMemoryConnectorStatus,
+  connectorWithPendingAuthorization,
+  memoryEntryIdForConnectorSuggestion,
+  upsertMemoryConnector,
+} from '../../rules.js';
+import { describeConnectorReadIssue, describeExtractionFailure } from '../../formatters.js';
+
+/** Runtime coordination the connectors hook receives from a host: the
+ *  entries reload (saving a suggestion mutates the memory list), the extraction
+ *  reload (a connector scan surfaces failures in the extraction history), and
+ *  the chat context the daemon uses to pick a model for the scan. */
+export interface MemoryConnectorsCoordination {
+  reload: () => Promise<void>;
+  reloadExtractions: () => Promise<MemoryExtractionRecord[]>;
+  chatAgentId: string | null;
+  chatModel: string | null;
+}
+
+export interface MemoryConnectorsController {
+  connectorStatuses: ConnectorStatusMap;
+  connectorsLoading: boolean;
+  selectedConnectorIds: Set<string>;
+  connectorExtracting: boolean;
+  connectorSaving: boolean;
+  connectorSuggestions: MemorySuggestion[];
+  selectedSuggestionIds: Set<string>;
+  connectorAttempts: ConnectorMemoryAttempt[];
+  connectorContextBytes: number;
+  connectorStatus: string | null;
+  connectorError: string | null;
+  /** Non-null when the connector catalogue or its statuses could not be refreshed. */
+  connectorLoadError: string | null;
+  connectingConnectorIds: Set<string>;
+  pendingConnectorAuthIds: Set<string>;
+  connectorConnectErrors: Record<string, string>;
+  memoryConnectors: Connector[];
+  connectorIdsWithDetails: Set<string>;
+  connectedMemoryConnectors: Connector[];
+  selectedConnectedConnectorIds: string[];
+  connectedCount: number;
+  connectorScanLabel: string;
+  selectedConnectorSuggestions: MemorySuggestion[];
+  reloadConnectors: () => Promise<void>;
+  /** Re-fetch connector statuses and reconcile pending-auth/error state. A
+   *  host drives this from the OAuth poll + popup-callback subscriptions
+   *  (which it owns, being a single instance). */
+  refreshConnectorStatuses: () => Promise<void>;
+  toggleConnectorSelection: (connectorId: string) => void;
+  onConnectMemoryConnector: (connectorId: string) => Promise<void>;
+  toggleConnectorSuggestion: (suggestionId: string) => void;
+  onSuggestConnectorMemory: () => Promise<void>;
+  onDiscardConnectorSuggestions: () => void;
+  onSaveConnectorSuggestions: () => Promise<void>;
+}
+
+export function useMemoryConnectors(
+  port: MemoryConnectorsPort,
+  coord: MemoryConnectorsCoordination,
+): MemoryConnectorsController {
+  const { reload, reloadExtractions, chatAgentId, chatModel } = coord;
+
+  const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [connectorStatuses, setConnectorStatuses] = useState<ConnectorStatusMap>({});
+  const [connectorsLoading, setConnectorsLoading] = useState(true);
+  const [selectedConnectorIds, setSelectedConnectorIds] = useState<Set<string>>(() => new Set());
+  const [connectorExtracting, setConnectorExtracting] = useState(false);
+  // Button disabled state is only visible after React commits. These refs make
+  // the scan/save re-entrancy guards synchronous too, so two calls in one
+  // event batch cannot duplicate remote work or race stale results back in.
+  const connectorExtractionInFlightRef = useRef(false);
+  const [connectorSaving, setConnectorSaving] = useState(false);
+  const connectorSaveInFlightRef = useRef(false);
+  const [connectorSuggestions, setConnectorSuggestions] = useState<MemorySuggestion[]>([]);
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<Set<string>>(() => new Set());
+  const [connectorAttempts, setConnectorAttempts] = useState<ConnectorMemoryAttempt[]>([]);
+  const [connectorContextBytes, setConnectorContextBytes] = useState(0);
+  const [connectorStatus, setConnectorStatus] = useState<string | null>(null);
+  const [connectorError, setConnectorError] = useState<string | null>(null);
+  // Discovery and status polling are independent reads. Keeping one error for
+  // both made a successful status poll erase a still-live catalogue failure,
+  // so the UI falsely implied that all connector data had recovered.
+  const [connectorCatalogueLoadError, setConnectorCatalogueLoadError] = useState<string | null>(null);
+  const [connectorStatusLoadError, setConnectorStatusLoadError] = useState<string | null>(null);
+  const [connectingConnectorIds, setConnectingConnectorIds] = useState<Set<string>>(() => new Set());
+  // Two synchronous `onConnectMemoryConnector(id)` calls in the SAME React
+  // batch (e.g. a double-click before the first render commits) would both
+  // read the same pre-update `connectingConnectorIds` closure and both pass
+  // the re-entrancy guard below — React state updates aren't visible to
+  // their own batch. This ref is updated synchronously (not batched), so the
+  // second call in the same batch still sees the first one's claim.
+  const connectingConnectorIdsRef = useRef<Set<string>>(new Set());
+  const [pendingConnectorAuthIds, setPendingConnectorAuthIds] = useState<Set<string>>(port.readPendingConnectorAuthIds);
+  const [connectorConnectErrors, setConnectorConnectErrors] = useState<Record<string, string>>({});
+  const connectorsRef = useRef(connectors);
+  const connectorStatusesRef = useRef(connectorStatuses);
+  // Two independent ordering domains, not one. The status snapshot
+  // (`connectorStatuses`) is written by both `reloadConnectors` and
+  // `refreshConnectorStatuses` (the OAuth poll and popup callback can
+  // overlap too) — only the newest of those may commit. The full-details
+  // catalogue (`connectors`, via `fetchMemoryConnectors`) is written ONLY by
+  // `reloadConnectors` — a status-only refresh must NOT invalidate an
+  // in-flight catalogue fetch, or the freshly-fetched discovery response
+  // gets silently discarded while `connectorsLoading` still clears (the
+  // catalogue guard is independent of the reload-loading guard below too).
+  const connectorStatusGuardRef = useRef(createAsyncCommitGuard());
+  const connectorCatalogueGuardRef = useRef(createAsyncCommitGuard());
+  const connectorReloadGuardRef = useRef(createAsyncCommitGuard());
+
+  useEffect(() => {
+    connectorsRef.current = connectors;
+  }, [connectors]);
+
+  useEffect(() => {
+    connectorStatusesRef.current = connectorStatuses;
+  }, [connectorStatuses]);
+
+  // Commits a new status map. `connectorStatusesRef` is updated SYNCHRONOUSLY
+  // here rather than relying solely on the effect above: a catalogue fetch
+  // that resolves in the microtask gap between this state commit and the
+  // effect's flush would otherwise read a one-cycle-stale ref, silently
+  // defeating the "merge against the latest status" guarantee below. The
+  // effect stays as a backup sync for any status write that doesn't route
+  // through here.
+  const commitConnectorStatuses = useCallback((statuses: ConnectorStatusMap) => {
+    connectorStatusesRef.current = statuses;
+    setConnectorStatuses(statuses);
+  }, []);
+
+  // Persist which connectors are mid-authorization so a reload resumes polling
+  // instead of stranding a half-finished OAuth handshake.
+  useEffect(() => {
+    port.writePendingConnectorAuthIds(pendingConnectorAuthIds);
+  }, [pendingConnectorAuthIds, port]);
+
+  const reloadConnectors = useCallback(async () => {
+    const statusRevision = connectorStatusGuardRef.current.begin();
+    const catalogueRevision = connectorCatalogueGuardRef.current.begin();
+    const reloadRevision = connectorReloadGuardRef.current.begin();
+    setConnectorsLoading(true);
+    try {
+      const statuses = await port.fetchConnectorStatuses();
+      if (connectorStatusGuardRef.current.isCurrent(statusRevision)) {
+        commitConnectorStatuses(statuses);
+        setConnectors((prev) => applyConnectorStatuses(prev, statuses));
+        setConnectorStatusLoadError(null);
+      }
+    } catch {
+      if (connectorStatusGuardRef.current.isCurrent(statusRevision)) {
+        setConnectorStatusLoadError("Connected app statuses couldn't be loaded. Try again shortly.");
+      }
+      // The catalogue response contains its own connector status. Continue
+      // with that independent read so a status-poll outage does not turn known
+      // connected apps into an unusable empty state; the status error remains
+      // visible until a status retry succeeds.
+    }
+    try {
+      const next = await port.fetchMemoryConnectors();
+      if (!connectorCatalogueGuardRef.current.isCurrent(catalogueRevision)) return;
+      // Merge against the LATEST known status map, not the `statuses` value
+      // captured above — a newer status commit (poll, callback, or this same
+      // reload's own status step racing a concurrent refresh) may have landed
+      // while this discovery fetch was still in flight, and stamping the
+      // captured snapshot back over it would silently revert it.
+      setConnectors(applyConnectorStatuses(next, connectorStatusesRef.current));
+      setConnectorCatalogueLoadError(null);
+    } catch {
+      // Discovery is required for the real catalogue. Keep prior details rather
+      // than replacing them with synthetic empty rows, and make the outage
+      // visible to the user.
+      if (connectorCatalogueGuardRef.current.isCurrent(catalogueRevision)) {
+        setConnectorCatalogueLoadError("Connected apps couldn't be loaded. Try again shortly.");
+      }
+    } finally {
+      if (connectorReloadGuardRef.current.isCurrent(reloadRevision)) {
+        setConnectorsLoading(false);
+      }
+    }
+  }, [port, commitConnectorStatuses]);
+
+  const memoryConnectors = useMemo(() => {
+    const byId = new Map(connectors.map((connector) => [connector.id, connector]));
+    return MEMORY_CONNECTOR_APP_IDS.map((id) => {
+      const connector = byId.get(id);
+      const status = connectorStatuses[id];
+      if (connector) {
+        return status ? applyMemoryConnectorStatus(connector, status) : connector;
+      }
+      return {
+        id,
+        // `MEMORY_CONNECTOR_APP_LABELS` is typed to require every
+        // MEMORY_CONNECTOR_APP_IDS entry to have a label, so this lookup
+        // can't miss — no `?? id` fallback needed (or reachable).
+        name: MEMORY_CONNECTOR_APP_LABELS[id],
+        provider: DEFAULT_CONNECTOR_PROVIDER,
+        category: 'Memory source',
+        status: status?.status ?? ('available' as const),
+        ...(status?.accountLabel ? { accountLabel: status.accountLabel } : {}),
+        ...(status?.lastError ? { lastError: status.lastError } : {}),
+        tools: [],
+      };
+    });
+  }, [connectorStatuses, connectors]);
+  const connectorIdsWithDetails = useMemo(() => new Set(connectors.map((connector) => connector.id)), [connectors]);
+  const connectedMemoryConnectors = useMemo(
+    () => memoryConnectors.filter((connector) => connector.status === 'connected'),
+    [memoryConnectors],
+  );
+  const selectedConnectedConnectorIds = useMemo(
+    () => [...selectedConnectorIds].filter((id) => connectedMemoryConnectors.some((connector) => connector.id === id)),
+    [selectedConnectorIds, connectedMemoryConnectors],
+  );
+  const connectedCount = connectedMemoryConnectors.length;
+  const connectorScanLabel = connectorExtracting
+    ? 'Scanning apps'
+    : selectedConnectedConnectorIds.length === 0
+      ? 'Select apps to scan'
+      : 'Scan selected apps';
+  const selectedConnectorSuggestions = useMemo(
+    () => connectorSuggestions.filter((suggestion) => selectedSuggestionIds.has(suggestion.id)),
+    [connectorSuggestions, selectedSuggestionIds],
+  );
+  const connectorLoadError = connectorCatalogueLoadError ?? connectorStatusLoadError;
+
+  // Prune selection down to still-connected apps: disconnecting an app should
+  // not leave it selected for a scan.
+  useEffect(() => {
+    setSelectedConnectorIds((prev) => {
+      const connectedIds = connectedMemoryConnectors.map((connector) => connector.id);
+      const connected = new Set(connectedIds);
+      const next = new Set([...prev].filter((id) => connected.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [connectedMemoryConnectors]);
+
+  const toggleConnectorSelection = useCallback((connectorId: string) => {
+    setSelectedConnectorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(connectorId)) {
+        next.delete(connectorId);
+      } else {
+        next.add(connectorId);
+      }
+      return next;
+    });
+  }, []);
+
+  const refreshConnectorStatuses = useCallback(async () => {
+    const revision = connectorStatusGuardRef.current.begin();
+    let statuses: ConnectorStatusMap;
+    try {
+      statuses = await port.fetchConnectorStatuses();
+    } catch {
+      // This function is called by the background OAuth poll and popup callback
+      // subscriptions as well as the connect action. Keep its failures in UI
+      // state so those fire-and-forget callers cannot produce an unhandled
+      // rejection or undo the optimistic connector update.
+      if (connectorStatusGuardRef.current.isCurrent(revision)) {
+        setConnectorStatusLoadError("Connected app statuses couldn't be loaded. Try again shortly.");
+      }
+      return;
+    }
+    if (!connectorStatusGuardRef.current.isCurrent(revision)) return;
+    const statusChanged = hasConnectorStatusChanges(connectorsRef.current, statuses);
+    commitConnectorStatuses(statuses);
+    setConnectors((prev) => applyConnectorStatuses(prev, statuses));
+    setConnectorStatusLoadError(null);
+    setPendingConnectorAuthIds((prev) => {
+      const next = new Set(prev);
+      for (const connectorId of prev) {
+        if (statuses[connectorId]?.status === 'connected') next.delete(connectorId);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+    setConnectorConnectErrors((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [connectorId, status] of Object.entries(statuses)) {
+        if (status.status === 'connected' && next[connectorId] !== undefined) {
+          delete next[connectorId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    if (statusChanged) port.notifyConnectorsChanged();
+  }, [port, commitConnectorStatuses]);
+
+  // NOTE: the OAuth mid-auth status poll and popup-callback message listener are
+  // deliberately NOT effects here — they open accumulating browser
+  // subscriptions, so a host orchestrator (a guaranteed single instance) owns
+  // them and drives `refreshConnectorStatuses` below. See the file header.
+
+  const onConnectMemoryConnector = useCallback(
+    async (connectorId: string) => {
+      if (connectingConnectorIdsRef.current.has(connectorId)) return;
+      connectingConnectorIdsRef.current.add(connectorId);
+      setConnectingConnectorIds((prev) => new Set(prev).add(connectorId));
+      setConnectorConnectErrors((prev) => {
+        if (prev[connectorId] === undefined) return prev;
+        const next = { ...prev };
+        delete next[connectorId];
+        return next;
+      });
+      try {
+        let result: Awaited<ReturnType<MemoryConnectorsPort['connectConnector']>>;
+        try {
+          result = await port.connectConnector(connectorId);
+        } catch (err) {
+          // A thrown connect (as opposed to a resolved `{ error }` result) must
+          // still land in connect-error state instead of propagating as an
+          // unhandled rejection — the same fix already applied to
+          // refreshConnectorStatuses above, for the call one step earlier.
+          setConnectorConnectErrors((prev) => ({
+            ...prev,
+            [connectorId]: err instanceof Error ? err.message : String(err),
+          }));
+          setPendingConnectorAuthIds((prev) => {
+            if (!prev.has(connectorId)) return prev;
+            const next = new Set(prev);
+            next.delete(connectorId);
+            return next;
+          });
+          return;
+        }
+        if (result.connector?.status === 'connected') port.notifyConnectorsChanged();
+        const requiresAuthorizationCompletion = result.auth?.kind === 'redirect_required' || result.auth?.kind === 'pending';
+        setConnectors((prev) =>
+          upsertMemoryConnector(
+            prev,
+            requiresAuthorizationCompletion && result.connector ? connectorWithPendingAuthorization(result.connector) : result.connector,
+          ),
+        );
+        // This upsert just committed newer-than-any-in-flight-discovery truth
+        // for this connector. Invalidate any older `reloadConnectors` catalogue
+        // fetch so its (now stale) wholesale replace can't land after this and
+        // silently overwrite what was just connected.
+        connectorCatalogueGuardRef.current.invalidate();
+        if (result.error) {
+          setConnectorConnectErrors((prev) => ({ ...prev, [connectorId]: result.error! }));
+          setPendingConnectorAuthIds((prev) => {
+            if (!prev.has(connectorId)) return prev;
+            const next = new Set(prev);
+            next.delete(connectorId);
+            return next;
+          });
+          return;
+        }
+        if (result.auth?.kind === 'redirect_required' || result.auth?.kind === 'pending') {
+          setPendingConnectorAuthIds((prev) => new Set(prev).add(connectorId));
+        } else {
+          setPendingConnectorAuthIds((prev) => {
+            if (!prev.has(connectorId)) return prev;
+            const next = new Set(prev);
+            next.delete(connectorId);
+            return next;
+          });
+        }
+        await refreshConnectorStatuses();
+      } finally {
+        // The ref guard above means only one call per connectorId is ever
+        // in-flight at a time, and nothing else touches this state — `prev`
+        // is guaranteed to have `connectorId` here, so there is no "already
+        // removed" case left to check.
+        connectingConnectorIdsRef.current.delete(connectorId);
+        setConnectingConnectorIds((prev) => {
+          const next = new Set(prev);
+          next.delete(connectorId);
+          return next;
+        });
+      }
+    },
+    [refreshConnectorStatuses, port],
+  );
+
+  const toggleConnectorSuggestion = useCallback((suggestionId: string) => {
+    setSelectedSuggestionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(suggestionId)) {
+        next.delete(suggestionId);
+      } else {
+        next.add(suggestionId);
+      }
+      return next;
+    });
+  }, []);
+
+  const onSuggestConnectorMemory = useCallback(async () => {
+    if (selectedConnectedConnectorIds.length === 0 || connectorExtractionInFlightRef.current) return;
+    connectorExtractionInFlightRef.current = true;
+    setConnectorExtracting(true);
+    setConnectorSuggestions([]);
+    setSelectedSuggestionIds(new Set());
+    setConnectorAttempts([]);
+    setConnectorContextBytes(0);
+    setConnectorStatus(null);
+    setConnectorError(null);
+    const startedAt = Date.now();
+    try {
+      const result = await port.suggestConnectorMemories(selectedConnectedConnectorIds, {
+        chatAgentId,
+        chatModel,
+      });
+      if (!result) {
+        setConnectorError('Could not read connected apps. Try again from the connectors panel.');
+        return;
+      }
+      const latestExtractions = await reloadExtractions();
+      const latestFailure = latestExtractions.find(
+        (record) => record.kind === 'connector' && record.phase === 'failed' && record.startedAt >= startedAt - 5_000,
+      );
+      const friendlyFailure = latestFailure ? describeExtractionFailure(latestFailure) : null;
+      setConnectorAttempts(result.connectors);
+      setConnectorContextBytes(result.contextBytes);
+      const succeeded = result.connectors.filter((connector) => connector.status === 'succeeded').length;
+      if (friendlyFailure) {
+        setConnectorError([friendlyFailure.title, friendlyFailure.detail, friendlyFailure.action].filter(Boolean).join(' '));
+      } else if (result.suggestions.length > 0) {
+        setConnectorSuggestions(result.suggestions);
+        setSelectedSuggestionIds(new Set(result.suggestions.map((suggestion) => suggestion.id)));
+        setConnectorStatus(
+          `Found ${result.suggestions.length} suggested memor${result.suggestions.length === 1 ? 'y' : 'ies'} from ${succeeded} app${succeeded === 1 ? '' : 's'}. Review before saving.`,
+        );
+      } else if (!result.attemptedLLM) {
+        setConnectorError(
+          describeConnectorReadIssue(result) ?? 'No memory suggestions found. Could not read useful content from the selected app yet.',
+        );
+      } else {
+        setConnectorStatus(`Checked ${succeeded} selected app${succeeded === 1 ? '' : 's'}, but found no new memory suggestions.`);
+      }
+    } catch (err) {
+      setConnectorError(err instanceof Error ? err.message : String(err));
+    } finally {
+      connectorExtractionInFlightRef.current = false;
+      setConnectorExtracting(false);
+    }
+  }, [chatAgentId, chatModel, reloadExtractions, selectedConnectedConnectorIds, port]);
+
+  const onDiscardConnectorSuggestions = useCallback(() => {
+    setConnectorSuggestions([]);
+    setSelectedSuggestionIds(new Set());
+    setConnectorAttempts([]);
+    setConnectorContextBytes(0);
+    setConnectorStatus(null);
+  }, []);
+
+  const onSaveConnectorSuggestions = useCallback(async () => {
+    if (selectedConnectorSuggestions.length === 0 || connectorSaveInFlightRef.current) return;
+    connectorSaveInFlightRef.current = true;
+    setConnectorSaving(true);
+    setConnectorError(null);
+    try {
+      const savedSuggestionIds = new Set<string>();
+      let failure: unknown;
+      try {
+        for (const suggestion of selectedConnectorSuggestions) {
+          const entry = await port.saveMemoryEntry({
+            id: memoryEntryIdForConnectorSuggestion(suggestion),
+            name: suggestion.name,
+            description: suggestion.description ?? '',
+            type: suggestion.type,
+            body: suggestion.body,
+          });
+          if (entry) {
+            savedSuggestionIds.add(suggestion.id);
+          }
+        }
+      } catch (err) {
+        failure = err;
+      }
+
+      // A save can succeed before a later request fails. Refresh and reconcile
+      // those confirmed writes before reporting the failure, so saved suggestions
+      // do not remain visible as retryable rows.
+      if (savedSuggestionIds.size > 0 || !failure) {
+        try {
+          await reload();
+        } catch (err) {
+          failure ??= err;
+        }
+      }
+
+      if (savedSuggestionIds.size > 0) {
+        setConnectorSuggestions((prev) => prev.filter((suggestion) => !savedSuggestionIds.has(suggestion.id)));
+        // The user can still change the remaining checkboxes while this save
+        // is in flight. Reconcile against that CURRENT selection rather than
+        // restoring the callback's stale snapshot of selected suggestions.
+        setSelectedSuggestionIds((prev) => new Set([...prev].filter((suggestionId) => !savedSuggestionIds.has(suggestionId))));
+        setConnectorStatus(`Saved ${savedSuggestionIds.size} memor${savedSuggestionIds.size === 1 ? 'y' : 'ies'} from connected apps.`);
+      }
+
+      // The `selectedConnectorSuggestions.length === 0` early-return above
+      // guarantees the list is non-empty here, so a zero-saved outcome always
+      // has `size !== length` and is already covered by the branch below —
+      // there is no separate "0 of 0" case to report.
+      if (failure) {
+        setConnectorError(failure instanceof Error ? failure.message : String(failure));
+      } else if (savedSuggestionIds.size !== selectedConnectorSuggestions.length) {
+        setConnectorError(
+          `Saved ${savedSuggestionIds.size} of ${selectedConnectorSuggestions.length} selected memories. Please try the remaining items again.`,
+        );
+      }
+    } finally {
+      connectorSaveInFlightRef.current = false;
+      setConnectorSaving(false);
+    }
+  }, [reload, selectedConnectorSuggestions, port]);
+
+  return {
+    connectorStatuses,
+    connectorsLoading,
+    selectedConnectorIds,
+    connectorExtracting,
+    connectorSaving,
+    connectorSuggestions,
+    selectedSuggestionIds,
+    connectorAttempts,
+    connectorContextBytes,
+    connectorStatus,
+    connectorError,
+    connectorLoadError,
+    connectingConnectorIds,
+    pendingConnectorAuthIds,
+    connectorConnectErrors,
+    memoryConnectors,
+    connectorIdsWithDetails,
+    connectedMemoryConnectors,
+    selectedConnectedConnectorIds,
+    connectedCount,
+    connectorScanLabel,
+    selectedConnectorSuggestions,
+    reloadConnectors,
+    refreshConnectorStatuses,
+    toggleConnectorSelection,
+    onConnectMemoryConnector,
+    toggleConnectorSuggestion,
+    onSuggestConnectorMemory,
+    onDiscardConnectorSuggestions,
+    onSaveConnectorSuggestions,
+  };
+}
+
+/**
+ * Wirer: binds the real connectors transport + OAuth bridges and returns a
+ * hook that still takes a host's runtime coordination. The default a host
+ * injects; swap it via the component prop in tests.
+ */
+export function useWiredMemoryConnectors(coord: MemoryConnectorsCoordination): MemoryConnectorsController {
+  return useMemoryConnectors(memoryConnectorsPort, coord);
+}
