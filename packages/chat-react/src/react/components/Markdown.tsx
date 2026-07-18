@@ -46,8 +46,18 @@ function parseBlocks(input: string): Block[] {
   const lines = input.split(/\r?\n/);
   const blocks: Block[] = [];
   let i = 0;
+  // Every `lines[i]` access below is guarded by an `i < lines.length` check
+  // (either this loop's own condition or an inner `while`'s left-hand
+  // operand, short-circuited before the index is read) — `lines` is a
+  // `string[]` from `String.prototype.split`, which never contains
+  // `undefined` entries, so the index is always in range and always a
+  // string. The `?? ''`/non-null-assertion sites below are TS-only
+  // fallbacks for `noUncheckedIndexedAccess`-style indexing with no real
+  // runtime path; using `!` documents that instead of instrumenting an
+  // unreachable branch (same convention as `ToolCard.tsx`'s `baseName`
+  // comment).
   while (i < lines.length) {
-    const line = lines[i] ?? '';
+    const line = lines[i]!;
     if (line.trim() === '') {
       i += 1;
       continue;
@@ -56,8 +66,8 @@ function parseBlocks(input: string): Block[] {
       const lang = line.slice(3).trim() || null;
       const body: string[] = [];
       i += 1;
-      while (i < lines.length && !/^```/.test(lines[i] ?? '')) {
-        body.push(lines[i] ?? '');
+      while (i < lines.length && !/^```/.test(lines[i]!)) {
+        body.push(lines[i]!);
         i += 1;
       }
       i += 1; // skip closing fence (or end of input if unterminated)
@@ -66,7 +76,11 @@ function parseBlocks(input: string): Block[] {
     }
     const heading = /^(#{1,3})\s+(.*)$/.exec(line);
     if (heading) {
-      blocks.push({ kind: 'h', level: (heading[1]?.length ?? 1) as 1 | 2 | 3, text: heading[2] ?? '' });
+      // Both capture groups are mandatory (non-optional) in this pattern, so
+      // whenever `heading` itself is truthy, `heading[1]`/`heading[2]` are
+      // always matched strings (never `undefined`) — same dead-fallback
+      // reasoning as the `lines[i]` accesses above.
+      blocks.push({ kind: 'h', level: heading[1]!.length as 1 | 2 | 3, text: heading[2]! });
       i += 1;
       continue;
     }
@@ -77,8 +91,8 @@ function parseBlocks(input: string): Block[] {
     }
     if (/^>\s?/.test(line)) {
       const quoted: string[] = [];
-      while (i < lines.length && /^>\s?/.test(lines[i] ?? '')) {
-        quoted.push((lines[i] ?? '').replace(/^>\s?/, ''));
+      while (i < lines.length && /^>\s?/.test(lines[i]!)) {
+        quoted.push(lines[i]!.replace(/^>\s?/, ''));
         i += 1;
       }
       blocks.push({ kind: 'bq', text: quoted.join('\n') });
@@ -86,8 +100,8 @@ function parseBlocks(input: string): Block[] {
     }
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i] ?? '')) {
-        items.push((lines[i] ?? '').replace(/^\s*[-*]\s+/, ''));
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\s*[-*]\s+/, ''));
         i += 1;
       }
       blocks.push({ kind: 'ul', items });
@@ -95,16 +109,16 @@ function parseBlocks(input: string): Block[] {
     }
     if (/^\s*\d+[.)]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i] ?? '')) {
-        items.push((lines[i] ?? '').replace(/^\s*\d+[.)]\s+/, ''));
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\s*\d+[.)]\s+/, ''));
         i += 1;
       }
       blocks.push({ kind: 'ol', items });
       continue;
     }
     const paragraph: string[] = [];
-    while (i < lines.length && (lines[i] ?? '').trim() !== '' && !isBlockStart(lines[i] ?? '')) {
-      paragraph.push(lines[i] ?? '');
+    while (i < lines.length && lines[i]!.trim() !== '' && !isBlockStart(lines[i]!)) {
+      paragraph.push(lines[i]!);
       i += 1;
     }
     blocks.push({ kind: 'p', text: paragraph.join('\n') });
@@ -175,7 +189,10 @@ function renderInline(text: string): ReactNode {
           {link}
         </a>,
       );
-    lastIndex = match.index + (whole?.length ?? 0);
+    // `whole` is `match[0]` — a successful `RegExpExecArray` always has a
+    // defined (if possibly empty) full-match string at index 0, so this
+    // fallback is unreachable (same dead-fallback reasoning as above).
+    lastIndex = match.index + whole!.length;
     match = INLINE_RE.exec(text);
   }
   if (lastIndex < text.length) nodes.push(text.slice(lastIndex));

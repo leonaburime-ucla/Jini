@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { ChatTransport } from '../../transport.js';
 import { useRunStream } from './useRunStream.js';
 import { createFakeChatTransport } from './testing/fake-transport.js';
 
@@ -131,5 +132,156 @@ describe('useRunStream', () => {
     expect(result.current.events).toEqual([]);
     expect(result.current.runId).toBeNull();
     expect(transport.stoppedRunIds).toEqual([]);
+  });
+
+  it('start() wraps a non-Error rejection from transport.startRun via toError, and preserves a real Error message as-is', async () => {
+    const transport = {
+      startRun: vi.fn().mockRejectedValueOnce('boom-string').mockRejectedValueOnce(new Error('boom-error')),
+      reattachRun: vi.fn(),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useRunStream(transport));
+
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('boom-string');
+
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    expect(result.current.error?.message).toBe('boom-error');
+  });
+
+  it('reattach() also wraps a non-Error rejection from transport.reattachRun via toError, and preserves a real Error as-is', async () => {
+    const transport = {
+      startRun: vi.fn(),
+      reattachRun: vi.fn().mockRejectedValueOnce(404).mockRejectedValueOnce(new Error('reattach failed')),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useRunStream(transport));
+
+    await act(async () => {
+      await result.current.reattach('run-x');
+    });
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('404');
+
+    await act(async () => {
+      await result.current.reattach('run-y');
+    });
+    expect(result.current.error?.message).toBe('reattach failed');
+  });
+
+  it('a superseded start() whose transport promise later resolves still returns the runId, but must not clobber the newer state', async () => {
+    let resolveFirst!: (v: { runId: string }) => void;
+    const firstPromise = new Promise<{ runId: string }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let callCount = 0;
+    const transport = {
+      startRun: vi.fn(async () => {
+        callCount += 1;
+        return callCount === 1 ? firstPromise : { runId: 'run-2' };
+      }),
+      reattachRun: vi.fn(),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useRunStream(transport));
+
+    let firstCall!: Promise<{ runId: string } | null>;
+    act(() => {
+      firstCall = result.current.start({ history: [] });
+    });
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    expect(result.current.runId).toBe('run-2');
+
+    resolveFirst({ runId: 'run-1' });
+    let firstResult: { runId: string } | null = null;
+    await act(async () => {
+      firstResult = await firstCall;
+    });
+    expect(firstResult).toEqual({ runId: 'run-1' });
+    // The stale resolution must not have overwritten the current (run-2) state.
+    expect(result.current.runId).toBe('run-2');
+  });
+
+  it('a superseded start() whose transport promise later rejects is silently dropped (stale-generation catch guard)', async () => {
+    let rejectFirst!: (err: unknown) => void;
+    const firstPromise = new Promise<{ runId: string }>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let callCount = 0;
+    const transport = {
+      startRun: vi.fn(async () => {
+        callCount += 1;
+        return callCount === 1 ? firstPromise : { runId: 'run-2' };
+      }),
+      reattachRun: vi.fn(),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useRunStream(transport));
+
+    let firstCall!: Promise<{ runId: string } | null>;
+    act(() => {
+      firstCall = result.current.start({ history: [] });
+    });
+    await act(async () => {
+      await result.current.start({ history: [] });
+    });
+    expect(result.current.runId).toBe('run-2');
+
+    rejectFirst(new Error('late failure'));
+    let firstResult: { runId: string } | null = { runId: 'sentinel' };
+    await act(async () => {
+      firstResult = await firstCall;
+    });
+    expect(firstResult).toBeNull();
+    // The stale rejection must not have flipped status to error.
+    expect(result.current.status).toBe('streaming');
+    expect(result.current.runId).toBe('run-2');
+  });
+
+  it('a superseded reattach() whose transport promise later rejects is silently dropped (stale-generation catch guard)', async () => {
+    let rejectFirst!: (err: unknown) => void;
+    const firstPromise = new Promise<void>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let callCount = 0;
+    const transport = {
+      startRun: vi.fn(),
+      reattachRun: vi.fn(async () => {
+        callCount += 1;
+        if (callCount === 1) return firstPromise;
+        return undefined;
+      }),
+      stopRun: vi.fn(),
+      fetchRunStatus: vi.fn(),
+    } as unknown as ChatTransport;
+    const { result } = renderHook(() => useRunStream(transport));
+
+    act(() => {
+      void result.current.reattach('run-a');
+    });
+    await act(async () => {
+      await result.current.reattach('run-b');
+    });
+    expect(result.current.runId).toBe('run-b');
+
+    rejectFirst(new Error('late reattach failure'));
+    // Flush microtasks so the superseded reattach()'s catch runs.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.status).toBe('streaming');
+    expect(result.current.runId).toBe('run-b');
   });
 });

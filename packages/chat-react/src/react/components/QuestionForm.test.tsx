@@ -182,12 +182,19 @@ describe('QuestionForm', () => {
     });
 
     it('disables further picks once maxSelections is reached', async () => {
-      render(<QuestionForm form={checkboxForm} interactive onSubmit={vi.fn()} />);
+      const onAnswerChange = vi.fn();
+      render(<QuestionForm form={checkboxForm} interactive onSubmit={vi.fn()} onAnswerChange={onAnswerChange} />);
       await userEvent.click(screen.getByRole('checkbox', { name: 'Red' }));
       await userEvent.click(screen.getByRole('checkbox', { name: 'Blue' }));
       const green = screen.getByRole('checkbox', { name: 'Green' });
       expect(green).toBeDisabled();
       expect(green.closest('label')).toHaveClass('qf-chip-disabled');
+      // toggleCheckbox() itself defensively re-checks the cap (belt-and-braces
+      // alongside the `disabled` attribute) — dispatch the change event directly,
+      // bypassing the disabled attribute the way a stale/replayed event could, to
+      // prove the internal guard also holds and no third selection is recorded.
+      fireEvent.click(green);
+      expect(onAnswerChange).not.toHaveBeenCalledWith('colors', expect.arrayContaining(['green']));
     });
 
     it('blocks submit once a required checkbox has zero selections, and allows it once populated', async () => {
@@ -324,6 +331,18 @@ describe('QuestionForm', () => {
       const input = inputOfType(container, 'range');
       expect(input.value).toBe('0');
     });
+
+    it('falls back to min (or 0) for a transient undefined value while a min-less range question is streaming in', () => {
+      const q1: FormQuestion = { id: 'q1', label: 'First', type: 'text' };
+      const onSubmit = vi.fn();
+      const { rerender } = render(<QuestionForm form={questionForm([q1], { id: 'g' })} interactive onSubmit={onSubmit} />);
+      const q2: FormQuestion = { id: 'q2', label: 'Volume', type: 'range' };
+      // No submittedAnswers this time, so this render pass's `currentAnswers` is the
+      // (not-yet-backfilled) `answers` state — q2 is genuinely undefined for one pass.
+      rerender(<QuestionForm form={questionForm([q1, q2], { id: 'g' })} interactive onSubmit={onSubmit} />);
+      const rangeInput = document.querySelector('input[type="range"]') as HTMLInputElement;
+      expect(rangeInput.value).toBe('0');
+    });
   });
 
   describe('color question', () => {
@@ -393,7 +412,7 @@ describe('QuestionForm', () => {
         { id: 'cover', label: 'Cover', type: 'file' },
       ]);
       const onSubmit = vi.fn();
-      const { container } = render(<QuestionForm form={q} interactive onSubmit={onSubmit} />);
+      const { container, unmount } = render(<QuestionForm form={q} interactive onSubmit={onSubmit} />);
       const [avatarInput, coverInput] = container.querySelectorAll('input[type="file"]');
       const file = new File(['data'], 'headshot.png');
       await userEvent.upload(avatarInput as HTMLInputElement, file);
@@ -402,11 +421,12 @@ describe('QuestionForm', () => {
       const [, , files] = onSubmit.mock.calls[0]!;
       expect(files).toEqual([{ questionId: 'avatar', questionLabel: 'Avatar', files: [file] }]);
       void coverInput;
+      unmount();
 
       onSubmit.mockClear();
       const q2 = questionForm([{ id: 'avatar', label: 'Avatar', type: 'file' }]);
       render(<QuestionForm form={q2} interactive onSubmit={onSubmit} />);
-      await userEvent.click(screen.getAllByRole('button', { name: 'Continue' })[0]!);
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
       expect(onSubmit).toHaveBeenCalledTimes(1);
       expect(onSubmit.mock.calls[0]!.length).toBe(2);
     });
@@ -458,8 +478,9 @@ describe('QuestionForm', () => {
       const swatches = container.querySelectorAll('.qf-card-swatch');
       expect(swatches.length).toBe(6);
       expect(screen.getByText('Bold and vivid')).toBeInTheDocument();
-      expect(screen.getByText('A · B · C · D')).toBeInTheDocument();
-      expect(screen.queryByText('E', { exact: false })).not.toHaveTextContent('E ·');
+      const refsParagraph = container.querySelector('.qf-card-refs')!;
+      expect(refsParagraph.textContent).toBe('References: A · B · C · D');
+      expect(refsParagraph.textContent).not.toContain('E');
 
       // The "plain" card has no palette/mood/references — those sections must not render for it.
       const cardLabels = container.querySelectorAll('label.qf-card');
@@ -520,8 +541,17 @@ describe('QuestionForm', () => {
       const q4: FormQuestion = { id: 'q4', label: 'Fourth', type: 'radio', options: [{ label: 'A', value: 'a' }] };
       const q5: FormQuestion = { id: 'q5', label: 'Fifth', type: 'checkbox', options: [{ label: 'A', value: 'a' }] };
       const q6: FormQuestion = { id: 'q6', label: 'Sixth', type: 'range', min: 3 };
-      const grownForm = questionForm([q1, q2, q3, q4, q5, q6], { id: 'growing' });
-      const submittedAnswers = { q1: 'kept', q7: 'irrelevant-because-not-a-question' };
+      const q8: FormQuestion = { id: 'q8', label: 'Eighth', type: 'number' };
+      const q9: FormQuestion = { id: 'q9', label: 'Ninth', type: 'date' };
+      const q10: FormQuestion = { id: 'q10', label: 'Tenth', type: 'url' };
+      const q11: FormQuestion = { id: 'q11', label: 'Eleventh', type: 'textarea' };
+      const q12: FormQuestion = { id: 'q12', label: 'Twelfth', type: 'file' };
+      const q13: FormQuestion = { id: 'q13', label: 'Thirteenth', type: 'select', options: [{ label: 'A', value: 'a' }] };
+      // Backfilled via the submittedAnswers path in the effect (line 68) — distinct from
+      // q2's defaultValue path and q3's empty-value path.
+      const q14: FormQuestion = { id: 'q14', label: 'Fourteenth', type: 'text' };
+      const grownForm = questionForm([q1, q2, q3, q4, q5, q6, q8, q9, q10, q11, q12, q13, q14], { id: 'growing' });
+      const submittedAnswers = { q1: 'kept', q14: 'from-submitted-answers', q7: 'irrelevant-because-not-a-question' };
 
       // Grow the form while also passing submittedAnswers so the backfill effect's
       // submittedAnswers-branch executes too (even though currentAnswers only reads
@@ -532,8 +562,7 @@ describe('QuestionForm', () => {
 
       expect(screen.getByDisplayValue('kept')).toBeInTheDocument();
       expect(screen.getByDisplayValue('defaulted')).toBeInTheDocument();
-      const thirdInput = screen.getByRole('textbox', { name: '' }) || null;
-      void thirdInput;
+      expect(screen.getByDisplayValue('from-submitted-answers')).toBeInTheDocument();
       // q3 has no default and wasn't in submittedAnswers -> backfilled to ''.
       const allTextboxes = screen.getAllByRole('textbox') as HTMLInputElement[];
       expect(allTextboxes.some((el) => el.value === '')).toBe(true);
@@ -542,6 +571,124 @@ describe('QuestionForm', () => {
       // q6 (range) backfilled to its min.
       const rangeInput = document.querySelector('input[type="range"]') as HTMLInputElement;
       expect(rangeInput.value).toBe('3');
+      expect((document.querySelector('input[type="number"]') as HTMLInputElement).value).toBe('');
+      expect((document.querySelector('input[type="date"]') as HTMLInputElement).value).toBe('');
+      expect((document.querySelector('input[type="url"]') as HTMLInputElement).value).toBe('');
+      expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+      expect((document.querySelector('select') as HTMLSelectElement).value).toBe('');
+      expect(document.querySelector('input[type="file"] ~ .qf-file-summary')).toBeNull();
+    });
+  });
+
+  describe('locked-form defensive guards (update/toggle handlers must no-op even if invoked directly)', () => {
+    it('update() no-ops on a locked text question when its onChange is invoked directly', () => {
+      const q = questionForm([{ id: 'notes', label: 'Notes', type: 'text' }]);
+      const { container } = render(<QuestionForm form={q} interactive={false} onSubmit={vi.fn()} />);
+      const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'should not apply' } });
+      expect(input.value).toBe('');
+    });
+
+    it('toggleCheckbox() no-ops on a locked checkbox when its onChange is invoked directly', () => {
+      const q = questionForm([{ id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }] }]);
+      const { container } = render(<QuestionForm form={q} interactive={false} onSubmit={vi.fn()} />);
+      const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(checkbox);
+      expect(checkbox.checked).toBe(false);
+    });
+
+    it('updateCheckboxCustom() no-ops on a locked checkbox custom input when invoked directly', () => {
+      const q = questionForm([{ id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }] }]);
+      render(<QuestionForm form={q} interactive={false} onSubmit={vi.fn()} />);
+      const customInput = screen.getByPlaceholderText('Type your own answer') as HTMLInputElement;
+      fireEvent.change(customInput, { target: { value: 'sneaky' } });
+      expect(customInput.value).toBe('');
+    });
+  });
+
+  describe('checkbox internal defensive branches', () => {
+    it('toggleCheckbox treats a non-array current answer (malformed defaultValue) as an empty selection', async () => {
+      const q = questionForm([{ id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }], defaultValue: 'red' as unknown as string }]);
+      const onAnswerChange = vi.fn();
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} onAnswerChange={onAnswerChange} />);
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Red' }));
+      expect(onAnswerChange).toHaveBeenLastCalledWith('colors', ['red']);
+    });
+
+    it('updateCheckboxCustom treats a non-array current answer as an empty selection too', async () => {
+      const q = questionForm([{ id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }], defaultValue: 'red' as unknown as string }]);
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} />);
+      const customInput = screen.getByPlaceholderText('Type your own answer');
+      fireEvent.change(customInput, { target: { value: 'Teal' } });
+      expect((customInput as HTMLInputElement).value).toBe('Teal');
+    });
+
+    it('toggling a checkbox without maxSelections defined works both on and off, and forwards onDraftChange', async () => {
+      const q = questionForm([{ id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }] }]);
+      const onDraftChange = vi.fn();
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} onDraftChange={onDraftChange} />);
+      const red = screen.getByRole('checkbox', { name: 'Red' });
+      await userEvent.click(red);
+      expect(onDraftChange).toHaveBeenLastCalledWith({ colors: ['red'] });
+      await userEvent.click(red);
+      expect(onDraftChange).toHaveBeenLastCalledWith({ colors: [] });
+    });
+
+    it('canonicalizeQuestionValue maps an array defaultValue through formOptionValueForLabel per-entry', () => {
+      const q = questionForm([
+        { id: 'colors', label: 'Colors', type: 'checkbox', options: [{ label: 'Red', value: 'red' }, { label: 'Blue', value: 'blue' }], defaultValue: ['Red', 'Blue'] },
+      ]);
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} />);
+      expect(screen.getByRole('checkbox', { name: 'Red' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'Blue' })).toBeChecked();
+    });
+  });
+
+  describe('remaining ternary sides', () => {
+    it('switch toggles back off after being turned on', async () => {
+      const q = questionForm([{ id: 'agree', label: 'Agree', type: 'switch' }]);
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} />);
+      const toggle = screen.getByRole('switch') as HTMLInputElement;
+      await userEvent.click(toggle);
+      expect(toggle.checked).toBe(true);
+      await userEvent.click(toggle);
+      expect(toggle.checked).toBe(false);
+    });
+
+    it('a locked direction-cards question renders its cards with the disabled styling', () => {
+      const q = questionForm([
+        { id: 'direction', label: 'Direction', type: 'direction-cards', cards: [{ id: 'warm', label: 'Warm', mood: '', references: [], palette: [], displayFont: 'serif', bodyFont: 'sans-serif' }] },
+      ]);
+      const { container } = render(<QuestionForm form={q} interactive={false} onSubmit={vi.fn()} />);
+      expect(container.querySelector('label.qf-card')).toHaveClass('qf-card-disabled');
+    });
+
+    it('typing into the radio question\'s own custom-choice input records the raw value directly', async () => {
+      const q = questionForm([{ id: 'platform', label: 'Platform', type: 'radio', options: [{ label: 'Mobile', value: 'mobile' }] }]);
+      const onAnswerChange = vi.fn();
+      render(<QuestionForm form={q} interactive onSubmit={vi.fn()} onAnswerChange={onAnswerChange} />);
+      const customInput = screen.getByPlaceholderText('Type your own answer');
+      await userEvent.type(customInput, 'X');
+      expect(onAnswerChange).toHaveBeenCalledWith('platform', 'X');
+    });
+
+    it('re-selecting a file input with zero files clears the recorded filename', async () => {
+      const q = questionForm([{ id: 'avatar', label: 'Avatar', type: 'file' }]);
+      const { container } = render(<QuestionForm form={q} interactive onSubmit={vi.fn()} />);
+      const fileInput = inputOfType(container, 'file');
+      await userEvent.upload(fileInput, new File(['x'], 'a.png'));
+      expect(screen.getByText('a.png')).toBeInTheDocument();
+      fireEvent.change(fileInput, { target: { files: [] } });
+      expect(screen.queryByText('a.png')).not.toBeInTheDocument();
+    });
+
+    it('tolerates a change event whose target.files is nullish (per the DOM\'s FileList | null typing)', () => {
+      const q = questionForm([{ id: 'avatar', label: 'Avatar', type: 'file' }]);
+      const { container } = render(<QuestionForm form={q} interactive onSubmit={vi.fn()} />);
+      const fileInput = inputOfType(container, 'file');
+      Object.defineProperty(fileInput, 'files', { value: null, configurable: true });
+      expect(() => fireEvent.change(fileInput)).not.toThrow();
+      expect(screen.queryByText('a.png')).not.toBeInTheDocument();
     });
   });
 });

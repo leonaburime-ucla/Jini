@@ -63,4 +63,65 @@ describe('MessageRow', () => {
     render(<MessageRow message={message} />);
     expect(screen.getByText('This turn failed.')).toBeInTheDocument();
   });
+
+  it('renders a user message with no attachments (no attachment tray at all)', () => {
+    const message: ChatMessage = { id: 'u2', role: 'user', content: 'no attachments here' };
+    const { container } = render(<MessageRow message={message} />);
+    expect(container.querySelector('.jini-message-attachments')).not.toBeInTheDocument();
+  });
+
+  it('uses a custom renderAttachment for a user message attachment chip', () => {
+    const message: ChatMessage = { id: 'u3', role: 'user', content: 'see attached', attachments: [{ path: '/a.png', name: 'a.png', kind: 'image' }] };
+    render(<MessageRow message={message} renderAttachment={(a) => <span data-testid="custom-chip">{a.name.toUpperCase()}</span>} />);
+    expect(screen.getByTestId('custom-chip')).toHaveTextContent('A.PNG');
+  });
+
+  it('renders the agent name badge when the message has one', () => {
+    const message: ChatMessage = { id: 'a7', role: 'assistant', content: 'hi', agentName: 'Researcher', runStatus: 'succeeded' };
+    render(<MessageRow message={message} />);
+    expect(screen.getByText('Researcher')).toBeInTheDocument();
+  });
+
+  it('skips an empty/whitespace-only text segment between a leading question-form and following content', () => {
+    const content = '<question-form id="q1" title="Pick">\n{"questions":[{"id":"x","label":"X","type":"text"}]}\n</question-form>\n   \n';
+    const message: ChatMessage = { id: 'a8', role: 'assistant', content, runStatus: 'succeeded' };
+    const { container } = render(<MessageRow message={message} />);
+    // Only the question-form segment renders content; the trailing whitespace-only
+    // text segment must not produce an empty `.jini-message-content` div.
+    expect(container.querySelectorAll('.jini-message-content')).toHaveLength(0);
+    expect(screen.getByText('Pick')).toBeInTheDocument();
+  });
+
+  it('renders submittedAnswers (locked, read-only) on the inline question-form when provided', () => {
+    const content = '<question-form id="q2" title="Done already">\n{"questions":[{"id":"x","label":"X","type":"text"}]}\n</question-form>';
+    const message: ChatMessage = { id: 'a9', role: 'assistant', content, runStatus: 'succeeded' };
+    render(<MessageRow message={message} questionFormSubmittedAnswers={{ x: 'locked answer' }} />);
+    expect(screen.getByDisplayValue('locked answer')).toBeInTheDocument();
+    expect(screen.getByText('You answered this')).toBeInTheDocument();
+  });
+
+  it('renders an inline question-form with no onQuestionFormSubmit wired (footer button hidden)', () => {
+    const content = '<question-form id="q3" title="No handler">\n{"questions":[{"id":"x","label":"X","type":"text"}]}\n</question-form>';
+    const message: ChatMessage = { id: 'a10', role: 'assistant', content, runStatus: 'succeeded' };
+    render(<MessageRow message={message} questionFormInteractive />);
+    expect(screen.getByText('No handler')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  });
+
+  it('forwards projectFileNames/onRequestOpenFile to the tool timeline', async () => {
+    const message: ChatMessage = {
+      id: 'a11',
+      role: 'assistant',
+      content: '',
+      events: [
+        { kind: 'tool_use', id: 't2', name: 'Read', input: { file_path: 'known.txt' } },
+        { kind: 'tool_result', toolUseId: 't2', content: 'contents', isError: false },
+      ],
+      runStatus: 'succeeded',
+    };
+    const onRequestOpenFile = vi.fn();
+    render(<MessageRow message={message} runSucceeded projectFileNames={new Set(['known.txt'])} onRequestOpenFile={onRequestOpenFile} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open' }));
+    expect(onRequestOpenFile).toHaveBeenCalledWith('known.txt');
+  });
 });

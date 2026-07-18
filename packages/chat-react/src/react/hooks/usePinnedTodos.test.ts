@@ -56,4 +56,21 @@ describe('usePinnedTodos', () => {
     const { result } = renderHook(() => usePinnedTodos(messages));
     expect(result.current.todos[0]?.status).toBe('stopped');
   });
+
+  it('falls back to String(input) for the dismissal key when the raw plan input cannot be JSON.stringified (e.g. circular)', () => {
+    const circular: Record<string, unknown> = { content: 'x', status: 'completed' };
+    circular['self'] = circular;
+    const message: ChatMessage = {
+      id: 'm1',
+      role: 'assistant',
+      content: '',
+      events: [{ kind: 'tool_use', id: 't1', name: 'TodoWrite', input: { todos: [circular] } }],
+    };
+    const { result } = renderHook(() => usePinnedTodos([message]));
+    expect(result.current.allComplete).toBe(true);
+    // Must not throw despite JSON.stringify failing internally, and dismiss() must
+    // still work off the String(input) fallback key.
+    act(() => result.current.dismiss());
+    expect(result.current.visible).toBe(false);
+  });
 });

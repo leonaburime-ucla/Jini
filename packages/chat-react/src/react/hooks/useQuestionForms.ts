@@ -78,8 +78,10 @@ export function useQuestionForms(messages: ReadonlyArray<ChatMessage> | undefine
  * locked "answered" state with the user's picks visible.
  */
 export function parseSubmittedAnswers(form: QuestionForm, userMessageContent: string): QuestionFormAnswers | null {
+  // `String.prototype.split` always returns an array of length >= 1 (even
+  // `''.split('\n')` is `['']`), so `lines` can never be empty here — no
+  // `lines.length === 0` guard is needed (removed as provably-dead).
   const lines = userMessageContent.split('\n').map((l) => l.trim());
-  if (lines.length === 0) return null;
   const header = lines[0] ?? '';
   if (!/^\[form answers/i.test(header)) return null;
   const answers: QuestionFormAnswers = {};
@@ -89,8 +91,11 @@ export function parseSubmittedAnswers(form: QuestionForm, userMessageContent: st
     const line = lines[i] ?? '';
     const m = /^[-*]\s*([^:]+):\s*(.*)$/.exec(line);
     if (!m) continue;
-    const labelKey = (m[1] ?? '').trim().toLowerCase();
-    const value = (m[2] ?? '').trim();
+    // Both capture groups are required (non-optional) in this pattern, so
+    // they're always defined once `m` is non-null — TS just can't express
+    // that for regex capture groups.
+    const labelKey = m[1]!.trim().toLowerCase();
+    const value = m[2]!.trim();
     const id = labelToId.get(labelKey);
     if (!id) continue;
     const question = form.questions.find((x) => x.id === id);

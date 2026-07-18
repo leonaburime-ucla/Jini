@@ -75,6 +75,19 @@ describe('useQuestionForms', () => {
     expect(result.current.forms).toEqual([]);
     expect(result.current.activeForm).toBeNull();
   });
+
+  it('treats a following user message that is not a recognizable form-answers reply as unsubmitted (the ?? undefined fallback)', () => {
+    const messages: ChatMessage[] = [
+      { id: '1', role: 'user', content: 'help me build something' },
+      { id: '2', role: 'assistant', content: FORM_CONTENT },
+      { id: '3', role: 'user', content: 'just a normal follow-up message, not a form reply' },
+    ];
+    const { result } = renderHook(() => useQuestionForms(messages));
+    const form = result.current.forms[0]!;
+    expect(form.submittedAnswers).toBeUndefined();
+    // Not the last message anymore, so it's also not interactive.
+    expect(form.interactive).toBe(false);
+  });
 });
 
 describe('parseSubmittedAnswers', () => {

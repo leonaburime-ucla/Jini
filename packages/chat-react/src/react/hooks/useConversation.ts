@@ -11,7 +11,7 @@
  * this hook never imports `fetch`/`EventSource` itself.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentEvent, ChatAttachment, ChatMessage } from '@jini/chat-core';
+import type { AgentEvent, ChatAttachment, ChatMessage, RunStatus } from '@jini/chat-core';
 import { isTerminalRunStatus } from '@jini/chat-core';
 import type { ChatTransport, RunContext } from '../../transport.js';
 import { useRunStream } from './useRunStream.js';
@@ -84,16 +84,14 @@ export function useConversation(options: UseConversationOptions): UseConversatio
     setMessagesState((prev) =>
       prev.map((m) => {
         if (m.id !== assistantId) return m;
-        const runStatus =
-          run.status === 'streaming'
-            ? 'running'
-            : run.status === 'done'
-              ? 'succeeded'
-              : run.status === 'error'
-                ? 'failed'
-                : run.status === 'canceled'
-                  ? 'canceled'
-                  : m.runStatus;
+        // A plain if/else chain (not a nested ternary) — deliberately, so
+        // each of the four mapped statuses is its own independently
+        // trackable branch under coverage instrumentation.
+        let runStatus: RunStatus | undefined = m.runStatus;
+        if (run.status === 'streaming') runStatus = 'running';
+        else if (run.status === 'done') runStatus = 'succeeded';
+        else if (run.status === 'error') runStatus = 'failed';
+        else if (run.status === 'canceled') runStatus = 'canceled';
         const nextRunId = run.runId ?? m.runId;
         return {
           ...m,
