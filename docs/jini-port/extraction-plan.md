@@ -111,12 +111,29 @@ targets, real tool-execution wiring).
 
 Requirement: keep absorbing OD's upstream GitHub fixes. `git format-patch` targets exact paths, so:
 
-1. **Hollow re-exports.** The OD adapter (`products/open-design/daemon/…`) **retains OD's exact upstream file tree**. Every file lifted into `@jini/*` is gutted to a 1-line re-export (`export { EventSink } from '@jini/daemon'`). Upstream patches still hit the path.
+1. **Hollow re-exports.** The OD adapter (`integrations/open-design/daemon/…` — corrected 2026-07-17; this doc previously said `products/open-design/daemon/…`, stale from before this repo's `integrations/` rename) **retains OD's exact upstream file tree**. Every file lifted into `@jini/*` is gutted to a 1-line re-export (`export { EventSink } from '@jini/daemon'`). Upstream patches still hit the path.
 2. **Sync-ownership manifest.** Maps every upstream daemon path → `product-owned` (patch applies normally, product logic) or `delegated-to-jini` (implementation now lives in a package).
-3. **Patch canary in CI (permanent).** Applies representative real upstream patches with a tested directory transform (`apps/daemon/… → products/open-design/daemon/…`). A patch touching a `delegated-to-jini` path **fails CI** until the equivalent `@jini/*` package patch + conformance test land — this prevents a fix applying to a *dead compatibility copy* while the running impl stays vulnerable.
+3. **Patch canary in CI (permanent).** Applies representative real upstream patches with a tested directory transform (`apps/daemon/… → integrations/open-design/daemon/…`). A patch touching a `delegated-to-jini` path **fails CI** until the equivalent `@jini/*` package patch + conformance test land — this prevents a fix applying to a *dead compatibility copy* while the running impl stays vulnerable.
 4. **Strangler-fig OD adapter.** Mount OD's Express app whole behind `createDaemon` first; migrate a route group to a pack only after a churn audit (git-log frequency) shows upstream rarely touches it. Patchability is the default; pack-migration is the earned exception.
 
 Note (verified): OD's `agent-runtime` zone is HIGH-churn (stream parsers, the `mocks/` replay harness), not "rarely changes" — so path-mirror those lifted files and keep a patch-router that re-targets upstream diff headers to engine paths.
+
+**Scope is `apps/daemon` only — do not expand to other OD apps without re-reading §12 C7
+and `docs/jini-port/recon/r7-od-real-backend-architecture.md` first.** `apps/desktop`
+and `apps/packaged` are real but small (verified 2026-07-17: ~13.5k and ~7.3k real
+hand-written lines respectively) and C7 explicitly says not to generalize them into
+this mechanism yet. `apps/telemetry-worker` doesn't even exist on upstream
+`nexu-io/open-design` — it's fork-only (see r7 §3) — and is out of scope entirely,
+not just deferred.
+
+**Source of truth for OD's real current structure**: read
+`/Users/la/Desktop/Programming/OSS-Repos/open-design` (a full clone, both
+`origin=nexu-io/open-design` and `fork=leonaburime-ucla/open-design` remotes) — not
+this repo's `integrations/open-design/reference/**`, which is a frozen 2026-07-16
+extraction-time snapshot (see the caveat in `integrations/open-design/README.md`).
+`AI-Dev-Shop/integrations/graphify/` and `AI-Dev-Shop/integrations/codebase-memory-mcp/`
+both already have that clone indexed/graphed — query those before re-deriving
+structure from scratch.
 
 ## 5. Consumers
 
@@ -139,6 +156,22 @@ AI-Dev-Shop (pipeline defs — HOW) + ADS-memory (durable decisions/knowledge) +
 
 Two standing gates on every task — **N**: `examples/minimal-host` installs only packed `@jini/*` tarballs, OD-noun/import ban; **O**: the OD patch canary dry-runs and rejects unclassified touched paths.
 
+**Verified status as of 2026-07-17** (ground truth from real `packages/*/src` +
+`source-map.md` content, not from this list's own prose, which had drifted stale —
+see `docs/jini-port/refactor-roadmap.md` for the fuller tracker): task 1 is
+**red-spec only** (`integrations/open-design/sync-ownership.test.ts` +
+`docs/jini-port/milestone-1-red-spec.md` pin the target; `sync-ownership.manifest.json`
+and `scripts/patch-canary.ts` don't exist yet — this is the actual next unblocked
+step). Tasks 2–4 (protocol/core/platform+sidecar) have real work landed, not tracked
+against this ledger. Task 5 (`@jini/daemon`) has real partial content (10 files +
+`source-map.md`, RunLifecycle/EventLog/close-status) — not "not started." Task 7
+(`@jini/agent-runtime`) has real content (365 ported craft/skills files) but zero
+TypeScript runtime/registry code — the instance registry itself is still greenfield.
+Tasks 6, 8, 9 (`ToolExecutor`, `@jini/sqlite`, `@jini/http`+`@jini/cli`) are genuinely
+untouched — `sqlite`/`http`/`cli`/`node-host`/`chat-react`/`renderers-react` are all
+single-line placeholder files. Task 10 is untouched and, per §4's scope note above,
+should stay scoped to `apps/daemon` only when it's eventually picked up.
+
 1. **Harnesses + sync-ownership manifest.** N health-boot from tarballs; a known upstream daemon patch applies via the path transform.
 2. **`@jini/protocol`** — run events/errors/cursors/cancellation/idempotency, seeded from `packages/contracts` with OD nouns stripped. Gate: fixture compiles without OD contracts; no sync-owned OD path changed.
 3. **Typed tokens + bindings + resolver + startup diagnostics** in `@jini/core`. Gate: tests prove missing/duplicate/version errors are legible; patch canary green.
@@ -148,7 +181,7 @@ Two standing gates on every task — **N**: `examples/minimal-host` installs onl
 7. **`@jini/agent-runtime`** with instance registry (built-ins generated; external agent packs). Gate: minimal-host drives OD's `mocks/` replay CLIs end-to-end; a historical `runtimes/defs/*` patch re-targets via the router; delegated-path security patches update both OD mapping and Jini.
 8. **Store ports + `@jini/sqlite`.** Gate: minimal-host survives restart + cursor replay; a Postgres *stub* compiles against the async ports; conformance suite has no OD schema nouns.
 9. **Runs + chat app-services (no HTTP yet), then `@jini/http` + `@jini/cli`.** Gate: same fixture run works via HTTP and CLI `--json --prompt-file`; adding a command pack needs no central `SUBCOMMAND_MAP` edit.
-10. **`products/open-design/daemon/` adapter behind the facade + external-consumption proof.** Gate: OD boots green; OD/Open-Marketing/Tovu consume packed tarballs; a representative upstream security patch applies and tests the RUNNING impl (not a dead copy). This canary stays in CI permanently.
+10. **`integrations/open-design/daemon/` adapter behind the facade + external-consumption proof** (corrected path — see §4). Gate: OD boots green; OD/Open-Marketing/Tovu consume packed tarballs; a representative upstream security patch applies and tests the RUNNING impl (not a dead copy). This canary stays in CI permanently. **Scope: `apps/daemon` only** (see §4 and §12 C7) — `desktop`/`packaged`/`telemetry-worker` are not part of this task.
 
 ## 9. The 2-year rot vector + guardrail
 
@@ -195,7 +228,7 @@ Define in `@jini/protocol` a single envelope: `{ runId, eventId, opaqueCursor, p
 `[V]` `project-runner` **does not exist in any repo**; AI-Dev-Shop already has a canonical 9-state job machine; ADS-memory is a per-project markdown workspace (a rename of `ADS-project-knowledge`), and the three AI-Dev-Shop clones have **already diverged**. **Fix:** direction = AI-Dev-Shop (declarative pipeline/personas/gates = HOW) → project-runner (interprets them; owns jobs/leases/attempts/sandbox/checkpoints = executable truth) → ADS-memory (durable decisions/evidence/immutable summaries; NOT live scheduler state). **Adopt** AI-Dev-Shop's existing state machine; render its markdown lifecycle *from* the runner's compact states (`queued→leased/running→succeeded` + retry/waiting_for_human/failed/cancelled + lease expiry). Convert the §8 ten milestones into a **hashed project-runner DAG** (keyed to this plan's hash); each milestone → red-spec/impl/package-contract/tarball/consumer-canary/evidence tasks; runner state authoritative, `tasks.md`/`pipeline-state.md` become generated views. **Bootstrap minimal:** local SQLite runner, one worker, filesystem sandbox, manual approval — do NOT block extraction on a distributed scheduler. Canonicalize ONE AI-Dev-Shop (published/pinned); the in-repo copy is an init template only.
 
 ### C7 — Desktop / sidecar / RenderService
-`[V]` OD desktop/packaged ≈ 14k lines (incl. a 3k updater + Chromium PDF/deck capture) — do not generalize now; `desktop-host` deferral is clean **only if every `@jini/*` stays Electron-free** and consumers own windows/updater/installer/dialogs. `[V]` `@jini/sidecar` is extractable but its IPC handler accepts `any` and OD's protocol includes `eval`/click/screenshot/export/update — Jini needs a **typed codec/dispatcher with host-supplied schemas + authenticated capability negotiation**; `eval`/inspect = a dev-only host extension, not the default protocol. **`RenderService`** is a **capability contract defined early** (daemon export routes already depend on it — `[V]` PDF/deck delegate to Electron over sidecar, and a *second* path uses daemon-side puppeteer) but it is a **provider bound via the registry, not a kernel service**: shape it as `renderToPdf(html)→bytes` / `capture(html)→png` + viewport/timeout/abort/resource-policy; Electron / headless-Chromium / Tauri are adapters. Tauri spike is narrow: sidecar launch/discovery, URL load, shutdown, crash recovery, single-instance, open-path/open-external — NOT updaters/deck/parity.
+`[V]` OD `apps/desktop` ≈ 13.5k real hand-written lines (incl. a 3.5k updater + Chromium PDF/deck capture; re-verified 2026-07-17 — a naive `find` reports 86.7k, 6.4x inflated by one vendored `dom-to-pptx` bundle + duplicate compiled `dist/` output, see `docs/jini-port/recon/r7-od-real-backend-architecture.md` §1–2) — do not generalize now; `desktop-host` deferral is clean **only if every `@jini/*` stays Electron-free** and consumers own windows/updater/installer/dialogs. `apps/packaged` is a separate, smaller surface (~7.3k real lines, no vendor bloat) this estimate didn't originally cover — same "don't generalize now" caution applies, just for a different reason (small, not complex). `[V]` `@jini/sidecar` is extractable but its IPC handler accepts `any` and OD's protocol includes `eval`/click/screenshot/export/update — Jini needs a **typed codec/dispatcher with host-supplied schemas + authenticated capability negotiation**; `eval`/inspect = a dev-only host extension, not the default protocol. **`RenderService`** is a **capability contract defined early** (daemon export routes already depend on it — `[V]` PDF/deck delegate to Electron over sidecar, and a *second* path uses daemon-side puppeteer) but it is a **provider bound via the registry, not a kernel service**: shape it as `renderToPdf(html)→bytes` / `capture(html)→png` + viewport/timeout/abort/resource-policy; Electron / headless-Chromium / Tauri are adapters. Tauri spike is narrow: sidecar launch/discovery, URL load, shutdown, crash recovery, single-instance, open-path/open-external — NOT updaters/deck/parity.
 
 ### C8 — Cross-cutting: versioning, observability, security
 - **Versioning:** lockstep all ~14 packages through the unstable period; anchor semver meaning on `@jini/protocol` + `@jini/core`; publish one tested release *set* + a machine-readable compatibility manifest; split independent versioning only after protocol stability.

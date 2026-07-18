@@ -13,12 +13,12 @@ yet in the ledger — see "The ledger gap" below).
 | 2 | `@jini/protocol` | Real work done directly (not via ledger) — ledger still shows `queued`, needs reconciliation once reached |
 | 3 | `@jini/core` | Same as above |
 | 4 | `@jini/platform` + `@jini/sidecar` | Same as above |
-| 5 | `@jini/daemon` (RunLifecycle + EventLog) | Not started |
+| 5 | `@jini/daemon` (RunLifecycle + EventLog) | **Real partial progress** (verified 2026-07-17) — 10 real files + `source-map.md` (event-log/close-status/run-lifecycle/tokens), not "not started." Ledger not reconciled, same gap as 2-4. |
 | 6 | ToolExecutor boundary | Not started |
-| 7 | `@jini/agent-runtime` | Not started |
-| 8 | `@jini/sqlite` + store ports | Not started |
-| 9 | Runs/chat app-services + `@jini/http` + `@jini/cli` | Not started |
-| 10 | `products/open-design/daemon/` adapter + external-consumption proof | Not started |
+| 7 | `@jini/agent-runtime` | **Partial** — 365 real files (ported craft/skills content catalog), but zero TypeScript runtime/registry code yet. The actual instance registry this milestone is about is still greenfield. |
+| 8 | `@jini/sqlite` + store ports | Not started (confirmed empty placeholder) |
+| 9 | Runs/chat app-services + `@jini/http` + `@jini/cli` | Not started (confirmed empty placeholders) |
+| 10 | `integrations/open-design/daemon/` adapter + external-consumption proof (corrected path, was `products/open-design/daemon/`) | Not started. Scope is `apps/daemon` only — see `docs/jini-port/recon/r7-od-real-backend-architecture.md`. |
 
 **The ledger gap:** milestones 2-4's `WorkItem`s are still `queued` in the
 ledger even though the real work exists in `packages/protocol`,
@@ -54,8 +54,14 @@ same kind of analysis r4-webui.md did by hand for the ~12 chat files, at 18x
 the scale. Two ways to do it, neither available/decided yet:
 1. Install graphify or codebase-memory-mcp (per
    `AI-Dev-Shop/integrations/backends.manifest.json`) and run a real import-graph
-   clustering pass. More thorough, more setup cost, and per AI-Dev-Shop's own
-   rule nothing installs automatically — needs an explicit go-ahead.
+   clustering pass. **Update 2026-07-17: both are now installed and already have
+   `/Users/la/Desktop/Programming/OSS-Repos/open-design` graphed/indexed**
+   (`AI-Dev-Shop/integrations/graphify/`'s `graphify-out/` + `codebase-memory-mcp`'s
+   CLI) — the setup-cost objection no longer applies; this option is now the cheap
+   one (query existing output) rather than the expensive one. See
+   `docs/jini-port/recon/r7-od-real-backend-architecture.md` for an example of using
+   this for the backend; the same tooling can be pointed at `apps/web/src/components/`
+   for this frontend sweep.
 2. Replicate r4's manual method (grep-count design/brand/plugin/figma/deck
    references per file, same technique already proven on the chat surface) at
    217-file scale. Zero setup, more manual/scrappy, already proven to work.

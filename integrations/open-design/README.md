@@ -13,3 +13,23 @@ This adapter keeps OD's **exact upstream daemon file tree**. Every file lifted i
 - `identity/` — product name/appId/`OD_*` env/`--od-stamp-*`, injected into `@jini/release`/`@jini/sidecar`.
 - `web/` — OD's feature-sliced Vite app.
 - `reference/od-web-src.orig/` — the real OD web tree (the source for frontend extraction; the original `apps/web/src` symlink into Tovu was broken).
+
+## Reliability caveat on `reference/**`
+
+`reference/od-web-src.orig/`, `components-original/`, `dev-skills-original/`,
+`craft-original/`, and `skills-original/` are a **frozen snapshot taken at this repo's
+2026-07-16 extraction-time init commit**, not a live or guaranteed-faithful mirror of
+OD. Treat any structural or architectural claim derived from `reference/**` as
+unverified unless it's already cited in an existing `packages/*/source-map.md`.
+
+For anything not already covered by a `source-map.md`, read the real, untouched OD
+clone instead: `/Users/la/Desktop/Programming/OSS-Repos/open-design` (full history,
+`origin=nexu-io/open-design` + `fork=leonaburime-ucla/open-design` remotes). Two
+analysis tools are already computed/available against that clone — check these before
+re-deriving structure from scratch:
+- `AI-Dev-Shop/integrations/graphify/` — a full graph is already computed at
+  `OSS-Repos/open-design/graphify-out/` (`GRAPH_REPORT.md`, `graph.json`,
+  `manifest.json`): community detection, god-nodes, import cycles.
+- `AI-Dev-Shop/integrations/codebase-memory-mcp/` — binary installed, OD indexed;
+  query via its CLI (`get_architecture`, `search_graph`, `search_code`,
+  `get_code_snippet`) rather than grepping the vendored snapshot.
