@@ -103,6 +103,28 @@ describe("collectLogSource / collectLogSources", () => {
   });
 });
 
+/**
+ * The scan logic in `findMacOSCrashReports` only runs on darwin (it early-
+ * returns `[]` for every other platform — see sources.ts). Running this
+ * suite on a non-darwin CI host (Linux, in this repo) means the real
+ * scan branches are never reached unless the test stubs `process.platform`
+ * for its own duration, the same way the "non-darwin" test below stubs it
+ * to `"linux"`. Without this stub these tests either fail (the crash-report
+ * assertions expect real matches) or pass vacuously (an assertion of `[]`
+ * is trivially satisfied by the platform guard alone, never exercising the
+ * scan). This helper makes every darwin-only test genuinely run the darwin
+ * code path regardless of host OS.
+ */
+async function withDarwinPlatform<T>(fn: () => Promise<T>): Promise<T> {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  try {
+    return await fn();
+  } finally {
+    Object.defineProperty(process, "platform", originalDescriptor);
+  }
+}
+
 describe("findMacOSCrashReports", () => {
   it("returns [] immediately on non-darwin platforms", async () => {
     const originalDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -133,26 +155,28 @@ describe("findMacOSCrashReports", () => {
     await mkdir(dirLikeMatch, { recursive: true });
     await symlink(join(tempDir, "does-not-exist-target"), brokenLink);
 
-    const all = await findMacOSCrashReports({
-      matchSubstrings: ["MyApp"],
-      searchDirs: [tempDir, join(tempDir, "does-not-exist-subdir")],
-      withinDays: 7,
-      maxReports: 5,
-    });
-    expect(all.map((entry) => entry.name)).toEqual([
-      "crash-reports/MyApp-2024-report.crash",
-      "crash-reports/myapp-older.crash",
-    ]);
-    expect(all[0]?.kind).toBe("text");
+    await withDarwinPlatform(async () => {
+      const all = await findMacOSCrashReports({
+        matchSubstrings: ["MyApp"],
+        searchDirs: [tempDir, join(tempDir, "does-not-exist-subdir")],
+        withinDays: 7,
+        maxReports: 5,
+      });
+      expect(all.map((entry) => entry.name)).toEqual([
+        "crash-reports/MyApp-2024-report.crash",
+        "crash-reports/myapp-older.crash",
+      ]);
+      expect(all[0]?.kind).toBe("text");
 
-    const limited = await findMacOSCrashReports({
-      matchSubstrings: ["MyApp"],
-      searchDirs: [tempDir],
-      withinDays: 7,
-      maxReports: 1,
+      const limited = await findMacOSCrashReports({
+        matchSubstrings: ["MyApp"],
+        searchDirs: [tempDir],
+        withinDays: 7,
+        maxReports: 1,
+      });
+      expect(limited).toHaveLength(1);
+      expect(limited[0]?.name).toBe("crash-reports/MyApp-2024-report.crash");
     });
-    expect(limited).toHaveLength(1);
-    expect(limited[0]?.name).toBe("crash-reports/MyApp-2024-report.crash");
   });
 
   it("derives ~/Library/Logs/DiagnosticReports from homeDir and uses default withinDays/maxReports", async () => {
@@ -161,14 +185,18 @@ describe("findMacOSCrashReports", () => {
     await mkdir(reportsDir, { recursive: true });
     await writeFile(join(reportsDir, "HomeApp-crash.crash"), "log", "utf8");
 
-    const result = await findMacOSCrashReports({ matchSubstrings: ["homeapp"], homeDir });
+    await withDarwinPlatform(async () => {
+      const result = await findMacOSCrashReports({ matchSubstrings: ["homeapp"], homeDir });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.absolutePath).toBe(join(reportsDir, "HomeApp-crash.crash"));
+      expect(result).toHaveLength(1);
+      expect(result[0]?.absolutePath).toBe(join(reportsDir, "HomeApp-crash.crash"));
+    });
   });
 
   it("uses only the built-in default darwin dirs when neither homeDir nor searchDirs is given", async () => {
-    const result = await findMacOSCrashReports({ matchSubstrings: ["no-such-app-xyz-shouldnt-match"] });
-    expect(result).toEqual([]);
+    await withDarwinPlatform(async () => {
+      const result = await findMacOSCrashReports({ matchSubstrings: ["no-such-app-xyz-shouldnt-match"] });
+      expect(result).toEqual([]);
+    });
   });
 });

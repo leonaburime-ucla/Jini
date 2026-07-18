@@ -47,18 +47,28 @@ describe("buildDiagnosticsZip", () => {
   });
 
   it("appends matching macOS crash reports when crashReports lookup is provided", async () => {
-    const crashPath = join(tempDir, "MyApp-2024-01-01-crash.crash");
-    await writeFile(crashPath, "crash body", "utf8");
+    // findMacOSCrashReports (see sources.ts) is a no-op unless the host
+    // platform is darwin, so this test stubs process.platform for its
+    // duration — otherwise it would pass vacuously on non-darwin CI hosts
+    // (Linux, in this repo) without ever exercising the crash-report path.
+    const originalDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      const crashPath = join(tempDir, "MyApp-2024-01-01-crash.crash");
+      await writeFile(crashPath, "crash body", "utf8");
 
-    const result = await buildDiagnosticsZip({
-      context: { app: { name: "jini-host" }, source: "test" },
-      sources: [],
-      crashReports: { matchSubstrings: ["MyApp"], searchDirs: [tempDir] },
-    });
+      const result = await buildDiagnosticsZip({
+        context: { app: { name: "jini-host" }, source: "test" },
+        sources: [],
+        crashReports: { matchSubstrings: ["MyApp"], searchDirs: [tempDir] },
+      });
 
-    const zip = await JSZip.loadAsync(result.zip);
-    expect(zip.file("crash-reports/MyApp-2024-01-01-crash.crash")).not.toBeNull();
-    expect(result.manifest.files.some((file) => file.name === "crash-reports/MyApp-2024-01-01-crash.crash")).toBe(true);
+      const zip = await JSZip.loadAsync(result.zip);
+      expect(zip.file("crash-reports/MyApp-2024-01-01-crash.crash")).not.toBeNull();
+      expect(result.manifest.files.some((file) => file.name === "crash-reports/MyApp-2024-01-01-crash.crash")).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", originalDescriptor);
+    }
   });
 
   it("records a warning placeholder when a file cannot be read", async () => {
