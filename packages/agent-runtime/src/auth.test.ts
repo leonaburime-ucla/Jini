@@ -6,7 +6,10 @@ const mockState = vi.hoisted(() => ({
         file: string,
         args: string[],
         options: unknown,
-        cb: (err: (Error & Record<string, unknown>) | null, result?: { stdout: string; stderr: string }) => void,
+        cb: (
+          err: (Error & { code?: string | number; signal?: string | null; stdout?: string; stderr?: string }) | null,
+          result?: { stdout: string; stderr: string },
+        ) => void,
       ) => void)
     | null,
 }));
@@ -16,7 +19,10 @@ vi.mock('node:child_process', () => ({
     file: string,
     args: string[],
     options: unknown,
-    cb: (err: (Error & Record<string, unknown>) | null, result?: { stdout: string; stderr: string }) => void,
+    cb: (
+      err: (Error & { code?: string | number; signal?: string | null; stdout?: string; stderr?: string }) | null,
+      result?: { stdout: string; stderr: string },
+    ) => void,
   ) => {
     if (mockState.execFileImpl) return mockState.execFileImpl(file, args, options, cb);
     cb(null, { stdout: '', stderr: '' });

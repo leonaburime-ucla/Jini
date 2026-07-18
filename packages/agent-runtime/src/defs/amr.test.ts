@@ -18,6 +18,7 @@ import {
   parseVelaModelJson,
   parseVelaModels,
 } from './amr.js';
+import type { RuntimeAgentDef } from '../types.js';
 
 afterEach(() => {
   mockState.execAgentFile.mockReset();
@@ -38,7 +39,8 @@ describe('amrAgentDef shape', () => {
   });
 
   it('buildArgs returns the fixed ACP argv regardless of inputs', () => {
-    const args = amrAgentDef.buildArgs('any prompt', ['/img.png'], ['/extra'], { model: 'x' }, { cwd: '/y' });
+    const buildArgs: RuntimeAgentDef['buildArgs'] = amrAgentDef.buildArgs;
+    const args = buildArgs('any prompt', ['/img.png'], ['/extra'], { model: 'x' }, { cwd: '/y' });
     expect(args).toEqual(['agent', 'run', '--runtime', 'opencode']);
   });
 });

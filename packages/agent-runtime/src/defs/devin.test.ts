@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { devinAgentDef } from './devin.js';
 
 afterEach(() => {
@@ -27,14 +28,15 @@ describe('devinAgentDef shape', () => {
 
 describe('devinAgentDef.buildArgs', () => {
   it('returns the fixed ACP argv regardless of inputs', () => {
-    const args = devinAgentDef.buildArgs('any prompt', ['/img.png'], ['/extra'], { model: 'sonnet' }, { cwd: '/x' });
+    const buildArgs: RuntimeAgentDef['buildArgs'] = devinAgentDef.buildArgs;
+    const args = buildArgs('any prompt', ['/img.png'], ['/extra'], { model: 'sonnet' }, { cwd: '/x' });
     expect(args).toEqual(['--permission-mode', 'dangerous', '--respect-workspace-trust', 'false', 'acp']);
   });
 });
 
 describe('devinAgentDef.fetchModels', () => {
   it('delegates to detectAcpModels with the same fixed ACP argv and a 15s timeout', async () => {
-    const seen: Array<{ bin: string; args: string[]; timeoutMs?: number }> = [];
+    const seen: Array<{ bin: string; args: string[]; timeoutMs?: number | undefined }> = [];
     const stub: AcpModelProbe = {
       detectModels: async (request) => {
         seen.push({ bin: request.bin, args: request.args, timeoutMs: request.timeoutMs });

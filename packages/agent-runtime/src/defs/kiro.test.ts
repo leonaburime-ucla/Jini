@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { kiroAgentDef } from './kiro.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -25,9 +26,8 @@ describe('kiroAgentDef.fetchModels', () => {
 
 describe('kiroAgentDef.buildArgs', () => {
   it('always returns the ACP argv, ignoring any input params', () => {
-    expect(kiroAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
-      'acp',
-    ]);
+    const buildArgs: RuntimeAgentDef['buildArgs'] = kiroAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual(['acp']);
   });
 });
 

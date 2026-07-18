@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { reasonixAgentDef } from './reasonix.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -27,9 +28,8 @@ describe('reasonixAgentDef.fetchModels', () => {
 
 describe('reasonixAgentDef.buildArgs', () => {
   it('always returns the ACP argv, ignoring any input params', () => {
-    expect(
-      reasonixAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' }),
-    ).toEqual(['acp']);
+    const buildArgs: RuntimeAgentDef['buildArgs'] = reasonixAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual(['acp']);
   });
 });
 

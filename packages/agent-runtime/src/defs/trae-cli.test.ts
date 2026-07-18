@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { traeCliAgentDef } from './trae-cli.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -25,7 +26,8 @@ describe('traeCliAgentDef.fetchModels', () => {
 
 describe('traeCliAgentDef.buildArgs', () => {
   it('always returns the ACP serve --yolo argv, ignoring any input params', () => {
-    expect(traeCliAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
+    const buildArgs: RuntimeAgentDef['buildArgs'] = traeCliAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
       'acp',
       'serve',
       '--yolo',

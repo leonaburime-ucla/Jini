@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { vibeAgentDef } from './vibe.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -25,7 +26,8 @@ describe('vibeAgentDef.fetchModels', () => {
 
 describe('vibeAgentDef.buildArgs', () => {
   it('always returns an empty argv, ignoring any input params', () => {
-    expect(vibeAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([]);
+    const buildArgs: RuntimeAgentDef['buildArgs'] = vibeAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([]);
   });
 });
 

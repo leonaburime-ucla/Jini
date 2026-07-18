@@ -3,7 +3,7 @@ import { buildAcpMcpServersForAgent } from './mcp.js';
 
 describe('buildAcpMcpServersForAgent', () => {
   it('returns an empty array when the def does not opt into mature-acp discovery', () => {
-    const servers = buildAcpMcpServersForAgent({ mcpDiscovery: undefined }, { name: 'x', command: 'x' });
+    const servers = buildAcpMcpServersForAgent({}, { name: 'x', command: 'x' });
     expect(servers).toEqual([]);
   });
 

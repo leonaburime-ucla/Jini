@@ -7,7 +7,7 @@ const mockState = vi.hoisted(() => ({
   // Keyed by a JSON-stringified args array so a single mock can answer
   // differently for --version / --help / models / status probes against
   // the same resolved binary path.
-  responses: new Map<string, { stdout?: string; stderr?: string; error?: Error & Record<string, unknown> }>(),
+  responses: new Map<string, { stdout?: string; stderr?: string; error?: Error & { code?: string | number } }>(),
 }));
 
 vi.mock('node:child_process', () => ({

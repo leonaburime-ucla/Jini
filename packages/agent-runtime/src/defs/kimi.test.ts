@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { kimiAgentDef } from './kimi.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -25,9 +26,8 @@ describe('kimiAgentDef.fetchModels', () => {
 
 describe('kimiAgentDef.buildArgs', () => {
   it('always returns the ACP argv, ignoring any input params', () => {
-    expect(kimiAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
-      'acp',
-    ]);
+    const buildArgs: RuntimeAgentDef['buildArgs'] = kimiAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual(['acp']);
   });
 });
 

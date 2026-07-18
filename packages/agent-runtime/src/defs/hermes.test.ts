@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAcpModelProbe, type AcpModelProbe } from '../acp-model-probe.js';
+import type { RuntimeAgentDef } from '../types.js';
 import { hermesAgentDef } from './hermes.js';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 
@@ -32,11 +33,12 @@ describe('hermesAgentDef.fetchModels', () => {
 
 describe('hermesAgentDef.buildArgs', () => {
   it('always returns the ACP handshake argv, ignoring any input params', () => {
-    expect(hermesAgentDef.buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
+    const buildArgs: RuntimeAgentDef['buildArgs'] = hermesAgentDef.buildArgs;
+    expect(buildArgs('prompt', ['img.png'], ['/extra'], { model: 'x' }, { cwd: '/a' })).toEqual([
       'acp',
       '--accept-hooks',
     ]);
-    expect(hermesAgentDef.buildArgs('', [], [], {}, {})).toEqual(['acp', '--accept-hooks']);
+    expect(buildArgs('', [], [], {}, {})).toEqual(['acp', '--accept-hooks']);
   });
 });
 
