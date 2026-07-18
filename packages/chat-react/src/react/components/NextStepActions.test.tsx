@@ -25,6 +25,11 @@ describe('NextStepActions', () => {
     expect(onSelect).toHaveBeenCalledWith('continue');
   });
 
+  it('renders an action icon when provided', () => {
+    render(<NextStepActions actions={[{ id: 'a', label: 'Refine', icon: <svg data-testid="refine-icon" /> }]} onSelect={() => {}} />);
+    expect(screen.getByTestId('refine-icon')).toBeInTheDocument();
+  });
+
   it('disables a busy action and swaps in its busyLabel', () => {
     render(<NextStepActions actions={[{ id: 'a', label: 'Refine', busy: true, busyLabel: 'Refining…' }]} onSelect={() => {}} />);
     expect(screen.getByText('Refining…')).toBeInTheDocument();

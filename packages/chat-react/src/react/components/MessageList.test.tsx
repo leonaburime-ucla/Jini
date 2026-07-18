@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '@jini/chat-core';
 import { MessageList } from './MessageList.js';
@@ -45,5 +46,50 @@ describe('MessageList', () => {
     const onSubmit = vi.fn();
     render(<MessageList messages={withForm} activeQuestionFormMessageId="a1" onQuestionFormSubmit={onSubmit} />);
     expect(screen.getByText('T')).toBeInTheDocument();
+  });
+
+  it('actually invokes the per-message onQuestionFormSubmit wrapper with the owning message id when the form is submitted', async () => {
+    const withForm: ChatMessage[] = [
+      { id: 'a1', role: 'assistant', content: '<question-form id="q" title="T">\n{"questions":[{"id":"x","label":"X","type":"text"}]}\n</question-form>', runStatus: 'running' },
+    ];
+    const onSubmit = vi.fn();
+    render(<MessageList messages={withForm} activeQuestionFormMessageId="a1" onQuestionFormSubmit={onSubmit} />);
+    await userEvent.type(screen.getByRole('textbox'), 'my answer');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(onSubmit).toHaveBeenCalledWith('a1', expect.any(String), expect.objectContaining({ x: 'my answer' }));
+  });
+
+  it('forwards questionFormSubmittedAnswersByMessageId for the message that has a recorded submission', () => {
+    const withForm: ChatMessage[] = [
+      { id: 'a1', role: 'assistant', content: '<question-form id="q" title="T">\n{"questions":[{"id":"x","label":"X","type":"text"}]}\n</question-form>', runStatus: 'succeeded' },
+    ];
+    render(<MessageList messages={withForm} questionFormSubmittedAnswersByMessageId={{ a1: { x: 'already answered' } }} />);
+    expect(screen.getByDisplayValue('already answered')).toBeInTheDocument();
+  });
+
+  it('forwards projectFileNames and onRequestOpenFile down to MessageRow/ToolCard', async () => {
+    const withTool: ChatMessage[] = [
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: '',
+        events: [
+          { kind: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'known.txt' } },
+          { kind: 'tool_result', toolUseId: 't1', content: 'contents', isError: false },
+        ],
+        runStatus: 'succeeded',
+      },
+    ];
+    const onRequestOpenFile = vi.fn();
+    render(<MessageList messages={withTool} projectFileNames={new Set(['known.txt'])} onRequestOpenFile={onRequestOpenFile} />);
+    const openButton = screen.getByRole('button', { name: 'Open' });
+    await userEvent.click(openButton);
+    expect(onRequestOpenFile).toHaveBeenCalledWith('known.txt');
+  });
+
+  it('forwards a custom renderAttachment down to MessageRow for user-message attachment chips', () => {
+    const withAttachment: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'see attached', attachments: [{ path: '/a.png', name: 'a.png', kind: 'image' }] }];
+    render(<MessageList messages={withAttachment} renderAttachment={(a) => <span data-testid="custom-chip">{a.name.toUpperCase()}</span>} />);
+    expect(screen.getByTestId('custom-chip')).toHaveTextContent('A.PNG');
   });
 });

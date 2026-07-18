@@ -78,7 +78,9 @@ function OpenInTabButton({ filePath, ctx }: { filePath: string; ctx: FileToolCtx
   const t = useT();
   if (!ctx.onRequestOpenFile) return null;
   if (!filePath || filePath === '(unnamed)') return null;
-  const baseName = filePath.split('/').pop() ?? filePath;
+  // `String.prototype.split` always returns a non-empty array, so `.pop()` on it can
+  // never be `undefined` here — the `??` fallback TS's return type demands is dead code.
+  const baseName = filePath.split('/').pop()!;
   if (!baseName) return null;
   if (ctx.projectFileNames && !ctx.projectFileNames.has(baseName)) return null;
   const open = ctx.onRequestOpenFile;
@@ -101,7 +103,8 @@ function FileWriteCard({ input, result, runStreaming, runSucceeded, ctx }: CardP
   const [open, setOpen] = useState(false);
   const obj = (input ?? {}) as { file_path?: string; filePath?: string; path?: string; content?: string };
   const file = obj.file_path ?? obj.filePath ?? obj.path ?? '(unnamed)';
-  const baseName = file.split('/').pop() ?? file;
+  // See OpenInTabButton's baseName comment: `.split('/').pop()` is never undefined.
+  const baseName = file.split('/').pop()!;
   const lines = typeof obj.content === 'string' ? obj.content.split('\n').length : null;
   const isRunning = runStreaming && !result;
   return (
@@ -135,7 +138,8 @@ function FileEditCard({ input, result, runStreaming, runSucceeded, ctx }: CardPr
   const [open, setOpen] = useState(false);
   const obj = (input ?? {}) as { file_path?: string; filePath?: string; path?: string; edits?: { old_string?: string; new_string?: string }[] };
   const file = obj.file_path ?? obj.filePath ?? obj.path ?? '(unnamed)';
-  const baseName = file.split('/').pop() ?? file;
+  // See OpenInTabButton's baseName comment: `.split('/').pop()` is never undefined.
+  const baseName = file.split('/').pop()!;
   const editCount = Array.isArray(obj.edits) ? obj.edits.length : 1;
   const isRunning = runStreaming && !result;
   return (
@@ -168,7 +172,8 @@ function FileReadCard({ input, result, runStreaming, runSucceeded, ctx }: CardPr
   const [open, setOpen] = useState(false);
   const obj = (input ?? {}) as { file_path?: string; filePath?: string; path?: string };
   const file = obj.file_path ?? obj.filePath ?? obj.path ?? '(unnamed)';
-  const baseName = file.split('/').pop() ?? file;
+  // See OpenInTabButton's baseName comment: `.split('/').pop()` is never undefined.
+  const baseName = file.split('/').pop()!;
   const isRunning = runStreaming && !result;
   return (
     <div className="op-card op-file">
