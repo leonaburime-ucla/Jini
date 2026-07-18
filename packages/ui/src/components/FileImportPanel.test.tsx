@@ -34,7 +34,7 @@ describe('FileImportPanel', () => {
         onImport={() => {}}
       />,
     );
-    const input = screen.getByTestId('plugins-zip-input');
+    const input = screen.getByTestId('plugins-zip-input') as HTMLInputElement;
     expect(input).not.toHaveAttribute('webkitdirectory');
     expect(input.multiple).toBe(false);
   });
@@ -52,7 +52,7 @@ describe('FileImportPanel', () => {
         onImport={() => {}}
       />,
     );
-    const input = screen.getByTestId('plugins-folder-input');
+    const input = screen.getByTestId('plugins-folder-input') as HTMLInputElement;
     expect(input).toHaveAttribute('webkitdirectory', '');
     expect(input.multiple).toBe(true);
   });

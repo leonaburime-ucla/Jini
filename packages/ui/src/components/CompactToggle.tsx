@@ -1,7 +1,7 @@
 // Lightweight inline toggle row: the hint moves to a native tooltip so the
 // row stays one line tall — meant for secondary toggles in a dense list
 // (contrast with the fuller-card `ToggleRow`). Origin: `CompactToggle` in
-// `NewProjectPanel.tsx` (Open Design), verbatim structural port — the
+// `NewProjectPanel.tsx` (OD), verbatim structural port — the
 // component carried no product-specific typing or copy. See
 // packages/ui/source-map.md.
 

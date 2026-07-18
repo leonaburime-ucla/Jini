@@ -1,5 +1,5 @@
 // Minimal labeled-number stat tile. Origin: `StatCard` in `PluginsView.tsx`
-// (Open Design), verbatim structural port — the component carried no
+// (OD), verbatim structural port — the component carried no
 // product-specific typing or copy (label/value come entirely from props).
 // See packages/ui/source-map.md.
 

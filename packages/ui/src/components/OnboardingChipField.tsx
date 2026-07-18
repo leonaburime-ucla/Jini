@@ -1,7 +1,7 @@
 // Flat toggleable-chip field: every choice is visible at once and a
 // selection takes one tap instead of opening a dropdown first — a
 // single-select or multi-select variant sharing one component. Origin:
-// `OnboardingChipField` in `EntryShell.tsx` (Open Design), verbatim
+// `OnboardingChipField` in `EntryShell.tsx` (OD), verbatim
 // structural port — label/options come entirely from props, so there was
 // nothing product-specific to strip. See packages/ui/source-map.md.
 

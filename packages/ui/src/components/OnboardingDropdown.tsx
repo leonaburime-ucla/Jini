@@ -1,7 +1,7 @@
 // Searchable/multi-select dropdown with viewport-aware flip placement,
 // click-outside/Escape dismiss, and single-open-at-a-time coordination
 // across multiple mounted instances (via a broadcast `window` event).
-// Origin: `OnboardingDropdown` in `EntryShell.tsx` (Open Design). Only the
+// Origin: `OnboardingDropdown` in `EntryShell.tsx` (OD). Only the
 // `options` shape's optional `meta`/`tag` fields were OD-flavored in the
 // recon read; this port keeps the plain `{ value, label }` shape actually
 // used by the component. Genericized:

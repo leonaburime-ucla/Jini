@@ -1,5 +1,5 @@
 // Trivial title+body panel header, used above a form section. Origin:
-// `OnboardingPanelHeader` in `EntryShell.tsx` (Open Design), verbatim
+// `OnboardingPanelHeader` in `EntryShell.tsx` (OD), verbatim
 // structural port — title/body are caller-supplied props, so there was
 // nothing product-specific to strip. See packages/ui/source-map.md.
 

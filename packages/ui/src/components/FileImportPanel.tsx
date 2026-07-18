@@ -1,6 +1,6 @@
 // File/folder picker card with a title, body copy, a native file input, and
 // an import button that flips to a working/busy label. Origin:
-// `FileImportPanel` in `PluginsView.tsx` (Open Design) — the origin
+// `FileImportPanel` in `PluginsView.tsx` (OD) — the origin
 // hardcoded its "Import"/"Importing…" button copy directly in JSX (title/
 // body/fileLabel were already caller-supplied props); that copy now goes
 // through `useT()` per this package's i18n policy. See

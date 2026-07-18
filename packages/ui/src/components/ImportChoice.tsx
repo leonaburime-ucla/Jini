@@ -1,6 +1,6 @@
 // Single tab/choice button for an import-source picker (e.g. "From GitHub"
 // / "Upload zip" / "Upload folder"). Origin: `ImportChoice` in
-// `PluginsView.tsx` (Open Design), verbatim structural port — all copy
+// `PluginsView.tsx` (OD), verbatim structural port — all copy
 // (title/body) is supplied by the caller as props, so there was nothing
 // product-specific to strip. See packages/ui/source-map.md.
 
