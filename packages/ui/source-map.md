@@ -1917,6 +1917,99 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
 
+## Section: bucket-A flat atoms — NewProjectPanel / PluginsView / EntryShell (2026-07-18)
+
+Scope: `docs/jini-port/god-components-extraction-plan.md` Section C's flat-atom
+row for three god-files' small presentational components (not the files'
+larger stateful bodies, which stay OD-specific). Cloud-dispatch preflight:
+source repo `leonaburime-ucla/open-design`, commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
+(cloned fresh to `/tmp/od-source`, not the vendored `integrations/open-design/reference/`
+snapshot); destination `packages/ui/src/components/`; task branch
+`feature/jini-ui-flat-atoms-onboarding-plugins`; validation commands
+`pnpm --filter @jini/ui typecheck`, `pnpm --filter @jini/ui exec vitest run --coverage`,
+a product-identity purity grep, and `pnpm guard` from the repo root.
+
+Each source file was read in full (not sampled) via `/tmp/od-source`. All ten
+components below are single-file-local in the origin — a fan-out grep for
+each name across `apps/web/src` (both quote styles) turned up no cross-file
+importer other than the origin file itself, so there was no orchestrator to
+re-wire and no external caller contract to preserve; this is a pure "lift the
+function into a new file" port for each one, not a vertical-slice refactor.
+
+### Choice-card overlap check (required by this task's dispatch prompt)
+
+r6 (`docs/jini-port/recon/r6-god-component-internals.md` line ~136) flags a
+"choice-card shape, maybe three times" concern between `EntryShell.tsx`'s
+`OnboardingChoiceCard` and `NewProjectPanel.tsx`'s `OptionCards<T>`/
+`FidelityCard`. Before shipping `OptionCards<T>`, searched this repo
+(`packages/ui/src/`) for `OnboardingChoiceCard`/`ChoiceCard`/`RadioCard`/
+`OptionCard` and for any existing choice-card-shaped component in
+`packages/ui/src/features/sketch-editor/` (the only place r6 hinted at a
+possible prior landing) — **no match**. `OnboardingChoiceCard` has not been
+extracted into `@jini/ui` yet (it isn't in this task's scope; it belongs to
+a future EntryShell dispatch), so there is no already-shipped duplicate to
+reconcile against.
+
+Read `OnboardingChoiceCard` in full anyway (`EntryShell.tsx` line 3570) to
+judge whether `OptionCards<T>` should be designed as its base primitive
+now, to avoid a near-duplicate later. Verdict: **not the same shape,
+ship both independently.** `OptionCards<T>` is `{ value, title, hint? }` —
+a plain labeled-radio-card grid. `OnboardingChoiceCard` is substantially
+richer: `icon` (enum) or `agentIconId`, `benefits`/`upcomingBenefits` lists
+with a separate `benefitPlacement` ('copy' | 'aside') layout mode, a
+`modelSlot`/`statusSlot`/`actionLabel` render-prop-shaped set of slots, a
+`badge`, `featured`, and an `amr` `variant`. Forcing it through
+`OptionCards<T>`'s shape would mean bolting most of the richer props onto
+the "simple" component anyway, defeating the point of having a compact one.
+**Recorded for whoever extracts `OnboardingChoiceCard` next**: don't
+independently re-derive a plain radio-card grid inside it — if a stripped-
+down non-featured, non-benefit card face is ever needed standalone, reuse
+this `OptionCards<T>`/`FidelityCard` pair rather than writing a third
+variant. `FidelityCard` itself (also named in the same Section C row,
+alongside `OptionCards<T>`/`CompactToggle`/`ToggleRow`) was **not** shipped
+in this batch — the task's dispatch prompt named only `OptionCards<T>` and
+`CompactToggle`/`ToggleRow` for `NewProjectPanel.tsx`; `FidelityCard` (plus
+its two inline `WireframeArt`/`HighFidelityArt` SVG illustrations) stays
+un-ported for now, tracked by the plan doc's existing Section C row — not a
+silent drop, just out of this dispatch's named scope.
+
+### Shipped
+
+| Jini file | Origin (`apps/web/src/components/…`) | What changed |
+|---|---|---|
+| `src/components/OptionCards.tsx` | `NewProjectPanel.tsx`'s `OptionCards<T>` | Verbatim structural port. Zero OD coupling in the origin (label/options/value/onChange all caller-supplied) — no i18n needed since there's no component-owned copy. Added an optional `className` passthrough (this package's existing flat-component convention; the origin had none because it only had one caller). |
+| `src/components/CompactToggle.tsx` | `NewProjectPanel.tsx`'s `CompactToggle` | Verbatim structural port, same reasoning as `OptionCards` (no copy owned by the component itself). Added `className` passthrough. |
+| `src/components/ToggleRow.tsx` | `NewProjectPanel.tsx`'s `ToggleRow` | Verbatim structural port, same reasoning. Note: `PrivacySection.tsx` (a different OD file, not in this task's scope) has its own independent `ToggleRow` — not touched, not consolidated; out of scope for this dispatch. Added `className` passthrough. |
+| `src/components/StatCard.tsx` | `PluginsView.tsx`'s `StatCard` | Verbatim structural port — `{ label, value }` only, no OD coupling. Added `className` passthrough. |
+| `src/components/Notice.tsx` | `PluginsView.tsx`'s `Notice` | Genericized `outcome`'s type from OD's `PluginInstallOutcome` (a plugin-install wire DTO imported from `@open-design/contracts`) to a new local `NoticeOutcome` interface carrying the same three fields the component actually reads (`ok`, `message`, `warnings?`, `log?`) — any "ran an operation, got a result + warnings + a log" flow can supply this, not just plugin installs. Wrapped the two previously-hardcoded strings ("Install log", the "N warning(s)" pluralization) in `useT()` per the i18n policy; added an optional `logLabel` override prop since a host may want different copy for its own log-bearing operation. |
+| `src/components/ImportChoice.tsx` | `PluginsView.tsx`'s `ImportChoice` | Verbatim structural port — `active`/`icon`/`title`/`body`/`onClick` all caller-supplied, no component-owned copy. `icon`'s type narrowed from the origin's inline `'github' \| 'upload' \| 'folder'` union to this package's existing `IconName` (all three values already exist in `Icon.tsx`'s union). |
+| `src/components/FileImportPanel.tsx` | `PluginsView.tsx`'s `FileImportPanel` | Genericized the `webkitdirectory`/`directory` non-standard DOM attributes using the same `as Record<string, string>` cast pattern already used elsewhere in OD's own codebase (`DesignSystemFlow.tsx`) rather than reaching for a new type hack. Wrapped the previously-hardcoded `"Import"`/`"Importing…"` button copy (title/body/fileLabel were already props) in `useT()`. |
+| `src/components/OnboardingPanelHeader.tsx` | `EntryShell.tsx`'s `OnboardingPanelHeader` | Verbatim structural port — `title`/`body` caller-supplied, no component-owned copy. |
+| `src/components/OnboardingChipField.tsx` | `EntryShell.tsx`'s `OnboardingChipField` | Verbatim structural port — `label`/`options[].label` caller-supplied, no component-owned copy. The discriminated-union `multiple`/`value`/`onChange` prop shape (single vs. array) is unchanged. |
+| `src/components/OnboardingDropdown.tsx` | `EntryShell.tsx`'s `OnboardingDropdown` | Two genericizations beyond a structural port: (1) the single-open-at-a-time peer-coordination mechanism dispatched a `window` `CustomEvent` named literally `'open-design:onboarding-dropdown-open'` — a product-identity string forbidden by this package's hard boundary rule — renamed to `'jini-ui:onboarding-dropdown-open'`; (2) the two empty-state strings were OD's own i18n dictionary keys (`t('homeHero.footer.noMatches')`, `t('settings.fetchModelsEmpty')`), routed through this package's own `useT()` as plain English instead: `t('No matches')` for the searchable/query-no-hits case (its actual English string, per `content.en`-equivalent locale files, was already generic — "No matches" — so ported as-is), and a new `t('No options available')` for the non-searchable/zero-options case — the origin's real fallback text there ("No compatible text models were returned.") was leftover wording from the one settings call site it happened to serve, not a generic empty-dropdown message, so this is a genuine simplification rather than a verbatim string carry-over. Removed one dead defensive `if (!root) return` null-check on a ref that is always attached by the time the gating effect runs (surfaced by the Phase 9.5 coverage loop; see below). |
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|open-design\.ai\|open-design:\|@open-design/"` across all ten new files: **clean, zero matches** (the one pre-existing `open-design:` occurrence — the peer-coordination event name — was the exact string replaced above, not left behind). CSS class names were left as the origin's verbatim strings (`newproj-*`, `plugins-view__*`, `plugins-import-modal__*`, `onboarding-view__*`, `onboarding-chip-field*`, `compact-toggle*`, `toggle-row*`) per the precedent already set for `Loading.tsx`'s `design-card`/`skeleton-block` classes — these read as feature-shaped names, not product-identity strings, and none use the `od-` prefix that would trigger the `jini-` rename convention used elsewhere in this file.
+
+### Coverage
+
+All ten files at 100% statements/branches/functions/lines (`json-summary`+`json`
+reporters, per-file). Two Phase 9.5 loop iterations were needed:
+`FileImportPanel.tsx`'s `event.currentTarget.files ?? []` fallback (files is
+typed `FileList | null` but a real `<input type="file">` never actually
+returns null) was classified reachable-in-principle and given a real test
+that forces `files` to `null` via `Object.defineProperty`, rather than
+deleted or ignored. `OnboardingDropdown.tsx`'s `if (!root) return` inside its
+placement-measurement effect was classified genuinely dead (the ref's owning
+div is unconditionally rendered, so the ref is always set by the time the
+`open`-gated effect runs) and removed per the loop's "refactor away the dead
+branch" rule rather than padded with a contrived test; its
+`window.innerHeight || document.documentElement.clientHeight || 720`
+fallback chain, by contrast, was classified genuinely reachable (a real
+embed/iframe timing edge case) and given two tests that force each fallback
+step. No `/* v8 ignore */` or other coverage-suppression comment was used
+anywhere in this batch.
 ---
 
 ## Section: flat atoms — `DesignKitView.tsx` + `home-hero/EdgeAutoScroll.tsx` (2026-07-18)

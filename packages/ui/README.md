@@ -118,6 +118,11 @@ Real content has landed in several parallel passes — see
   `docs/jini-port/god-components-extraction-plan.md` item 5. Uses the NEW
   `react/{hooks,components}` layout (this is the first feature built with it
   from scratch). See `packages/ui/source-map.md`.
+- 10 more `src/components/` flat atoms (2026-07-18) — the Section C
+  bucket-A batch from `NewProjectPanel.tsx` (`OptionCards`, `CompactToggle`,
+  `ToggleRow`), `PluginsView.tsx` (`StatCard`, `Notice`, `ImportChoice`,
+  `FileImportPanel`), and `EntryShell.tsx` (`OnboardingPanelHeader`,
+  `OnboardingChipField`, `OnboardingDropdown`). See `packages/ui/source-map.md`.
 - `src/features/memory/` — ported from OD's never-merged PR #5228 (a
   vertical-slice decomposition of `MemorySection.tsx`, 2026-07-18): the
   saved-memory list/editor, the extraction-history stream, and the
