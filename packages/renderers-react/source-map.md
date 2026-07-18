@@ -439,3 +439,136 @@ version pins already matched); `types.ts`'s two additions
 chat-core` manifest-vocabulary re-exports from `port/renderers-react-and-
 annotation-canvas`) are simply concatenated, not merged shape-for-shape,
 since neither side redeclares anything the other already had.
+
+---
+
+## Section: `preview-modal-shell` — classification (2026-07-18)
+
+**Scoping task, not yet a full port.** A prior research pass sampled only the
+first ~100 of `apps/web/src/components/PreviewModal.tsx`'s 1,118 lines and
+flagged low OD coupling (`od_hits=0` per an import-based scan) as
+provisional. This section is the full-file classification that scan
+demanded, done from a fresh clone (`leonaburime-ucla/open-design`, branch
+`main`) of the real file, not the vendored `integrations/open-design/
+reference/` snapshot.
+
+**Verdict: the prior partial read's "low OD coupling" holds for the modal
+*shell* (roughly the top half + the content-stage state machine) but not for
+the file as a whole.** A large, structurally separate block — the merged
+Share/Export popover (`showTemplateShareMenu`/`templateShareOpen` and
+everything inside it, JSX lines ~692–940, ~250 of 1,118 lines) is genuinely
+OD-specific: hardcoded social-platform integrations, OD's own copy-to-
+clipboard lib, and calls into `apps/web/src/runtime/exports.ts` (1,715
+lines), which itself imports `@open-design/host` directly (`isOpenDesignHostAvailable`)
+— an actual product-identity package, not a generic utility. That pipeline
+(`exportAsHtml`/`exportAsPdf`/`exportAsZip`/`exportAsImage`/
+`captureHostIframeSnapshot`/`requestPreviewSnapshot`) has not been ported to
+`@jini/renderers-react` in any form (only `openSandboxedPreviewInNewTab`,
+part of the same origin file, made it into `new-tab-preview.ts` — see the
+sandboxed-iframe-rendering-core section above). Forcing a port of the share
+menu now would mean porting or stubbing that whole pipeline first; out of
+scope for this task, and not attempted here.
+
+### Genuinely generic (ported this task — see "What shipped" below)
+
+- The modal shell itself: backdrop, `role="dialog"`/`aria-modal`, header
+  with title/subtitle block.
+- The tab bar (`role="tablist"`/`role="tab"`, multi-view switching).
+- Fullscreen: native `requestFullscreen`/`exitFullscreen` integration,
+  `fullscreenchange` listener kept in lock-step with React state, Escape
+  exits fullscreen before closing the modal.
+- Close button + Escape-to-close.
+- Body-scroll lock while mounted.
+- The design-width/scale-to-fit iframe-stage sizing engine: `ResizeObserver`-
+  driven stage measurement (with a `window` `resize` fallback when
+  `ResizeObserver` is unavailable), `transform: scale()` fit, re-measure on
+  sidebar toggle / active-view change, and the `clientWidth`-over-
+  `getBoundingClientRect` rationale (rect width is transform-aware and lands
+  short during the modal's own entrance animation).
+- The optional companion sidebar: toggle open/closed, edge-handle
+  expand/collapse buttons, `aria-label`, lazy-load notification (`onToggle`
+  fires on open-state or `contentKey` change so a host can lazy-fetch panel
+  content).
+- The split-button primary action: main click + optional caret-triggered
+  menu of secondary items, busy/disabled states, outside-click/Escape
+  dismissal for the menu. (The "Use plugin" wording in the origin's comments
+  is OD example usage, not part of the shape — the split-button pattern
+  itself is generic chrome.)
+- The content-stage state machine: custom `ReactNode` / unavailable
+  placeholder / error-with-retry / loading / rendered-HTML. The *shape* of
+  this state machine is generic; two of its states needed generalizing (see
+  below).
+- Extension points: `headerExtras` slot, `onView` lazy-load callback fired on
+  first mount and every tab change, analytics callbacks
+  (`onFullscreenClick`/`onSidebarToggleClick`), `hideSidebarToggle` (a plain
+  boolean toggle for the header button — kept even though the origin's
+  comment ties it to a plugin-detail layout choice; the mechanic itself
+  doesn't reference that).
+- Rendering the active view's HTML: reuses this package's **existing**
+  `SrcDocSandbox` + `buildSrcDoc` (already ported, Part A above) instead of
+  re-implementing a raw sandboxed `<iframe>` — the origin's own
+  `buildSrcdoc(activeHtml, {deck})` call is this same mechanism.
+
+### Needed generalizing (generic shape, OD-specific vocabulary in the original)
+
+- `PreviewView.unavailable.noun`: a closed `'skill' | 'plugin' | 'template'`
+  union in the origin, driving an OD-internal `kind`→i18n-key switch
+  (`preview.nounSkill`/`preview.nounPlugin`/`preview.nounTemplate`) for
+  copy like "This **skill** ships no example preview." That vocabulary is
+  OD's own content-type taxonomy. Generalized to a single caller-supplied,
+  already-resolved `message: string` — the shell just displays it; phrasing
+  responsibility moves to the host, which is the correct seam (this package
+  has no concept of "skill" vs. "plugin" vs. "template").
+- `exportTitleFor(viewId)`: existed purely to name PDF/ZIP/HTML/image
+  exports and the new-tab preview page title. Dropped entirely — every one
+  of its call sites lives in the deferred share/export block below; nothing
+  in the ported shell needs it (the iframe's own accessible `title` is
+  `${title} ${activeView.label}`, unrelated to `exportTitleFor`).
+- `deck?: boolean` on a view: origin's `buildSrcdoc(html, {deck})` selects
+  deck-aware slide-navigation srcDoc behavior. This package's `buildSrcDoc`
+  (Part A) does not implement the deck postMessage bridge yet (`source-map.md`
+  above: "`injectDeckBridge` ... deferred to the eventual deck-navigation
+  feature"). Dropped from the ported shell's `PreviewModalView` — not a
+  silent drop, a real gap: deck-aware preview navigation is unavailable
+  until a deck `SrcDocBridge` lands in this package. A host embedding this
+  shell today gets a plain (non-deck-navigable) HTML render for deck content,
+  same as any other HTML view.
+
+### Genuinely OD-specific (not ported, host-owned seam)
+
+- The entire merged Share/Export popover: `PreviewShareTarget`,
+  `SOCIAL_SHARE_PLATFORMS` (X/Reddit/Facebook/LinkedIn/Instagram/
+  Xiaohongshu), `buildSocialShareUrl`, `copyPreviewShare`/
+  `openShareDestination`, the `PreviewSharePopoverItem` union, and every
+  `preview.share*` i18n key. Depends on OD's own `lib/copy-to-clipboard.ts`
+  (trivial, would be a cheap generic port on its own, but there is no
+  ported consumer left to justify porting it speculatively) and the
+  1,715-line `runtime/exports.ts` pipeline (PDF/ZIP/HTML/image export,
+  snapshot capture) — that pipeline imports `@open-design/host` directly
+  and is not ported anywhere in Jini today. `onShareClick`/
+  `onSharePopoverItemClick`/`shareTarget` dropped from the ported shell's
+  props along with it.
+- `openSandboxedPreviewInNewTab` — the one export-pipeline function that
+  **is** already ported (`new-tab-preview.ts`, Part-A-adjacent), but its
+  only call site in the origin (`openInNewTab()`) is itself only reachable
+  from inside the deferred share popover ("Open in new tab" menu item) — so
+  it isn't wired into the ported shell either. Available for a future
+  share-menu port to reuse directly.
+- OD's `Icon` component (`./Icon`, an internal named-icon-set component) —
+  not ported (product-specific icon set, out of scope, same call already
+  made for `AnnotationCanvas`'s icon set). Replaced with a small local
+  `icons.tsx` (2 icons: `close`, `chevron-down`) following the exact
+  `DEFAULT_ANNOTATION_CANVAS_ICONS` pattern already in this package —
+  overridable via a `PreviewModalShellProps.icons` prop. The stage
+  fullscreen toggle's icon was already a raw inline `<svg>` in the origin
+  (not `Icon`), so it needed no OD-icon replacement, just carrying the two
+  path variants over into the same local icon set (`fullscreen`/
+  `fullscreen-exit`) for override-consistency.
+- Exact visual chrome: the `ds-modal-*` CSS class names and all associated
+  (unported, OD-only) CSS. This package ships no CSS system (confirmed by
+  every prior slice here, e.g. `AnnotationCanvas`'s doc comment: "Visual
+  chrome ... intentionally not ported verbatim") — structure/ARIA/
+  interactions are preserved, exact class names are not. The shell exposes
+  `data-preview-modal-*` attributes for host styling hooks and a
+  `className` passthrough on the root, mirroring `AnnotationCanvas`'s
+  `data-annotation-canvas-active` convention.
