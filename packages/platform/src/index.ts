@@ -12,6 +12,8 @@
  * - `toolchain`  — user-level toolchain bin discovery.
  * - `asset-cache` — SSRF-safe same-origin cache/proxy for sandboxed content's
  *   external media references.
+ * - `download`    — managed-download engine (atomic resume, checksum, lock,
+ *   manifest, retention pruning).
  *
  * The set of names exported here is intentionally identical to the pre-split
  * public surface; importers see no change.
@@ -78,3 +80,28 @@ export {
   isCacheableExternalUrl,
   isPrivateAddress,
 } from "./asset-cache.js";
+
+export type {
+  DownloadCopyAndClearOptions,
+  DownloadCopyAndClearResult,
+  ManagedDownloadChecksum,
+  ManagedDownloadErrorCode,
+  ManagedDownloadInspection,
+  ManagedDownloadOptions,
+  ManagedDownloadPayload,
+  ManagedDownloadProgress,
+  ManagedDownloadResult,
+  PruneManagedDownloadsOptions,
+  PruneManagedDownloadsResult,
+  RemoveManagedDownloadOptions,
+  RemoveManagedDownloadResult,
+} from "./download.js";
+export {
+  MANAGED_DOWNLOAD_ERROR_CODES,
+  ManagedDownloadError,
+  downloadCopyAndClear,
+  inspectManagedDownload,
+  managedDownload,
+  pruneManagedDownloads,
+  removeManagedDownload,
+} from "./download.js";

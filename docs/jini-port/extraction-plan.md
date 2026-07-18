@@ -93,6 +93,9 @@ Ports are **async-only** (Promise-returning) from day one — OD's `db.ts` is sy
 @jini/renderers-react  artifact/renderer registry + srcDoc sandbox (optional; renamed from artifacts-react for neutrality)
 @jini/ui             generic primitives + feature-shaped UI domains + their hooks/providers/ports (optional; renamed from @jini/components 2026-07-16 — one "components" bucket undersold the scope, see packages/ui/README.md)
 # deferred until a 2nd host exists: @jini/desktop-host (electron/tauri + RenderService port)
+# NOTE (2026-07-17): built ahead of this deferral by explicit human decision, scoped to the
+# C7 narrow slice (shell primitives + bridge + RenderService port + Electron/Tauri adapters).
+# See packages/desktop-host/source-map.md — a second host consumer is still not confirmed.
 ```
 All React packages are optional. `@jini/core` (pure interfaces/tokens) is split from `@jini/daemon` (stateful lifecycle) so a short-lived CLI can use the tool/registry surface without pulling the daemon runtime.
 

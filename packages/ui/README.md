@@ -118,6 +118,33 @@ Real content has landed in several parallel passes — see
   `docs/jini-port/god-components-extraction-plan.md` item 5. Uses the NEW
   `react/{hooks,components}` layout (this is the first feature built with it
   from scratch). See `packages/ui/source-map.md`.
+- `src/features/memory/` — ported from OD's never-merged PR #5228 (a
+  vertical-slice decomposition of `MemorySection.tsx`, 2026-07-18): the
+  saved-memory list/editor, the extraction-history stream, and the
+  connector-sourced-suggestions flow. Carries forward every async/
+  state-correctness fix that PR's own long review cycle found (the bugs were
+  independently confirmed pre-existing in OD's original monolith, not
+  introduced by the decomposition), plus one additional fix
+  (`fetchMemoryList()`'s under-validated response) made during this port. See
+  `packages/ui/source-map.md` for the full provenance note, including why its
+  connector-reconciliation reducers reuse `features/connectors/rules.ts`
+  instead of re-deriving a third copy.
+
+- `src/features/schedule-picker/` — `RecurringSchedulePicker`, a generic
+  "cron-lite" recurring-schedule editor (2026-07-18), ported from
+  `NewAutomationModal.tsx`'s `SchedulePopover` per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map.
+  Also added flat `src/components/{PillButton,PopoverMenu,PopoverItem}.tsx`
+  and `src/utils/timezone.ts`, both from the same source file. See
+  `packages/ui/source-map.md`.
+- `src/features/mention-autocomplete/` — `MentionAutocomplete`, a generic
+  "type a trigger character, get a filtered picker" mention/capability
+  autocomplete (2026-07-18), also ported from `NewAutomationModal.tsx`, per
+  the same Consolidation map row. Checked against `QuickSwitcher.tsx` and
+  the `composer/*` Lexical `@mention` system for a possible 3-way overlap —
+  concluded they're three distinct shapes, not one primitive done three
+  times; see `packages/ui/source-map.md` for the full comparison (read that
+  section before extracting either of those two).
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
 `mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
