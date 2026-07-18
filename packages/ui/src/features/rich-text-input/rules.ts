@@ -64,8 +64,13 @@ export function detectActiveTrigger(
   for (const trigger of triggers) {
     const match = buildTriggerDetectionRegex(trigger).exec(beforeText);
     if (match) {
-      const query = trigger.anchor === 'inline' ? match[2] : match[1];
-      return { id: trigger.id, query: query ?? '' };
+      // Both regex shapes' one capturing group (`([^\s<c>]*)`) is
+      // unconditional, not `?`-quantified — it always participates in a
+      // successful match (possibly capturing an empty string), so it's
+      // never `undefined`. The `!` documents that instead of an
+      // unreachable `?? ''` fallback.
+      const query = trigger.anchor === 'inline' ? match[2]! : match[1]!;
+      return { id: trigger.id, query };
     }
   }
   return null;
@@ -84,8 +89,12 @@ export function deleteActiveTrigger(sel: RangeSelection, re: RegExp): void {
   // Strip a leading whitespace capture (the `(^|\s)` group of an inline
   // trigger) so only the literal token is removed, not the space before it.
   const tok = match[0].replace(/^\s+/, '');
+  // `match[0]` is always a substring of `head` (that's what `.exec()`
+  // matched it against), and `head.length === offset` by construction
+  // above, so `tok.length <= match[0].length <= offset` always — `start`
+  // can never go negative. No test can force a regex match to exceed the
+  // string it matched against, so this isn't padded with a contrived one.
   const start = offset - tok.length;
-  if (start < 0) return;
   node.spliceText(start, tok.length, '', true);
 }
 
@@ -115,6 +124,18 @@ export function hasPlainNavigationIntent(event: KeyboardEvent): boolean {
   return !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
 }
 
+// Lexical's `Point.set()` only ever permits a `'text'`-type point to
+// reference a TextNode or an `'element'`-type point to reference an
+// ElementNode — it throws otherwise (verified directly: Lexical itself
+// rejects constructing a point at a LineBreakNode or any other node
+// shape). Since `RangeSelection` points are only ever mutated through
+// `.set()`, `point.getNode()` for `selection.anchor` is therefore always
+// either a TextNode or an ElementNode — never a third kind. TypeScript
+// can't see that invariant through the wider `LexicalNode` return type, so
+// the two functions below narrow with `$isTextNode`/`$isElementNode` and
+// stop there instead of carrying a trailing `return null` that no real
+// selection (and so no test) could ever reach.
+
 export function mentionBeforeCaret(selection: RangeSelection): MentionNode | null {
   const point = selection.anchor;
   const node = point.getNode();
@@ -126,12 +147,9 @@ export function mentionBeforeCaret(selection: RangeSelection): MentionNode | nul
     const previous = node.getPreviousSibling();
     return $isMentionNode(previous) ? previous : null;
   }
-  if ($isElementNode(node)) {
-    if (point.offset <= 0) return null;
-    const previous = node.getChildAtIndex(point.offset - 1);
-    return $isMentionNode(previous) ? previous : null;
-  }
-  return null;
+  if (point.offset <= 0) return null;
+  const previous = node.getChildAtIndex(point.offset - 1);
+  return $isMentionNode(previous) ? previous : null;
 }
 
 export function mentionAfterCaret(selection: RangeSelection): MentionNode | null {
@@ -145,11 +163,8 @@ export function mentionAfterCaret(selection: RangeSelection): MentionNode | null
     const next = node.getNextSibling();
     return $isMentionNode(next) ? next : null;
   }
-  if ($isElementNode(node)) {
-    const next = node.getChildAtIndex(point.offset);
-    return $isMentionNode(next) ? next : null;
-  }
-  return null;
+  const next = node.getChildAtIndex(point.offset);
+  return $isMentionNode(next) ? next : null;
 }
 
 export function selectBeforeMention(node: MentionNode): void {

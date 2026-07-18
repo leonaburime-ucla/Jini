@@ -54,6 +54,9 @@ export default defineConfig({
         // runtime statements (verified via the same
         // `grep -nE '^(export )?(const|function|class|let|var) '` check).
         'src/features/list-detail-panel/types.ts',
+        // rich-text-input/types.ts is pure `interface`/`type` declarations,
+        // zero runtime statements (same verification check).
+        'src/features/rich-text-input/types.ts',
       ],
     },
   },

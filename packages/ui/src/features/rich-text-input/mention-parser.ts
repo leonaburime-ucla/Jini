@@ -67,7 +67,16 @@ export function parseMentionParts(
     parts.push({ kind: 'text', text: text.slice(copiedUntil) });
   }
 
-  return found ? coalesceTextParts(parts) : null;
+  // Every 'text' part pushed above is guarded to be non-empty (`match.start
+  // > copiedUntil` / `copiedUntil < text.length`), and each is immediately
+  // followed by that iteration's mention part — so `parts` never contains
+  // an empty or adjacent-duplicate 'text' entry that would need coalescing.
+  // An earlier version of this function ran the result through a
+  // coalesce-adjacent-and-drop-empty pass copied from the origin; removed
+  // per this package's coverage-driven-refactor policy once the loop proved
+  // every branch of that pass was unreachable from this one real call site
+  // (Phase 9.5: a dead branch gets refactored out, not padded with a test).
+  return found ? parts : null;
 }
 
 interface MentionTrieNode {
@@ -106,11 +115,17 @@ function getMentionTokenIndex(entities: MentionEntity[]): MentionTokenIndex {
       seen.add(key);
       return true;
     })
-    .sort((a, b) => (b.token?.length ?? 0) - (a.token?.length ?? 0));
+    // The preceding .filter() step already excludes every entity whose
+    // `token` is falsy, so by the time .sort() runs every element's `token`
+    // is a real string — the `!` documents that (noUncheckedIndexedAccess
+    // makes `.length` on an optional string require narrowing) rather than
+    // adding an unreachable `?? 0` fallback branch no real input can hit.
+    .sort((a, b) => b.token!.length - a.token!.length);
 
   for (const entity of normalized) {
+    // `normalized` was already filtered above to exclude any falsy/`'@'`
+    // token, so `token` here is always a real, non-`'@'` string.
     const token = entity.token;
-    if (!token) continue;
     let node = root;
     for (const char of token) {
       let child = node.children.get(char);
@@ -139,7 +154,11 @@ function findKnownMentionAt(
   let best: MentionMatch | null = null;
   let node: MentionTrieNode | undefined = index.root;
   for (let i = start; i < text.length; i += 1) {
-    node = node.children.get(text[i] ?? '');
+    // `i < text.length` is the loop condition itself, so `text[i]` is always
+    // defined here — the `!` documents that instead of adding an
+    // unreachable `?? ''` fallback (noUncheckedIndexedAccess requires
+    // narrowing a string index read either way).
+    node = node.children.get(text[i]!);
     if (!node) break;
     if (node.entity && node.token && isMentionRightBoundary(text, i + 1)) {
       best = { start, token: node.token, entity: node.entity };
@@ -150,8 +169,12 @@ function findKnownMentionAt(
 
 function findUnknownMentionAt(text: string, start: number): MentionMatch | null {
   let end = start + 1;
-  if (end >= text.length || /[\s@]/.test(text[end] ?? '')) return null;
-  while (end < text.length && !/[\s@]/.test(text[end] ?? '')) {
+  // Both `text[end]` reads below are only ever evaluated once a preceding
+  // `end < text.length` check (the `||`'s left side / the `&&`'s left side)
+  // has already passed, so `text[end]` is always defined — `!` documents
+  // that instead of an unreachable `?? ''` fallback.
+  if (end >= text.length || /[\s@]/.test(text[end]!)) return null;
+  while (end < text.length && !/[\s@]/.test(text[end]!)) {
     end += 1;
   }
   const token = text.slice(start, end);
@@ -175,7 +198,10 @@ function findUnknownMentionAt(text: string, start: number): MentionMatch | null 
  */
 export function isMentionBoundary(text: string, start: number): boolean {
   if (start === 0) return true;
-  return /[\s([{"']/.test(text[start - 1] ?? '');
+  // `start > 0` here (the `start === 0` case already returned), so
+  // `start - 1` is always a valid index — `!` documents that instead of an
+  // unreachable `?? ''` fallback.
+  return /[\s([{"']/.test(text[start - 1]!);
 }
 
 /**
@@ -185,22 +211,9 @@ export function isMentionBoundary(text: string, start: number): boolean {
  */
 export function isMentionRightBoundary(text: string, end: number): boolean {
   if (end >= text.length) return true;
-  return /[\s@]/.test(text[end] ?? '');
-}
-
-function coalesceTextParts(parts: MentionPart[]): MentionPart[] {
-  const result: MentionPart[] = [];
-  for (const part of parts) {
-    const last = result[result.length - 1];
-    if (part.kind === 'text' && last?.kind === 'text') {
-      last.text += part.text;
-    } else if (part.kind === 'text' && part.text.length === 0) {
-      continue;
-    } else {
-      result.push(part);
-    }
-  }
-  return result;
+  // `end < text.length` here — `!` documents the always-defined read
+  // instead of an unreachable `?? ''` fallback.
+  return /[\s@]/.test(text[end]!);
 }
 
 interface MentionMatch {
@@ -218,7 +231,9 @@ interface MentionMatch {
  */
 function isMentionSubmitRightBoundary(text: string, end: number): boolean {
   if (end >= text.length) return true;
-  return /[\s@,.;:!?)\]}"'»”’]/.test(text[end] ?? '');
+  // `end < text.length` here — `!` documents the always-defined read
+  // instead of an unreachable `?? ''` fallback.
+  return /[\s@,.;:!?)\]}"'»”’]/.test(text[end]!);
 }
 
 /**
