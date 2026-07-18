@@ -118,6 +118,15 @@ Real content has landed in several parallel passes — see
   `docs/jini-port/god-components-extraction-plan.md` item 5. Uses the NEW
   `react/{hooks,components}` layout (this is the first feature built with it
   from scratch). See `packages/ui/source-map.md`.
+- `src/features/list-detail-panel/` — a generic `ListDetailPanel<TItem>`
+  master-detail (list+preview) navigator shell, ported from
+  `DesignSystemsTab.tsx` (2026-07-18), per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map.
+  `PluginsView.tsx`'s detail modal and `ProjectView.tsx`'s composition were
+  read and confirmed NOT to share this shape (a portal overlay and a
+  resizable 2-pane split, respectively) — scoped to `DesignSystemsTab.tsx`
+  alone rather than forcing a broader generalization. See
+  `packages/ui/source-map.md`.
 - 10 more `src/components/` flat atoms (2026-07-18) — the Section C
   bucket-A batch from `NewProjectPanel.tsx` (`OptionCards`, `CompactToggle`,
   `ToggleRow`), `PluginsView.tsx` (`StatCard`, `Notice`, `ImportChoice`,
