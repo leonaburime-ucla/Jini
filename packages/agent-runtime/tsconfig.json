@@ -5,7 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "exclude": [
-    "src/skills/**"
-  ]
+  "exclude": ["src/craft/**", "src/skills/**"]
 }

@@ -117,3 +117,59 @@ The "patch-router" half of task 4's gate ("a real historical `packages/platform`
 patch routes cleanly") depends on task 1 (harnesses + sync-ownership manifest),
 which has not been done yet. Not attempted here — see the Programmer handoff
 report for this task.
+
+## Addendum: `download.ts` (2026-07-17)
+
+Sourced from `leonaburime-ucla/open-design`'s `packages/download` on `main`
+(cloned fresh to `/tmp/od-source`; `src/index.ts`, one file, 1051 LOC), per
+`docs/jini-port/recon/r2-packages.md` §11: "a generic download store... only
+sentinel/kind string constants... Classification: GENERIC-RUNTIME. Portable;
+rename the sentinel strings. Small." Its only workspace dependency is
+`@open-design/platform` — already ported here as this package.
+
+**Recon file-count discrepancy:** the task brief (echoing r2-packages.md's
+header count) describes this as "16 files, ~1651 LOC." The actual origin
+package on `open-design`'s current `main` has exactly one `src` file
+(`src/index.ts`, 1051 LOC) plus one test file (442 LOC) — 1493 LOC total
+across both, still in the same ballpark as the cited total but as a single
+cohesive module, not 16 files. Verified directly (`find packages/download -type
+f`) before starting the port; treated the real directory contents as ground
+truth over the stale recon count, same situation as `@jini/http`'s
+`tool-request-auth.ts` discrepancy in this same porting session.
+
+| Jini file | Origin file(s) | Transform |
+|---|---|---|
+| `src/download.ts` | `packages/download/src/index.ts` | Logic verbatim (target normalization, atomic-copy-then-rename downloads with HTTP Range resume, sha256/sha512 checksum verification, cross-process advisory locking with stale-lock/pid-reuse detection, a durable JSON manifest per target, retention pruning, same-process in-flight dedup with progress fan-out and per-caller abort, and the `downloadCopyAndClear` one-shot copy-then-clear-if-unreferenced helper). Import source for `atomicCopyFile`/`pathContains`/`removePathBestEffort`/`isProcessAlive` switched from the `@open-design/platform` package import to relative sibling imports (`./fs.js`, `./process.js`), since this now lives inside the same package as those primitives rather than depending on it as a separate workspace package — all four call signatures matched exactly, so no adapter code was needed. Dropped one dead unused import (`relative` from `node:path`, unused in the origin file too — verified by grep). **Identity-stripped** three sentinel/kind string constants (the task brief cited two; a third of the same kind was found during the port and stripped for the same reason): `STORE_SENTINEL = ".open-design-download-root.json"` → `".jini-download-root.json"`, `STORE_KIND = "open-design-managed-download-root"` → `"jini-managed-download-root"`, and `MANIFEST_KIND = "open-design-managed-download"` (not explicitly named in r2-packages.md's two-string summary, but the same category of cosmetic identity string) → `"jini-managed-download"`. These three strings are the only OD-identity content in the entire file — every other line is generic download-store logic with zero product coupling, matching recon's "Classification: GENERIC-RUNTIME" call. |
+| `src/download.test.ts` | `packages/download/tests/index.test.ts` | Ported near-verbatim (all 13 tests: copy-and-clear, Range resume, Range-unsupported fallback, checksum-mismatch fast-fail, same-process dedup + progress fan-out, per-caller abort without killing the shared transfer, stale-pid-lock clearing, Windows pid-reuse lock clearing, alive-lock fast-fail, output-conflict refusal, explicit remove, default-window pruning, tampered-file suspicious-reset-and-redownload) — only the temp-dir prefix (`od-download-` → `jini-download-`) and the import path (package import → sibling `./download.js`) changed. Placed beside `download.ts` per this package's per-file test convention (see `asset-cache.test.ts`), not folded into the barrel-completeness `index.test.ts`. |
+
+Folded into the **existing** `@jini/platform` package (a new `src/download.ts`
+file, plus the barrel `index.ts` re-exporting its public surface) rather than
+a new package, per the task brief: its only workspace dependency is this
+package, and it sits alongside the existing `fs.ts` file-primitives module
+(same "generic OS/file primitives" charter, no new build/publish surface
+needed).
+
+**Strictness-only edits** (same category as the ones already documented
+above for `proxy-env.ts`/`toolchain.ts`, no behavior change): Jini's
+`tsconfig.base.json` sets `exactOptionalPropertyTypes: true`, which OD's own
+`tsconfig.json` does not. This surfaced eight sites where an optional field
+was explicitly assigned a possibly-`undefined` value (`DownloadManifest.
+totalBytes`/`.validators`, `DownloadAttemptResult.totalBytes`,
+`writeResponseBodyToPartial`'s and `downloadWithRetries`'s/`runManagedDownload`'s
+options `totalBytes?`/`requestHeaders?`, and the test file's `sendBody`
+helper's `delayMs?`) — every one fixed by widening the field's declared type
+to explicitly include `| undefined` (`T | undefined` instead of bare `T` on
+an already-optional `?:` field), which is behaviorally identical at runtime.
+One site (`downloadFromZero`'s `fetchImpl(target.url, { headers:
+requestHeaders })`) couldn't be fixed by widening because `RequestInit` is a
+library-defined type this package doesn't own; that call site was changed to
+a conditional spread (`...(requestHeaders == null ? {} : { headers:
+requestHeaders })`) instead of always including the `headers` key, matching
+the conditional-spread pattern already used throughout this same file for
+the identical reason (e.g. `cleanupWarning`).
+
+## Dependencies
+
+No new dependency — `download.ts` uses only `node:crypto`/`node:fs`/
+`node:fs/promises`/`node:path`/`node:stream`/`node:stream/promises` builtins
+plus this package's own `fs.ts`/`process.ts` exports.

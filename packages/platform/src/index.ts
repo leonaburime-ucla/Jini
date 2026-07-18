@@ -16,6 +16,8 @@
  * - `sandbox-env` — sandboxed agent-execution directory tree + env overlay.
  * - `resource-paths` — daemon CLI/resource-root/data-dir path resolution.
  * - `terminal` — in-memory interactive terminal (PTY) session manager.
+ * - `download`    — managed-download engine (atomic resume, checksum, lock,
+ *   manifest, retention pruning).
  *
  * The set of names exported here is intentionally identical to the pre-split
  * public surface; importers see no change.
@@ -126,3 +128,28 @@ export type {
   TerminalSseSink,
 } from "./terminal.js";
 export { createTerminalService, ensureSpawnHelperExecutable, resolveShell, spawnHelperCandidatePaths } from "./terminal.js";
+
+export type {
+  DownloadCopyAndClearOptions,
+  DownloadCopyAndClearResult,
+  ManagedDownloadChecksum,
+  ManagedDownloadErrorCode,
+  ManagedDownloadInspection,
+  ManagedDownloadOptions,
+  ManagedDownloadPayload,
+  ManagedDownloadProgress,
+  ManagedDownloadResult,
+  PruneManagedDownloadsOptions,
+  PruneManagedDownloadsResult,
+  RemoveManagedDownloadOptions,
+  RemoveManagedDownloadResult,
+} from "./download.js";
+export {
+  MANAGED_DOWNLOAD_ERROR_CODES,
+  ManagedDownloadError,
+  downloadCopyAndClear,
+  inspectManagedDownload,
+  managedDownload,
+  pruneManagedDownloads,
+  removeManagedDownload,
+} from "./download.js";
