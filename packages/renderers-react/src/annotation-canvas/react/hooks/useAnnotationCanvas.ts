@@ -118,6 +118,7 @@ export interface AnnotationCanvasController {
   handleTextBlur: (id: number) => void;
   handleTextEscape: (id: number, el: HTMLTextAreaElement) => void;
   autosizeTextArea: (el: HTMLTextAreaElement | null) => void;
+  registerTextArea: (id: number, el: HTMLTextAreaElement | null) => void;
   onTextPointerDown: (e: ReactPointerEvent, mark: TextMark) => void;
   onTextPointerMove: (e: ReactPointerEvent, mark: TextMark) => void;
   onTextPointerUp: (e: ReactPointerEvent, mark: TextMark) => void;
@@ -519,6 +520,12 @@ export function useAnnotationCanvas(options: UseAnnotationCanvasOptions): Annota
     el.style.height = `${el.scrollHeight}px`;
   }, []);
 
+  /** Registers (or, when `el` is null, unregisters) the mounted `<textarea>` backing a text mark, so the autofocus-on-create effect, the autosize-on-frame-change effect, and `textBounds()`'s export-accurate measurement can find it. The presentational layer calls this from the textarea's `ref` callback. */
+  const registerTextArea = useCallback((id: number, el: HTMLTextAreaElement | null) => {
+    if (el) textAreaRefs.current.set(id, el);
+    else textAreaRefs.current.delete(id);
+  }, []);
+
   function updateTextMark(id: number, text: string) {
     commitTextMarks(textMarksRef.current.map((mark) => (mark.id === id ? { ...mark, text } : mark)));
   }
@@ -754,8 +761,15 @@ export function useAnnotationCanvas(options: UseAnnotationCanvasOptions): Annota
   async function compositeWithBackground(snap: PreviewSnapshot): Promise<Blob | null> {
     const frameRect = port.captureFrameRect?.() ?? wrapRef.current?.getBoundingClientRect() ?? null;
     if (!frameRect) return null;
-    const out = typeof document !== 'undefined' ? document.createElement('canvas') : null;
-    if (!out) return null;
+    // No `typeof document !== 'undefined'` SSR guard here (unlike the
+    // component's own preview-modal portal check): this function is only
+    // ever reached via `send()`, itself only invocable from an event handler
+    // on an already-mounted, hydrated component — never during an SSR render
+    // pass, where `document` is provably defined. Proved dead and removed
+    // during the coverage pass (see `source-map.md`); the guard is only
+    // meaningful at JSX-render time (portal / effect bodies), not inside an
+    // async handler like this one.
+    const out = document.createElement('canvas');
     out.width = snap.w;
     out.height = snap.h;
     const ctx = out.getContext('2d');
@@ -898,9 +912,17 @@ export function useAnnotationCanvas(options: UseAnnotationCanvasOptions): Annota
     title: rule.action === 'send' && sendDisabled ? options.sendDisabledReason ?? t('Sending is unavailable right now.') : t(rule.labelKey),
     enabled: rule.enabled,
   }));
+  // The `?? submitOptions[0]!` fallback is a TS-only safety net: `submitAction`
+  // is typed `AnnotationAction`, and `buildSubmitOptionRules` always returns
+  // exactly one entry per `AnnotationAction` value, so `.find` can never
+  // actually miss — not covered by a test for the same reason a `!` assertion
+  // isn't.
   const currentSubmit = submitOptions.find((opt) => opt.action === submitAction) ?? submitOptions[0]!;
 
   const markToolOptions: MarkToolOptionController[] = MARK_TOOL_OPTION_RULES.map((rule) => ({ tool: rule.tool, label: t(rule.labelKey) }));
+  // Same reasoning as `currentSubmit` above: `markTool` is typed `MarkTool`
+  // and `MARK_TOOL_OPTION_RULES` covers every `MarkTool` value, so `.find`
+  // can never miss.
   const currentMarkTool = markToolOptions.find((item) => item.tool === markTool) ?? markToolOptions[0]!;
 
   const textMarksWithEditing: TextMarkController[] = textMarks.map((mark) => ({ ...mark, editing: editingTextId === mark.id }));
@@ -929,6 +951,7 @@ export function useAnnotationCanvas(options: UseAnnotationCanvasOptions): Annota
     handleTextBlur,
     handleTextEscape,
     autosizeTextArea,
+    registerTextArea,
     onTextPointerDown,
     onTextPointerMove,
     onTextPointerUp,

@@ -120,10 +120,92 @@ describe('splice helpers', () => {
     expect(out).toContain('<meta data-probe="1">');
   });
 
+  it('injectBeforeHeadEnd preserves a real <!doctype> through the DOMParser fallback', () => {
+    // Exercises `serializeHtmlDocument`'s `doc.doctype ? ... : ''` true
+    // branch — the DOMParser-fallback test above uses a doctype-less
+    // fragment, which only ever exercises the false ('') side.
+    const out = injectBeforeHeadEnd('<!doctype html><html><body>hi</body></html>', '<meta data-probe="1">');
+    expect(out.toLowerCase().startsWith('<!doctype html>')).toBe(true);
+    expect(out).toContain('<meta data-probe="1">');
+  });
+
+  it('injectBeforeHeadEnd falls back to prepending when DOMParser itself throws', async () => {
+    const originalDOMParser = globalThis.DOMParser;
+    class ThrowingDOMParser {
+      parseFromString(): never {
+        throw new Error('boom');
+      }
+    }
+    globalThis.DOMParser = ThrowingDOMParser as unknown as typeof DOMParser;
+    try {
+      const doc = '<html>just a fragment, no head or body tag at all</html>';
+      expect(injectBeforeHeadEnd(doc, '<X/>')).toBe(`<X/>${doc}`);
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('injectBeforeHeadEnd falls back to a regex replace when <head> is open but never closed', () => {
+    // No `</head>` anywhere (so the lastIndexOf search misses), but a real
+    // `<head>` opening tag is present — takes the regex-replace path rather
+    // than falling through to the DOMParser branch at all.
+    const out = injectBeforeHeadEnd('<html><head><meta charset="utf-8"></html>', '<X/>');
+    expect(out).toBe('<html><head><X/><meta charset="utf-8"></html>');
+  });
+
+  it('injectBeforeHeadEnd measures the search limit from the full doc length when there is no <body> at all', () => {
+    // With no <body> anywhere, `limit` falls back to `lower.length` rather
+    // than a body-relative offset; a normal open+close <head> with no body
+    // still splices correctly.
+    const out = injectBeforeHeadEnd('<html><head><meta/></head></html>', '<X/>');
+    expect(out).toBe('<html><head><meta/><X/></head></html>');
+  });
+
   it('injectBeforeBodyEnd falls back to DOMParser when the doc has no <body> tag and no </body> at all', () => {
     const out = injectBeforeBodyEnd('<html><head></head></html>', '<script data-probe="1"></script>');
     expect(out.toLowerCase()).toContain('<body>');
     expect(out).toContain('<script data-probe="1"></script>');
+  });
+
+  it('injectBeforeBodyEnd falls back to appending when DOMParser itself throws', async () => {
+    const originalDOMParser = globalThis.DOMParser;
+    class ThrowingDOMParser {
+      parseFromString(): never {
+        throw new Error('boom');
+      }
+    }
+    globalThis.DOMParser = ThrowingDOMParser as unknown as typeof DOMParser;
+    try {
+      const doc = '<html>just a fragment, no head or body tag at all</html>';
+      expect(injectBeforeBodyEnd(doc, '<X/>')).toBe(`${doc}<X/>`);
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+});
+
+describe('sanitizeTitleInDoc malformed-markup edge cases', () => {
+  it('gives up without throwing when a <script> block before the title is missing its closing ">"', () => {
+    // `findRealTitleOffset`'s script/style skip-ahead re-searches for the
+    // closing tag's own ">"; when the document is truncated mid-tag there is
+    // none, and it must fall back to advancing past the closing tag text
+    // itself instead of looping forever or throwing.
+    const doc = '<html><script>x</script';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
+  });
+
+  it('bails out instead of mis-slicing when a Turkish dotted capital I before <title> desyncs the lowercased search offset from the original string', () => {
+    // `sanitizeTitleInDoc` searches for "</title>" inside `html.toLowerCase()`
+    // but then re-uses that offset directly against the *original* `html`.
+    // `String.prototype.toLowerCase()` maps U+0130 (LATIN CAPITAL LETTER I
+    // WITH DOT ABOVE) to a two-code-unit sequence, so each occurrence before
+    // the title tag desyncs the lowercased offset from the original by one.
+    // With enough of them, the desynced offset walks past the end of the
+    // document and the final `html.indexOf('>', closingTagStart)` finds no
+    // more ">" at all (returns -1) — this must return the input unchanged
+    // rather than produce a garbage slice.
+    const doc = 'İ'.repeat(8) + '<title>Foo</title>';
+    expect(sanitizeTitleInDoc(doc)).toBe(doc);
   });
 });
 
@@ -199,6 +281,18 @@ describe('buildSrcDoc', () => {
       previewFocusGuard: true,
     });
     expect(doc).toContain('<base href="https://example.com/artifact/">');
+    expect(doc).toContain('data-jini-sandbox-shim');
+    expect(doc).toContain('data-jini-preview-focus-guard');
+  });
+
+  it('injects the sandbox shim/focus guard into <body> when there is no <head> and no baseHref (so nothing upstream synthesizes one)', () => {
+    // `injectBaseHref`'s own "no <head>" fallback wraps an <html> tag in a
+    // synthesized `<head>...</head>`, which — when baseHref *is* set — means
+    // by the time injectSandboxShim/injectPreviewFocusGuard run, the doc
+    // already has a <head> after all. Omitting baseHref here is the only way
+    // to reach their own independent "<body> but no <head>" branch.
+    const doc = buildSrcDoc('<html><body>Hi</body></html>', { previewFocusGuard: true });
+    expect(doc).not.toContain('<base href');
     expect(doc).toContain('data-jini-sandbox-shim');
     expect(doc).toContain('data-jini-preview-focus-guard');
   });

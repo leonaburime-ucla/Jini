@@ -133,4 +133,20 @@ describe('ArtifactView', () => {
     const { container } = render(<ArtifactView file={file} registry={customRegistry} />);
     expect(container.querySelector('h1')).toHaveTextContent('Fallback works');
   });
+
+  it('treats a missing `content` as empty markdown on the built-in-safe-converter fallback path too (no custom renderPartial, no content)', () => {
+    // Distinct from the two "missing content" cases above: those both hit a
+    // renderer with a `renderPartial` (the default markdown renderer always
+    // has one), so they never exercise the `file.content ?? ''` fallback on
+    // the *other* branch of that ternary — the one taken when the resolved
+    // renderer has no renderPartial of its own.
+    const customRegistry = registry.register({
+      id: 'markdown',
+      supportsStreaming: false,
+      canRender: ({ file }) => file.name.endsWith('.md'),
+    });
+    const file: ArtifactFile = { name: 'notes.md', kind: 'text' };
+    const { container } = render(<ArtifactView file={file} registry={customRegistry} />);
+    expect(container.textContent).not.toContain('undefined');
+  });
 });

@@ -130,6 +130,16 @@ describe('drawCaptureTarget', () => {
     expect(calls).toContain('fillText');
   });
 
+  it('truncates a label longer than 42 characters before measuring/drawing it', () => {
+    const { ctx, calls } = fakeCtx();
+    const target: CaptureTarget = {
+      position: { x: 10, y: 10, width: 50, height: 20 },
+      label: 'This label is intentionally much longer than forty-two characters',
+    };
+    drawCaptureTarget(ctx, 1, 1, target);
+    expect((ctx.fillText as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('This label is intentionally much longer...');
+  });
+
   it('draws the box but skips the label when there is no label/elementId', () => {
     const { ctx, calls } = fakeCtx();
     const target: CaptureTarget = { position: { x: 10, y: 10, width: 50, height: 20 } };

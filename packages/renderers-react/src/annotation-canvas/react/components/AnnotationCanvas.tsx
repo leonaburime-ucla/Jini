@@ -45,7 +45,14 @@ export function AnnotationCanvas(props: AnnotationCanvasProps) {
   const icons = { ...DEFAULT_ANNOTATION_CANVAS_ICONS, ...iconOverrides };
   const c = useAnnotationCanvas(props);
 
-  const activePreview = c.previewIndex !== null ? (c.imagePreviews[c.previewIndex] ?? null) : null;
+  // `c.imagePreviews[c.previewIndex]` is a TS-only possibly-undefined lookup
+  // (`noUncheckedIndexedAccess`): `previewIndex` is only ever set to a
+  // currently-valid index (the thumbnail's own `onClick={() =>
+  // c.setPreviewIndex(i)}` closes over the same array it maps over), and
+  // every state change that could shrink `imagePreviews` (`removeExtraFile`)
+  // unconditionally resets `previewIndex` to `null` in that same update — so
+  // this can never actually be `undefined` while `previewIndex !== null`.
+  const activePreview = c.previewIndex !== null ? c.imagePreviews[c.previewIndex]! : null;
 
   return (
     <div
@@ -95,6 +102,7 @@ export function AnnotationCanvas(props: AnnotationCanvasProps) {
             >
               <textarea
                 ref={(el) => {
+                  c.registerTextArea(mark.id, el);
                   if (el) c.autosizeTextArea(el);
                 }}
                 value={mark.text}

@@ -320,3 +320,20 @@ cases). `pnpm guard` clean. No product-identity strings anywhere in `src/`
 (re-verified after Part B's additions via the same
 `grep -rniE "open design|OD_|--od-stamp|/tmp/open-design"` + bare-`OD`-word
 sweep — both empty across the whole package, not just this feature).
+
+## Coverage pass (Part B follow-up) — one real bug found and fixed
+
+While driving `useAnnotationCanvas.ts`/`AnnotationCanvas.tsx` to full test
+coverage, the hook's internal `textAreaRefs` map (backing the
+autofocus-on-create effect, the autosize-on-frame-change effect, and
+`textBounds()`'s export-accurate measurement) turned out to never be
+populated — the component's textarea `ref` callback only called
+`autosizeTextArea(el)`, never registering `el` into the map at all. All
+three features were silently no-ops at runtime (autofocus never focused,
+the resize-driven autosize effect iterated an always-empty map, and
+`textBounds()` always fell back to its 1×1-approximation branch instead of
+measuring the real element). Fixed by adding a `registerTextArea(id, el)`
+function to the controller (mirroring `updateTextMark`/`removeTextMark`'s
+shape) and calling it from the textarea's `ref` callback alongside
+`autosizeTextArea`. Behavior-only fix, no shape/API changes beyond the one
+new controller method.
