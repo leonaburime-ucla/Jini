@@ -562,6 +562,63 @@ verify at 100%/100%/100%/100% in the full merged run, not just in isolation. `pn
 `node:fs`, `node:os`, `node:path`, `node:util`, `node:buffer` — all Node built-ins already
 available via the workspace's `@types/node`.
 
+## providers/ — LLM-provider integrations (2026-07-18)
+
+Origin: `apps/daemon/src/integrations/` (13 files) on the real fork clone
+`leonaburime-ucla/open-design`, read directly from `/tmp/od-source` for this
+task (not the frozen in-repo snapshot). Per
+`docs/jini-port/recon/r1-daemon.md` TASK 1's MIXED-classification entry for
+`integrations/`: "LLM-provider integrations (`google-models`,
+`openai-chat-token-params`, `provider-models`, `xai-oauth*`, `aihubmix`,
+`elevenlabs-voices`) are generic agent-runtime providers; `vela*` (AMR) is a
+specific provider adapter."
+
+**Verified by reading all 13 files, not assumed.** The classification held:
+`vela.ts`/`vela-errors.ts`/`vela-profile.ts`/`vela-wallet.ts` (4 files,
+1,630 lines total) are OD's own AMR-vendor-specific provider adapter
+(wallet/billing UI-shaped types, AMR-branded error taxonomy, an
+OD-configured profile format) — **not ported**. The other 9 files split into
+two groups: `google-models.ts`/`openai-chat-token-params.ts`/`aihubmix.ts`
+(zero imports, already fully generic — verbatim) and
+`provider-models.ts`/`elevenlabs-voices.ts`/`xai-oauth.ts`/
+`xai-oauth-server.ts`/`xai-credentials.ts`/`xai-tokens.ts` (generic
+mechanism, but each imported at least one out-of-scope OD module — a
+product-owned settings-store reader, a 2,600-line agent-CLI connection-test
+orchestrator, or a 601-line generic-but-unported MCP-OAuth-discovery
+subsystem — requiring a real port/generalization judgment call, not a
+straight lift).
+
+### File map
+
+| Jini file | OD origin file(s) | Transform |
+|---|---|---|
+| `providers/token-params.ts` | `integrations/openai-chat-token-params.ts` | Verbatim. Zero imports in the origin. |
+| `providers/google.ts` | `integrations/google-models.ts` | Verbatim. Zero imports in the origin. |
+| `providers/aihubmix.ts` | `integrations/aihubmix.ts` | Verbatim third-party-gateway wire helpers (zero imports in the origin), plus one coverage-driven refactor: `aihubmixAppCodeHeader()`'s `AIHUBMIX_APP_CODE ? {...} : {}` conditional was simplified to always return the header — `AIHUBMIX_APP_CODE` is a fixed non-empty literal, not a runtime-configurable value, so the empty-string branch was dead code (Phase 6.5 category 2), not a coverage gap to test around. |
+| `providers/types.ts` | `packages/contracts/src/api/connectionTest.ts` + `packages/contracts/src/api/providerModels.ts` (types only) | Vendored inline, narrowed to the fields this package's own code reads/writes (`ConnectionTestKind`/`ConnectionTestProtocol`/`ProviderModelOption`/`ProviderModelsRequest`/`ProviderModelsResponse`) — same policy as `types.ts`'s vendored `AgentDiagnostic`/`AgentFixIntent`. The daemon-only surface (agent connection-test request/response shapes, reasoning-execution fields) is not ported. |
+| `providers/connection-guard.ts` | `packages/contracts/src/api/connectionTest.ts` (`isLoopbackApiHost`/`isBlockedExternalApiHostname`/`validateBaseUrl`) + `apps/daemon/src/connectionTest.ts` (`validateBaseUrlResolved`, `redactSecrets`) | Vendored, not the surrounding 2,600-line file (almost entirely OD's own agent-CLI connection-test orchestration — proxy dispatchers, codex-specific executable-fallback copy, product-prefixed env vars — out of this task's scope). `validateBaseUrlResolved`'s DNS lookup is now a required injected parameter (`DnsLookupFn`) instead of defaulting to `node:dns` internally at every call site; `defaultDnsLookup` is exported separately for a caller that wants the real resolver. One coverage-driven refactor: the trailing `!hi \|\| !lo` guard in `ipv4MappedToDotted` was replaced with non-null assertions + a comment — the preceding `hexParts.length !== 2` check already guarantees two non-empty regex-matched segments, so the guard was dead (Phase 6.5 category 4). |
+| `providers/model-catalog.ts` | `integrations/provider-models.ts` (`listProviderModels`) | Ported with its `@open-design/contracts` type imports repointed at this package's own `types.ts`, and its `../connectionTest.js` SSRF-guard/redaction imports repointed at `connection-guard.ts`. Logic otherwise unchanged. Two coverage-driven refactors (Phase 6.5): (1) `extractModels`'s parameter type was narrowed from the full `ConnectionTestProtocol` union to a 5-member `ModelListProtocol` type (the only protocols `providerModelsUrl` ever resolves a listing endpoint for — `azure`/`bedrock` short-circuit earlier in `listProviderModels`, and `providerModelsUrl` itself throws for every other value), removing an unreachable `return []` fallback rather than leaving it as a dead branch; (2) three `err instanceof Error ? err.message : String(err)` / `?? ''` fallbacks that TypeScript requires but that the surrounding code makes provably unreachable (`providerModelsUrl`/`JSON.parse` only ever throw real `Error`s; `validateBaseUrlResolved`'s failure shape always pairs a set `error` with a missing `parsed`) were replaced with non-null-style assertions + justifying comments instead of contrived non-Error-throw tests. |
+| `providers/elevenlabs.ts` | `integrations/elevenlabs-voices.ts` | De-branded: the origin resolved the API key/base URL via OD's own product-owned settings-store reader (`resolveProviderConfig`, `../media/config.js`, out of this package's scope) and threw a hardcoded product-prefixed env-var hint. Both replaced by an injected `ElevenLabsCredentialResolver` port — a host supplies its own settings-store/env lookup. |
+| `providers/pkce.ts` | `apps/daemon/src/mcp-oauth.ts` (PKCE-generation + authorize-URL-building + token-exchange/refresh + `PendingAuthCache` subset only) | Vendored, not the surrounding 601-line file — the origin is a *daemon-side OAuth 2.1 client for HTTP/SSE MCP servers*, most of which is RFC 9728/8414 protected-resource + authorization-server *discovery* and RFC 7591 Dynamic Client Registration, a distinct, separately-scoped MCP-server-OAuth-discovery subsystem that `xai-oauth.ts` never calls (xAI's OAuth server is hardcoded, no MCP discovery involved) and that is not part of this task's 13-file scope — same reasoning `acp-model-probe.ts` used to exclude the ACP transport subsystem. |
+| `providers/oauth-provider.ts` | `integrations/xai-oauth.ts` | Generalized rather than lifted: the origin hardcoded xAI's issuer/endpoints/client_id/scope/redirect port as module-level constants and function names (`beginXAIAuth`, `XAI_OAUTH_CLIENT_ID`, ...) because it only ever talked to one OAuth server. Replaced with a config-driven `beginOAuthPkce`/`completeOAuthPkce`/`refreshOAuthPkceToken` triad taking an `OAuthPkceProviderConfig`, with `XAI_OAUTH_PROVIDER_CONFIG` kept as the one concrete preset the origin actually shipped — mirrors this package's existing `RuntimeAgentDef` (generic contract) + `defs/*` (concrete instances) pattern. |
+| `providers/oauth-callback-server.ts` | `integrations/xai-oauth-server.ts` | De-branded: the origin hardcoded xAI's fixed callback port/host/path as module constants and had the origin product's own name baked into the result-page HTML (see the file's own header for the general shape; the exact original literal strings were `XAI_CALLBACK_HOST`/`XAI_CALLBACK_PORT`/`XAI_CALLBACK_PATH` = `'127.0.0.1'`/`56121`/`'/callback'`, and the HTML `<title>`/body text opened with `"Open Design — xAI authorized"` / `"Open Design — sign-in failed"` plus a "Open Design now has access to your SuperGrok subscription" sentence). `host`/`port`/`path` are now required input fields instead of defaulted constants; the result page uses generic "the host application" copy. One coverage-driven refactor: `closeServer()`'s `if (!s) return resolve();` guard and `renderResultPage`'s `outcome.error \|\| 'unknown error'` fallback were both replaced with non-null assertions + comments — both conditions are provably unreachable given this file's own call graph (`closeServer` has exactly one call site, guarded by a `stopped` flag that prevents re-entry; every `'error'`-kind outcome this file constructs always sets a non-empty `error` string). Listener/HTTP mechanics otherwise unchanged. |
+| `providers/oauth-tokens.ts` | `integrations/xai-tokens.ts` | Generalized: the origin hardcoded the on-disk filename (`xai-tokens.json`) and type names (`StoredXAIToken`) for xAI's single-account case. The filename is now a caller-supplied parameter (`fileName`) and the types are provider-neutral (`StoredOAuthToken`/`OAuthTokenFile`); write-lock keying changed from `dataDir`-only to `dataDir + fileName` so two different providers sharing a `dataDir` don't serialize each other's writes. On-disk layout (`{ token: ... }`), atomic-write-then-rename, and best-effort `chmod 0600` are unchanged. |
+| `providers/oauth-credentials.ts` | `integrations/xai-credentials.ts` | Generalized: the origin's `resolveXAIBearer` hardcoded the xAI refresh call and the `xai-tokens.json` filename. `resolveOAuthBearer(config, tokenFileName, dataDir, fetchImpl?)` takes both as parameters. Refresh-on-read logic (skew window, refresh_token carry-forward when the response omits one) unchanged. |
+| `providers/index.ts` | *(new — barrel)* | Re-exports every module above. |
+
+### Not ported / explicitly out of scope
+
+- `integrations/vela.ts`, `vela-errors.ts`, `vela-profile.ts`, `vela-wallet.ts` — OD's own AMR-vendor-specific provider adapter (design decision above).
+- `apps/daemon/src/connectionTest.ts`'s `testProviderConnection`/`testAgentConnection` (the file's actual exported entry points) and all agent-CLI-connection-test orchestration around them — daemon-level composition glue (agent launch, stream-parser wiring, proxy-dispatcher construction) entirely out of this package's `integrations/`-file scope; only the four small SSRF/redaction utilities that `provider-models.ts` itself depends on were vendored (`connection-guard.ts`).
+- `apps/daemon/src/mcp-oauth.ts`'s discovery/DCR/`beginAuth` surface (`discoverProtectedResource`, `discoverAuthServer`, `registerClient`, `getOrRegisterClient`, `beginAuth`, `PendingAuthCache`'s only-used-by-discovery neighbors) — a distinct MCP-server-OAuth-discovery subsystem `xai-oauth.ts` doesn't call into; flagged as a real follow-up for a future task scoped to `agent-protocol/`-adjacent generic transport material (per `r1-daemon.md`'s own classification of that directory as a separate GENERIC-ENGINE target).
+- `integrations/xai-credentials.ts`/`xai-tokens.ts`/`xai-oauth*.ts`'s literal xAI constants beyond `XAI_OAUTH_PROVIDER_CONFIG` (e.g. the PoC client_id's provenance comment) — kept as-is in the preset, not generalized away, since a concrete working preset is more useful than a stripped one.
+
+### Validation
+
+- `pnpm --filter @jini/agent-runtime typecheck` (src + tests): zero errors, zero TS2307.
+- `pnpm --filter @jini/agent-runtime test` (full package, from a clean `pnpm install`): 1183/1184 passing. The 1 failure (`launch.test.ts`'s codex-wrapper-fallback-on-permission-denied test) is the same pre-existing sandbox-root environment issue already documented above in this file (`git stash` confirms it fails identically on the pre-`providers/`-addition tree) — not caused by this task, not one of the 13 ported files.
+- **Coverage** (`json-summary`+`json` reporters, `pnpm exec vitest run src/providers/ --coverage`, real aggregate for the whole `src/providers/` folder, not per-file-in-isolation): **statements 100%, branches 99.83%, functions 100%, lines 100%**. Every individual file in `src/providers/` is at 100% on all four metrics except `model-catalog.ts` (branches 99.43%, one `validated.error!` non-null-assertion line — see the file-map row above) — both clear the ≥99% floor per file and in aggregate, with 100% achieved everywhere else. `providers/types.ts` is excluded from the denominator in `vitest.config.ts` (zero runtime declarations — same carve-out as the package's existing `src/types.ts`).
+- **Purity**: `grep -rniE "open[- ]design|\bod_|--od-stamp|/tmp/open-design|@open-design" src/providers/` — zero matches. `pnpm guard` (repo root) passes (the guard script is a skeleton pending its rules' implementation per its own "ok (skeleton — rules pending implementation during extraction)" output — not a claim of a populated boundary-check pass).
 ## agent-protocol/ (2026-07-18)
 
 Origin: fork `leonaburime-ucla/open-design`, branch `refactor/agent-protocol-barrel`
