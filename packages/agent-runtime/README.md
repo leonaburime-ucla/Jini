@@ -1,9 +1,19 @@
 # `@jini/agent-runtime`
 
 Runtime-side content and (eventually) execution code for agent-driven
-artifact generation. Currently a content package: brand-agnostic craft
+artifact generation. Mostly a content package (brand-agnostic craft
 knowledge and portable skill packages, both product-neutral per root
-`AGENTS.md`.
+`AGENTS.md`), plus one real TypeScript surface: `src/registry.ts`.
+
+## `src/registry.ts`
+
+The provider/model/agent vocabulary (`ModelProvider`, `ModelOption`,
+`AgentDefinition`, `AgentDiagnostic`, `CredentialStatus`, ...) and a handful
+of pure helpers (credential-status resolution, model-list merging, a stable
+model-catalogue cache key, model-choice normalization against a live
+catalogue) for any consumer building a "pick a model/agent" UI — e.g.
+`@jini/chat-react`'s `features/model-picker/` slice. See `source-map.md` for
+full provenance.
 
 ## `src/craft/`
 
