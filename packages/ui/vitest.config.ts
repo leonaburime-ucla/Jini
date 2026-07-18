@@ -41,6 +41,15 @@ export default defineConfig({
         'src/features/settings-dialog/types.ts',
         'src/features/settings-dialog/tabs/*/types.ts',
         'src/features/settings-dialog/tabs/integrations/ports.ts',
+        // Same carve-out: `features/html-viewer/types.ts` (plain
+        // `DeckSlideState`/`DeckNavigateAction` type shapes) and its
+        // `ports.ts` (`FullscreenPort`/`NewTabPreviewPort`/
+        // `HtmlViewerDependencies` — interfaces only, unlike
+        // `features/observability/ports.ts` which carries a real
+        // `noopSafetyEventReporter` runtime export) both verified
+        // zero-runtime-declaration.
+        'src/features/html-viewer/types.ts',
+        'src/features/html-viewer/ports.ts',
       ],
     },
   },

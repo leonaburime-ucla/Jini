@@ -11,6 +11,7 @@ export * from './features/sketch-editor/index.js';
 export * from './features/asset-grid/index.js';
 export * from './features/viewer-shell/index.js';
 export * from './features/version-manager/index.js';
+export * from './features/html-viewer/index.js';
 export * from './features/settings-dialog/index.js';
 export * from './features/settings-dialog/tabs/appearance/index.js';
 export * from './features/settings-dialog/tabs/notifications/index.js';

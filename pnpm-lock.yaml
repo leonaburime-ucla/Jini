@@ -110,6 +110,9 @@ importers:
       '@excalidraw/excalidraw':
         specifier: 0.18.1
         version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@jini/renderers-react':
+        specifier: workspace:*
+        version: link:../renderers-react
       micromark:
         specifier: ^4.0.0
         version: 4.0.2

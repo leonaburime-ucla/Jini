@@ -2132,3 +2132,115 @@ Every user-facing string in every `react/components/` file routes through `useT(
 ### Full `@jini/ui` package coverage aggregate — reported honestly, not just this task's files
 
 Per this task's explicit instruction to report the real full-package number, not just per-file numbers for what was touched: `npx vitest run --coverage` (whole package, 151 test files, 1370 tests, **all green**) gives an aggregate of **93.19% statements / 91.07% branches / 92.60% functions / 93.19% lines** — well below the ≥99% bar the skill file requires, and this is **not** attributable to this task's own files (every file this task added or touched is 100% on all 4 metrics, confirmed above). The gap is entirely pre-existing debt in features and utilities shipped by earlier sessions, spanning a wide swath of the package: `src/components/` (`Icon.tsx` 41%, `TooltipLayer.tsx` 73%, `CustomSelect.tsx` 79%, `AppChromeHeader.tsx` 50% branches, several others), `src/features/connectors/` (several files 60-90% branches/functions despite that feature's own source-map section above reporting "144/145 tests, all green" with no coverage percentage claimed), `src/features/observability/` (most files 60-88%), `src/features/i18n/context.tsx` (83% functions), `src/utils/notifications.ts` (67%), `src/utils/visual-stability.ts` (33% branches), and several more (full list available via `coverage/coverage-summary.json`, not reproduced here). This directly corroborates the exact failure pattern the `port-refactor-audit-canary` findings warned about for a sibling task ("real full-package coverage was 93-94%, not the 100% its own commit messages claimed") — except here it traces to debt already present before this task started, not a false claim made by this task. Fixing it is a real, separate, package-wide undertaking (dozens of files, none owned by this task's scope) and was not attempted here; flagged explicitly rather than left as a silent gap in this record.
+
+---
+
+## Section: `features/html-viewer/` — deck navigation + zoom + present (2026-07-18)
+
+Scope: the next slice of `HtmlViewer` after the `html-viewer` classification
+section above — that task ended with the sandboxed-iframe/message-bus core
+flagged as "a rewrite, not an extraction," needing its own scoping before
+any of `HtmlViewer`'s deferred GENERIC pieces (deck navigation, manual
+edit, comment pinning, `InspectPanel`) could actually ship. This task
+builds that core (`@jini/renderers-react`, see its own `source-map.md`)
+and, as the classification's own recommended staging suggested ("sandboxed
+rendering + postMessage bridge first, then deck/slide navigation, then the
+inline visual editor, then comment-pinning"), the deck/slide-navigation +
+zoom + present row — the classification's lowest-coupling deferred item
+once the bridge exists.
+
+### Re-verification against the real source before building
+
+Re-read the classification's cited line ranges directly against the real
+OD fork (same commit, `0b88ef56144b5a42dc427c1292ae22676d698a34`) rather
+than trusting the summary: `SlideState = { active, count }` cached in a
+module-level `Map` keyed per preview, `od:slide`/`od:slide-state`
+postMessage protocol (host sends `action: next|prev|first|last|go` +
+optional `index`; iframe replies with the new `{active, count}`); a
+`zoom` percentage (`useState(100)`) with a `[50, 75, 100, 125, 150, 200]`
+preset dropdown (`previewScale = zoom / 100`); three present actions
+(`presentInThisTab` — mode switch + local "in-tab present" flag,
+`presentFullscreen` — `element.requestFullscreen()` with a fallback to
+in-tab present, `presentNewTab` — reuses the same new-tab-preview
+mechanism `@jini/renderers-react` now ships). Confirmed zero OD types in
+any of these — matches the classification's verdict.
+
+### What shipped — `packages/ui/src/features/html-viewer/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `DeckSlideState`, `DeckNavigateAction`. Zero runtime declarations — excluded from coverage per the established carve-out (see `vitest.config.ts`). |
+| `constants.ts` | A **fresh** `jini:deck-navigate`/`jini:deck-state` postMessage protocol — deliberately not a rename of OD's `od:slide`/`od:slide-state`, per the classification's own finding that the real bridge needs a redesign, not a rename. `DEFAULT_ZOOM_LEVELS`/`DEFAULT_ZOOM` (verbatim preset values from the source). |
+| `rules.ts` | `canGoPrev`/`canGoNext`/`slideCounterLabel`/`clampSlideIndex` (pure deck-state derivations); `parseDeckStateMessage` — validates an inbound `postMessage` payload (finite, non-negative, in-range `active`/`count`) since that data crosses a trust boundary from sandboxed content; `isKnownZoomLevel`/`zoomToScale`. |
+| `ports.ts` / `dependencies.ts` | `FullscreenPort` (`requestFullscreen`/`exitFullscreen`/`fullscreenElement`/`subscribeFullscreenChange`) and `NewTabPreviewPort` — the two real browser APIs this slice needs, following `features/viewer-shell`'s clipboard-port precedent. `createBrowserNewTabPreviewPort` delegates straight to `@jini/renderers-react`'s `openSandboxedPreviewInNewTab` — this feature is that package's first `@jini/ui` consumer. Zero runtime declarations in `ports.ts` itself (interfaces only) — same carve-out as `types.ts`. |
+| `react/hooks/useDeckNavigation.ts` | Wraps `@jini/renderers-react`'s `useSandboxBridge`, speaking the `jini:deck-*` protocol; tracks `DeckSlideState` and exposes `goNext`/`goPrev`/`goFirst`/`goLast`/`goTo`. No port/`useWired` variant needed — it talks directly to the generic, already-real `useSandboxBridge`, not a host-specific transport. |
+| `react/hooks/useZoomControl.ts` | Pure client-side zoom-percentage + menu-open state, no host dependency (matches `usePreviewCanvasSize`'s no-port precedent in `features/version-manager/` for a hook with nothing to inject). |
+| `react/hooks/usePresentMode.ts` + `useWiredPresentMode` | Binds `FullscreenPort`/`NewTabPreviewPort`; tracks `isFullscreen` via the browser's own `fullscreenchange` event (so an Escape-driven exit is reflected, not just a call this hook itself made). |
+| `react/components/DeckNavigationControls.tsx` | Prev/next + counter, renders nothing until the sandboxed content reports its first state. |
+| `react/components/ZoomMenu.tsx` | Percentage trigger + preset dropdown; outside-click/Escape dismiss is local, reusing `browser/useDismissOnOutsideOrEscape` exactly like `features/version-manager/`'s `VersionPromptPopover`. |
+| `react/components/PresentMenu.tsx` | The three present actions as a disclosure menu, same local-dismiss shape as `ZoomMenu`. `onPresentInline` is a bare callback prop — "present in this tab" is host layout state (which panel is showing), not a browser API this package should own. |
+| `index.ts` | Public barrel; also added to the package-root `src/index.ts` barrel (`export * from './features/html-viewer/index.js'`). |
+
+### Pre-existing barrel-completeness gap found and fixed in passing
+
+While adding this feature to `src/index.test.ts`'s tracked-modules map (the
+barrel-completeness smoke test — see its own doc comment for the bug class
+it guards against: a feature shipped, individually tested, and
+100%-coverage-verified, but never re-exported from the package's public
+barrel), found `features/version-manager` was **already** missing from
+that map since the session that shipped it — a real instance of the exact
+gap the test exists to catch, just never added to the test's own tracking
+list. Added both `version-manager` and `html-viewer` to the map in this
+task; both pass (no missing exports).
+
+### i18n
+
+Every user-facing string in `DeckNavigationControls`/`ZoomMenu`/`PresentMenu`
+routes through `useT()`. Verified end-to-end: each component has a test
+mounting under `I18nProvider` with a translated (French) dictionary and
+asserting the translated text actually renders (button labels, `aria-label`s,
+and the `role="group"` accessible name), not just a happy-path smoke case.
+
+### A real cross-environment coverage-merge gap found and worked around
+
+Drafting `dependencies.ts`'s tests initially split them the way this
+package's own documented convention prescribes for an SSR guard: a jsdom
+test file for the "browser present" cases plus a separate
+`// @vitest-environment node` companion for the "no `document` at all"
+case. Coverage on the merged report showed that one guard's branch
+(`typeof document === 'undefined'` in `exitFullscreen`) as **uncovered**
+even though the node companion file, run alone, proved it covered — a real
+`@vitest/coverage-v8` limitation merging branch-hit counts for one source
+file instrumented under two different test environments in the same
+`vitest run`. Fixed by moving every `createBrowserFullscreenPort` test
+into a single `// @vitest-environment node` file, using a hand-built fake
+`document` (a real `EventTarget` plus the two Fullscreen-API members this
+port reads) for the "document present" cases instead of jsdom's real
+global — eliminating the environment split (and the merge gap with it)
+rather than leaving a genuinely-tested branch looking uncovered in the
+aggregate. Worth flagging for any future task in this package relying on
+the jsdom-file-plus-node-companion pattern for an SSR guard: verify the
+*merged* per-file coverage, not just the companion file's own isolated
+number, before trusting it clears the bar.
+
+### Purity grep
+
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|open-design\.ai\|openDesignDesktop\|@open-design/"` across every new file under `features/html-viewer/`: **clean, zero matches.** The stricter case-insensitive `od-`-prefix pass is also clean.
+
+### Test / typecheck / guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/html-viewer`): **71 tests, 9 files, all green.**
+- Per-file coverage for every new file (`constants.ts`, `dependencies.ts`, `rules.ts`, `index.ts`, all 3 hooks, all 3 components): **100% on all 4 metrics**, `types.ts`/`ports.ts` excluded per the documented zero-executable-statement carve-out (both re-verified via the standard grep). Reached via the Phase 9.5 classify-then-fix loop — every gap found was a real reachable path (an untested `PresentMenu` action, an untested `injectBeforeHeadEnd`-style branch in the sibling `@jini/renderers-react` package) that got a real test, not a suppression comment; zero `/* v8 ignore */` anywhere in this task's new files.
+- **Full `@jini/ui` package** (`npx vitest run --coverage`, whole package): **160 test files, 1441 tests, all green**, aggregate **93.35% statements / 91.28% branches / 92.88% functions / 93.35% lines** — a small improvement over the prior section's 93.19/91.07/92.60/93.19 (this task's own files are 100%; the rest is the same pre-existing debt that section already catalogued in detail, not re-itemized here).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### What's still deferred (unchanged from the classification section above)
+
+The sandboxed-iframe/message-bus core's remaining consumers: the inline
+visual/DOM editor (manual edit + undo/redo + page-styles panel), the
+DOM-pinned comment overlay (its geometry helpers already shipped as
+`utils/polygon-selection.ts`; the overlay itself has not), `InspectPanel`,
+the deploy-modal shell, and the export-menu shell. Each still has the same
+real, defensible generic shape the classification described — none
+attempted this session; genuinely out of scope, not silently dropped.
