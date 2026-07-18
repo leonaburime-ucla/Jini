@@ -2685,17 +2685,23 @@ interface-only, no runtime declarations.)
 ### Test/typecheck/guard results
 
 - `pnpm --filter @jini/ui run typecheck`: green (zero errors).
-- `pnpm --filter @jini/ui exec vitest run src/features/resource-dashboard`: **253 tests, 16 files, all
-  green** — `rules.test.ts` (27), `dependencies.test.ts` (25), `index.test.ts` (6),
-  `useResourceBoard.test.ts` (35), `useResourceRowList.test.ts` (18), `StatusPill.test.tsx` (5),
+- `pnpm --filter @jini/ui exec vitest run src/features/resource-dashboard`: **270 tests, 16 files, all
+  green** (re-counted 2026-07-18, correcting the `useResourceBoard.test.ts` count below, which this
+  section originally mis-stated as 35 when the executed suite reported 34 — a documentation error a
+  2026-07-18 audit flagged; counts here also include the mutation-error-handling/run-history-race
+  regressions added by that same audit's required fixes, see the dedicated section above) —
+  `rules.test.ts` (27), `dependencies.test.ts` (25), `index.test.ts` (6),
+  `useResourceBoard.test.ts` (38), `useResourceRowList.test.ts` (22), `StatusPill.test.tsx` (5),
   `ResourceMetrics.test.tsx` (2), `ResourceCard.test.tsx` (17), `ResourceKanbanBoard.test.tsx` (11),
-  `ResourceBoardToolbar.test.tsx` (18), `ResourceBoardView.test.tsx` (17), `ResourceBoard.test.tsx`
-  (19, including the two-orchestrator native-action-dispatch tests and the i18n end-to-end test),
-  `ResourceRunHistoryList.test.tsx` (12), `ResourceRowListItem.test.tsx` (11),
-  `ResourceRowListView.test.tsx` (16), `ResourceRowList.test.tsx` (15, including the i18n end-to-end
-  test).
-- Full package `pnpm --filter @jini/ui exec vitest run`: **167 files, 1614 tests, all green** — 16 of
-  those 167 files are this feature's new test files (253 of the 1614 tests).
+  `ResourceBoardToolbar.test.tsx` (18), `ResourceBoardView.test.tsx` (20), `ResourceBoard.test.tsx`
+  (21, including the two-orchestrator native-action-dispatch tests, the i18n end-to-end test, and the
+  actionError regressions), `ResourceRunHistoryList.test.tsx` (12), `ResourceRowListItem.test.tsx`
+  (11), `ResourceRowListView.test.tsx` (19, including the actionError regressions),
+  `ResourceRowList.test.tsx` (16, including the i18n end-to-end test and the actionError regression).
+- Full package `pnpm --filter @jini/ui exec vitest run`: counts drift as sibling features land in
+  parallel; re-run `pnpm --filter @jini/ui exec vitest run` for the current total rather than trusting
+  a number recorded here — see the full-package coverage section (added by the same 2026-07-18 audit
+  pass) for why this package's full-suite number is tracked separately from any one feature's count.
 - Full monorepo `pnpm -r run typecheck`: `packages/ui typecheck: Done` (clean). Failures exist
   elsewhere in the monorepo (`packages/agent-runtime`, `packages/chat-react`, `packages/cli`,
   `packages/http`, `packages/node-host`, `packages/renderers-react`, `packages/sqlite` — all missing
