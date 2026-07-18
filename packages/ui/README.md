@@ -195,6 +195,20 @@ Real content has landed in several parallel passes — see
   this branch despite the extraction plan describing it as already shipped
   — documented as a discrepancy, matching the same pattern already recorded
   for `features/progress-card/`. See `packages/ui/source-map.md`.
+- `src/features/revision-review/` — `RevisionDiffCard`/`RevisionHistoryList`,
+  a generic "proposed change review" widget (2026-07-18), ported from
+  `DesignSystemFlow.tsx`'s remaining pieces. Genericizes `DesignSystemRevision`
+  to `RevisionReviewItem<TMeta>`; unifies the origin's two duplicate diff
+  functions into one `diffAddedLines`. Confirmed distinct from
+  `features/progress-card/` rather than folded in. See
+  `packages/ui/source-map.md`.
+- `src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+  (2026-07-18) — the rest of `DesignSystemFlow.tsx`'s remaining pieces: a
+  color-swatch chip, a plain-value chip, and the theme-toggle-driven
+  style-guide preview panel that renders both, with the token source
+  genericized to host-injected data (the origin's markdown-parsing pipeline
+  is not ported). Reuses the already-shipped `utils/color-math.ts` rather
+  than re-deriving its math a second time. See `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

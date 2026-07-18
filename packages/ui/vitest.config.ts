@@ -64,6 +64,9 @@ export default defineConfig({
         // tab-launcher-menu/types.ts is likewise pure `interface`/`type`
         // declarations, zero runtime statements (same verification grep).
         'src/features/tab-launcher-menu/types.ts',
+        // revision-review/types.ts is likewise pure `interface`/`type`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/revision-review/types.ts',
       ],
     },
   },

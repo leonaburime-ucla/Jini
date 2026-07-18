@@ -4001,3 +4001,137 @@ placeholder and section headers render.
   exactly the kind of test-authoring mistake that would otherwise ship a
   false "the component itself is unstable" signal; fixed by hoisting the anchor
   element outside the `renderHook` callback in every affected case.
+
+## Section: `DesignSystemFlow.tsx`'s remaining pieces — `features/revision-review/` + flat `TokenChip`/`ValueChip`/`ComponentKitPreview` (2026-07-18)
+
+Source: `apps/web/src/components/DesignSystemFlow.tsx` (5,439 lines), real
+clone at `leonaburime-ucla/open-design` commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34` — already partially mined for
+`features/progress-card/` (`WorkspaceActivityCard`/`GenerationStatusCard`)
+and `utils/color-math.ts` (hex/RGB/luminance/mix primitives). This task
+mines its two remaining pieces named in the task brief.
+
+### 1. `features/revision-review/` (`RevisionDiffCard` + `RevisionHistoryList`)
+
+A generic "proposed change review" widget: a diff/proposed-body preview with
+accept/reject actions, plus a status-badged revision history list. Per
+`docs/jini-port/god-components-extraction-plan.md`'s `features/progress-
+card/` row, r6 flagged these as "conceptually related" to the progress-card
+family ("status-badged... progress bar + status icon") but "not confirmed
+identical, still worth evaluating together before extracting either" — this
+task read both shapes side by side (`ProgressCard`'s status-icon-plus-
+progress-bar-plus-step-list vs. this widget's feedback-plus-diff-plus-
+accept/reject-plus-history-list) and confirmed they're genuinely distinct:
+`ProgressCard` renders an in-flight run's step-by-step state with a
+determinate/indeterminate progress bar; this widget renders a completed
+proposal awaiting a binary accept/reject decision, with no progress bar or
+step list at all. Built as its own feature per the task brief's own
+instruction, not folded into `progress-card`.
+
+**Genericized:** the origin's `DesignSystemRevision` (from
+`@open-design/contracts`) becomes `RevisionReviewItem<TMeta = unknown>` —
+every field the widget actually reads (`status`/`feedback`/`baseBody`/
+`proposedBody`/`createdAt`/`updatedAt`/`sectionTitle`/`fileChanges`) is
+generic already; `TMeta` is the type-parameter escape hatch the task brief
+asked for, letting a host attach whatever extra identity it needs
+(`designSystemId`/`jobId` in the origin) without this feature reading or
+caring about it.
+
+**A real, disclosed duplication caught and unified:** the origin has two
+functions, `revisionAddedText` (diffing `revision.baseBody`/`proposedBody`)
+and `revisionFileAddedText` (diffing a file change's `baseContent`/
+`proposedContent`) — byte-for-byte identical bodies (longest-common-line-
+prefix, then the proposed side's remaining lines, trimmed), just applied to
+two different field pairs. Unified into one `diffAddedLines(baseText,
+proposedText)` in `rules.ts`, called from both call sites in
+`RevisionDiffCard`, rather than porting the duplication forward.
+
+**What shipped:** `types.ts` (`RevisionReviewStatus`, `RevisionReviewFileChange`,
+`RevisionReviewItem<TMeta>`), `rules.ts` (`diffAddedLines`,
+`formatRevisionTimestamp` — the origin's `formatDateTime`, a thin
+`Intl`/`Date` wrapper with no i18n-key text so it stays a plain util rather
+than routing through `useT()`), `react/components/{RevisionDiffCard,
+RevisionHistoryList}.tsx` — both fully controlled/presentational (accept/
+reject/history are host-driven via props; neither the origin nor this port
+holds any internal state), `index.ts` barrel. No `ports.ts`/`dependencies.ts`
+— no transport dependency, matching the `schedule-picker`/`iframe-pool`
+"no ports" precedent already established in this file.
+
+### 2. Flat `react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+
+`DesignMdTokenChip`/`DesignMdValueChip`/`DesignMdComponentKitPreview` — a
+color-swatch chip, a plain-value chip, and the theme-toggle-driven style-
+guide preview panel that renders both. Renamed to drop the origin's
+`DesignMd`-prefixed internal naming (OD's own "design.md" spec-format
+jargon) per this task's naming-discipline instruction — `TokenChip`/
+`ValueChip`/`ComponentKitPreview` describe what they render, not OD's
+internal vocabulary for it.
+
+**Token source genericized to host-injected data, per the task brief:** the
+origin took a raw `markdown: string` prop and parsed it internally via
+`buildDesignMdPreviewModel` → `parseDesignMd` (OD's own "design.md" spec-
+format parser) into the token model the preview actually renders.
+`ComponentKitPreview` instead takes that already-resolved
+`ComponentKitPreviewTokens` model directly as a prop — the markdown-parsing
+pipeline is OD product-specific logic and is not ported, matching the
+call already made and documented in this file's color-math section ("what
+was deliberately left behind: the OD-specific color-selection heuristic
+that consumes the math, not the math itself"). `buildDesignMdPreviewModel`'s
+internal heuristic (`findPreviewColor`/`firstNonNeutralColor` role-matching
+by keyword against color labels) is exactly that heuristic, so it stays
+behind for the same already-established reason, not re-litigated here.
+
+**A duplicate-primitive check that paid off:** before writing any color
+math for this component, checked `packages/ui/src/utils/color-math.ts`
+(this task's own required step, per the "check for an existing equivalent"
+audit lesson) — it already ports `normalizeHex`/`hexToRgb`/`luminance`/
+`mixHex`/`toHexByte`/`readableTextColor`, which are exactly
+`buildDesignMdPreviewModel`'s local `normalizePreviewHex`/`previewRgb`/
+`previewLuminance`/`mixPreviewHex`/`toHexByte`/`readableTextColor` under
+different names (same origin file, ported in an earlier task). Every real
+color-math need `ComponentKitPreview` has (deriving `primaryText` via
+`readableTextColor`) is met by importing the existing util — nothing was
+re-derived.
+
+**What shipped:** `TokenChip`/`ValueChip` (flat, zero-prop-surface color/
+value chip atoms) and `ComponentKitPreview` (the light/dark-switchable
+preview stage + button/type-scale specimen + the token-chip row underneath)
+in `packages/ui/src/react/components/` — this branch's base still has the
+old flat `src/components/` (rename not yet merged), and these three are new
+atoms alongside `EditorIcon` already added there this session, so they land
+in `react/components/` too per this task's own path-convention instruction.
+
+### i18n
+
+Every user-facing string in all five new components (`RevisionDiffCard`,
+`RevisionHistoryList`, `ComponentKitPreview`) routes through `useT()`,
+English string as key. `TokenChip`/`ValueChip` have no user-facing text of
+their own beyond a caller-supplied `label`/`value`/`hex`, so nothing to
+wrap there. `rules.ts` stays hook-free by design in both new areas. Every
+component with real translatable text has a test mounting it under
+`I18nProvider` with a translated dictionary and asserting the translated
+text renders.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/revision-review/` and
+`packages/ui/src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+(+ tests): **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- `revision-review`'s own test run (`npx vitest run src/features/revision-
+  review --coverage`): **4 test files, 22 tests, all green**, **100%
+  statements/branches/functions/lines on every file** (`types.ts` excluded
+  per the documented zero-executable-statement carve-out, added to
+  `vitest.config.ts`'s exclude list).
+- The three flat atoms' own test run (`npx vitest run
+  src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.test.tsx
+  --coverage`): **3 test files, 9 tests, all green**, **100% on all 4
+  metrics** for all three files.
+- Full `@jini/ui` package (`npx vitest run`): **275 test files, 2791 tests,
+  all green** — no regression in any pre-existing test.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — no boundary violations introduced.
