@@ -1,1 +1,56 @@
-// @jini/http — placeholder. See docs/jini-port/extraction-plan.md for the target.
+/**
+ * @module @jini/http
+ *
+ * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
+ * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
+ * legacy-shaped compat error helpers, and a route-pack registrar. See `source-map.md` for full
+ * provenance and scope-decision notes.
+ */
+export type {
+  Handler,
+  HttpMethod,
+  InputParser,
+  JsonRouteSpec,
+  Result,
+  RouteInputContext,
+} from './types.js';
+export { err, ok } from './types.js';
+
+export { rawInput, validationError } from './request.js';
+
+export { sendApiError, sendJson, statusForError } from './response.js';
+
+export type { OriginContext } from './origin.js';
+export { guardSameOrigin } from './origin.js';
+
+export type {
+  ParsedHostHeader,
+  RequestWithOriginHeaders,
+} from './origin-validation.js';
+export {
+  allowedBrowserPorts,
+  configuredAllowedHosts,
+  configuredAllowedOrigins,
+  isAllowedBrowserHost,
+  isAllowedBrowserOrigin,
+  isIpLiteralHostname,
+  isLoopbackOrPrivateLanHost,
+  isLocalSameOrigin,
+  isPrivateIpv4,
+  parseHostHeader,
+} from './origin-validation.js';
+
+export type { AdapterContext } from './adapter.js';
+export { defineJsonRoute, mountJsonRoute } from './adapter.js';
+
+export { mountPackHttp } from './pack-http.js';
+
+// Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
+// above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
+// `(code, message, init)` — same job, different call-site generation, so it is re-exported here
+// under a distinct name to avoid a duplicate export.
+export {
+  createCompatApiError,
+  createCompatApiErrorResponse,
+  sendApiError as sendCompatApiError,
+} from './compat.js';
