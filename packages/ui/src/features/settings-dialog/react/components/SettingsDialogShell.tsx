@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import type { SettingsDialogChromeLabels, SettingsDialogTabMeta } from '../../types.js';
 import { findActiveTab } from '../../rules.js';
 import { useSettingsDialogShell } from '../hooks/useSettingsDialogShell.js';

@@ -1,6 +1,6 @@
 import { useT } from '../../i18n/index.js';
 import type { ConnectorPanelAlert } from '../types.js';
-import { Icon } from '../../../components/Icon.js';
+import { Icon } from '../../../react/components/Icon.js';
 
 export interface ConnectorAlertListProps {
   alerts: readonly ConnectorPanelAlert[];

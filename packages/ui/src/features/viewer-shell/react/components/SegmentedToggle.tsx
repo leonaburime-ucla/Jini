@@ -1,4 +1,4 @@
-import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { RemixIcon } from '../../../../react/components/RemixIcon.js';
 import type { SegmentedOption } from '../../types.js';
 
 export interface SegmentedToggleProps<TValue extends string> {

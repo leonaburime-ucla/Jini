@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { I18nProvider } from '../features/i18n/index.js';
+import { I18nProvider } from '../../features/i18n/index.js';
 import { OnboardingDropdown } from './OnboardingDropdown.js';
 
 const OPTIONS = [

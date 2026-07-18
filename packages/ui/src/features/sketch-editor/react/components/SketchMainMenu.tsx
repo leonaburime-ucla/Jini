@@ -1,4 +1,4 @@
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import type { SketchMainMenuComponent } from '../../ports.js';
 import type { SketchTranslate } from '../../types.js';
 

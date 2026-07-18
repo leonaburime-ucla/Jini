@@ -6,7 +6,7 @@
 // through `useT()` per this package's i18n policy. See
 // packages/ui/source-map.md.
 
-import { useT } from '../features/i18n/index.js';
+import { useT } from '../../features/i18n/index.js';
 
 export interface FileImportPanelProps {
   title: string;

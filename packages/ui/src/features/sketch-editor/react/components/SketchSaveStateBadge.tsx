@@ -1,4 +1,4 @@
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 
 export interface SketchSaveStateBadgeProps {
   state: 'saving' | 'dirty' | 'saved';

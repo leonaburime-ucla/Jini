@@ -31,8 +31,11 @@ separate deliberately — see the chat-core/chat-react split discussion in
 
 ## Internal structure
 
-- `src/components/` — flat, presentational-only atoms. Props in, JSX out, no
-  state/logic/fetch (same discipline as OD's own ADR 0002 slice rule).
+- `src/react/components/` — flat, presentational-only atoms. Props in, JSX
+  out, no state/logic/fetch (same discipline as OD's own ADR 0002 slice
+  rule). Renamed from `src/components/` (2026-07-18) to keep the React layer
+  visibly separate at the package top level too, consistent with the
+  per-feature `react/` convention below.
 - `src/features/<domain>/` — anything that needs its own hooks + ports +
   dumb-components + barrel because it's a cohesive concern, not a single atom
   (mirrors the ports+dependencies+barrel discipline already proven by OD's
@@ -48,9 +51,10 @@ separate deliberately — see the chat-core/chat-react split discussion in
   planned), just keeping the pure layer visibly and mechanically separate
   from the React layer within one package, at effectively zero cost. See
   `packages/ui/source-map.md`'s `features/connectors/` section for the
-  worked example. **Not yet retrofitted onto the flat `src/components/`/
-  `src/hooks/` buckets below** — those still sit at the top level; revisit if
-  this pattern proves worth extending there too.
+  worked example. **Retrofitted onto the flat `src/components/` bucket
+  (2026-07-18, now `src/react/components/`)**; `src/hooks/` below is not —
+  it still sits at the top level; revisit if this pattern proves worth
+  extending there too.
 - `src/providers/` — the *only* place allowed to import a concrete
   transport/DOM adapter and bind it to a `features/<domain>/ports.ts`
   interface. Everything else in this package depends on the port, never a
@@ -72,10 +76,11 @@ Real content has landed in several parallel passes — see
   a second batch (i18n/observability-adjacent utils: notifications, uuid,
   platform, etc., also 2026-07-16).
 - `src/features/i18n/` and `src/features/observability/` (2026-07-16).
-- `src/components/` and `src/hooks/` — `docs/jini-port/ui-extraction-plan.md`
-  section A's flat-group components and the `useInView` hook (2026-07-17) —
-  the first content in these two directories, and the first task to pull in
-  `react`/`react-dom` as real dependencies of this package.
+- `src/components/` (now `src/react/components/`, see rename above) and
+  `src/hooks/` — `docs/jini-port/ui-extraction-plan.md` section A's flat-group
+  components and the `useInView` hook (2026-07-17) — the first content in
+  these two directories, and the first task to pull in `react`/`react-dom`
+  as real dependencies of this package.
 - `src/features/connectors/` — the `ConnectorsBrowser.tsx` god-component
   canary (2026-07-17), per `docs/jini-port/god-components-extraction-plan.md`
   §0: an OAuth integration marketplace UI (ports+dependencies+hooks+
