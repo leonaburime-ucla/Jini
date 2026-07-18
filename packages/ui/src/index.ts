@@ -31,12 +31,15 @@ export * from './utils/dom-subscriptions.js';
 export * from './utils/auto-open-file.js';
 export * from './utils/localized-url.js';
 export * from './utils/markdown-scroll-sync.js';
+export * from './utils/design-md.js';
 
 export * from './hooks/useInView.js';
 export * from './hooks/useCoalescedCallback.js';
 export * from './hooks/useStableHandler.js';
 export * from './hooks/useDebouncedValue.js';
 export * from './hooks/useResizableSplitPane.js';
+export * from './hooks/useBrandFonts.js';
+export * from './hooks/useEdgeAutoScroll.js';
 
 export * from './browser/useModalWindowDragGuard.js';
 
@@ -55,6 +58,9 @@ export * from './components/WorkingDirPicker.js';
 export * from './components/AppChromeHeader.js';
 export * from './components/ExportDiagnosticsButton.js';
 export * from './components/PaletteTweaks.js';
+export * from './components/BrandLogo.js';
+export * from './components/HeaderActionsMenu.js';
+export * from './components/EdgeScrollZones.js';
 export * from './components/PillButton.js';
 export * from './components/PopoverMenu.js';
 export * from './components/PopoverItem.js';
