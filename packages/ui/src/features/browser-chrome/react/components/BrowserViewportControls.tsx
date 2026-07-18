@@ -2,8 +2,8 @@ import { useRef, useState } from 'react';
 import type { BrowserViewportId, BrowserViewportPreset } from '../../types.js';
 import { BROWSER_VIEWPORT_PRESETS } from '../../constants.js';
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
-import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { Icon } from '../../../../react/components/Icon.js';
+import { RemixIcon } from '../../../../react/components/RemixIcon.js';
 import { useDismissOnOutsideOrEscape } from '../../../../browser/index.js';
 
 function viewportIconName(viewport: BrowserViewportId): string {

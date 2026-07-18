@@ -1,0 +1,46 @@
+// Full-card toggle row with an inline hint line beneath the label — the
+// heavier sibling of `CompactToggle` for standalone toggles that deserve
+// more visual weight. Origin: `ToggleRow` in `NewProjectPanel.tsx` (Open
+// Design), verbatim structural port — the component carried no
+// product-specific typing or copy. See packages/ui/source-map.md.
+
+export interface ToggleRowProps {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+  className?: string;
+}
+
+export function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+  className,
+}: ToggleRowProps) {
+  return (
+    <button
+      type="button"
+      className={[
+        'toggle-row',
+        checked ? 'on' : '',
+        disabled ? 'disabled' : '',
+        className,
+      ].filter(Boolean).join(' ')}
+      onClick={() => {
+        if (!disabled) onChange(!checked);
+      }}
+      aria-pressed={checked}
+      disabled={disabled}
+    >
+      <div className="toggle-row-text">
+        <span className="toggle-row-label">{label}</span>
+        {hint ? <span className="toggle-row-hint">{hint}</span> : null}
+      </div>
+      <span className="toggle-row-switch" aria-hidden />
+    </button>
+  );
+}

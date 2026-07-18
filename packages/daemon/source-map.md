@@ -164,3 +164,155 @@ charter itself.
 produces/consumes exactly those types, not parallel ones, per the task
 brief. `node:crypto` (`randomUUID`) — Node built-in, no new external
 dependency.
+
+## `ToolExecutor` — the tool-execution boundary (2026-07-18, port continuation task — Part 3)
+
+**No upstream source. This is original design work, not a port.** Per
+extraction-plan.md §2.5/§8 task 6 and confirmed by direct research the same
+evening this was built: OD's `apps/daemon/src/runtimes/tool-loop-guard.ts`
+only *observes* `tool_use` events to detect runaway repetition — it never
+gates a call before it runs, and no admission-control/confirmation/audit
+layer exists anywhere in the researched OD source for tool invocation. This
+file builds that invariant fresh, against the shape extraction-plan.md §2.5
+specifies almost verbatim: `{descriptor, handler, policy}` registration,
+`ToolExecutor.execute(principal, run, tool, input, signal)` as the sole
+invocation path, an audit trail covering
+`requested→authorized→confirmed→started→completed→timed-out→cancelled`,
+resumable confirmation, and a transport-injected `ExecutionDelegate`.
+
+### Package split: `ToolRegistry` in `@jini/core`, `ToolExecutor` in `@jini/daemon`
+
+extraction-plan.md §3's locked package table already answers "which
+package" precisely, and this port follows it rather than picking a new
+answer: `@jini/core` owns `ProviderRegistry, ToolRegistry, DI tokens +
+resolver, Principal/Authorizer, pure interfaces`; `@jini/daemon` owns
+`RunLifecycle, EventLog/EventSink, AgentExecutor, ToolExecutor, createDaemon
+(stateful)`. Concretely: `ToolRegistry` (registration/enumeration, no
+timers, no per-call state — a `Map` plus a couple of methods) is exactly
+the "pure interface" shape `@jini/core`'s existing `token.ts`/`pack.ts`/
+`bindings.ts` already establish. `ToolExecutor` (the audit-record map, the
+pending-confirmation map, the per-call `AbortController`/timeout — genuine
+runtime state that outlives a single function call) matches
+`RunLifecycle`/`EventLog`'s existing shape in this package far better than
+it matches anything in `@jini/core`. New files:
+
+| File | Package | Contents |
+|---|---|---|
+| `packages/core/src/principal.ts` | `@jini/core` | `Principal { id, roles? }` — deliberately minimal per §3 ("Principal/Authorizer, pure interfaces"); anything richer is a consumer concern. |
+| `packages/core/src/tool-registry.ts` | `@jini/core` | `RunRef` (a structural `{ id: string }` — no import needed to satisfy it; `@jini/protocol`'s `RunStatus` already has `id: string` and structurally satisfies it, so `@jini/core` gains no new dependency), `ToolDescriptor`, `ToolExecutionContext`, `ToolHandler`, `ToolPolicy`/`AuthorizationDecision`, `ToolRegistration`, the public `ToolRegistry` interface (`register`/`has`/`list` — descriptors only), `createToolRegistry()`, and the package-internal `getToolRegistration(registry, toolId)`. |
+| `packages/core/src/internal.ts` | `@jini/core` | Re-exports **only** `getToolRegistration` — see "Handlers never publicly retrievable" below. |
+| `packages/core/src/tool-tokens.ts` | `@jini/core` | `ToolRegistryToken`, alongside the service per this package's own token-placement convention. |
+| `packages/daemon/src/tool-executor.ts` | `@jini/daemon` | `ExecutionDelegate`, the audit-trail types, `ToolExecutionResult`, the `ToolExecutor` interface, `createToolExecutor()`. |
+| `packages/daemon/src/tokens.ts` (edited) | `@jini/daemon` | Added `ToolExecutorToken` alongside the pre-existing `RunLifecycleToken`/`EventLogToken`. |
+
+### "Handlers never publicly retrievable" — how it's actually enforced
+
+The task brief's own words. A `ToolRegistry`'s public methods
+(`register`/`has`/`list`) never return a `handler` or `policy` — `list()`
+returns `ToolDescriptor`s only. But `ToolExecutor` (a different package)
+genuinely needs the full `{descriptor, handler, policy}` triple to do its
+job. The registrations themselves live in a module-private `WeakMap<ToolRegistry,
+Map<string, ToolRegistration>>` in `tool-registry.ts` — unreachable from the
+returned `ToolRegistry` object's own methods — and `getToolRegistration`
+is the one function that can read it back out. That function is exported
+from `./internal.ts`, **not** from `./index.ts`'s public barrel (verified
+by a test: `'getToolRegistration' in publicBarrel === false`), and
+`internal.ts` is wired as a separate `./internal` entry in this package's
+`package.json` `exports` map rather than a subpath TypeScript/Node would
+resolve by accident. This is the realistic boundary a JS/TS package can
+actually enforce (there is no language-level "friend package" access
+modifier) — a consumer of `@jini/core`'s default entry point cannot reach
+a handler; `@jini/daemon`'s `ToolExecutor` is the one caller that imports
+`@jini/core/internal` on purpose, and that import is visible in its own
+source (`tool-executor.ts`'s own import line), not hidden.
+
+### Design decisions
+
+**1. Authorization vs. confirmation are two distinct gates, not one.**
+`ToolPolicy.authorize` (owned by the tool's registration) answers "is this
+principal permitted to use this tool at all" — a rule-based decision.
+`ExecutionDelegate.onConfirm` (owned by the transport, only consulted when
+`ToolDescriptor.requiresConfirmation` is set) answers "does the user want
+to proceed with *this specific* invocation right now" — an interactive,
+per-call gate. `ExecutionDelegate.onAuthorize` exists too, but only as an
+additional veto *after* the policy already allows (e.g. "does this session
+actually hold an active grant") — it can turn an `'allow'` into a `'deny'`,
+never the reverse, and is never consulted when the policy itself denies
+(tested explicitly).
+
+**2. Confirmation resumability is a real parked Promise, not a polling
+flag.** When `ExecutionDelegate.onConfirm` doesn't supply a decision
+synchronously (returns/resolves `undefined`), `execute()`'s returned
+Promise is parked on an internal `Map<executionId, resolve>` and simply
+does not settle — `resumeConfirmation(executionId, decision)` is the only
+thing that can settle it, and it can be called from a completely separate
+tick/request, arbitrarily far in the future, no polling required. This is
+the concrete answer to "the headless kernel can't prompt, so the transport
+injects an `ExecutionDelegate`": the kernel (`ToolExecutor`) never renders
+anything; it hands the transport a notification (the `onConfirm` call) and
+waits indefinitely for `resumeConfirmation`, exactly the shape a real UI
+approval flow needs. One documented sharp edge: an `async` `onConfirm`
+that itself resolves to `undefined` is treated as "the decision is
+`undefined`" (i.e. denied) rather than "pending," since the code can only
+tell "no decision yet" apart from "the Promise's inner value happens to be
+undefined" by checking whether `onConfirm`'s *own return value* is
+`undefined` before awaiting it — documented on the interface, not
+silently surprising.
+
+**3. Output truncation is a text-output concern, not a general
+serialization limit.** `ToolDescriptor.maxOutputBytes` only truncates a
+`string` handler result exceeding that length; non-string (structured)
+output passes through untouched even when the limit is set. A real
+byte-accurate UTF-8 truncation or a generic-JSON-payload cap was judged
+out of scope for this task's gate ("output truncation" — proven, not
+maximally engineered) — a reasonable follow-up if a real tool handler
+starts returning large structured payloads.
+
+**4. `execute()` throws (doesn't return a status) for an unknown tool
+id.** Denial/confirmation-denial/timeout/cancellation/failure are all
+legitimate business-domain outcomes modeled as `ToolExecutionResult`
+variants; calling `execute()` with a `toolId` nothing registered is a
+routing/programming bug, not a business outcome, so it's a thrown `Error`
+instead — the same distinction OD's own `RunLifecycle`-equivalent code in
+this package (`requireRun`) already draws between "unknown id" (throw) and
+"legitimate terminal state" (return value).
+
+**5. No persistence.** Like `EventLog`'s in-memory reference
+implementation, `createToolExecutor`'s audit records and pending-
+confirmation state live only in the process; a real host that needs audit
+records to survive a restart, or confirmation to resume across a daemon
+restart, layers a durable store behind `getAuditRecord`/`resumeConfirmation`
+later. Out of this task's scope (the gate is "one allowed + one denied
+tool call, resumable confirmation, timeout, cancellation, output
+truncation, and an audit record — no HTTP involved," which this satisfies
+in-process).
+
+**6. A `finally` block was deliberately avoided around the handler's
+try/catch.** An early draft cleaned up the timeout handle and the active-
+`AbortController` map entry in a `finally` clause; istanbul/v8 instruments
+try/finally with a synthetic "abrupt completion through finally" branch
+that is unreachable here (nothing in the catch block can itself throw a
+second exception past the catch), which the coverage-driven pass (Phase
+6.5) couldn't close without a contrived test. Repeating the two-line
+cleanup at each of the try/catch's own return points instead avoided
+introducing that uncoverable branch — a "dead branch, refactor away"
+call, same discipline as the agent-protocol port's (Part 1) precedent.
+
+### Validation
+
+`pnpm --filter @jini/core typecheck` / `pnpm --filter @jini/daemon
+typecheck`: clean (src + tests). Coverage (`vitest run --coverage`, scoped
+per each package's `vitest.config.ts` to this task's new files): `@jini/core`'s
+`tool-registry.ts`/`internal.ts` and `@jini/daemon`'s `tool-executor.ts`
+all 100% statements/branches/functions/lines. A dedicated test proves each
+gate item: one allowed call (full audit trail), one denied call (policy
+deny, and separately a delegate-vetoed allow), resumable confirmation
+(parked `execute()` settled later by a separate `resumeConfirmation()`
+call, proven via a captured `executionId` — both through a real
+`ExecutionDelegate.onConfirm` and through `randomUUID` mocked to prove the
+no-delegate-at-all path), a timeout (`descriptor.timeoutMs` outliving an
+abort-aware handler), a cancellation (`cancel(executionId)` on an in-flight
+call, plus an already-aborted and a mid-flight external `AbortSignal`),
+output truncation (both the truncated and untruncated string cases, plus
+non-string pass-through), and audit-record retrieval (including the
+`null` case for an unknown id).

@@ -7,6 +7,8 @@ import * as browserChrome from './features/browser-chrome/index.js';
 import * as sketchEditor from './features/sketch-editor/index.js';
 import * as assetGrid from './features/asset-grid/index.js';
 import * as viewerShell from './features/viewer-shell/index.js';
+import * as versionManager from './features/version-manager/index.js';
+import * as htmlViewer from './features/html-viewer/index.js';
 import * as settingsDialog from './features/settings-dialog/index.js';
 import * as settingsAppearance from './features/settings-dialog/tabs/appearance/index.js';
 import * as settingsNotifications from './features/settings-dialog/tabs/notifications/index.js';
@@ -14,6 +16,7 @@ import * as settingsLanguage from './features/settings-dialog/tabs/language/inde
 import * as settingsInstructions from './features/settings-dialog/tabs/instructions/index.js';
 import * as settingsPrivacy from './features/settings-dialog/tabs/privacy/index.js';
 import * as settingsIntegrations from './features/settings-dialog/tabs/integrations/index.js';
+import * as memory from './features/memory/index.js';
 
 // Guards against the exact bug found while merging browser-chrome and
 // viewer-shell: both features were fully built, individually tested, and
@@ -30,6 +33,8 @@ const featureModules: Record<string, object> = {
   'features/sketch-editor': sketchEditor,
   'features/asset-grid': assetGrid,
   'features/viewer-shell': viewerShell,
+  'features/version-manager': versionManager,
+  'features/html-viewer': htmlViewer,
   'features/settings-dialog': settingsDialog,
   'features/settings-dialog/tabs/appearance': settingsAppearance,
   'features/settings-dialog/tabs/notifications': settingsNotifications,
@@ -37,6 +42,7 @@ const featureModules: Record<string, object> = {
   'features/settings-dialog/tabs/instructions': settingsInstructions,
   'features/settings-dialog/tabs/privacy': settingsPrivacy,
   'features/settings-dialog/tabs/integrations': settingsIntegrations,
+  'features/memory': memory,
 };
 
 describe('package barrel (src/index.ts)', () => {

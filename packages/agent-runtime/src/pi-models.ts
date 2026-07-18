@@ -24,13 +24,19 @@ export function parsePiModels(stdout: unknown): RuntimeModelOption[] | null {
   const entries: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
   const seen = new Set(['default']);
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
+    // The loop bound (`i < lines.length`) guarantees `lines[i]` is always
+    // defined; the non-null assertion documents that runtime invariant
+    // instead of a `noUncheckedIndexedAccess`-driven guard that could never
+    // actually trigger (same treatment as this function's other port,
+    // `agent-protocol/pi-rpc/models.ts` — see source-map.md's "Barrel
+    // merge" section for why two copies of this function exist).
+    const line = lines[i]!;
     const parts = line.split(/\s+/);
     if (parts.length < 2) continue;
-    const provider = parts[0];
-    const modelId = parts[1];
-    if (provider === undefined || modelId === undefined) continue;
+    // `parts.length >= 2` (just checked) guarantees both indices are
+    // defined; same non-null-assertion rationale as above.
+    const provider = parts[0]!;
+    const modelId = parts[1]!;
     // Skip duplicates (some providers list the same model under multiple names).
     const fullId = `${provider}/${modelId}`;
     if (seen.has(fullId)) continue;

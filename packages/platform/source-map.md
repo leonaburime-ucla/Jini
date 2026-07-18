@@ -44,6 +44,25 @@ capture group; a tuple index bounded by the tuple's own `.length`):
 
 No other files needed strictness edits.
 
+## Flat daemon primitives (2026-07-18, port continuation task — Part 2)
+
+Four of the seven top-level files identified in `apps/daemon/src/` as
+"generic daemon primitives, not yet ported" (`agents.ts`, `sandbox-mode.ts`,
+`terminals.ts`, `daemon-paths.ts`, `origin-validation.ts`,
+`api-token-auth.ts`, `redact.ts`) landed here: the ones that do real
+filesystem/OS-process work, matching this package's existing
+command/process/fs/toolchain scope. The three pure security/auth/telemetry
+primitives (`redact.ts`, `api-token-auth.ts`, `origin-validation.ts`)
+landed in `@jini/core` instead, and `agents.ts` was deliberately not
+ported at all — see `@jini/core`'s own `source-map.md` for both.
+
+| Jini file | Origin file | Home rationale + transform |
+|---|---|---|
+| `src/home-expansion.ts` | `apps/daemon/src/home-expansion.ts` | Verbatim port (already product-neutral — no `OD_`-prefixed names or product strings in the origin). A new file, not present in the pre-2026-07-18 `@jini/platform`; added because both `sandbox-mode.ts` and `daemon-paths.ts` depend on it and it's a pure path-expansion primitive, the same kind of thing `fs.ts` already hosts here. |
+| `src/sandbox-env.ts` | `apps/daemon/src/sandbox-mode.ts` | Genericized: the origin hardcoded its host product's sandbox-mode/import-allowed-roots/data-dir/agent-home env-var names and a literal product-branded config sub-directory name. All are now fields on `SandboxEnvConfig`, threaded through every function — the same "config object carries the product's env-var names" pattern `agent-runtime-env.ts`'s `RuntimeEnvConfig.envPrefix` (per `r1b-daemon-design.md` §1c) already established for this codebase. Renamed `sandbox-mode.ts` → `sandbox-env.ts` since the file is about the sandboxed *environment* (directory tree + env-var overlay) more than a boolean "mode." Home: `@jini/platform`, not `@jini/core` — it does real `fs.mkdirSync`/`fs.realpathSync` work and builds a `NodeJS.ProcessEnv` overlay for a spawned process, the same OS-primitive shape as `process.ts`'s env/spawn helpers. |
+| `src/resource-paths.ts` | `apps/daemon/src/daemon-paths.ts` | Genericized: the origin hardcoded its host CLI's env-var names, its own npm package specifier (`require.resolve('<package>/package.json')`), a `.` + product-name default data-dir name, and a product-name path segment in the Windows packaged-resources marker. All are now fields on `ResourcePathsConfig`. One API-shape change beyond de-branding: `resolveProcessResourcesPath` takes an injected `{ resourcesPath?, execPath }` parameter instead of reading the global `process` object directly, so the macOS/Windows marker-matching logic is unit-testable without mutating `process.execPath` in-process. Renamed `daemon-paths.ts` → `resource-paths.ts` to describe what the file actually resolves (CLI path, packaged-resources root, plugin-previews dir, data dir) now that "daemon" isn't an implicit product noun here. Home: `@jini/platform` — real `fs`/`path`/packaged-app-layout resolution, the same shape as `toolchain.ts`'s bin-discovery primitives. |
+| `src/terminal.ts` | `apps/daemon/src/terminals.ts` | The one file in this batch with **zero** product-identity strings in the origin — but two real couplings were replaced with injectable ports rather than ported verbatim, per the task brief's own framing ("this file is especially relevant — this project's consumer research (Zana + Open-Marketing both independently need a terminal/PTY port) means this file may directly inform that future port; design its generic interface accordingly"): (1) the origin statically `import type * as NodePty from 'node-pty'` and dynamically `await import('node-pty')` — `@jini/platform` does not depend on `node-pty` (a native addon this sandboxed build environment can't install/compile), so the port instead defines a minimal `PtyProcess`/`PtySpawn` port interface and takes a `loadSpawnPty: () => Promise<PtySpawn>` factory from the caller; a real Node host wires a thin `node-pty` adapter, a test wires a fake. `spawnHelperCandidatePaths`'s `require.resolve('node-pty')` call is a *runtime* string lookup (not a static import), so it still typechecks and still resolves for real once a consumer has `node-pty` installed — it just isn't a hard dependency of this package. (2) the origin's `stream(session, req, res, createSseResponse)` took an Express `req`/`res` pair directly; the port replaces it with a transport-neutral `attach(id, lastEventId, sink: TerminalSseSink)` / `detach(id, sink)` pair (`TerminalSseSink` = `{ send, end }`, no Express/HTTP types), so a future terminal port for a non-Express host isn't stuck re-deriving this from OD's routes. Beyond those two seams, the ring-buffer/coalescing/exit-tail-trim/TTL-cleanup logic is behaviorally the same as the origin, retyped away from `any` (this package's public surface bans `no-explicit-any` per `extraction-plan.md` §7) — sessions are looked up by `id: string` rather than the caller holding and re-passing the mutable internal session object, and `write`/`resize`/`kill`/`attach`/`detach` all take `id` for that reason. One dead-branch removal surfaced during the coverage-driven pass (Phase 6.5): the `pty.onExit` handler's `exitCode ?? null` fallback is unreachable given `PtyProcess.onExit`'s own callback type declares `exitCode: number` (non-nullable, matching both the origin's own type annotation and node-pty's real exit-event shape) — removed, documented inline at the call site, same classification and precedent as the agent-protocol port's dead-branch removals. |
+
 ## Dependencies
 
 No runtime dependencies in the origin package (devDependencies only: `@types/node`,
@@ -154,3 +173,84 @@ the identical reason (e.g. `cleanupWarning`).
 No new dependency — `download.ts` uses only `node:crypto`/`node:fs`/
 `node:fs/promises`/`node:path`/`node:stream`/`node:stream/promises` builtins
 plus this package's own `fs.ts`/`process.ts` exports.
+
+## 2026-07-18 addition — `aws-sigv4.ts` + `blob-storage.ts`
+
+Task brief: port `apps/daemon/src/storage/aws-sigv4.ts` (per
+`docs/jini-port/recon/r1-daemon.md`'s TASK 1: "generic") and resolve
+`project-storage.ts`'s "leans OD" flag (verify and either drop or extract a
+generic core). Origin: real `leonaburime-ucla/open-design` fork clone
+(`/tmp/od-source`), `apps/daemon/src/storage/{aws-sigv4,project-storage}.ts`
+on `main`.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/aws-sigv4.ts` | `apps/daemon/src/storage/aws-sigv4.ts` | `signSigV4`/`encodeS3PathSegment` + types, logic verbatim (pure `node:crypto` SigV4 signer, zero OD nouns in the implementation). **Identity-stripped**: one comment ("the OD daemon ships without an extra 60+ MB of SDK code") reworded to "a host daemon ships without" — prose only. |
+| `src/blob-storage.ts` | `apps/daemon/src/storage/project-storage.ts` | See "Design decision" below — the generic ~90% of the file (interface + both backends), renamed and with `projectId` generalized to `namespace` throughout. `resolveProjectStorage()` (the OD-env-var factory) was **not ported** — see below. |
+
+## Design decision: `project-storage.ts` was split, not ported wholesale or dropped
+
+The task brief asked to verify the recon's "leans OD" flag on
+`project-storage.ts` firsthand and either drop it or extract a generic core
+with OD's project-specific parts as an adapter, "depending on what you
+actually find." Read in full: the `ProjectStorage` interface,
+`LocalProjectStorage`, and `S3ProjectStorage` classes carry no OD nouns in
+their own logic — they're a backend-agnostic blob CRUD port (read/write/
+list/delete/stat under a scoping key) plus a local-disk and an
+S3-compatible implementation, both traversal-guarded. The **only** OD
+coupling in the file is the bottom `resolveProjectStorage()` factory
+function, which reads `OD_PROJECT_STORAGE`/`OD_S3_BUCKET`/`OD_S3_REGION`/
+`OD_S3_PREFIX`/`OD_S3_ENDPOINT`/`OD_S3_ACCESS_KEY_ID`/
+`OD_S3_SECRET_ACCESS_KEY`/`OD_S3_SESSION_TOKEN` directly from `process.env`.
+
+**Extracted, not dropped:** the interface + both implementations, ported to
+`src/blob-storage.ts` as `BlobStorage`/`BlobFileMeta`/`LocalBlobStorage`/
+`S3BlobStorage`/`S3BlobStorageOptions`/`StorageError`, with every
+`projectId: string` parameter renamed to `namespace: string` — per
+extraction-plan.md's Task-4 Port-2 finding ("OD's 'project' is a product
+model; engine needs a generic workspace/session store interface") and §2.1's
+"Runs key on an opaque `contextRef`, never `projectId`" convention, "project"
+specifically is flagged elsewhere in this porting effort as OD's noun, not
+the engine's — `namespace` carries no domain meaning here beyond "a
+top-level grouping/scoping key," which is what the parameter actually is
+structurally (nothing in `LocalBlobStorage`/`S3BlobStorage`'s logic assumes
+it means a design project).
+
+**Dropped, not ported:** `resolveProjectStorage()`. This is OD adapter
+wiring — a specific env-var-naming convention and the choice to read
+`process.env` directly inside the engine layer — not generic engine
+behavior. It has no equivalent anywhere else in this porting session's
+established pattern (`createSqliteEventLog`, `LocalBlobStorage`,
+`S3BlobStorage` are all called with explicit constructor arguments; none of
+`@jini/*`'s existing adapters read `process.env` inside their own
+constructors). A Jini host application composes its own equivalent
+(`new LocalBlobStorage(root)` or `new S3BlobStorage({ bucket, region,
+credentials, ... })` called directly, with whatever env-var convention that
+host prefers) rather than inheriting OD's `OD_S3_*` names or its
+env-selection shape.
+
+Landed in `@jini/platform`, not `@jini/sqlite`: this is a filesystem/network
+blob-storage primitive with no SQL involvement, parallel to this package's
+existing `fs.ts` (path containment / atomic copy) and `http.ts` (readiness
+polling) roles — `@jini/sqlite` is reserved for the `EventLog` port adapter
+and `better-sqlite3`-specific helpers (`db-inspect.ts`,
+`backend-config.ts`), none of which this needs. `aws-sigv4.ts` lives
+alongside it in the same package since it's `S3BlobStorage`'s only
+dependency and has no other consumer yet.
+
+## Tests
+
+`src/aws-sigv4.test.ts` and `src/blob-storage.test.ts`, written fresh for
+this port (OD's `project-storage.ts`/`aws-sigv4.ts` had no co-located test
+files in the source tree to port from) — canonical-request/signature-shape
+assertions with a fixed clock for `aws-sigv4.ts`; real-filesystem
+(`mkdtempSync`) round-trip + traversal-guard + non-ENOENT-failure coverage
+for `LocalBlobStorage`; a stubbed `fetchFn` (mocked `Response`-shaped
+objects, including pagination, malformed/missing-field list-XML, and a
+`text()`-throws case) for `S3BlobStorage`.
+
+## Dependencies
+
+No new dependency — `aws-sigv4.ts` uses only `node:crypto`; `blob-storage.ts`
+uses only `node:path`/`node:fs/promises` plus `aws-sigv4.ts` and the global
+`fetch` (Node 18+ built-in, matching the origin's `globalThis.fetch` default).

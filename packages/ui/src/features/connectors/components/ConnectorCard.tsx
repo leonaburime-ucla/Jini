@@ -2,7 +2,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, SyntheticEvent } from 'react'
 import { useT } from '../../i18n/index.js';
 import type { Connector, ConnectorAction, ConnectorAuthorizationPending } from '../types.js';
 import { getConnectorDisplayToolCount, statusLabel, toolsBadgeTranslation } from '../rules.js';
-import { Icon } from '../../../components/Icon.js';
+import { Icon } from '../../../react/components/Icon.js';
 import { ConnectorLogo } from './ConnectorLogo.js';
 
 export interface ConnectorCardProps {
