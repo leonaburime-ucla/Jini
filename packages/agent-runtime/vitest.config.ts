@@ -33,6 +33,10 @@ export default defineConfig({
         // documented carve-out, not a coverage dodge (same reasoning as
         // packages/ui/vitest.config.ts's settings-dialog types.ts excludes).
         'src/types.ts',
+        // Same carve-out as `src/types.ts` above: pure `export type`/
+        // `export interface` file, zero runtime declarations (verified via
+        // the same grep). Vendored provider-connectivity shapes only.
+        'src/providers/types.ts',
       ],
       thresholds: {
         statements: 99.9,
