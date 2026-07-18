@@ -177,7 +177,11 @@ describe('SourceConfigList — MCP-server-shaped source', () => {
     persisted = await dependencies.port.fetchSources();
     expect(persisted[0]?.label).toBe('New label');
     expect(persisted[0]?.fields.url).toBe('https://mcp.example/renamed');
-  });
+    // Explicit timeout: this test drives many sequential userEvent
+    // interactions (toggle, expand, edit two fields, save) against a real
+    // mounted tree, which can exceed the default 5s under full-package
+    // parallel test-suite contention even though it runs in ~1s in isolation.
+  }, 20000);
 });
 
 describe('SourceConfigList — BYOK-key-shaped source (same component, different fields/adapter)', () => {

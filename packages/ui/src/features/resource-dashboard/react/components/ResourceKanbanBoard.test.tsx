@@ -151,6 +151,35 @@ describe('ResourceKanbanBoard', () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  /**
+   * Regression, same shape as `ResourceCard.tsx`'s identical fix:
+   * `onClick`'s `stopPropagation` only stops the synthetic click a browser
+   * fires for an Enter/Space keydown on a focused button — the raw keydown
+   * event itself is separate and still bubbles unless stopped
+   * independently. Before this fix, activating the delete button via the
+   * keyboard also fired the outer card's own `onKeyDown` and opened it.
+   */
+  it('activating the delete button via keyboard (Enter) does not also call onOpen', async () => {
+    const onOpen = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <ResourceKanbanBoard
+        columns={makeColumns()}
+        emptyColumnLabel="No items"
+        deleteLabel="Delete"
+        deleteAriaLabel={(title) => `Delete ${title}`}
+        isBusy={() => false}
+        onOpen={onOpen}
+        onDelete={onDelete}
+      />,
+    );
+    const [cardA] = screen.getAllByTestId('resource-kanban-card');
+    within(cardA!).getByRole('button').focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onDelete).toHaveBeenCalledWith('a');
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('disables the delete button while busy', () => {
     render(
       <ResourceKanbanBoard

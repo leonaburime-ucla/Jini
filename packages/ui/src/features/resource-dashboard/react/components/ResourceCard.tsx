@@ -83,11 +83,24 @@ export function ResourceCard<TBody = unknown>({
               event.stopPropagation();
               onToggleMenu();
             }}
+            // `stopPropagation` on `onClick` above only stops the CLICK the
+            // browser synthesizes from an Enter/Space keydown — the raw
+            // keydown event itself still bubbles to the outer card's own
+            // `onKeyDown` (a separate event), which would otherwise ALSO
+            // treat that same keypress as "activate the card" and open/
+            // toggle-select it at the same time this button's own action
+            // runs. Stop it here too.
+            onKeyDown={(event) => event.stopPropagation()}
           >
             {moreLabel}
           </button>
           {menuOpen ? (
-            <div className="resource-board-card-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <div
+              className="resource-board-card-menu"
+              role="menu"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
               {item.menuActions!.map((action) => (
                 <button
                   key={action.kind}

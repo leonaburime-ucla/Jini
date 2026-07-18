@@ -77,6 +77,12 @@ export function ResourceKanbanBoard<TBody = unknown>({
                         event.stopPropagation();
                         onDelete(item.id);
                       }}
+                      // See `ResourceCard.tsx`'s identical fix: `stopPropagation`
+                      // on `onClick` doesn't stop the raw keydown event (a
+                      // separate event) from bubbling to the outer card's own
+                      // `onKeyDown`, which would otherwise ALSO open the card
+                      // on the same Enter/Space keypress that activates this button.
+                      onKeyDown={(event) => event.stopPropagation()}
                     >
                       {deleteLabel}
                     </button>

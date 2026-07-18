@@ -109,6 +109,37 @@ describe('ResourceCard', () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  /**
+   * Regression: `onClick`'s `stopPropagation` only stops the synthetic
+   * click a browser fires for an Enter/Space keydown on a focused button —
+   * the raw keydown event is a SEPARATE event that still bubbles unless
+   * stopped independently. Before this fix, pressing Enter/Space while the
+   * "More" button (or a menu item) was focused also fired the outer card's
+   * own `onKeyDown`, which treated the same keypress as "activate the
+   * card" and opened/toggle-selected it at the same time.
+   */
+  it('activating the menu button via keyboard (Enter) does not also activate the card', async () => {
+    const item: ResourceBoardItem = { id: 'p1', title: 'X', menuActions: [{ kind: 'rename', label: 'Rename' }] };
+    const onOpen = vi.fn();
+    const onToggleMenu = vi.fn();
+    render(<ResourceCard {...baseProps({ item, onOpen, onToggleMenu })} />);
+    screen.getByRole('button', { name: 'More' }).focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onToggleMenu).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('activating a menu item via keyboard (Enter) does not also activate the card', async () => {
+    const item: ResourceBoardItem = { id: 'p1', title: 'X', menuActions: [{ kind: 'rename', label: 'Rename' }] };
+    const onOpen = vi.fn();
+    const onAction = vi.fn();
+    render(<ResourceCard {...baseProps({ item, menuOpen: true, onOpen, onAction })} />);
+    screen.getByRole('menuitem', { name: 'Rename' }).focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onAction).toHaveBeenCalledWith('rename');
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('renders menu items when menuOpen is true and dispatches onAction with the clicked kind', async () => {
     const item: ResourceBoardItem = {
       id: 'p1',
