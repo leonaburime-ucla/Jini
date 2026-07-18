@@ -2096,3 +2096,394 @@ whether either can adopt this primitive's `rules.ts` directly (or extract a shar
 reconciliation" module both `rules.ts` files import) instead of maintaining three independently-evolving
 implementations of essentially the same upsert/status-reconcile logic. Not resolved here — flagged
 per the task's own instruction, a rules-level opportunity only, never a UI-level one.
+
+## Section: `features/resource-dashboard/` — DesignsTab.tsx + TasksView.tsx "resource-dashboard shell, twice" (2026-07-18)
+
+Part B of a two-part scheduled task (Part A shipped `features/source-config-list/`, section
+above). Per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" section:
+
+> **Resource-dashboard shell, twice, both directly Run-vocabulary-relevant**: `DesignsTab.tsx`'s
+> dashboard shell (§1.17 — sub-tabs, search, bulk-actions, a **config-driven status-kanban** whose
+> vocabulary `not_started/running/awaiting_input/succeeded/failed/canceled` "reads like a generic
+> agent-run/job lifecycle") and `TasksView.tsx`'s list shells (§1.20 — hero+metric-tile header,
+> tabbed template gallery, **row-list-with-expandable-run-history**, "a recognizable generic
+> scheduled-job list CRUD shape"). ... evaluate together, likely as one `features/resource-dashboard/`
+> (or a name that doesn't presuppose "design" — this is the single most core-engine-relevant cluster
+> in the whole sweep and deserves care over speed).
+
+### Provenance
+
+Both sources read in FULL from `/tmp/od-source` (public OD fork, `main` branch, commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`, 2026-07-02), not the vendored snapshot:
+
+1. `apps/web/src/components/DesignsTab.tsx` (1,404 lines).
+2. `apps/web/src/components/TasksView.tsx` (1,135 lines).
+
+### The shared-vs-separate verdict: TWO distinct composition shapes, ONE shared low-level primitive
+
+The orchestrator's own pre-read notes hypothesized a "PARTIAL overlap, not a clean single shape and
+not two fully unrelated shapes" and explicitly asked for independent verification rather than
+presuming either answer. A full read of both files confirms: **genuinely two distinct top-level
+composition shapes**, sharing only a thin, genuinely-common layer (a status vocabulary + a
+status-badge presentational primitive + a "group items by status" pure rule) — not a shared
+dashboard shell. Evidence, quoted with line ranges:
+
+**1. Kanban/status-grouping exists in exactly one of the two files, not both.**
+`DesignsTab.tsx` lines 1012–1095 build a real grouped-by-status board:
+```
+const filtered = filtered.map(...)... // search+sub-sort applied first
+{STATUS_ORDER.map((status) => {
+  const colProjects = filteredProjects.filter(
+    (item) => normalizeStatus(item.project.status?.value ?? "not_started") === status,
+  );
+  return (<div key={status} className="design-kanban-col">...
+```
+`STATUS_ORDER` (lines 48–55) is a fixed 6-value array (`not_started`/`running`/`awaiting_input`/
+`succeeded`/`failed`/`canceled`), and this is a real column-per-status board, toggle-able against a
+card grid via `view: "grid" | "kanban"` state (line 33, persisted to `localStorage` at line
+45/277-281). `TasksView.tsx` has **no equivalent anywhere** — grep for `STATUS_ORDER`,
+`.filter(.*status`, or any per-status grouping construct across its 1,135 lines returns nothing. Its
+only status-vocabulary usage (`statusLabel()`, lines 203-209, and `StatusPill`, lines 211-213) renders
+a single row's OR a single run's status as an inline badge — never as a grouping/column key. This
+directly falsifies "both express the same shape, just differently" — one origin has a literal kanban
+board; the other has never grouped anything by status at any nesting depth, including inside its own
+nested run-history sublist (`AutomationRunHistory`, lines 1029–1135, which is itself a flat
+chronological list of runs, not grouped/bucketed by status).
+
+**2. The header/toolbar shapes are structurally unrelated.**
+`DesignsTab.tsx`'s toolbar (lines 509-693): a sub-tab-pill sort selector (`recent`/`yours` —
+confirmed a SORT, not a filter, by reading the `filtered` `useMemo` at lines 343-388, which always
+returns every item, just re-ordered), a search input, a select-mode toggle + bulk-delete bar (lines
+614-651, only in grid view), and the grid/kanban view toggle. `TasksView.tsx`'s header (lines
+636-667): an `<header className="automations-hero">` with an eyebrow/title/lede block and 3 metric
+tiles (`Metric` component, lines 1020-1027) plus a single primary CTA button. Zero structural overlap
+— no sort selector, no search input, no select-mode, no bulk-delete anywhere in `TasksView.tsx`'s
+"your automations" list (the only filtering/tabs in the whole file are in the template gallery
+section, lines 909-988, which is create-flow content, not a filter over existing items).
+
+**3. Per-item chrome is a kebab menu in one, always-visible inline buttons in the other.**
+`DesignsTab.tsx`'s card kebab menu (lines 842-940): rename/duplicate/delete behind a
+`design-card-more` button + popover, with outside-click/Escape dismiss
+(`menuContainerRef`/`menuOpenId`, lines 130, 245-261, 844). `TasksView.tsx`'s row actions (lines
+756-819): run/history/edit/pause-resume/delete are ALL always-visible inline buttons
+(`automation-row__btn`), never collapsed into an overflow menu. This is a real interaction-pattern
+difference, not just a visual one — DesignsTab's kanban-card variant (lines 1052-1064) drops the
+kebab menu entirely in favor of a single always-visible delete button, closer to TasksView's
+always-visible-buttons style, which is itself evidence the kebab-vs-inline choice tracks the SURROUNDING
+shell's density (grid card vs. list row), not a fixed universal pattern either file
+independently discovered.
+
+**4. The row/item's OWN data shape differs at the type level, not just presentationally.**
+DesignsTab's top-level items (`Project`) ARE themselves status-bearing resources — `p.status?.value`
+(line 799) is a first-class field driving both the grid card's badge and the kanban column placement.
+TasksView's top-level items (`Routine`) are NOT themselves status-bearing in the same sense — a
+routine has `enabled`/`schedule`/`nextRunAt`; its `lastRun` (optional, lines 732-753) and its
+`runs` (lines 1044-1062, lazy-fetched only on expand) are what actually carry a `RoutineRun['status']`
+value. This is why TasksView never groups by status: the thing being listed at the top level isn't a
+status-bearing resource at all, just a schedule that OWNS a collection of status-bearing sub-resources
+one level down.
+
+**5. Non-overlapping content confirmed present in only one file each**, closing the loop on the
+orchestrator's own pre-read hypothesis: DesignsTab's card-grid/cover-thumbnail resolution (lines
+942-974, OD-specific html/image/video/logo/brand kind dispatch), select-mode+bulk-delete+kebab-menu,
+and `localStorage` view-toggle have no TasksView analog anywhere. TasksView's hero+metrics header,
+template gallery (lines 909-988, a curated catalog of automation presets — create-flow content, not
+a resource list concern), proposals-review section (lines 837-907, apply/reject an
+automation-evolution workflow — no status-bearing-resource-list concept at all), and
+inline-expandable-nested-run-history (lines 820-829, 1029-1135) have no DesignsTab analog.
+
+**What IS genuinely shared**, confirmed by direct comparison: `statusLabel()` (DesignsTab lines
+1185-1190) and `statusLabel()` (TasksView lines 203-209) are structurally identical functions — a
+status-value-to-translated-string lookup, called at a leaf render site to build a small badge/pill.
+This is the ONE real shared shape, and it is exactly as small as it looks: a status vocabulary + a
+`StatusPill` presentational primitive + a pure "given items and a status order, bucket them into
+columns" rule (a generalization of DesignsTab's `STATUS_ORDER.map` + `normalizeStatus`, usable by
+ANY future consumer that wants kanban grouping, not just this one).
+
+**Resulting design**: ship ONE feature folder, `packages/ui/src/features/resource-dashboard/`,
+containing the shared low-level layer (`StatusPill`, `ResourceMetrics`, `groupItemsByStatus`,
+`statusToneFor`, the pending-action-tracking pattern) PLUS two genuinely separate composed
+orchestrators built on top of it: `ResourceBoard` (the DesignsTab shape: search/sort/select-mode/
+bulk-delete/kebab-menu/grid-kanban-toggle) and `ResourceRowList` (the TasksView shape: hero+metrics+
+CTA/flat-row-list/inline-actions/expandable-lazy-loaded-run-history). This is the outcome the task
+brief flagged as plausible ("a shared 'status-badged list item + StatusPill' primitive doesn't
+necessarily mean the surrounding dashboard shells are one shape") and the evidence above confirms it
+directly — forcing both shapes through one composed shell would mean bolting kanban-grouping onto a
+shape that never uses it (TasksView), or bolting expandable nested run-history onto a shape that
+never had it (DesignsTab).
+
+### What shipped — `packages/ui/src/features/resource-dashboard/`
+
+Uses the `react/{hooks,components}/` layout throughout (zero-React files at the feature top level).
+
+| File | Contents |
+|---|---|
+| `types.ts` | Shared: `ResourceStatusOption`, `ResourceStatusTone`/`ResourceStatusToneMap`. Board-shape: `ResourceBoardViewMode`, `ResourceSortOption`, `ResourceMenuActionSpec`, `ResourceBoardItem<TBody>` (generic `body` render-slot, `sortValues` keyed-by-sort-option map, `menuActions`). Row-list-shape: `ResourceMetric`, `ResourceRowAction`, `ResourceRowItem`, `ResourceRunHistoryItem`. |
+| `constants.ts` | `DEFAULT_STATUS_TONE`, `UNMATCHED_STATUS_BUCKET`, `DEFAULT_BOARD_VIEW_MODE`. |
+| `rules.ts` | Shared: `statusToneFor`, `pendingActionKey`/`isActionPending`/`withPendingAction`/`withoutPendingAction` (re-derived fresh, NOT imported from `source-config-list` despite identical shape — see "Design choices" below). Board-shape: `groupItemsByStatus` (generalizes `STATUS_ORDER.map`, with an `UNMATCHED_STATUS_BUCKET` catch-all so an unrecognized status is never silently dropped — DesignsTab itself has no such case since every `Project` defaults to `not_started`, but a generic primitive can't assume that), `filterBoardItemsByQuery`, `sortBoardItems` (generic over a host-supplied `sortValues` map, since DesignsTab's `recent`/`yours` sort by two different `Project` timestamp fields), `toggleSelectedId`, `pruneSelectedIds`. |
+| `ports.ts` | `ResourceBoardPort<TItem>` (`fetchItems`/`deleteItem` required, `renameItem`/`duplicateItem` optional — no "add" method at all, since both origins delegate creation entirely to host UI), `ResourceViewModeStoragePort` (scoped by a host-supplied `scopeKey`, never DesignsTab's literal `"od:designs:view"`), `ResourceRowListPort<TRow>` (`fetchRows` required, `fetchRowHistory` optional — everything else TasksView's rows can DO is host-dispatched, not a port method, see below). |
+| `dependencies.ts` | `createFakeResourceBoardPort`/`createFakeResourceRowListPort` — both can ship genuinely useful zero-config defaults (unlike `source-config-list`'s fake, which needs a required `createSource` callback) precisely because neither port has an "add" concept. `createLocalStorageViewModeStorage` — real, SSR-guarded `localStorage`-backed default (same "browser-only generic behavior ships as a real implementation, not a fake" reasoning as `features/browser-chrome`'s history storage). |
+| `react/components/StatusPill.tsx` | The one genuinely shared UI primitive (see verdict above). |
+| `react/components/ResourceMetrics.tsx` | Generalizes TasksView's `Metric` tile row over an arbitrary host-supplied list. |
+| `react/components/ResourceCard.tsx` | DesignsTab's `design-card`: click-to-open/toggle-select, select-mode checkbox XOR kebab menu, status pill, host `renderBody` slot (cover-thumbnail resolution stays host-owned). |
+| `react/components/ResourceKanbanBoard.tsx` | The status-grouped board — a deliberately LIGHTER card than `ResourceCard` (no select-mode, no kebab menu, no visible status pill — status conveyed by column + a CSS class only, matching the origin's own `design-kanban-card` exactly, confirmed by reading that branch specifically rather than assuming symmetry with the grid card). |
+| `react/components/ResourceBoardToolbar.tsx` | Sort pills + search + select-mode/bulk-delete bar (grid-view-only) + view toggle + optional create button. |
+| `react/components/ResourceBoardView.tsx` | Pure composition: toolbar + loading/error/two-distinct-empty-states (no-items-at-all vs. search-matched-nothing, DesignsTab's own distinction) + grid-or-kanban. |
+| `react/hooks/useResourceBoard.ts` + `useWiredResourceBoard` | Owns search/sort/view-mode-persistence/select-mode/bulk-delete/the single-open-at-a-time kebab menu (with a REAL outside-click/Escape dismiss bug found and fixed while writing tests — see below)/kanban-column derivation. |
+| `react/components/ResourceBoard.tsx` | Orchestrator. `rename`/`duplicate`/`delete` menu-action kinds are natively understood (mapped to the matching port method or, for `rename`, bubbled to `onRenameRequest` since it needs a text input this primitive doesn't collect — no `Dialog` is ported, see Dropped); any other kind bubbles to `onCustomItemAction`. |
+| `react/components/ResourceRunHistoryList.tsx` | TasksView's `AutomationRunHistory` sublist: loading/empty states, a `StatusPill` + timing per run, an optional error/summary message, host-defined actions. |
+| `react/components/ResourceRowListItem.tsx` | One row: title/meta/detail lines, last-run `StatusPill`, ALWAYS-VISIBLE inline action buttons (never a kebab — see verdict point 3), an optional history-expand toggle, the expanded sublist. |
+| `react/components/ResourceRowListView.tsx` | Pure composition: hero header (eyebrow/title/lede) + metrics + CTA + a clickable empty state (TasksView's own empty state IS the create button) OR the row list. |
+| `react/hooks/useResourceRowList.ts` + `useWiredResourceRowList` | Owns row loading, a generic `dispatchRowAction` (busy-tracks + reloads + refreshes the expanded row's history on success — mirrors TasksView's own `runNow` bumping `historyTick`), and expand/collapse with re-fetch-on-every-expand (not cached, matching the origin). |
+| `react/components/ResourceRowList.tsx` | Orchestrator. `onRowAction` is REQUIRED and bubbles for every action kind (unlike `ResourceBoard`, nothing is natively understood here — see ports.ts). |
+| `index.ts` | Public barrel — `isActionPending`/`pendingActionKey`/`withPendingAction`/`withoutPendingAction` deliberately NOT re-exported (see Design choices). |
+
+### Dropped — per source, never silently
+
+**`DesignsTab.tsx`:**
+- Cover-thumbnail resolution across html/image/video/logo/brand kinds (lines 1240-1352,
+  `projectCover`/`ProjectBrandCover`/`brandHostname`) — entirely OD-specific file-kind dispatch and
+  brand-logo-fallback-chain logic. `ResourceBoardItem.body` + `ResourceCard`'s `renderBody` slot is the
+  seam a host uses instead.
+- Rename/delete/bulk-delete confirmation dialogs (`Dialog`/`DialogFooter` from `@open-design/components`,
+  lines 1097-1163) — a third-party product component library, not ported. `ResourceBoard`'s `rename`/
+  `duplicate`/`delete` methods perform the mutation directly with no confirm step; a host wanting
+  confirmation wraps its own dialog around the call (same "host-owned modal chrome" pattern already
+  established — no feature in this package has ported a generic `Dialog` primitive).
+- Analytics tracking calls threaded through nearly every handler (`trackProjectsListClick`,
+  `trackProjectsListControlsClick`, `trackProjectsMorePopoverClick`, `trackPageView`) — host-owned,
+  analytics is cross-cutting concern territory per this package's existing convention (see
+  `features/connectors`'/`features/asset-grid`'s own "analytics is host-owned" notes).
+- The manual-refresh button and 15-second auto-refresh polling (`refreshProjectsList`,
+  `PROJECTS_AUTO_REFRESH_MS`, lines 46, 287-341) — not ported; a host wanting this composes it around
+  the hook's exposed `reload()`.
+- `Toast`-based success/error notifications after bulk-delete (lines 1164-1174) — host-owned; the
+  hook's `bulkDelete()` return value (`{ deleted, failed }`) is the seam.
+- Live-artifact-specific card variant (`liveArtifactCardTitle`/`liveArtifactCardMetaLead`/
+  `artifactStatusLabel`, lines 1204-1237, and the whole `item.type === "live-artifact"` branch) —
+  a second, OD-specific item shape layered onto the same grid, not generalized (a host with a
+  similarly dual-shaped list composes two `ResourceBoardItem[]` arrays itself).
+
+**`TasksView.tsx`:**
+- The entire template-gallery section (lines 909-988, plus `buildAutomationTemplates`/
+  `filterTemplates`/`templateFilters`/the 6 hardcoded `buildStaticTemplates` presets, lines 58-331) —
+  a curated create-flow catalog, a fundamentally different concern from listing existing resources
+  (confirmed by the shared-vs-separate analysis above: this section has no DesignsTab analog at all).
+- The proposals-review section (lines 837-907, `AutomationEvolutionProposal` apply/reject workflow,
+  `proposalTargetLabel`/`proposalActionLabel`) — OD's automation-evolution-specific feature, no
+  generic resource-list analog.
+- The `crystallize` action (lines 564-595, 1097-1111) — a specific OD workflow (turn a successful
+  run into review-able proposals). `ResourceRunHistoryItem.actions` generalizes only the OTHER kept
+  action ("open"/"view progress"); crystallize's own semantics (and its dedicated `crystallizingRunId`
+  busy-state, separate from the generic row-busy tracking) are not ported.
+- `NewAutomationModal` (the create/edit form + REST wiring) — entirely host-owned; `onCreate`/
+  `onRowAction`'s `'edit'` kind are the seams a host wires its own modal through.
+- `scheduleStatusLabel`/`nextRunLabel`/`formatAutomationTimestamp`/`formatRunDuration` (lines
+  172-201) — OD's `Routine`/`RoutineRun`-specific formatting logic. `ResourceRowItem.metaLine`/
+  `detailLine` and `ResourceRunHistoryItem.startedAtLabel`/`durationLabel` are pre-formatted
+  host-supplied strings; this primitive never re-derives them.
+- Analytics (`fireClick`/`trackAutomationsClick`/`trackPageView`) — host-owned, same as DesignsTab.
+- `window.confirm` before delete (line 618) — a bare browser confirm, itself a UX choice; not baked
+  into this primitive's `dispatchRowAction`, same "host wraps its own confirmation" reasoning as
+  DesignsTab's dropped `Dialog`.
+
+### Design choices flagged for reviewers
+
+- **`isActionPending`/`pendingActionKey`/`withPendingAction`/`withoutPendingAction` are re-derived
+  fresh in this feature's `rules.ts`, not imported from `features/source-config-list`**, even though
+  they are byte-for-byte the same pattern (confirmed while writing this feature — both independently
+  generalize "track an in-flight action per `(id, kind)` key" from their respective origin's ad hoc
+  string-key convention). Per this package's own "share only what correctness forces" rule (no
+  shared/app-level layer), and per the **fixing-open-design-web** skill's hooks discipline
+  ("duplication across slices is welcome; share only what *correctness* forces"), this is the correct
+  call — but it does mean the SAME helper now exists twice in the package under the same names. To
+  keep the package's own public barrel unambiguous, this feature deliberately does NOT re-export
+  these four names from its `index.ts` (they stay internal, used only by this feature's own hooks) —
+  `features/source-config-list` already publishes them at the package barrel; a host needing this
+  exact utility uses that one. A real `TS2308` ambiguous-export compiler error at `src/index.ts` is
+  what caught this during `pnpm --filter @jini/ui run typecheck`, not a design review — flagged here
+  as a genuine, if narrow, argument for eventually promoting this pattern to a shared
+  non-feature-owned module (a `src/utils/` helper, e.g.) rather than letting a third independent
+  copy appear the next time this shape recurs (r6 §3's cross-cutting pattern table already lists
+  "Progress bar + status icon + step/todo list" as a related, not-yet-extracted third instance in
+  `DesignSystemFlow.tsx`). Not resolved here — flagged for a future consolidation pass, same spirit
+  as the `features/connectors`/`features/source-config-list` rules-level reuse flag already recorded
+  above in this document.
+- **`ResourceRowList`'s `onRowAction` bubbles EVERY action kind, unlike `ResourceBoard`'s native
+  rename/duplicate/delete handling.** This asymmetry is intentional, not an inconsistency: DesignsTab's
+  kebab menu has a small, fixed, cross-source-stable vocabulary (rename/duplicate/delete — the exact
+  3 methods `ResourceBoardPort` already needs), whereas TasksView's row actions (run/edit/
+  pause-resume/delete) have no such fixed, generalizable semantics — "pause/resume" alone requires
+  toggling arbitrary host state with no universal shape, and "edit" always opens host UI. Rather than
+  invent 1-2 native port methods and leave the rest host-dispatched (an arbitrary, hard-to-predict
+  split), `ResourceRowList` dispatches ALL of them uniformly, letting the host's single `onRowAction`
+  implementation branch on `kind` itself.
+- **A real bug was caught while writing `ResourceBoard`'s own orchestrator tests, not by inspection**:
+  the kebab menu's outside-click dismiss effect (`useResourceBoard.ts`) closed on ANY `window`
+  `mousedown`, including a mousedown on the menu's OWN items — so clicking Rename/Duplicate/Delete
+  inside an already-open menu closed the menu (via the native `mousedown` bubbling to `window`,
+  BEFORE React's synthetic `click` handler could fire) before the click could ever register. Every
+  "dispatch a native menu action" test failed cleanly, catching this immediately rather than shipping
+  a silently-broken menu. Fixed with a `menuContainerRef` containment check — DesignsTab's OWN
+  pattern (`menuContainerRef`/`el.contains(e.target)`, lines 130, 247-249), which this port had
+  initially simplified away and shouldn't have. Threaded through `useResourceBoard` ->
+  `ResourceBoardView` -> `ResourceCard`, with a dedicated regression test in
+  `useResourceBoard.test.ts` (`stays open on a mousedown INSIDE menuContainerRef`) so this exact
+  regression can't silently reappear.
+- **Two Phase 9.5 dead-branch refactors, not tested around** (see the coverage section below for the
+  full loop): `ResourceBoard.tsx`'s `kanbanColumns` lookup and rename-target lookup both originally
+  had a defensive `??`/`?.` fallback that can never actually fire given this component's own call
+  contract; `useResourceRowList.ts`'s `fetchHistoryFor` had a dead `port.fetchRowHistory` existence
+  guard for the same reason (every call site already guarantees it). All three replaced with a
+  non-null assertion plus an explanatory comment, per the skill's Phase 9.5 point 1's
+  "TS-required fallback with no real runtime path" classification.
+
+### `RunState` vocabulary-reconciliation note (flagged, NOT resolved — out of scope for this task)
+
+Per the task brief, this UI primitive's status vocabulary is close to, but not identical with,
+`@jini/protocol`'s own `RunState`:
+
+- `@jini/protocol`'s `RunState` (`packages/protocol/src/run.ts`): `['queued', 'starting', 'running',
+  'succeeded', 'failed', 'cancelled']` — 6 values, spelled `cancelled`.
+- DesignsTab's `STATUS_ORDER`: `['not_started', 'running', 'awaiting_input', 'succeeded', 'failed',
+  'canceled']` — 6 values, spelled `canceled`; has `not_started`/`awaiting_input` with no `RunState`
+  analog; has no `queued`/`starting` analog (its own `normalizeStatus` actually MAPS `queued` onto
+  `running` for display purposes — DesignsTab's `ProjectDisplayStatus` type is a superset that
+  includes `queued` as a raw value even though `STATUS_ORDER`/the kanban board never surfaces it as
+  its own column).
+- TasksView's `RoutineRun['status']` (`statusLabel()`, lines 203-209): `succeeded`/`failed`/`running`/
+  `queued`/`canceled` — 5 values, spelled `canceled`; no `starting`/`not_started`/`awaiting_input`
+  analog at all — the narrowest of the three vocabularies.
+
+This feature's own `ResourceStatusOption[]`/`ResourceStatusToneMap` types (`types.ts`) are
+DELIBERATELY generic string-keyed maps with no hardcoded vocabulary at all — neither DesignsTab's nor
+TasksView's status values are baked into this primitive anywhere; a host supplies whichever
+vocabulary its own domain needs (see `ResourceBoard.test.tsx`/`ResourceRowList.test.tsx`, which each
+use their own literal `STATUS_OPTIONS` array, not an imported constant). This means when a future
+Jini `RunsView`/job-dashboard consumer wires this primitive to `@jini/protocol`'s real `RunState`,
+that consumer supplies `statusOptions: [{value: 'queued', label: 'Queued'}, ...]` matching
+`RUN_STATES` verbatim (spelled `cancelled`, no `not_started`/`awaiting_input`) — no code in this
+primitive needs to change for that to work, since the vocabulary is a runtime prop, not a compile-time
+union. The THREE-WAY spelling/vocabulary mismatch (`cancelled` vs. `canceled` vs. `canceled`, and the
+`not_started`/`awaiting_input`/`starting` non-overlaps) is real and will need a decision when that
+wiring actually happens (does a future `RunsView` normalize `RunState` into a DesignsTab-shaped
+6-value display vocabulary with synthetic `not_started`/`awaiting_input` states derived from
+elsewhere, or does it accept a narrower kanban with only `RunState`'s own 6 values and no
+`awaiting_input` column?) — flagged here per the task's explicit instruction, deliberately NOT
+resolved, since resolving it requires knowing how a real `RunsView` consumer wants to present
+`awaiting_input`-shaped states (which don't exist in the engine's `RunState` at all — that would be
+an application-level concept layered on top, e.g. a paused-for-input tool-call).
+
+### i18n
+
+Every user-facing string in every component (`StatusPill`, `ResourceMetrics`, `ResourceCard`,
+`ResourceKanbanBoard`, `ResourceBoardToolbar`, `ResourceBoardView`, `ResourceRunHistoryList`,
+`ResourceRowListItem`, `ResourceRowListView`) is either passed in pre-translated (leaf/pure-composition
+components take `statusLabel`/`errorLabel`/etc. as already-resolved strings, never call `t()`
+themselves) or wrapped via `useT()` at the two orchestrators (`ResourceBoard`/`ResourceRowList`),
+which is where every literal English string this primitive owns (`'Search…'`, `'Select'`, `'Delete
+selected'`, `'New'`, `'History'`, `'No items yet.'`, etc.) is wrapped in `t()`, following this
+package's "the English string itself is the key" convention. `rules.ts` stays hook-free (pure);
+`statusToneFor` and `groupItemsByStatus` never produce user-facing text, only tone/grouping keys.
+`ResourceBoard.test.tsx` and `ResourceRowList.test.tsx` each have a dedicated i18n end-to-end test
+mounting the full orchestrator under `I18nProvider` with a real dictionary and asserting the
+translated strings actually render (not just the unconfigured passthrough case) — e.g.
+`ResourceRowList.test.tsx`'s test asserts `'No items yet.'` (unconfigured) resolves to the French-ish
+`'Rien pour le moment'` string via a mounted dictionary.
+
+### Phase 9.5 coverage-driven loop
+
+Quoting the header this task was required to quote: **"Phase 9.5 — Coverage-driven refactor loop
+(repeat until ≥99% on all 4 metrics, 100% is the goal)"**, and the coverage-bar changelog's point 1:
+**"Coverage bar raised from the original's ≥98% to ≥99% on all 4 metrics, with 100% as the actual
+goal (see Phase 9.5) — after 6 extractions landed against the original's 98% floor, one shipped
+with a genuine bug and needed a real coverage-driven bug hunt after the fact."**
+
+Ran the classify-then-fix loop once (`json-summary`/`json` reporters, per Phase 9.5's own
+instruction that the v8 text table drops rows). Every initially-uncovered branch/line was classified
+per Phase 9.5 point 1:
+- **Genuinely reachable, just untested** (the large majority): a `toneMap`-threading branch left
+  untested in four components (`ResourceBoard`/`ResourceRowList`/`ResourceRowListItem`/
+  `ResourceRowListView`), an `eyebrow`/`lede` branch and an unmatched-status label-fallback branch in
+  `ResourceRowList.tsx`, the grid-view-mode toggle button (only kanban had been clicked in existing
+  tests), and a message-without-`isError` branch in `ResourceRunHistoryList.tsx` — all closed with
+  real, behavior-asserting tests, not padding.
+- **A genuine race-condition branch, not previously exercised**: `useResourceRowList.ts`'s
+  `historyLoadingRowId` clear-on-settle logic (`current === id ? null : current`) guards against an
+  OLDER, slower history fetch for row A finally resolving AFTER the user has already switched the
+  expanded row to B (and B's own fetch already cleared/set the loading flag) — closed with a
+  dedicated test using a manually-controlled deferred Promise to force that exact interleaving,
+  documented in the test as a real (if narrow) behavior this primitive protects, not a padding test.
+- **Dead branches, refactored away rather than tested around** (Phase 9.5 point 1, "Dead branch"
+  classification): `ResourceBoard.tsx`'s `kanbanColumns` lookup (`board.kanbanColumns.get(...) ?? []`)
+  and rename-target lookup (`current?.title ?? ''`), plus `useResourceRowList.ts`'s
+  `fetchHistoryFor`'s `if (!port.fetchRowHistory) return;` guard — all three provably unreachable
+  given this component/hook's own internal call contract (documented per-site above in "Design
+  choices"), replaced with a non-null assertion and an explanatory comment each, per Phase 9.5 point
+  1's "TS-required fallback with no real runtime path" classification.
+- No `/* v8 ignore */` or any coverage-suppression comment was used anywhere, per Phase 9.5 point 3.
+
+`types.ts`/`ports.ts` (verified interface-only via `grep -nE '^(export )?(const|function|class|let|var) '`
+finding no runtime declarations in either) were added to `vitest.config.ts`'s existing documented
+zero-executable-statement carve-out, the same pattern already used for `settings-dialog`'s and
+`source-config-list`'s `types.ts`/`ports.ts` files.
+
+**Final coverage (json-summary, 2026-07-18) — 100% on all 4 metrics, aggregate AND every individual
+file, no exclusions needed beyond the two documented interface-only files:**
+
+Aggregate: **1204/1204 statements (100%), 488/488 branches (100%), 73/73 functions (100%), 1204/1204
+lines (100%).**
+
+| File | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| `constants.ts` | 100 | 100 | 100 | 100 |
+| `dependencies.ts` | 100 | 100 | 100 | 100 |
+| `index.ts` | 100 | 100 | 100 | 100 |
+| `rules.ts` | 100 | 100 | 100 | 100 |
+| `react/components/StatusPill.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceMetrics.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceCard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceKanbanBoard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoardToolbar.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoardView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRunHistoryList.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowListItem.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowListView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowList.tsx` | 100 | 100 | 100 | 100 |
+| `react/hooks/useResourceBoard.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useResourceRowList.ts` | 100 | 100 | 100 | 100 |
+
+(`types.ts`/`ports.ts` excluded per the documented zero-executable-statement carve-out — both
+interface-only, no runtime declarations.)
+
+### Purity grep
+
+`grep -rniE "open design|OD_|--od-stamp|open-design\.ai|openDesignDesktop|@open-design/" packages/ui/src/features/resource-dashboard/`: **clean, zero matches** (exit code 1).
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors).
+- `pnpm --filter @jini/ui exec vitest run src/features/resource-dashboard`: **253 tests, 16 files, all
+  green** — `rules.test.ts` (27), `dependencies.test.ts` (25), `index.test.ts` (6),
+  `useResourceBoard.test.ts` (35), `useResourceRowList.test.ts` (18), `StatusPill.test.tsx` (5),
+  `ResourceMetrics.test.tsx` (2), `ResourceCard.test.tsx` (17), `ResourceKanbanBoard.test.tsx` (11),
+  `ResourceBoardToolbar.test.tsx` (18), `ResourceBoardView.test.tsx` (17), `ResourceBoard.test.tsx`
+  (19, including the two-orchestrator native-action-dispatch tests and the i18n end-to-end test),
+  `ResourceRunHistoryList.test.tsx` (12), `ResourceRowListItem.test.tsx` (11),
+  `ResourceRowListView.test.tsx` (16), `ResourceRowList.test.tsx` (15, including the i18n end-to-end
+  test).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **167 files, 1614 tests, all green** — 16 of
+  those 167 files are this feature's new test files (253 of the 1614 tests).
+- Full monorepo `pnpm -r run typecheck`: `packages/ui typecheck: Done` (clean). Failures exist
+  elsewhere in the monorepo (`packages/agent-runtime`, `packages/chat-react`, `packages/cli`,
+  `packages/http`, `packages/node-host`, `packages/renderers-react`, `packages/sqlite` — all missing
+  a `tsconfig.json` entirely; `packages/daemon`/`packages/deploy` — unresolved `@jini/protocol`/
+  `@jini/core` module references, apparently missing built `dist` output in this session) — **all
+  pre-existing, entirely unrelated to this task** (this task touched only `packages/ui`); a strictly
+  larger failing-package set than the two (`agent-runtime`/`chat-react`) the prior
+  `source-config-list` section documented, most plausibly because this session never ran a full
+  `pnpm install`/build across the workspace before starting, not because of anything this task
+  changed — flagged for the record, not fixed (out of scope for a `packages/ui`-only task).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)`
+  — unchanged, no boundary violations introduced.
