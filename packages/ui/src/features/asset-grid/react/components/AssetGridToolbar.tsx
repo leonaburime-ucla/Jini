@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { ALL_FACET_VALUE } from '../../constants.js';
 import type { AssetGridFacetOption, AssetGridViewMode } from '../../types.js';
 

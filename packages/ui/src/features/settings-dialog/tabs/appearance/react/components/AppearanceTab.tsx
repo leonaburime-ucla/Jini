@@ -1,7 +1,7 @@
 import { useLayoutEffect } from 'react';
 import type { CSSProperties } from 'react';
 import { useT } from '../../../../../../features/i18n/index.js';
-import { Icon } from '../../../../../../components/Icon.js';
+import { Icon } from '../../../../../../react/components/Icon.js';
 import {
   ACCENT_SWATCHES,
   DEFAULT_ACCENT_COLOR,

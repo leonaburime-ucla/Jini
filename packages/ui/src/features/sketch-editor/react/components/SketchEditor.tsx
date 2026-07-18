@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useI18n } from '../../../i18n/index.js';
-import { Toast } from '../../../../components/Toast.js';
+import { Toast } from '../../../../react/components/Toast.js';
 import { defaultSketchEditorDependencies } from '../../dependencies.js';
 import { defaultExcalidrawLangCode, sketchSceneHasContent, validateSketchEmbeddableUrl } from '../../rules.js';
 import type { ExcalidrawInitialDataState, SketchEditorDependencies } from '../../ports.js';

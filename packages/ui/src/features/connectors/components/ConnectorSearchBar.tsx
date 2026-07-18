@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useT } from '../../i18n/index.js';
-import { Icon } from '../../../components/Icon.js';
+import { Icon } from '../../../react/components/Icon.js';
 
 export interface ConnectorSearchBarProps {
   value: string;

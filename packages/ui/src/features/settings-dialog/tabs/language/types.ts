@@ -11,4 +11,4 @@
  * (`{ code, label }`) rather than declaring a near-duplicate — the two
  * components pick from the same kind of host-supplied locale list.
  */
-export type { LocaleOption } from '../../../../components/LanguageMenu.js';
+export type { LocaleOption } from '../../../../react/components/LanguageMenu.js';

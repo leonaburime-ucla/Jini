@@ -1,27 +1,58 @@
 import { describe, expect, it } from 'vitest';
-import * as barrel from './index.js';
+import * as HttpBarrel from './index.js';
 
+/**
+ * A barrel-only smoke test: every other test in this package imports its target
+ * module directly, so the root barrel itself was never actually exercised.
+ * Proves the public surface a host actually imports (`from '@jini/http'`) really
+ * re-exports what `source-map.md` documents.
+ */
 describe('@jini/http barrel', () => {
-  it('re-exports the request/response/origin/adapter/pack/local-daemon public surfaces', () => {
-    expect(typeof barrel.ok).toBe('function');
-    expect(typeof barrel.err).toBe('function');
-    expect(typeof barrel.rawInput).toBe('function');
-    expect(typeof barrel.validationError).toBe('function');
-    expect(typeof barrel.sendJson).toBe('function');
-    expect(typeof barrel.sendApiError).toBe('function');
-    expect(typeof barrel.statusForError).toBe('function');
-    expect(typeof barrel.guardSameOrigin).toBe('function');
-    expect(typeof barrel.defineJsonRoute).toBe('function');
-    expect(typeof barrel.mountJsonRoute).toBe('function');
-    expect(typeof barrel.mountPackHttp).toBe('function');
-    expect(typeof barrel.createCompatApiError).toBe('function');
-    expect(typeof barrel.createCompatApiErrorResponse).toBe('function');
-    expect(typeof barrel.sendCompatApiError).toBe('function');
-    expect(typeof barrel.requireLocalDaemonRequest).toBe('function');
-    expect(typeof barrel.validateLocalDaemonRequest).toBe('function');
-    expect(typeof barrel.normalizeLocalAuthority).toBe('function');
-    expect(typeof barrel.isLoopbackHostname).toBe('function');
-    expect(typeof barrel.isLoopbackPeerAddress).toBe('function');
-    expect(typeof barrel.localOriginFromHeader).toBe('function');
+  it('re-exports the Result helpers', () => {
+    expect(typeof HttpBarrel.ok).toBe('function');
+    expect(typeof HttpBarrel.err).toBe('function');
+  });
+
+  it('re-exports request/response helpers', () => {
+    expect(typeof HttpBarrel.rawInput).toBe('function');
+    expect(typeof HttpBarrel.validationError).toBe('function');
+    expect(typeof HttpBarrel.sendApiError).toBe('function');
+    expect(typeof HttpBarrel.sendJson).toBe('function');
+    expect(typeof HttpBarrel.statusForError).toBe('function');
+  });
+
+  it('re-exports the origin guard', () => {
+    expect(typeof HttpBarrel.guardSameOrigin).toBe('function');
+    expect(typeof HttpBarrel.isLocalSameOrigin).toBe('function');
+  });
+
+  it('re-exports the Adapter', () => {
+    expect(typeof HttpBarrel.defineJsonRoute).toBe('function');
+    expect(typeof HttpBarrel.mountJsonRoute).toBe('function');
+  });
+
+  it('re-exports the pack-http registrar', () => {
+    expect(typeof HttpBarrel.mountPackHttp).toBe('function');
+  });
+
+  it('re-exports the compat error helpers', () => {
+    expect(typeof HttpBarrel.createCompatApiError).toBe('function');
+    expect(typeof HttpBarrel.createCompatApiErrorResponse).toBe('function');
+    expect(typeof HttpBarrel.sendCompatApiError).toBe('function');
+  });
+
+  it('re-exports the daemon-status routes and registrar', () => {
+    expect(typeof HttpBarrel.registerDaemonStatusRoutes).toBe('function');
+    expect(HttpBarrel.daemonStatusRoute.path).toBe('/api/daemon/status');
+    expect(HttpBarrel.daemonShutdownRoute.path).toBe('/api/daemon/shutdown');
+  });
+
+  it('re-exports the local-daemon-request helpers', () => {
+    expect(typeof HttpBarrel.requireLocalDaemonRequest).toBe('function');
+    expect(typeof HttpBarrel.validateLocalDaemonRequest).toBe('function');
+    expect(typeof HttpBarrel.normalizeLocalAuthority).toBe('function');
+    expect(typeof HttpBarrel.isLoopbackHostname).toBe('function');
+    expect(typeof HttpBarrel.isLoopbackPeerAddress).toBe('function');
+    expect(typeof HttpBarrel.localOriginFromHeader).toBe('function');
   });
 });
