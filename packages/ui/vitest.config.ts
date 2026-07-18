@@ -50,6 +50,10 @@ export default defineConfig({
         // zero-runtime-declaration.
         'src/features/html-viewer/types.ts',
         'src/features/html-viewer/ports.ts',
+        // list-detail-panel/types.ts is pure `interface` declarations, zero
+        // runtime statements (verified via the same
+        // `grep -nE '^(export )?(const|function|class|let|var) '` check).
+        'src/features/list-detail-panel/types.ts',
       ],
     },
   },

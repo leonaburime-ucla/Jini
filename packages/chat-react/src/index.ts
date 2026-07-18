@@ -1,1 +1,53 @@
-// @jini/chat-react — placeholder. See docs/jini-port/extraction-plan.md for the target.
+/**
+ * @jini/chat-react — headless hooks + presentational components + slots for
+ * a chat/artifact frontend, built on `@jini/chat-core`'s framework-free
+ * vocabulary. See docs/jini-port/recon/r4b-webui-design.md §1/§2/§4 for the
+ * spec this package implements, and source-map.md for provenance.
+ *
+ * This barrel is filled in incrementally as each layer lands (hooks first,
+ * then presentational components, then the `<JiniChatProvider>` composition
+ * root) — see source-map.md's "Status" section for what's shipped so far.
+ */
+export * from './transport.js';
+export * from './artifact-types.js';
+export * from './slots.js';
+export * from './tool-renderer-registry.js';
+
+export * from './react/hooks/useRunStream.js';
+export * from './react/hooks/useConversation.js';
+export * from './react/hooks/useComposer.js';
+export * from './react/hooks/useToolTimeline.js';
+export * from './react/hooks/usePinnedTodos.js';
+export * from './react/hooks/useQuestionForms.js';
+export * from './react/hooks/useArtifactStream.js';
+export {
+  useT,
+  useI18n,
+  useAnalytics,
+  useProjectContext,
+  useChatTransport,
+  useArtifactRegistry,
+} from './react/hooks/context.js';
+
+export { TodoCard } from './react/components/TodoCard.js';
+export type { TodoCardProps } from './react/components/TodoCard.js';
+export { ToolCard } from './react/components/ToolCard.js';
+export type { ToolCardProps } from './react/components/ToolCard.js';
+export { QuestionForm } from './react/components/QuestionForm.js';
+export type { QuestionFormProps, QuestionFormHandle, QuestionFormFileSubmission } from './react/components/QuestionForm.js';
+export { QuestionsPanel } from './react/components/QuestionsPanel.js';
+export type { QuestionsPanelProps } from './react/components/QuestionsPanel.js';
+export { NextStepActions } from './react/components/NextStepActions.js';
+export type { NextStepAction, NextStepActionsProps } from './react/components/NextStepActions.js';
+export { Markdown } from './react/components/Markdown.js';
+export type { MarkdownProps } from './react/components/Markdown.js';
+export { MessageRow } from './react/components/MessageRow.js';
+export type { MessageRowProps } from './react/components/MessageRow.js';
+export { MessageList } from './react/components/MessageList.js';
+export type { MessageListProps } from './react/components/MessageList.js';
+export { Composer } from './react/components/Composer.js';
+export type { ComposerProps } from './react/components/Composer.js';
+export { AttachmentTray } from './react/components/AttachmentTray.js';
+export type { AttachmentTrayProps } from './react/components/AttachmentTray.js';
+export { JiniChatProvider, useJiniChatSlots, useOnFeedback } from './react/components/JiniChatProvider.js';
+export type { JiniChatProviderProps, JiniChatSlots } from './react/components/JiniChatProvider.js';
