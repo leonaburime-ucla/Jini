@@ -140,6 +140,16 @@ describe('MemoryConnectedPanel', () => {
     expect(screen.getByText('Connected apps')).toBeInTheDocument();
   });
 
+  it('falls back to the tool title when the source has no connector name', () => {
+    renderPanel({ connectorSuggestions: [suggestion('s1', { source: { toolTitle: 'Notion Search' } })] });
+    expect(screen.getByText('Notion Search')).toBeInTheDocument();
+  });
+
+  it('prefers the connector name over the tool title when both are present', () => {
+    renderPanel({ connectorSuggestions: [suggestion('s1', { source: { connectorName: 'Notion', toolTitle: 'Notion Search' } })] });
+    expect(screen.getByText('Notion')).toBeInTheDocument();
+  });
+
   it('omits the description line for a suggestion without one', () => {
     renderPanel({ connectorSuggestions: [suggestion('s1', { description: '' })] });
     expect(screen.getByText('name-s1')).toBeInTheDocument();

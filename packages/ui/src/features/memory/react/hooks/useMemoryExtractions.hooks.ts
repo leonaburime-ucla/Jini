@@ -70,28 +70,39 @@ export function useMemoryExtractions(port: MemoryExtractionsPort): MemoryExtract
     // and delete/clear flows can all trigger reloads concurrently, so the
     // snapshot that lands must reconcile against local state, not overwrite.
     const sinceClock = store.snapshotClock();
+    // Released at every exit point below instead of a `try/finally`: a bare
+    // `catch {}` here never itself throws, so a `finally` would carry a
+    // structurally-unreachable "exception during catch" edge that no real
+    // test could ever hit — see the coverage-loop note in this file's test
+    // suite for why this shape was chosen over that dead branch.
+    const endReload = () => {
+      inFlightReloads.current -= 1;
+      if (inFlightReloads.current <= 0) {
+        inFlightReloads.current = 0;
+        setIsRefreshing(false);
+      }
+    };
     try {
       const confirmed = await port.fetchExtractions();
-      if (!reloadGuard.current.isCurrent(ticket)) return store.rows();
+      if (!reloadGuard.current.isCurrent(ticket)) {
+        endReload();
+        return store.rows();
+      }
       // Return what actually committed, not the raw fetch — reconciliation
       // can drop/keep rows differently than the raw response (a real caller,
       // useMemoryConnectors, reads this return value directly).
       const committed = store.commitSnapshot(confirmed, sinceClock);
       setLoadError(null);
+      endReload();
       return committed;
     } catch {
+      endReload();
       if (!reloadGuard.current.isCurrent(ticket)) return store.rows();
       // Keep the last confirmed history instead of presenting a synthetic
       // empty list when the daemon cannot be reached — and return that same
       // preserved state, since callers read this value directly.
       setLoadError(LOAD_ERROR_MESSAGE);
       return store.rows();
-    } finally {
-      inFlightReloads.current -= 1;
-      if (inFlightReloads.current <= 0) {
-        inFlightReloads.current = 0;
-        setIsRefreshing(false);
-      }
     }
   }, [port, store]);
 

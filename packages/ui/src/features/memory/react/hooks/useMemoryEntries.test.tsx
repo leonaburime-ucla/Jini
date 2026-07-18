@@ -403,6 +403,43 @@ describe('useMemoryEntries — preview', () => {
 });
 
 describe('useMemoryEntries — edit', () => {
+  it('scrolls the editor into view and focuses the name field once an edit target is set', async () => {
+    const coord = makeCoord();
+    const port = makePort({ fetchMemoryEntry: vi.fn(async () => savedEntry({ id: 'a' })) });
+    const { result } = renderHook(() => useMemoryEntries(port, coord));
+
+    const editorEl = document.createElement('div');
+    const scrollIntoView = vi.fn();
+    editorEl.scrollIntoView = scrollIntoView;
+    const nameInput = document.createElement('input');
+    const focus = vi.spyOn(nameInput, 'focus');
+    // The hook only reads these refs' `.current` inside its effect (which
+    // runs after render, using whatever a real caller attached them to by
+    // then) — assigning them directly here reproduces exactly what a
+    // mounted `MemoryManualEditor` would have done via `ref={editorRef}`.
+    result.current.editorRef.current = editorEl;
+    result.current.editorNameRef.current = nameInput;
+
+    await act(async () => {
+      await result.current.startEdit('a');
+    });
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it('does not touch the editor DOM refs when nothing is being edited', () => {
+    const { result } = renderHook(() => useMemoryEntries(makePort(), makeCoord()));
+    const editorEl = document.createElement('div');
+    const scrollIntoView = vi.fn();
+    editorEl.scrollIntoView = scrollIntoView;
+    result.current.editorRef.current = editorEl;
+
+    // No startEdit/startNew call — editingTarget stays null, so the effect's
+    // early return means the ref is never touched.
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
   it('surfaces a failed edit read as loadError instead of a silent no-op', async () => {
     const coord = makeCoord();
     const port = makePort({

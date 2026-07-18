@@ -774,6 +774,30 @@ describe('useMemoryConnectors — scan / suggest / save', () => {
     expect(result.current.connectorStatus).toMatch(/Saved 2 memories/);
   });
 
+  it('defaults a missing suggestion description to an empty string on save', async () => {
+    const port = makePort({
+      fetchConnectorStatuses: connectedStatuses,
+      suggestConnectorMemories: vi.fn(async () => scanResponse({ suggestions: [suggestion('s1', { description: undefined })] })),
+      saveMemoryEntry: vi.fn(async (draft) => ({
+        id: draft.id ?? 'generated',
+        name: draft.name,
+        description: draft.description,
+        type: draft.type,
+        body: draft.body,
+      })),
+    });
+    const { result } = await connectAndSelect(port, makeCoord());
+    await act(async () => {
+      await result.current.onSuggestConnectorMemory();
+    });
+
+    await act(async () => {
+      await result.current.onSaveConnectorSuggestions();
+    });
+
+    expect(port.saveMemoryEntry).toHaveBeenCalledWith(expect.objectContaining({ description: '' }));
+  });
+
   it('connectorSaving is true only while a save is in flight', async () => {
     const saveDeferred = deferred<MemoryEntry | null>();
     const port = makePort({

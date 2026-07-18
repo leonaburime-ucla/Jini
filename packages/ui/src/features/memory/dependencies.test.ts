@@ -123,6 +123,13 @@ describe('memoryEntriesPort', () => {
     await expect(memoryEntriesPort.fetchMemoryEntry('x')).rejects.toThrow("Memory entry request succeeded without a 'entry' field");
   });
 
+  it('fetchMemoryEntry rejects (not returns null) when the entry field is present but explicitly null', async () => {
+    // requiredNonNullField's "present but null/undefined" branch — distinct
+    // from the field being entirely absent (covered above) or a genuine 404.
+    mockFetch(() => ({ ok: true, json: async () => ({ entry: null }) }));
+    await expect(memoryEntriesPort.fetchMemoryEntry('x')).rejects.toThrow("Memory entry request succeeded without a 'entry' field");
+  });
+
   it('saveMemoryEntry POSTs when the draft has no id and PUTs when it does', async () => {
     const post = mockFetch((url, init) => {
       expect(url).toBe('/api/memory');
@@ -223,6 +230,13 @@ describe('createFakeMemoryConnectorsPort', () => {
     expect(await port.fetchConnectorStatuses()).toEqual({ notion: { status: 'connected', accountLabel: 'me@x.com' } });
   });
 
+  it('omits accountLabel from a derived status entry for a connector that has none', async () => {
+    const port = createFakeMemoryConnectorsPort({
+      connectors: [{ id: 'figma', name: 'Figma', provider: 'p', category: 'c', status: 'available', tools: [] }],
+    });
+    expect(await port.fetchConnectorStatuses()).toEqual({ figma: { status: 'available' } });
+  });
+
   it('connectConnector marks an existing connector connected, or synthesizes a new connected row for an unknown id', async () => {
     const port = createFakeMemoryConnectorsPort({
       connectors: [{ id: 'notion', name: 'Notion', provider: 'p', category: 'c', status: 'available', tools: [] }],
@@ -275,6 +289,14 @@ describe('memoryConnectorsPort browser bridges', () => {
     memoryConnectorsPort.writePendingConnectorAuthIds(new Set());
     expect(window.sessionStorage.getItem('jini:memory:pending-connector-auth')).toBeNull();
     expect(memoryConnectorsPort.readPendingConnectorAuthIds()).toEqual(new Set());
+  });
+
+  it('writePendingConnectorAuthIds swallows a blocked sessionStorage instead of throwing', () => {
+    const setItem = vi.spyOn(window.sessionStorage.__proto__, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'QuotaExceededError');
+    });
+    expect(() => memoryConnectorsPort.writePendingConnectorAuthIds(new Set(['notion']))).not.toThrow();
+    setItem.mockRestore();
   });
 
   it('drops non-string/blank entries and returns empty on malformed JSON or a non-array payload', () => {
