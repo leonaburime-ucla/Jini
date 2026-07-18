@@ -164,3 +164,56 @@ charter itself.
 produces/consumes exactly those types, not parallel ones, per the task
 brief. `node:crypto` (`randomUUID`) — Node built-in, no new external
 dependency.
+
+## Addendum: `legacy-data-migration.ts` (2026-07-18, Part D of the backend
+registry/memory/services/migration task)
+
+Origin: `leonaburime-ucla/open-design`'s `refactor/web-memory-slice` branch
+(cloned fresh to `/tmp/od-source`), `apps/daemon/src/migration/` (3 files:
+`index.ts` barrel, `legacy-data-migrator.ts`, `update-apply-observations.ts`).
+Per `docs/jini-port/recon/r1-daemon.md` TASK 1's `migration/` row: "Legacy-data
+migration is generic mechanism but hardcodes OD data layout (inference)." Read
+all 3 files in full to confirm/correct that inference:
+
+- **`legacy-data-migrator.ts` — confirmed generic, ported** (as
+  `src/legacy-data-migration.ts`). The mechanism (refuse-if-no-proof,
+  refuse-if-destination-populated, refuse-if-already-migrated, reject
+  symlinks, stage-then-atomically-promote, rollback-on-any-failure) has zero
+  OD-specific logic; only the module-level `PAYLOAD_ENTRIES` constant
+  (`app.sqlite`, `media-config.json`, `projects`, `artifacts`, ...) and the
+  hardcoded `app.sqlite` "proof of real data" check were OD-specific.
+  Generalized both into a host-supplied `LegacyDataMigrationConfig`
+  (`payloadEntries` + `proofEntry`), threaded through every exported function
+  (`dataDirIsEmptyOrFresh`, `legacyDirHasPayload`, `dataDirHasExistingPayload`,
+  `migrateLegacyDataDirSync`) instead of a hardcoded module constant. Also
+  generalized: the marker file name (`.migrated-from` is now a default, not
+  hardcoded), the staging-dir naming prefix (`.od-migrate-` → `.migrate-`),
+  and the thrown-error message text (dropped "OD_LEGACY_DATA_DIR"/"Open
+  Design"/relaunch-specific wording, kept the operator-actionable structure).
+  Simplification: the logger contract's unused `warn` method was dropped —
+  the module never calls it (verified: `grep -n 'log.warn'` had zero hits in
+  the origin either), so carrying it forward would be untested dead surface,
+  not a behavior the port owes callers.
+- **`update-apply-observations.ts` — NOT ported, correctly classified
+  OD-PRODUCT, not "generic with OD hardcodes."** This is Electron-installer
+  apply-across-version-upgrade telemetry: it reads `@open-design/release`'s
+  `ReleaseChannel`/`releaseChannelFromVersion`, imports
+  `@open-design/contracts/analytics`'s `TrackingUpdateApply*` event-schema
+  types, and submits a PostHog `update_apply_observed` analytics event via
+  this package's own `analytics.ts`/`app-config.ts` (OD's daemon-local
+  telemetry/config modules, not ported). The recon's "generic mechanism but
+  hardcodes OD data layout" inference was written for the whole `migration/`
+  directory as one row; on a full read this file is not a data-layout
+  migration at all — it observes and reports on the *desktop updater's*
+  apply-outcome, a product-specific concern (release channels, installer
+  artifact types, a fixed analytics event name/property schema) with no
+  generic-mechanism core to extract. Skipped, not forced.
+
+## New home decision
+
+Ranked alongside `RunLifecycle`/`EventLog` in `@jini/daemon` because, like
+those, it is a daemon-startup-lifecycle concern — the origin's own doc
+comment states it runs "at module import time in server.ts, before
+`openDatabase` opens SQLite," i.e. before any daemon service starts, which is
+exactly this package's charter ("stateful" lifecycle, not a pure-interfaces
+package like `@jini/core`).
