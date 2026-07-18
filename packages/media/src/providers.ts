@@ -1,6 +1,6 @@
 /**
  * The multi-vendor media-provider/model catalogue — reference data, not
- * product identity. Ported near-verbatim from Open Design's
+ * product identity. Ported near-verbatim from OD's
  * `apps/daemon/src/media/models.ts`; every provider id/label/hint here names
  * a real third-party vendor (OpenAI, Fal.ai, ElevenLabs, ...), not an OD
  * concept, so per the AGENTS.md boundary rule (no product-identity strings)
@@ -185,7 +185,7 @@ export function modelsForSurface(surface: MediaSurface, audioKind?: AudioKind): 
 
 /**
  * Standard (non-product-scoped) credential env var names each provider's own
- * SDK/docs recognize, in priority order. De-branded from Open Design's
+ * SDK/docs recognize, in priority order. De-branded from OD's
  * `apps/daemon/src/media/config.ts` `PROVIDER_ENV_CANDIDATES`: that map led
  * every provider with an `OD_*`-prefixed project-scoped override var, which
  * is a host concern (a project-local secrets layer), not vendor reference

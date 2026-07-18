@@ -2,7 +2,7 @@
  * `@jini/media` core type system — the provider/model catalogue shape and the
  * pure, transport-free request-building types layered on top of it.
  *
- * Ported from Open Design's `apps/daemon/src/media/models.ts` (catalogue
+ * Ported from OD's `apps/daemon/src/media/models.ts` (catalogue
  * shape) and `apps/daemon/src/media-adapters/types.ts` (capability +
  * request-builder shape) — see `source-map.md` for the full provenance.
  * Neither origin file carries any OD domain noun; this is a product-neutral

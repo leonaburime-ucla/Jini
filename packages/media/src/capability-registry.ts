@@ -1,6 +1,6 @@
 /**
  * Injection-style capability registry. Ported verbatim (pattern-for-pattern)
- * from Open Design's `apps/daemon/src/media-adapters/capabilities.ts` — the
+ * from OD's `apps/daemon/src/media-adapters/capabilities.ts` — the
  * task brief's own research flagged this as "a clean, already-generic port."
  * The registry holds NO data of its own: callers seed it, and every consumer
  * depends only on `get()`/`register()`/`all()`, never on the raw seed, so

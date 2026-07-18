@@ -1,5 +1,5 @@
 /**
- * Reference capability seed data, ported verbatim from Open Design's
+ * Reference capability seed data, ported verbatim from OD's
  * `apps/daemon/src/media-adapters/seed.ts` (itself sourced from AIHubMix's
  * `lib/models.ts` + DB, per that file's own header comment). Every field
  * here is real vendor model behavior verified against a live upstream call

@@ -1,6 +1,6 @@
 /**
  * `MediaTaskStore` — the async task-tracking port for request-now,
- * poll-later media generation. Generalized from Open Design's
+ * poll-later media generation. Generalized from OD's
  * `apps/daemon/src/media/tasks.ts`, which is a `better-sqlite3`-coupled,
  * synchronous CRUD module keyed on `projectId` (an OD domain noun) with a
  * hardcoded SQL schema. Per extraction-plan.md §2.6 ("ports are async-only

@@ -1,6 +1,6 @@
 /**
  * `MediaPolicy` — a host-injected gate on media generation. Generalized from
- * Open Design's `apps/daemon/src/media/policy.ts`, which is a thin wrapper
+ * OD's `apps/daemon/src/media/policy.ts`, which is a thin wrapper
  * around `@open-design/contracts`'s `MediaExecutionPolicy`/
  * `mediaExecutionPolicyDenial` (that package is OD-owned and out of scope
  * for this engine package). The underlying evaluation logic itself carries
