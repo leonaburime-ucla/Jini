@@ -160,6 +160,13 @@ Real content has landed in several parallel passes — see
   times; see `packages/ui/source-map.md` for the full comparison (read that
   section before extracting either of those two).
 
+- `src/react/components/EditorIcon.tsx` (2026-07-18) — a flat icon-by-key
+  atom ported from `EditorIcon.tsx`, same lookup-table shape as `Icon.tsx`/
+  `AgentIcon.tsx`/`RemixIcon.tsx`. First file under the new
+  `src/react/components/` path (the `refactor/ui-flat-components-under-react`
+  rename hadn't landed on this branch's base yet, so this is a new folder
+  alongside the still-present flat `src/components/`). See
+  `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

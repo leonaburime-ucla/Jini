@@ -81,3 +81,4 @@ export * from './components/EdgeScrollZones.js';
 export * from './components/PillButton.js';
 export * from './components/PopoverMenu.js';
 export * from './components/PopoverItem.js';
+export * from './react/components/EditorIcon.js';

@@ -3537,4 +3537,82 @@ DOM-pinned comment overlay (its geometry helpers already shipped as
 `utils/polygon-selection.ts`; the overlay itself has not), `InspectPanel`,
 the deploy-modal shell, and the export-menu shell. Each still has the same
 real, defensible generic shape the classification described — none
+
+## Section: `react/components/EditorIcon.tsx` — flat atom (2026-07-18)
+
+Source: `apps/web/src/components/EditorIcon.tsx` (168 lines, real clone at
+`leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`),
+per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps"
+list ("Icon-by-key renderer, twice") and this task's own brief. That doc's
+row flags an unresolved question — whether `EditorIcon` should become a data
+config registered under `Icon.tsx`'s existing lookup rather than its own
+component — but this task's brief explicitly directs shipping it as its own
+file matching the sibling atoms' conventions, so that question is left open
+for a future consolidation pass rather than re-litigated here.
+
+**Read first (per the path-convention check):** `packages/ui/src/components/`
+still exists on this branch's base (the `refactor/ui-flat-components-under-
+react` rename has not merged) — so per this task's own instruction, the new
+atom was placed under `packages/ui/src/react/components/EditorIcon.tsx`
+(a new folder, this is its first file) rather than the old flat
+`src/components/`, and `index.ts`'s barrel export line points at
+`./react/components/EditorIcon.js`. Every existing barrel entry as of this
+task is still `./components/*.js` form (0 pre-existing `./react/components/`
+entries) — the new line is simply the correct real path for where the file
+now lives, per the task's own instruction to route new atoms there
+regardless of prevalence once the rename hasn't landed.
+
+**Template read:** `AgentIcon.tsx`/`RemixIcon.tsx`/`Icon.tsx` (all three, per
+the task brief) — `EditorIcon` is closest in shape to `Icon.tsx` (an inline-
+SVG lookup keyed by a string, `aria-hidden` on every glyph) but with
+`AgentIcon.tsx`'s two-tier structure (a `Record<string, Visual>` lookup +
+graceful fallback tile) layered on top, since each editor needs its own
+bg/fg color pair alongside its glyph, not just a shared `currentColor` stroke.
+
+**What shipped:** `EditorIcon({ editorId, size })` — a `Record<string,
+EditorVisual>` lookup (`vscode`/`cursor`/`windsurf`/`zed`/`qoder`/
+`antigravity`/`webstorm`/`idea`/`xcode`/`finder`/`explorer`/`file-manager`/
+`terminal`/`warp`) mapping a string key to `{ bg, fg, glyph }`, where `glyph`
+is a `(size: number) => ReactElement` closure — each brand's inline SVG path
+data ported byte-for-byte (this is presentational brand-mark data, not
+logic, so nothing needed genericizing there). Unregistered ids fall back to
+a neutral gray folder-tile glyph, matching the origin exactly.
+
+**Genericized:** the origin's `editorId: HostEditorId | string` (an OD
+contracts-package type) becomes a plain `editorId: string` — the only OD
+coupling the origin had, per the task brief. No other product-identity
+coupling found.
+
+**i18n:** none needed — every glyph is an `aria-hidden` inline SVG with no
+visible text and no `aria-label`/`title` prop, so there is no user-facing
+string to route through `useT()`. Noted explicitly per the i18n policy
+rather than silently skipped.
+
+**Minor accessibility fix (disclosed, not silent):** the origin's fallback-
+tile inner `<svg>` omitted `aria-hidden="true"` (every other glyph function
+in the same file sets it) — added here for consistency with the rest of the
+lookup table and with `Icon.tsx`'s own convention of `aria-hidden` on every
+glyph; a decorative-icon accessibility improvement, not a behavior change a
+consumer could observe.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/react/components/EditorIcon.tsx`(+test): **clean, zero
+matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors (required
+  building `@jini/chat-core` then `@jini/renderers-react` first — their
+  `dist/` output didn't exist yet in this checkout and `@jini/ui`'s
+  `features/html-viewer/` imports `@jini/renderers-react`; pre-existing
+  build-order dependency, not something this task's own files introduced).
+- New atom's own test (`npx vitest run src/react/components/EditorIcon.test.tsx
+  --coverage`): **9 tests, 1 file, all green**, **100% statements/branches/
+  functions/lines** on `EditorIcon.tsx` — every named glyph function
+  (`vscodeLogo`, `finderLogo`, `terminalLogo`, `folderLogo`, `qoderLogo`,
+  `antigravityLogo`) and the shared `simplePath` closure invoked at least
+  once, plus the fallback-tile branch and a custom-size branch. No
+  `/* v8 ignore */` used.
 attempted this session; genuinely out of scope, not silently dropped.
