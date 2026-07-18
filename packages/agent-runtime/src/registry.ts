@@ -7,7 +7,7 @@
  * key, model-choice normalization against a live catalogue) those pickers
  * all independently re-derive today.
  *
- * Ported and generified from Open Design's `apps/web/src/state/config.ts`
+ * Ported and generified from OD's `apps/web/src/state/config.ts`
  * (`KnownProvider`/`KNOWN_PROVIDERS`), `packages/contracts/src/api/registry.ts`
  * (`AgentInfo`/`AgentDiagnostic`/`AgentFixIntent`/`AgentModelOption`),
  * `packages/contracts/src/api/providerModels.ts` (`ProviderModelOption`),
