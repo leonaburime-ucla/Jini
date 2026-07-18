@@ -8,7 +8,7 @@ import { useConnectorAuthorization } from './hooks/useConnectorAuthorization.js'
 import { useConnectorDetail } from './hooks/useConnectorDetail.js';
 import { connectorPanelAlerts, scopeConnectorsToProvider, sortConnectorsForSearch } from './rules.js';
 import { AUTHORIZATION_CANCEL_FAILED_MESSAGE, DEFAULT_PROVIDER_TABS, DEFAULT_PROVIDER_TAB_ID } from './constants.js';
-import { CenteredLoader } from '../../components/Loading.js';
+import { CenteredLoader } from '../../react/components/Loading.js';
 import { ProviderTabBar } from './components/ProviderTabBar.js';
 import { ConnectorSearchBar } from './components/ConnectorSearchBar.js';
 import { ConnectorAlertList } from './components/ConnectorAlertList.js';

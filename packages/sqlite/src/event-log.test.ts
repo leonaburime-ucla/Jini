@@ -74,6 +74,17 @@ describe('createSqliteEventLog — ordered append + replay', () => {
     expect(await log.replay('r1', null)).toEqual({ kind: 'ok', entries: [a1, a2] });
     expect(await log.replay('r2', null)).toEqual({ kind: 'ok', entries: [b1] });
   });
+
+  it('stores undefined data as JSON null and replays it back as null', async () => {
+    const entry = await log.append({ runId: 'r1', event: 'ping', data: undefined });
+    expect(entry.data).toBeUndefined();
+
+    const replay = await log.replay('r1', null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') {
+      expect(replay.entries[0]?.data).toBeNull();
+    }
+  });
 });
 
 describe('createSqliteEventLog — idempotency-key dedup', () => {
@@ -165,6 +176,15 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     if (replay.kind === 'ok') {
       expect(replay.entries).toHaveLength(2);
     }
+    await capped.close();
+  });
+
+  it('reports oldestAvailableCursor:null when every entry for the run has been evicted (maxEntriesPerRun: 0)', async () => {
+    const capped = createSqliteEventLog(':memory:', { maxEntriesPerRun: 0 });
+    await capped.append({ runId: 'r1', event: 'agent', data: 1 });
+
+    const replay = await capped.replay('r1', '0');
+    expect(replay).toEqual({ kind: 'replay-gap', requestedCursor: '0', oldestAvailableCursor: null });
     await capped.close();
   });
 });

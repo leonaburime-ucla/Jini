@@ -41,7 +41,14 @@ describe('port satisfaction: AmrProfileResolver', () => {
     expect(results.length).toBeGreaterThan(20);
     expect(results.every((agent) => typeof agent.available === 'boolean')).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(0);
-  });
+    // Explicit generous timeout: this exercises detectAgents() over the full
+    // 24+ item registry (real PATH/launch-resolution work per def), which
+    // takes ~3s in isolation but can exceed vitest's 5000ms default under
+    // full-suite parallel worker contention (merge-verification run
+    // 2026-07-18: passed consistently at ~3s alone, timed out at 5000ms only
+    // when co-scheduled with the package's other ~1400 tests). Not a
+    // behavior change — same assertions, same call.
+  }, 20000);
 });
 
 describe('port satisfaction: AcpModelProbe', () => {
