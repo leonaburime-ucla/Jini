@@ -169,9 +169,23 @@ Real content has landed in several parallel passes — see
   `packages/ui/source-map.md` for the full writeup, including what was
   deliberately left behind (the OD-specific color-selection heuristic that
   consumes the math, not the math itself).
+- `src/features/rich-text-input/` — a real Lexical (Meta's rich-text
+  framework) editor integration ported from OD's chat composer
+  (2026-07-18): editor setup/config, an atomic `@mention`/`/command`
+  token node type (generic, host-injected `resolveMentionColor` instead of
+  importing OD's connector-brand-color logic), a caret-floating-layer
+  positioning hook/component, and serialize/deserialize between the
+  editor's document model and a plain `@token` string. Named by three
+  prior tasks (`mention-autocomplete`'s own "3-way overlap" note among
+  them) as this exact destination. See `packages/ui/source-map.md`,
+  including four dead branches found and refactored away during the
+  coverage-driven-refactor loop (a `mention-parser.ts` merge pass, a
+  `rules.ts` selection catch-all, a `useSeededValue` StrictMode guard, and
+  two `$isRangeSelection`/`$isMentionNode` re-checks) — all four provably
+  unreachable given Lexical's own selection/point invariants, not padded
+  with contrived tests.
 
 Section B (vertical-slice `features/<domain>/` work: `byok-config`,
-`mcp-config`, `rich-text-input`, `workspace-tabs`) and section C
-(cross-package routing) of the extraction plan are not started. The
-god-components-extraction-plan.md list beyond the features enumerated above
-is also not started.
+`mcp-config`, `workspace-tabs`) and section C (cross-package routing) of
+the extraction plan are not started. The god-components-extraction-plan.md
+list beyond the features enumerated above is also not started.

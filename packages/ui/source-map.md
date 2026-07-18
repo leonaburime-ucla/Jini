@@ -3538,3 +3538,166 @@ DOM-pinned comment overlay (its geometry helpers already shipped as
 the deploy-modal shell, and the export-menu shell. Each still has the same
 real, defensible generic shape the classification described — none
 attempted this session; genuinely out of scope, not silently dropped.
+
+## Section: `features/rich-text-input/` — Lexical rich-text editor + mention node + caret-floating-layer (2026-07-18)
+
+Source: `leonaburime-ucla/open-design`, branch `main` @
+`0b88ef56144b5a42dc427c1292ae22676d698a34` (real clone at `/tmp/od-source`,
+per this task's mandate — not `integrations/open-design/reference/`'s
+frozen snapshot), `apps/web/src/components/composer/` (last touched at
+`31d98634c3676ad1e991d5d003a8e3728c273de`): `LexicalComposerInput.tsx`
+(809 lines), `MentionNode.ts` (237 lines), `CaretFloatingLayer.tsx`
+(160 lines), `deserialize.ts` (61 lines), `serialize.ts` (50 lines) — OD's
+chat composer's Lexical (Meta's rich-text framework) integration. Named as
+the destination for this exact cluster by three prior tasks' own
+provenance notes (`features/mention-autocomplete/`'s "3-way overlap"
+section, and the god-components-extraction-plan.md Consolidation map's
+`utils/connectorBrandColor.ts`/`utils/inlineMentions.ts` rows), all of
+which deliberately deferred it here rather than smuggling it into their
+own narrower scope.
+
+### What shipped — `packages/ui/src/features/rich-text-input/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `MentionEntity` (generic `{id, kind: string, token?, label, title?}` — replaces the origin's fixed `plugin\|skill\|mcp\|file\|workspace\|connector\|unknown` `InlineMentionKind` union with a free-form string), `MentionPart`, `MentionInsert`, `CaretRect`, `RichTextTriggerAnchor` (`'inline'\|'line-start'`), `RichTextTriggerConfig`, `RichTextTriggerMatch`, `PopoverNavigationKey`, `SerializedRichText`, `RichTextInputHandle`. Zero runtime statements (verified, added to `vitest.config.ts`'s exclude carve-out). |
+| `constants.ts` | `EDITOR_THEME`, `DEFAULT_TEST_ID`, `DEFAULT_TRIGGERS` (the origin's hardcoded `@mention`(inline)/`\|command`(line-start) pair, now data instead of two literal regexes), the `CaretFloatingLayer` sizing constants. |
+| `mention-node.ts` | `MentionNode` (the atomic `@token` node, a `TextNode` subclass), `$createMentionNode`, `$isMentionNode`. Ported near-verbatim from `MentionNode.ts` — same token-mode/clone-recursion trap avoided (`setMode('token')` called only in `$createMentionNode`, never the constructor, per the origin's own hard-won comment). The one genuinely OD-tilted piece of the whole cluster (`connectorBrandColor`/`resolveBrandTheme` imports, plus the document-wide `MutationObserver` re-stamping every mounted pill on a theme flip) is dropped entirely — no color logic and no global observer belong on a generic Lexical node class. |
+| `mention-parser.ts` | The generalized `apps/web/src/utils/inlineMentions.ts` (trie-based longest-match `@token` lookup, left/right boundary rules): `buildMentionToken`, `parseMentionParts`, `isMentionBoundary`, `isMentionRightBoundary`, `mentionTokenPresent`, `foldPresentMentions`. This file was explicitly left un-ported by the `mention-autocomplete` task ("the rest of that file is a much larger rich-text-over-a-committed-string mention system that belongs with the Lexical `composer/*` `@mention` system instead... pulling it in here would have smuggled a second, unrelated feature's source file into this task's scope") — this task is that second feature. |
+| `serialize.ts` / `deserialize.ts` | `serializeRichText`/`setRichTextFromPlainText`, ported verbatim (no OD-specific surface in the originals at all beyond importing the generic `MentionNode`/`InlineMentionEntity`). |
+| `rules.ts` | Pure Lexical-selection logic, no React: generalized trigger detection (`detectActiveTrigger`, `buildTriggerDeletionRegex`, `buildAnyTriggerDeletionRegex` — accept any `RichTextTriggerConfig[]` instead of two hardcoded regexes), the atomic-mention-navigation helpers (`mentionBeforeCaret`/`mentionAfterCaret`/`selectBeforeMention`/`selectAfterMention`/`removeMentionAtCaret`, ported verbatim — no OD surface in the origin), `readCaretRect` (the caret-rect fallback chain, verbatim), and `computeCaretFloatingLayerPosition` (`CaretFloatingLayer.tsx`'s `computePopoverPos`, verbatim, generalized to take its gap/margin/height/width constants as a parameter object instead of module-level literals). |
+| `react/hooks/{useTriggerDetection,useKeyboardCommands,useMentionAtomicNavigation,usePasteFiles,useSyncedOnChange,useSeededValue}.ts` | The origin's internal `LexicalComposerInput.tsx` plugin components (`TriggerPlugin`, `KeyboardPlugin`, `MentionAtomicNavigationPlugin`, `PastePlugin`, `OnChangePlugin`, `SeedingPlugin`), each promoted to its own testable hook rather than an inline unexported component, per this package's hook/dumb-component discipline. |
+| `react/hooks/useMentionColorStamping.ts` | The **replacement** for the origin's dropped brand-hue logic: a host-injected `resolveMentionColor: (mention: MentionEntity) => string \| undefined` callback, applied via Lexical's own `registerMutationListener(MentionNode, ...)` scoped to one editor instance (plus an initial restamp pass for nodes already mounted before the callback's identity changed) — not a document-wide `MutationObserver`. Sets a `--rich-text-mention-color` CSS custom property; a host's CSS reads it, this hook never writes any other style. |
+| `react/hooks/useCaretFloatingLayerPosition.ts` | `CaretFloatingLayer.tsx`'s inline `reposition`/effect logic, extracted into its own hook (component stays presentational). |
+| `react/components/RichTextInput.tsx` | The origin's `LexicalComposerInput` forwardRef component, generalized: `value`/`onChange`/`onTriggerChange`/`onSubmit`/`onPasteFiles`/`popoverOpen`/`onPopoverKey`/`comboboxAria`/`triggers`/`mentionTriggerId`/`resolveMentionColor`/`namespace`/`testId`/`mentionListboxId` are all host-configurable props, no OD types anywhere. The origin's `EditorRefPlugin` (a ref-bridging plugin needed only because its `forwardRef` component lived outside the `LexicalComposer` context) is dropped — the inner `EditorSurface` here is itself inside that context, so `useImperativeHandle` reads `editor` directly from `useLexicalComposerContext()`. |
+| `react/components/CaretFloatingLayer.tsx` | Ported near-verbatim (a `document.body` portal positioned against a caret rect) — no OD-specific surface in the origin. |
+| `index.ts` | Public barrel. |
+
+### Scope note: a plain-text editor with atomic tokens, not a full block/marks rich text editor
+
+The origin uses Lexical's `PlainTextPlugin` (not `RichTextPlugin`) — no
+headings/bold/lists/blocks, just text + atomic `@mention`/`/command`
+tokens, a single-paragraph model (Enter submits, Shift+Enter soft-breaks).
+This is ported faithfully as-is; no formatting features were added since
+none existed in the source, and adding them was never in scope.
+
+### Generalization: configurable triggers, not hardcoded `@`/`/`
+
+The origin hardcoded exactly two literal regexes (`/(^|\s)@([^\s@]*)$/`,
+`/^\/([^\s/]*)$/`) inside `TriggerPlugin`/`deleteActiveTrigger`. Replaced
+with a `RichTextTriggerConfig[]` (`{id, character, anchor: 'inline'|'line-start'}`)
+a host supplies via `triggers` (defaulting to the origin's exact two),
+with `escapeRegExpChar` guarding against a metacharacter trigger character.
+`insertMention` resolves which trigger's character to delete via a
+`mentionTriggerId` prop (default `'mention'`) looked up against the same
+array, instead of the origin's implicit single hardcoded `@`.
+
+### Coverage-driven dead-branch findings (Phase 9.5, not silently ported)
+
+Four genuine dead branches were found and refactored away during the
+classify-then-fix loop — none padded with a contrived test, per this
+package's "never fake the number" rule:
+
+1. `mention-parser.ts`'s `coalesceTextParts` (ported verbatim from the
+   origin's `buildInlineMentionParts`): tracing `parseMentionParts`'s own
+   push-guards (`match.start > copiedUntil`, `copiedUntil < text.length`)
+   proves every `'text'` part it ever pushes is already non-empty, and
+   each is immediately followed by that iteration's `'mention'` part — so
+   `coalesceTextParts`'s merge-adjacent-and-drop-empty pass can never
+   actually fire from this file's one real call site. Removed entirely
+   (the origin carried the same latent dead code).
+2. `rules.ts`'s `mentionBeforeCaret`/`mentionAfterCaret` trailing
+   `return null` (also ported verbatim): Lexical's own `Point.set()`
+   throws if a `'text'`-type point doesn't reference a `TextNode` or an
+   `'element'`-type point doesn't reference an `ElementNode` (verified
+   directly — a LineBreakNode point construction throws), so
+   `point.getNode()` for a `RangeSelection` anchor is always one or the
+   other. Replaced the trailing branch with a documented cast.
+3. `useSeededValue.ts`'s `lastSeeded`-ref "StrictMode double-invoke guard"
+   (also from the origin): traced through carefully, `setRichTextFromPlainText`
+   commits with `discrete: true`, so by the time StrictMode's mount-only
+   cleanup+re-run cycle reaches this effect a second time,
+   `editor.getEditorState()` already reflects the first run's seed — the
+   `value === current` check directly above already bails first. Removed;
+   a real `<StrictMode>`-wrapped test confirms no double-seed regression.
+4. `react/components/RichTextInput.tsx`'s `insertMention`/`replaceActiveTrigger`
+   re-check of `$isRangeSelection(sel)` immediately after
+   `$getRoot().selectEnd()`: `selectEnd()` always establishes a collapsed
+   `RangeSelection` (even on a completely empty root), so the re-check
+   can never fail. Replaced with a documented cast in both methods.
+   `useMentionColorStamping.ts`'s `stampByKey` had the same shape
+   (`$isMentionNode` re-check on a key already guaranteed to be a mention
+   by both of its call sites) — same fix.
+
+### i18n
+
+This feature ships **zero hardcoded user-facing strings** — unlike every
+other feature in this package, `RichTextInput`'s only text-shaped props
+(`placeholder`, `title`) are entirely host-supplied, and `CaretFloatingLayer`
+only renders host-supplied `children`. No `useT()` wiring applies; recorded
+here explicitly per this package's policy of stating an exemption rather
+than silently skipping it, not because the i18n policy was overlooked.
+
+### Phase 9.6 (async/network test-category gate)
+
+Not applicable — no cluster in this feature makes a network request or
+holds async state (Lexical's own internal update scheduling is not a
+network boundary). Recorded explicitly per the same policy.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/rich-text-input/`: **clean, zero matches.**
+
+### Test / typecheck / coverage / guard results
+
+- `pnpm --filter @jini/ui run typecheck`: clean, zero errors, full package.
+- This feature's own test run (`npx vitest run src/features/rich-text-input`):
+  **20 test files, 242 tests, all green.**
+- Per-file coverage (`vitest run --coverage`, `json-summary`+`json`
+  reporters): **100% statements/branches/functions/lines on every single
+  file in this feature** (`constants.ts`, `deserialize.ts`, `mention-node.ts`,
+  `mention-parser.ts`, `rules.ts`, `serialize.ts`, both components, all 8
+  hooks, the test-only `lexical-harness.tsx` support file, and `index.ts`
+  via a barrel smoke test) — `types.ts` excluded per the documented
+  zero-executable-statement carve-out (verified). Reached via the full
+  Phase 9.5 classify-then-fix loop; the four dead branches above were
+  refactored away, everything else reachable got a real test (including a
+  `// @vitest-environment node` companion for `readCaretRect`'s
+  `typeof window === 'undefined'` guard). Zero `/* v8 ignore */` anywhere.
+  Real DOM-dispatched-event tests (Phase 9's mandatory bar, not just
+  `dispatchCommand` calls) cover Enter/ArrowDown/Backspace/paste on the
+  mounted `RichTextInput`, per the retained-behavior manifest for
+  keyboard/paste interactions.
+- **Full `@jini/ui` package** (`npx vitest run --coverage`, excluding
+  `features/html-viewer/**` and the root `src/index.test.ts` barrel — see
+  the caveat below): **258 test files, 2747 tests, all green**, aggregate
+  **94.4% statements / 94.59% branches / 94.48% functions / 94.4% lines**
+  — this task's own 18 files are 100%; the remainder is pre-existing debt
+  already catalogued in prior sections of this file, not re-itemized here.
+  **Caveat**: `features/html-viewer/`'s tests (and the root barrel that
+  re-exports it) fail to even load in a fresh session because
+  `@jini/renderers-react`'s built `dist/registry.js` imports
+  `@jini/chat-core`, whose own `dist/` is gitignored and not built by
+  default (`pnpm --filter @jini/chat-core build` fixes it locally but
+  doesn't persist across a fresh clone) — this is pure environment/build-order
+  fragility, not a code regression (`html-viewer`'s own prior section
+  reported 160 files/1441 tests all green when its dist happened to
+  already be built); flagged here rather than silently worked around.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — no boundary violations introduced.
+- `pnpm -r run typecheck` (full monorepo): fails only at
+  `packages/diagnostics` (missing `jszip` dependency) — pre-existing,
+  unrelated to this task.
+
+### What was deliberately not attempted
+
+Nothing from the five source files was dropped silently — every piece
+r5/r6's own recon and this task's brief named (editor setup/config,
+mention-node type, caret-floating-layer positioning, serialize/deserialize,
+keyboard/paste/atomic-navigation plugins) shipped, tested, and is
+behaviorally verified, not just visually similar. The only intentional
+omissions are the OD-specific brand-color computation itself (replaced by
+the host-injected `resolveMentionColor` seam, per the task brief) and the
+origin's hardcoded `'chat-composer'` Lexical namespace string (now a
+`namespace` prop, defaulting to `'rich-text-input'`).
