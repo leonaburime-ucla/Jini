@@ -69,9 +69,24 @@ describe('deriveTreeChildren', () => {
     expect(result.dirsAtCurrentDir).toEqual(['nested-empty']);
   });
 
-  it('skips a persisted folder path that equals the current directory itself', () => {
+  it('skips a persisted folder path that equals the current directory itself (via prefix mismatch: "dir" never starts with "dir/")', () => {
     const result = deriveTreeChildren([], [{ path: 'dir' }], 'dir');
     expect(result.dirsAtCurrentDir).toEqual([]);
+  });
+
+  it('skips a persisted folder record whose path, after stripping the prefix, is empty (the degenerate "root describing itself" case)', () => {
+    // Distinct from the previous test: this exercises the `!remainder`
+    // `continue` specifically, which requires `folder.path` to literally
+    // equal the prefix (here, the root's prefix is `''`, so an empty-path
+    // folder record matches it) rather than fail the earlier
+    // `startsWith(prefix)` check.
+    const result = deriveTreeChildren([], [{ path: '' }], '');
+    expect(result.dirsAtCurrentDir).toEqual([]);
+  });
+
+  it('scopes a persisted folder nested two levels below the current directory to its immediate child segment', () => {
+    const result = deriveTreeChildren([], [{ path: 'dir/sub/deep' }], 'dir');
+    expect(result.dirsAtCurrentDir).toEqual(['sub']);
   });
 
   it('sorts dirsAtCurrentDir alphabetically', () => {
@@ -396,6 +411,18 @@ describe('filesFromDataTransfer', () => {
     const f = new File(['x'], 'x.txt');
     const result = await filesFromDataTransfer({ items: [], files: [f] } as unknown as DataTransfer);
     expect(result).toEqual([f]);
+  });
+
+  it('treats a missing (undefined) items list the same as an empty one', async () => {
+    const f = new File(['x'], 'x.txt');
+    const result = await filesFromDataTransfer({ items: undefined, files: [f] } as unknown as DataTransfer);
+    expect(result).toEqual([f]);
+  });
+
+  it('treats a missing (undefined) files list the same as an empty one', async () => {
+    const item = { kind: 'file', getAsFile: () => new File(['x'], 'x.txt') } as unknown as DataTransferItem;
+    const result = await filesFromDataTransfer({ items: [item], files: undefined } as unknown as DataTransfer);
+    expect(result).toHaveLength(1);
   });
 
   it('reads a file-kind item with no entry API via getAsFile', async () => {

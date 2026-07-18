@@ -157,4 +157,35 @@ describe('useAssetTreeDragUpload', () => {
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledWith([file]);
   });
+
+  it('rethrows a non-FileSystemReadError instead of swallowing it into dropReadError', async () => {
+    const { result } = renderHook(() => useAssetTreeDragUpload(vi.fn()));
+    const boom = new Error('boom');
+    // Bypass the `dragEvent()` helper's object-spread merge here: spreading
+    // a getter-based `dataTransfer` would invoke (and throw from) the
+    // getter immediately, before `onDrop` ever runs. Constructing the event
+    // by hand lets `dataTransfer.items` stay unevaluated until
+    // `filesFromDataTransfer` reads it inside the hook.
+    const event = {
+      preventDefault: vi.fn(),
+      dataTransfer: {
+        get items(): DataTransferItem[] {
+          throw boom;
+        },
+        files: [] as File[],
+      },
+      currentTarget: { contains: () => false },
+      relatedTarget: null,
+    } as unknown as DragEvent<Element>;
+    // The hook's `onDrop` deliberately does not catch/await this rethrow
+    // (fire-and-forget, matching the origin `DesignFilesPanel`'s own
+    // `handleDrop`) — it surfaces as an unhandled rejection, which this
+    // listener catches so the test process doesn't fail on it.
+    const rejectionHandler = vi.fn();
+    process.once('unhandledRejection', rejectionHandler);
+    act(() => result.current.onDrop(event));
+    await flush();
+    expect(result.current.dropReadError).toBeNull();
+    expect(rejectionHandler).toHaveBeenCalledWith(boom, expect.anything());
+  });
 });

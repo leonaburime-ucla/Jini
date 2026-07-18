@@ -34,6 +34,54 @@ describe('AssetTreeFileRow', () => {
     expect(onOpen).toHaveBeenCalledWith('a.txt');
   });
 
+  it('single click on the kind-glyph icon selects preview; double click opens', async () => {
+    const onSelectPreview = vi.fn();
+    const onOpen = vi.fn();
+    render(<AssetTreeFileRow {...baseProps} onSelectPreview={onSelectPreview} onOpen={onOpen} />);
+    const icon = screen.getByText('¶');
+    await userEvent.click(icon);
+    expect(onSelectPreview).toHaveBeenCalledWith('a.txt');
+    await userEvent.dblClick(icon);
+    expect(onOpen).toHaveBeenCalledWith('a.txt');
+  });
+
+  it('single click on the size cell selects preview; double click opens', async () => {
+    const onSelectPreview = vi.fn();
+    const onOpen = vi.fn();
+    render(<AssetTreeFileRow {...baseProps} onSelectPreview={onSelectPreview} onOpen={onOpen} />);
+    const sizeCell = screen.getByText('512 B');
+    await userEvent.click(sizeCell);
+    expect(onSelectPreview).toHaveBeenCalledWith('a.txt');
+    await userEvent.dblClick(sizeCell);
+    expect(onOpen).toHaveBeenCalledWith('a.txt');
+  });
+
+  it('single click on the time cell selects preview; double click opens', async () => {
+    const onSelectPreview = vi.fn();
+    const onOpen = vi.fn();
+    render(
+      <AssetTreeFileRow {...baseProps} modifiedAt={Date.now()} onSelectPreview={onSelectPreview} onOpen={onOpen} />,
+    );
+    const timeCell = screen.getByText('Just now');
+    await userEvent.click(timeCell);
+    expect(onSelectPreview).toHaveBeenCalledWith('a.txt');
+    await userEvent.dblClick(timeCell);
+    expect(onOpen).toHaveBeenCalledWith('a.txt');
+  });
+
+  it('double-clicking the rename input stops propagation instead of opening the file', async () => {
+    const onOpen = vi.fn();
+    render(
+      <AssetTreeFileRow
+        {...baseProps}
+        renaming={{ path: 'a.txt', draft: 'a.txt', saving: false }}
+        onOpen={onOpen}
+      />,
+    );
+    await userEvent.dblClick(screen.getByRole('textbox'));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('clicking the checkbox toggles selection without triggering preview', async () => {
     const onToggleSelect = vi.fn();
     const onSelectPreview = vi.fn();
@@ -86,6 +134,24 @@ describe('AssetTreeFileRow', () => {
     expect(onSelectPreview).toHaveBeenCalledTimes(2);
     expect(onOpen).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it('a single Space on the name button also previews (not just Enter)', () => {
+    const onSelectPreview = vi.fn();
+    render(<AssetTreeFileRow {...baseProps} onSelectPreview={onSelectPreview} />);
+    const nameButton = screen.getByText('a.txt').closest('button')!;
+    nameButton.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    expect(onSelectPreview).toHaveBeenCalledWith('a.txt');
+  });
+
+  it('a key other than Enter/Space on the name button does nothing', () => {
+    const onSelectPreview = vi.fn();
+    const onOpen = vi.fn();
+    render(<AssetTreeFileRow {...baseProps} onSelectPreview={onSelectPreview} onOpen={onOpen} />);
+    const nameButton = screen.getByText('a.txt').closest('button')!;
+    nameButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));
+    expect(onSelectPreview).not.toHaveBeenCalled();
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
   it('clicking the menu trigger calls onOpenMenu with the anchor rect', async () => {

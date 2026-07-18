@@ -288,4 +288,93 @@ describe('AssetTreeBrowser', () => {
     expect(screen.getByText('Fichiers')).toBeInTheDocument();
     expect(screen.getByText('Dossiers')).toBeInTheDocument();
   });
+
+  it('falls back to real browser dependencies when dependencies is omitted', () => {
+    const props = baseProps();
+    const withoutDependencies = { ...props };
+    delete (withoutDependencies as { dependencies?: unknown }).dependencies;
+    // No dependencies prop at all — AssetTreeBrowser must default to
+    // `createBrowserAssetTreeDependencies()` internally rather than crash.
+    expect(() => render(<AssetTreeBrowser {...withoutDependencies} />)).not.toThrow();
+    expect(screen.getByTestId('asset-tree-file-row-readme.txt')).toBeInTheDocument();
+  });
+
+  it('renders with folders entirely omitted (not just empty), files still visible', () => {
+    const props = baseProps();
+    const withoutFolders = { ...props };
+    delete (withoutFolders as { folders?: unknown }).folders;
+    render(<AssetTreeBrowser {...withoutFolders} />);
+    expect(screen.getByTestId('asset-tree-file-row-readme.txt')).toBeInTheDocument();
+  });
+
+  it('treats an omitted `folders` the same as an empty one for the empty-state check (only reachable with files also empty, since `isEmpty` short-circuits on files.length first)', () => {
+    const props = baseProps();
+    const withoutFolders = { ...props, files: [] };
+    delete (withoutFolders as { folders?: unknown }).folders;
+    render(<AssetTreeBrowser {...withoutFolders} />);
+    expect(screen.getByTestId('asset-tree-empty')).toBeInTheDocument();
+  });
+
+  it('clicking the batch-download button drives downloadFiles through to completion', async () => {
+    const downloadFiles = vi.fn().mockResolvedValue({ blob: new Blob(['x']), filename: 'archive.zip' });
+    render(<AssetTreeBrowser {...baseProps({ downloadFiles })} />);
+    await userEvent.click(within(screen.getByTestId('asset-tree-file-row-readme.txt')).getByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    await waitFor(() => expect(downloadFiles).toHaveBeenCalledWith(['readme.txt']));
+  });
+
+  it('the row menu tolerates its target file vanishing from `files` while still open: no crash, copy-local-path disabled, download hidden, copy click no-ops', async () => {
+    const getFileUrl = (f: TestFile) => `/files/${f.path}`;
+    const { rerender } = render(<AssetTreeBrowser {...baseProps({ getFileUrl })} />);
+    await userEvent.click(screen.getByTestId('asset-tree-file-menu-photo.png'));
+    expect(screen.getByRole('button', { name: 'Copy local path' })).not.toBeDisabled();
+    expect(screen.getByRole('link')).toBeInTheDocument();
+
+    // 'photo.png' drops out of `files` (e.g. the host deleted it elsewhere)
+    // while the row menu is still open for it — the popover itself isn't
+    // tied to `files`, so `menuPos` survives; only the resolved file goes
+    // missing.
+    rerender(<AssetTreeBrowser {...baseProps({ getFileUrl, files: makeFiles().filter((f) => f.path !== 'photo.png') })} />);
+    expect(screen.getByTestId('asset-tree-row-menu-popover')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy local path' })).toBeDisabled();
+    expect(screen.queryByRole('link')).toBeNull();
+    await expect(userEvent.click(screen.getByRole('button', { name: 'Copy local path' }))).resolves.not.toThrow();
+  });
+
+  it('shows the upload-error banner for a failed drop, and hides it once a preview opens even though the error is still set', async () => {
+    render(<AssetTreeBrowser {...baseProps()} />);
+    const body = screen.getByTestId('asset-tree-body');
+    const failingEntry = {
+      isFile: false,
+      isDirectory: true,
+      createReader: () => ({
+        readEntries: (_success: (entries: FileSystemEntry[]) => void, error: (err: DOMException) => void) => {
+          error(new DOMException('boom'));
+        },
+      }),
+    };
+    const item = { kind: 'file', webkitGetAsEntry: () => failingEntry };
+    fireEvent.drop(body, { dataTransfer: { items: [item], files: [] } });
+    await waitFor(() => expect(screen.getByTestId('asset-tree-upload-error-banner')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('asset-tree-file-row-readme.txt').querySelector('.asset-tree-row-name')!);
+    expect(screen.getByTestId('asset-tree-preview')).toBeInTheDocument();
+    expect(screen.queryByTestId('asset-tree-upload-error-banner')).toBeNull();
+  });
+
+  it('renders a nested folder correctly scoped once navigated into its parent directory', async () => {
+    const files = [...makeFiles(), { path: 'docs/inner/note.txt', kind: 'text', size: 10, mtime: NOW - 500 }];
+    render(<AssetTreeBrowser {...baseProps({ files })} />);
+    await userEvent.click(screen.getByTestId('asset-tree-dir-row-docs'));
+    expect(screen.getByTestId('asset-tree-dir-row-docs/inner')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('asset-tree-dir-row-docs/inner'));
+    expect(screen.getByTestId('asset-tree-file-row-docs/inner/note.txt')).toBeInTheDocument();
+  });
+
+  it('shows a download link in the preview pane when getFileUrl is supplied while a file is previewed', async () => {
+    render(<AssetTreeBrowser {...baseProps({ getFileUrl: (f: TestFile) => `/files/${f.path}` })} />);
+    await userEvent.click(screen.getByTestId('asset-tree-file-row-readme.txt').querySelector('.asset-tree-row-name')!);
+    const preview = screen.getByTestId('asset-tree-preview');
+    expect(within(preview).getByRole('link', { name: /Download/ })).toHaveAttribute('href', '/files/readme.txt');
+  });
 });

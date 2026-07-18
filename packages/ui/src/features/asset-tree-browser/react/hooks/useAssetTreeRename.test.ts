@@ -138,4 +138,33 @@ describe('useAssetTreeRename', () => {
     act(() => result.current.startRename('other.txt'));
     expect(result.current.renameError).toBeNull();
   });
+
+  it('a rejection arriving after the rename was already cancelled does not resurrect the renaming state', async () => {
+    let rejectRename: (err: unknown) => void = () => {};
+    const onRenameFile = vi.fn(
+      () =>
+        new Promise<TestFile | null>((_resolve, reject) => {
+          rejectRename = reject;
+        }),
+    );
+    const { result } = renderHook(() => useAssetTreeRename<TestFile>({ currentDir: '', onRenameFile }));
+    act(() => result.current.startRename('file.txt'));
+    act(() => result.current.updateDraft('renamed.txt'));
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.commitRename();
+    });
+    expect(result.current.renaming?.saving).toBe(true);
+    act(() => result.current.cancelRename());
+    expect(result.current.renaming).toBeNull();
+    await act(async () => {
+      rejectRename(new Error('too late'));
+      await pending;
+    });
+    // The catch handler's `setRenaming((prev) => (prev ? ... : prev))` must
+    // see `renaming` already null (from the cancel above) and leave it
+    // alone, rather than reviving a `saving: false` state for a rename the
+    // user already dismissed.
+    expect(result.current.renaming).toBeNull();
+  });
 });

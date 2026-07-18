@@ -71,11 +71,12 @@ export interface AssetTreeBrowserProps<TFile extends AssetTreeFileItem> {
  * A directory-navigable file tree: breadcrumbs, a host-supplied toolbar,
  * kind-grouped sections with a pinned Folders section, row selection with
  * batch delete/download, inline rename, a row context menu, drag-and-drop +
- * clipboard-paste upload, and a companion `FilePreviewPane`. Ported from
- * Open Design's `DesignFilesPanel.tsx` — see `packages/ui/source-map.md`
- * for the full retained-behavior manifest and everything dropped (OD's live
- * artifacts section, plugin-folders section, project menu, rotating-tip
- * footer, and file-kind-specific preview rendering).
+ * clipboard-paste upload, and a companion `FilePreviewPane`. Ported from a
+ * design-tool origin project's file-manager panel — see
+ * `packages/ui/source-map.md` for the full retained-behavior manifest and
+ * everything dropped (the origin's live-artifacts section, plugin-folders
+ * section, project menu, rotating-tip footer, and file-kind-specific
+ * preview rendering).
  */
 export function AssetTreeBrowser<TFile extends AssetTreeFileItem>({
   files,
@@ -331,7 +332,13 @@ export function AssetTreeBrowser<TFile extends AssetTreeFileItem>({
           // normally afterward.
           onCopyLocalPath={() => {
             const path = rowMenu.menuPos!.path;
-            const localPath = menuFile ? selectors.getLocalPath?.(menuFile) : null;
+            // `canCopyLocalPath` (passed below) already gates the button's
+            // `disabled` state on `!!menuFile`, so a click can only reach
+            // this handler when `menuFile` is non-null — asserting that
+            // instead of re-guarding it here avoids an unreachable `: null`
+            // ternary arm (a real click can never fire on a disabled
+            // button, so that arm was dead code, not defensive coding).
+            const localPath = selectors.getLocalPath?.(menuFile!);
             if (localPath) void copyLocalPath.copyLocalPath(path, localPath);
           }}
           onDelete={() => {

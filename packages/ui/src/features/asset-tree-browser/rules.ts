@@ -382,7 +382,12 @@ export async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise
     if (fallbackFiles.length > 0) return fallbackFiles;
     throw rejected.reason;
   }
-  const files = results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  // Every entry in `results` is guaranteed fulfilled here — the `if (rejected)`
+  // check above already returned/threw for the first rejected one, so
+  // there's no reachable `result.status === 'rejected'` case left to branch
+  // on (an earlier `flatMap((result) => (status === 'fulfilled' ? value : []))`
+  // form carried a dead `: []` arm that v8 correctly flagged as never taken).
+  const files = (results as PromiseFulfilledResult<File[]>[]).flatMap((result) => result.value);
   return files.length > 0 ? files : fallbackFiles;
 }
 
