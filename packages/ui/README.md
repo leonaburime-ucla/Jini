@@ -178,6 +178,14 @@ Real content has landed in several parallel passes — see
   porting (a missing `px`-unit append on numeric style values, and a reused
   parked iframe never having its hidden/inert markers undone) — see
   `packages/ui/source-map.md`.
+- `src/features/command-palette/` — `CommandPalette`, a generic Cmd/Ctrl+P
+  fuzzy file-and-item palette (2026-07-18), ported from `QuickSwitcher.tsx`.
+  Collapses the origin's file/tab discriminated union into one
+  `CommandPaletteItem` shape; recents persist via a real
+  `localStorage`-backed `CommandPaletteRecentsPort`. Confirmed distinct from
+  `features/mention-autocomplete/` (already checked in that feature's
+  source-map section) rather than re-litigated. See
+  `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

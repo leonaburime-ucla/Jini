@@ -3764,3 +3764,113 @@ parses a response from).
   `release`/`evict`, `evictMatching`'s `includeActive` true/false split, the
   LRU-vs-never-evict-active interaction) that got a real test. No
   `/* v8 ignore */` used anywhere.
+
+## Section: `features/command-palette/` (`CommandPalette`, from `QuickSwitcher.tsx`) (2026-07-18)
+
+Source: `apps/web/src/components/QuickSwitcher.tsx` (330 lines) +
+`apps/web/src/quickSwitcherRecents.ts` (33 lines), real clone at
+`leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`.
+A full-screen Cmd/Ctrl+P file-and-tab palette: substring+prefix fuzzy scoring,
+arrow-key cursor navigation with wraparound, IME-composition-aware key
+handling, recents-first empty-query ordering.
+
+**Not re-litigated, per the task brief:** `docs/jini-port/god-components-
+extraction-plan.md`'s "5 more overlaps" list names `QuickSwitcher.tsx` as
+one of three "type a trigger character, get a filtered picker" shapes,
+alongside `MentionAutocomplete` (already shipped) and the Lexical `@mention`
+system. `packages/ui/source-map.md`'s `mention-autocomplete` section (search
+"QuickSwitcher" — the "3-way overlap" note) already did the side-by-side
+read and concluded `QuickSwitcher` is a distinct shape (an already-open,
+single-purpose fuzzy-match palette with keyboard-cursor selection — no
+inline-textarea trigger detection, no tabbed multi-category grouping, no
+removable-chips multi-select) and should get its own extraction. This task
+is that extraction, built as its own primitive rather than folded into
+`mention-autocomplete/` — the prior conclusion held up on a second read of
+the actual source and was not revisited.
+
+**Genericized:** the origin's `QuickSwitcherResult` discriminated union
+(`{ kind: 'tab', context: WorkspaceContextItem }` vs.
+`{ kind: 'file', file: ProjectFile }`, each with its own path/title/kind-
+label derivation) collapses into one flat `CommandPaletteItem` (`id`, `name`,
+`kind: string`, optional `mtime`/`path`/`title`/`keywords`) — the task
+brief's own target shape. This is a real simplification, not just a rename:
+the origin derived a row's subtitle/tooltip/kind-label differently per kind
+(a `workspaceContextKindLabel` switch mapping 9 OD-specific kind strings to
+English labels for tabs; `baseName`/`dirName` path-splitting for files); the
+generic version instead expects the **host** to resolve `name`/`path`/`title`
+into their final display strings before handing items to the palette, and
+just displays `kind.toUpperCase()` as a plain badge. The origin's
+`quickSwitcherRecents.ts` (`od:qs-recents:<projectId>` keys) becomes a real
+`CommandPaletteRecentsPort` (`ports.ts`) + a real `localStorage`-backed
+implementation (`dependencies.ts`, namespace `jini:command-palette:recents`,
+matching `features/browser-chrome`'s history-storage precedent of shipping
+a real implementation rather than a fake, since it only touches generic
+browser APIs) — recents are now keyed by an opaque host-supplied `scopeKey`
+(replacing `projectId`) and by `item.id` (replacing file `name`).
+
+**Scoring, disclosed simplification:** the origin ran two different scoring
+functions — `scoreMatch` (basename/full-name tiers for files) and
+`scoreWorkspaceContextMatch` (a 5-field string-concatenation search plus an
+exact-kind-match tier, for tabs). With one unified item shape, this task
+ships one `scoreItemMatch` scoring `item.name` (exact/prefix/substring tiers)
+plus a lower-tier substring match against an optional `keywords` field
+(replacing the tab-specific multi-field concatenation with a host-supplied,
+generic "extra searchable text" slot). The origin's separate "kind exactly
+matches the query" tier (used only for tabs) is dropped — a minor, disclosed
+behavior narrowing in service of one scoring function instead of two
+kind-specific ones.
+
+**Dropped:** the `motion/react` (framer-motion) entrance/exit animation
+(`modalOverlay`/`scaleIn` variants) — this package has no existing
+framer-motion dependency, and no other feature here uses one for an overlay/
+popover (`mention-autocomplete`, `schedule-picker`, `settings-dialog` all use
+plain CSS). Adding a net-new animation-library dependency for a decorative
+concern this component's own genericization doesn't require felt like scope
+creep; the overlay/palette `<div>`s keep the same class-name structure so a
+host can layer its own CSS transitions on top if it wants them.
+
+**What shipped:** `types.ts` (`CommandPaletteItem`, `CommandPaletteResult`),
+`constants.ts`, `rules.ts` (`scoreItemMatch`, `rankItems` — the origin's
+`matches` useMemo logic as a pure function, `nextCursor` ported verbatim,
+`parseRecentIds`/`pushRecentId` — the origin's recents JSON parsing/pushing,
+extracted to pure functions for direct testing rather than living inline in
+the localStorage adapter), `ports.ts` + `dependencies.ts`
+(`CommandPaletteRecentsPort` + `createLocalStorageRecents`),
+`react/hooks/useCommandPalette.ts` (+ `useWiredCommandPalette` production
+wirer, mirroring `useBrowserHistory`/`useWiredBrowserHistory`'s pattern) —
+owns query/cursor state, ranking, recents tracking, and the IME-aware
+keyboard handler — `react/components/{CommandPaletteRow,CommandPalette}.tsx`,
+`index.ts` barrel.
+
+### i18n
+
+Every user-facing string (`Search…` placeholder default, `No matches`/
+`No items` empty states, `Navigate`/`Select`/`Close` footer hints) routes
+through `useT()`, English string as key per this package's i18n policy (the
+origin's namespaced `quickSwitcher.*` keys are not carried over — the
+convention here is the English string itself as the key). `rules.ts` stays
+hook-free by design; it doesn't produce any user-facing text itself. A real
+test mounts `CommandPalette` under `I18nProvider` with a French dictionary
+and asserts the translated placeholder and all three footer hints render
+(not just that `t()` compiles).
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/command-palette/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/command-palette
+  --coverage`): **6 test files, 60 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`types.ts`/`ports.ts` excluded
+  per the documented zero-executable-statement carve-out, verified via the
+  standard grep and added to `vitest.config.ts`'s exclude list). Real tests
+  cover the required fuzzy-scoring/cursor-wraparound edge cases explicitly:
+  empty query, no matches, a single match, and wraparound in both directions
+  (`nextCursor` at index 0 going backward and at the last index going
+  forward), plus a zero-/negative-total guard and a single-item-list case.
+  One jsdom gap needed a small polyfill (`Element.prototype.scrollIntoView`,
+  unimplemented in jsdom — same gap already polyfilled elsewhere in this
+  package's `useResizableSplitPane.test.tsx`), not a source change.

@@ -57,6 +57,10 @@ export default defineConfig({
         // iframe-pool/types.ts is likewise pure `interface` declarations,
         // zero runtime statements (same verification grep).
         'src/features/iframe-pool/types.ts',
+        // command-palette/{types,ports}.ts are likewise pure `interface`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/command-palette/types.ts',
+        'src/features/command-palette/ports.ts',
       ],
     },
   },
