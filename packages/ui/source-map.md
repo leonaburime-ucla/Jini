@@ -1916,3 +1916,183 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+---
+
+## Section: `features/source-config-list/` — generic `SourceConfigList<TSource>` (2026-07-18)
+
+Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A row
+`features/source-config-list/`, and r6 §3's cross-cutting pattern table: "URL/OAuth source
+add + trust/status + list + per-item test/refresh/remove" is the single most-repeated shape
+in the entire 23-file god-component sweep — appears in at least 6 places. This task ships the
+4 in scope per the plan's own row (not `ConnectorsBrowser.tsx`, already shipped separately as
+`features/connectors/` — confirmed a genuinely different shape, OAuth-catalog-*browse* rather
+than add-by-URL/key; not Memory slice's connector reducers either, a rules-level-only future
+reuse, flagged below, not this task's UI).
+
+Sources, read from `/tmp/od-source` (public OD fork, `main`), not the vendored snapshot:
+
+1. `apps/web/src/components/McpClientSection.tsx` (1,471 lines) — the strongest reference: an
+   add-server picker (template categories + custom-blank), a draft-rows-with-bulk-Save-button
+   list, per-row expand-to-edit, and a per-row `McpOAuthControl` (OAuth postMessage/focus/
+   visibility handshake + fallback polling).
+2. `apps/web/src/components/byok/*` (6 files) — `ByokProviderPicker`, `ByokConnectionTestControl`,
+   `ByokModelField`, `ByokProviderBaseUrl`, `ByokKeyField`, `validation.ts`: a single-item
+   (not list) form for one BYOK provider config — protocol picker, masked API-key field with
+   show/hide + cleaned-whitespace notice, base-URL field with default/customize toggle, model
+   field with a searchable-select + custom-model fallback, and a connection-test status/button
+   control.
+3. `apps/web/src/components/PluginsView.tsx`'s `SourcesPanel` (line ~1402) — r6 §1.11 calls this
+   the near-exact structural twin of `McpClientSection.tsx`: add-a-marketplace-by-URL form with
+   a trust-level `<select>` (`restricted`/`trusted`/`official`), a list of marketplace cards each
+   with its own trust `<select>` + Refresh + Remove buttons, no per-item test.
+4. `apps/web/src/components/EntryShell.tsx`'s `OnboardingByokSetupPanel` (line ~2904) — r6 §1.7:
+   reinforces, does not newly discover, the byok pattern above, inside OD's onboarding flow: a
+   protocol-tab strip, a provider quick-fill dropdown, API-key/base-URL/model fields, and both a
+   "Fetch models" and a "Test" mini-button with inline running/success/error status text.
+
+Per r6 §3, comparing (1) and (3) side-by-side first (as the task brief required) confirmed they
+really are near-identical in shape (add-by-URL form + trust-or-mode select + list + per-item
+refresh/remove), which is what let this primitive generalize confidently rather than guessing
+from one source and hoping the rest fit.
+
+### What shipped — `packages/ui/src/features/source-config-list/`
+
+Uses the **new** `react/{hooks,components}/` layout end-to-end (per `god-components-extraction-plan.md`'s React-layout policy) — every file with zero React import stays at the feature's top level, everything importing React lives under `react/`.
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `SourceFieldKind`/`SourceFieldSpec`/`SourceFieldValues` (the host-supplied field-config seam), `SourceTrustOption` (host-supplied trust vocabulary — never baked in), `SourceConnectionStatus`/`SourceTestResult`, `SourceConfigItem` (`id`/`label?`/`trust?`/`enabled?`/`fields`/`status?`/`statusMessage?`), `SourceActionKind`, `SourceDraftIssue`/`SourceDraftValidation`, `AddSourceInput`/`AddSourceResult<TSource>`. |
+| `constants.ts` | `MASK_CHAR`, `MASKED_VALUE_VISIBLE_SUFFIX_LENGTH`, `MASKED_VALUE_MIN_MASK_LENGTH` — the password-field masking convention (ported in spirit from `ByokKeyField.tsx`'s show/hide, generalized to a "always mask by default, show trailing 4 chars" rule not present verbatim in any one origin file). |
+| `rules.ts` | `emptySourceDraft`, `validateSourceDraft` (required-field + `url`-kind http(s) format check, ported from the shared rule underlying both `McpClientSection.tsx`'s `validateRow` and `PluginsView.tsx`'s URL-add flow), `issueForField`, `pendingActionKey`/`isActionPending`/`withPendingAction`/`withoutPendingAction` (per-`(id,kind)` independent in-flight tracking, generalizing the `` `refresh:${marketplace.id}` `` string-key convention `PluginsView.tsx`'s `pendingAction` state already used ad hoc), `upsertSourceById`/`removeSourceById`/`updateSourceById`, `maskFieldValue`, `sourceDisplayLabel`. |
+| `ports.ts` | `SourceConfigPort<TSource>` — `fetchSources`/`addSource`/`removeSource` required; `refreshSource`/`setTrust`/`testSource` **optional**, so the React layer derives which per-item actions to render from which methods a host's port actually implements rather than a separate set of boolean flags to keep in sync. `SourceConfigDependencies<TSource>` wraps it. |
+| `dependencies.ts` | `createFakeSourceConfigPort`/`createFakeSourceConfigDependencies` — an in-memory fake requiring a host-supplied `createSource` callback (unlike `features/asset-grid/`'s read-only fake, this feature's `addSource` inherently needs to synthesize a `TSource` from an arbitrary host's `AddSourceInput`, so there's no zero-config default — see the file's own header comment). `supportsRefresh`/`supportsTrust`/`supportsTest` let a test/demo scope the fake to exactly the capabilities one origin shape actually has. |
+| `react/hooks/useSourceConfigList.ts` | Loads the list, exposes `remove`/`refresh`/`setTrust`/`test` (each independently pending-tracked), `addSourceToList` (local upsert after a successful add, no reload), and `capabilities` (`canRefresh`/`canSetTrust`/`canTest`, derived from which optional port methods exist). Plus `useWiredSourceConfigList` (binds a required `dependencies` — see below for why this one isn't optional-defaulting). |
+| `react/hooks/useSourceConfigAddForm.ts` | Owns the add-form draft (values + optional trust), live validation, and submit-through-the-port. Deliberately **not** i18n-aware (per the i18n policy: hooks stay `t`-free; the component wraps `validation.issues[i].message` in `t()` at render time) and deliberately not a `McpClientSection.tsx`-style bulk-dirty-tracked draft-rows-with-Save — see "Dropped" below. Plus `useWiredSourceConfigAddForm`. |
+| `react/components/SourceConfigField.tsx` | One field per `SourceFieldSpec`: `text`/`url`/`password`(with show/hide, small local disclosure state)/`select`/`textarea`. |
+| `react/components/SourceConfigTestControl.tsx` | Generic per-item status-line + Test/Retry button — simplified descendant of `ByokConnectionTestControl.tsx`'s status/button shape and `McpOAuthControl`'s status/action shape (OAuth-handshake specifics dropped, see below). |
+| `react/components/SourceConfigAddForm.tsx` | Renders `fieldSpecs.map(SourceConfigField)` + an optional trust `<select>` (only when `trustOptions` is given) + submit button. Errors only render once a submit has been attempted (ported UX judgment from the byok/onboarding sources' "don't yell before submit" convention). |
+| `react/components/SourceConfigItemCard.tsx` | Collapsed summary (label + trust badge) that expands (ported from `McpClientSection.tsx`'s `McpRow` expand-to-edit) to show every field (masked) + capability-gated Refresh/Remove/trust-`<select>`/Test. |
+| `react/components/SourceConfigListView.tsx` | Pure composition (props in, JSX out): title/subtitle head, the add form, loading/error/empty states, the item-card list. |
+| `react/components/SourceConfigList.tsx` | The orchestrator: composes `useWiredSourceConfigList` + `useWiredSourceConfigAddForm` + `SourceConfigListView`. Also re-exports the two feature hooks so a caller/test can compose them directly without a separate `../hooks/*` import. |
+| `index.ts` | Public barrel. |
+
+### Dropped — per source, never silently
+
+**`McpClientSection.tsx`:**
+- The categorized template **picker** (`PickerPanel`/`PickerCard`, `CATEGORY_ORDER`, collapsible `<details>` groups, inline search-filter-by-category) — this is a curated-catalog-of-presets UX specific to "which MCP servers does OD recommend," not a generic "add a source" concern. A host wanting a picker composes one itself and calls `addSource` with the chosen preset's field values.
+- The **draft-rows-with-a-separate-bulk-Save-button** pattern (`rows`/`savedSig`/`dirty` signature-diff, a single `save()` that validates and PUTs the whole list at once, `useImperativeHandle`'s `save`/`hasDirty` surfaced to a dialog footer). The generic primitive instead adds/removes/updates **immediately per action** — the shape 3 of the 4 origin sources (byok, PluginsView, onboarding) actually use, and the one that composes cleanly with independent per-item pending state. A host that truly wants McpClientSection's specific batch-save UX needs its own wrapper; this primitive doesn't attempt to generalize batch-dirty-tracking.
+- `McpOAuthControl`'s OAuth-specific concurrency handshake: `postMessage`/`BroadcastChannel` listening, a 2-second fallback poll with a 5-minute timeout, `window.open` with Electron-`shell.openExternal`-aware null-return handling, and a manual "I've approved — Refresh" fallback button. `SourceConfigTestControl`'s generic `onTest` callback can be *bound* to an OAuth-kicking-off port method, but none of this handshake machinery is generic primitive code — a host with an OAuth-backed source shape re-implements (or reuses `features/connectors/`'s already-shipped `useConnectorAuthorization` handshake logic, a more direct fit for that specific need).
+- `McpAgentSupportBanner` (which installed CLI agents receive external MCP servers) — pure OD-runtime-catalog display, no generic analog.
+- Row reordering (`moveRow`, ↑/↓ buttons) — no other of the 4 sources has an ordering concept; omitted rather than forced onto shapes that don't need it.
+- The env/headers `KEY=VALUE`-per-line textarea convention (`mapToText`/`textToMap`) and the inline "Need help? Map your MCP JSON config" collapsible example panel — MCP-transport-specific, not generic form-field material. A host with a similar need models it as its own `textarea`-kind field and does its own text↔map parsing outside this primitive.
+
+**`byok/*`:**
+- `validation.ts`'s **protocol-specific API-key shape validation** — `sk-ant-`/`sk-`/`AIza`/`AQ.` prefix detection, first-party-base-URL-aware "this looks like an OpenAI key, not an Anthropic key" cross-protocol mismatch errors, and `cleanByokApiKey`'s zero-width-character/newline stripping. `rules.ts`'s `validateSourceDraft` only does host-agnostic required/URL-format checks — a host with real per-provider key-shape rules must run its own extra validation before calling `addSource` (the port's `AddSourceResult.message` is the seam for surfacing that failure back to the form).
+- `normalizeByokBaseUrl`'s provider-specific URL normalization (auto-adding `https://`, inserting OpenAI's `/v1` path for `api.openai.com`, trimming trailing slashes with protocol-specific exceptions) — not ported; a `url`-kind field only gets a plain http(s)-format check.
+- `resolveByokModelPreference`'s explicit/account/provider-default/empty precedence resolution, and `ByokModelField`'s searchable-combobox-with-custom-model-sentinel UX (`SearchableModelSelect`, `CUSTOM_MODEL_SENTINEL`) — model selection here is generalized only as far as `select`/`text`-kind fields go; the "suggested models" hint, the "loaded from account" success message, and the Azure-specific model-fetch hint are all origin-source-specific copy/state this primitive doesn't model.
+- `apiKeyConsoleLink`'s per-provider "get an API key" external link — a host with per-provider help links renders its own `SourceConfigField` variant or wraps the primitive; not a generic concept (which provider, which URL).
+
+**`PluginsView.tsx`'s `SourcesPanel`:**
+- The **specific trust vocabulary** `restricted`/`trusted`/`official` — never hardcoded in this primitive; a host supplies its own `SourceTrustOption[]` (`trustOptions` prop), which is exactly how the MCP-shaped test scenario below uses a *different* two-value vocabulary (`restricted`/`trusted`) than any origin source used verbatim.
+- Marketplace-specific summary metadata: plugin count (`` `${n} plugins` ``), catalog `version` display, and the manifest-`name`-vs-raw-URL title fallback logic tied to `PluginMarketplace.manifest`. Generalized only as far as `sourceDisplayLabel`'s generic "explicit label, else first field value, else id" rule — a host wanting richer per-item metadata composes its own summary line via `SourceConfigItemCard`'s field list (expanded state) rather than a dedicated metadata row.
+- `sourceUrlTrackedRef`'s one-time analytics-on-first-focus tracking hook — analytics is host-owned; not part of this primitive at all.
+
+**`EntryShell.tsx`'s `OnboardingByokSetupPanel`:**
+- The onboarding-flow-specific **framing**: the protocol-tab strip copy (`API_PROTOCOL_TABS`), the "Quick-fill provider" dropdown pre-filling a whole provider preset (base URL + suggested model) in one click, and the mini-button-with-inline-status-text visual treatment (`onboarding-view__mini-button is-loading`). This primitive's `SourceConfigAddForm`/`SourceConfigTestControl` are deliberately plainer — a host embedding this primitive inside its own onboarding flow supplies its own surrounding chrome/copy.
+- The **separate "Fetch models" action** (`onFetchModels`/`modelsState`/`ProviderModelsResponse`, `mergeOnboardingProviderModelOptions`) alongside "Test" — this primitive generalizes only the single "test this source" concept (`testSource`); a host wanting a second independent async action (fetch available models, in this case) composes its own control alongside `SourceConfigItemCard`, there's no second generic port method for it.
+- `onboardingProviderModelLabel`/`renderOnboardingProviderTestMessage`/`onboardingTestVariant`'s origin-specific message-formatting logic (embeds the tested model name, latency, and a sample response into localized copy) — `SourceConfigTestResult.message` is a plain host-supplied string; formatting it richly is the host's job via its `testSource` port implementation, not this primitive's.
+
+### Design choices flagged for reviewers
+
+- **`dependencies` is a required prop/param, not optional-defaulting-to-a-fake** (on `SourceConfigList`, `useWiredSourceConfigList`, `useWiredSourceConfigAddForm`) — a deliberate difference from `features/asset-grid/`'s `useWiredAssetGridData`, which can supply a zero-config fake because its port is read-only. This primitive's `addSource` inherently needs a host-specific `createSource: (input) => TSource` to synthesize a new item for an arbitrary generic `TSource`, so there is no generic default that could exist. `createFakeSourceConfigPort`/`createFakeSourceConfigDependencies` are still shipped, per the mandated pattern, for tests and demos — they just require that one callback.
+- **A real bug was caught while writing tests, not by inspection**: `rules.ts`'s `sourceDisplayLabel` originally fell back to the *raw, unmasked* first-field value when a source had no explicit `label` — meaning a labelless BYOK-key-shaped source with only an `apiKey` field would leak the full secret into the always-visible card summary row. Fixed to mask the fallback value through the same `maskFieldValue` rule used everywhere else (see `rules.ts`'s doc comment and `rules.test.ts`'s dedicated regression test).
+- **Two dead `?? []` fallbacks were refactored away, not tested around**, per Phase 9.5 point 2: `SourceConfigAddForm.tsx` and `SourceConfigItemCard.tsx` each originally computed a separate boolean (`hasTrustOptions`/`showTrustSelect`) to decide whether to render a trust `<select>`, then separately null-coalesced `trustOptions` again inside the JSX — but TypeScript can't narrow through an intermediate boolean, so the `?? []` branch could never actually fire once the boolean was already true. Refactored to narrow `trustOptions` directly in the JSX condition (`trustOptions && trustOptions.length > 0 ? trustOptions.map(...) : null`), which both satisfies the type checker without a fallback and removes the genuinely-unreachable branch instead of writing a test that could never hit it.
+- **A real, if minor, UX bug surfaced by the same loop**: neither trust `<select>` (add-form or item-card) had a placeholder `<option>` for "no trust chosen yet" — so with a controlled `value=""` and no matching `<option value="">`, the DOM silently displayed the *first* trust option as selected even though no explicit choice had been made. Added a disabled/hidden placeholder option to both, gated on `!trust`/`!source.trust`.
+
+### i18n
+
+Every user-facing string in every component (`SourceConfigField`, `SourceConfigTestControl`, `SourceConfigAddForm`, `SourceConfigItemCard`, `SourceConfigListView`) is wrapped in `useT()`'s `t()`, using the English string itself as the key convention this package already established. `rules.ts` stays hook-free (pure validation messages built as plain English strings; the component wraps them at the call site, e.g. `SourceConfigAddForm`'s `issueForField(validation, spec.key)?.message` rendered via `<SourceConfigField error={issue.message} />` — masking/label-derivation stay pure with no i18n wrapping needed since they never produce user-facing copy directly). `SourceConfigList.test.tsx`'s dedicated i18n test mounts the full orchestrator under `I18nProvider` with a French dictionary (`{'Add source': 'Ajouter une source', 'No sources configured yet.': 'Aucune source configurée.'}`) and asserts the translated strings actually render — not just the unconfigured passthrough case.
+
+### Two-shape proof (the actual abstraction test, per the task's own instruction)
+
+`SourceConfigList.test.tsx` exercises the **same** `SourceConfigList<TSource>` component against two
+deliberately different injected shapes:
+
+- An **MCP-server-shaped** source (`{ fields: { url: string }, trust?: string }`) with a
+  `restricted`/`trusted` trust vocabulary, `refreshSource`+`setTrust` enabled, `testSource`
+  disabled (matching the real origin `McpClientSection.tsx` shape, which has no per-item test
+  concept in this primitive's sense).
+- A **BYOK-key-shaped** source (`{ fields: { apiKey: string, model: string } }`) with **no**
+  trust concept at all (`trustOptions` omitted, `setTrust` disabled), `refreshSource` disabled,
+  `testSource` enabled with a host-supplied `onTest` returning a custom message.
+
+Both load existing items, add a new item through the generic add form, and — the MCP shape only
+— change trust and refresh; the BYOK shape proves the trust `<select>` never renders at all
+(`queryByRole('combobox')` is null) and that its labelless summary masks the API key, while the
+MCP shape proves its Test button never renders (`queryByRole('button', {name:'Test'})` is null).
+Same component, same `rules.ts`, two different `dependencies`/`fieldSpecs`/`trustOptions` —
+this is the abstraction actually holding, not two presentational smoke tests.
+
+### Phase 9.5 coverage-driven loop
+
+Quoting the header this task was required to quote: **"Phase 9.5 — Coverage-driven refactor loop
+(repeat until ≥99% on all 4 metrics, 100% is the goal)"**, and the coverage-bar changelog's point 1:
+**"Coverage bar raised from the original's ≥98% to ≥99% on all 4 metrics, with 100% as the actual
+goal (see Phase 9.5) — after 6 extractions landed against the original's 98% floor, one shipped
+with a genuine bug and needed a real coverage-driven bug hunt after the fact."**
+
+Ran the classify-then-fix loop once (`json-summary`/`json` reporters, per Phase 9.5's own
+instruction that the v8 text table drops rows): every initially-uncovered branch was genuinely
+reachable-but-untested (documented above with the tests that now cover them) except the two dead
+`?? []` fallbacks, which were refactored away rather than tested around, per Phase 9.5 point 2 —
+no `/* v8 ignore */` or any coverage-suppression comment was used anywhere, per Phase 9.5 point 3.
+`types.ts`/`ports.ts` (verified interface-only via `grep -nE '^(export )?(const|function|class|let|var) '`
+finding no runtime declarations) were added to `vitest.config.ts`'s existing documented
+zero-executable-statement carve-out, the same pattern already used for `settings-dialog`'s
+`types.ts` files.
+
+**Final coverage (json-summary, 2026-07-18) — 100% on all 4 metrics, every file, no exclusions
+needed beyond the two documented interface-only files:**
+
+| File | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| `constants.ts` | 100 | 100 | 100 | 100 |
+| `dependencies.ts` | 100 | 100 | 100 | 100 |
+| `index.ts` | 100 | 100 | 100 | 100 |
+| `rules.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useSourceConfigList.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useSourceConfigAddForm.ts` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigField.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigTestControl.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigAddForm.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigItemCard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigListView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigList.tsx` | 100 | 100 | 100 | 100 |
+
+### Purity grep
+
+`grep -rniE "open design|OD_|--od-stamp|open-design\.ai|openDesignDesktop|@open-design/" packages/ui/src/features/source-config-list/`: **clean, zero matches.**
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors). Needed the same `exactOptionalPropertyTypes`-driven fix the settings-dialog/connectors sections above already document: an optional prop whose value can be explicitly `undefined` at the call site (`SourceConfigAddFormProps.trust`/`submitError`) needs `| undefined` added to its declared type, not just a `?`.
+- `pnpm --filter @jini/ui exec vitest run src/features/source-config-list`: **152 tests, 11 files, all green** — `rules.test.ts` (33), `dependencies.test.ts` (17), `useSourceConfigList.test.ts` (16), `useSourceConfigAddForm.test.ts` (10), `SourceConfigField.test.tsx` (11), `SourceConfigTestControl.test.tsx` (8), `SourceConfigAddForm.test.tsx` (11), `SourceConfigItemCard.test.tsx` (21), `SourceConfigListView.test.tsx` (12), `SourceConfigList.test.tsx` (8, including the two-shape proof and the i18n end-to-end test), `index.test.ts` (5, barrel smoke test).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **151 files, 1361 tests, all green** — 11 of those 151 files are this feature's new test files (152 of the 1361 tests).
+- Full monorepo `pnpm -r run typecheck`: fails only at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — the same two pre-existing, unrelated stub-package failures every prior section in this doc has already documented; not touched by this task.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### Flag for future work
+
+`features/connectors/`'s `ConnectorsBrowser.tsx` canary and Memory slice's connector-reconciliation
+reducers (`mergeMemoryConnector`/`applyMemoryConnectorStatus(es)`/`connectorWithPendingAuthorization`/
+`connectorStatusesChanged`, per r6 §2 and this doc's `features/connectors/` section) both independently
+manage "a list of connected things, reconcile live status onto it" state — structurally adjacent to
+this primitive's `rules.ts` (`upsertSourceById`/`updateSourceById`/`removeSourceById`/
+`isActionPending`/pending-key tracking), even though their UI stays separate (OAuth-catalog-browse
+vs. add-by-URL/key are genuinely different interaction shapes, confirmed by the consolidation map).
+When Memory slice work happens, or when `ConnectorsBrowser.tsx`'s own reducers get revisited, check
+whether either can adopt this primitive's `rules.ts` directly (or extract a shared "keyed-list
+reconciliation" module both `rules.ts` files import) instead of maintaining three independently-evolving
+implementations of essentially the same upsert/status-reconcile logic. Not resolved here — flagged
+per the task's own instruction, a rules-level opportunity only, never a UI-level one.
