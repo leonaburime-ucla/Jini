@@ -7,6 +7,8 @@ import * as browserChrome from './features/browser-chrome/index.js';
 import * as sketchEditor from './features/sketch-editor/index.js';
 import * as assetGrid from './features/asset-grid/index.js';
 import * as viewerShell from './features/viewer-shell/index.js';
+import * as versionManager from './features/version-manager/index.js';
+import * as htmlViewer from './features/html-viewer/index.js';
 import * as settingsDialog from './features/settings-dialog/index.js';
 import * as settingsAppearance from './features/settings-dialog/tabs/appearance/index.js';
 import * as settingsNotifications from './features/settings-dialog/tabs/notifications/index.js';
@@ -31,6 +33,8 @@ const featureModules: Record<string, object> = {
   'features/sketch-editor': sketchEditor,
   'features/asset-grid': assetGrid,
   'features/viewer-shell': viewerShell,
+  'features/version-manager': versionManager,
+  'features/html-viewer': htmlViewer,
   'features/settings-dialog': settingsDialog,
   'features/settings-dialog/tabs/appearance': settingsAppearance,
   'features/settings-dialog/tabs/notifications': settingsNotifications,
