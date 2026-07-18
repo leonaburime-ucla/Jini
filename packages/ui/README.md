@@ -167,6 +167,17 @@ Real content has landed in several parallel passes — see
   rename hadn't landed on this branch's base yet, so this is a new folder
   alongside the still-present flat `src/components/`). See
   `packages/ui/source-map.md`.
+- `src/features/iframe-pool/` — a generic, host-configurable "cap N mounted
+  iframes, LRU-evict inactive ones, park the rest off-DOM" pool (2026-07-18),
+  ported from `IframeKeepAlivePool.tsx` per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map (the
+  pattern recurs 3 times in OD's own codebase; this is the canonical
+  implementation). Genericizes the origin's `projectId`/`fileName` key pair
+  into one opaque string key and drops the OD-specific
+  `OD_PREVIEW_KEEP_ALIVE` env-var toggle. Fixed two real bugs found while
+  porting (a missing `px`-unit append on numeric style values, and a reused
+  parked iframe never having its hidden/inert markers undone) — see
+  `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

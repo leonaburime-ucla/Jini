@@ -25,6 +25,7 @@ export * from './features/list-detail-panel/index.js';
 export * from './features/schedule-picker/index.js';
 export * from './features/mention-autocomplete/index.js';
 export * from './features/memory/index.js';
+export * from './features/iframe-pool/index.js';
 export * from './utils/index.js';
 export * from './utils/timezone.js';
 export * from './utils/zip.js';

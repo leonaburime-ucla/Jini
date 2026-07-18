@@ -54,6 +54,9 @@ export default defineConfig({
         // runtime statements (verified via the same
         // `grep -nE '^(export )?(const|function|class|let|var) '` check).
         'src/features/list-detail-panel/types.ts',
+        // iframe-pool/types.ts is likewise pure `interface` declarations,
+        // zero runtime statements (same verification grep).
+        'src/features/iframe-pool/types.ts',
       ],
     },
   },

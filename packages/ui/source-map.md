@@ -3616,3 +3616,151 @@ matches.**
   once, plus the fallback-tile branch and a custom-size branch. No
   `/* v8 ignore */` used.
 attempted this session; genuinely out of scope, not silently dropped.
+
+## Section: `features/iframe-pool/` — iframe keep-alive/LRU pool (2026-07-18)
+
+Source: `apps/web/src/components/IframeKeepAlivePool.tsx` (403 lines, real
+clone at `leonaburime-ucla/open-design` commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`), per this task's own brief: "cap
+N mounted iframes, LRU-evict inactive ones, park the rest off-DOM," confirmed
+by `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map to
+recur 3 times across OD's own codebase (`FileWorkspace.tsx`'s inline
+browser-webview cache is the still-open third occurrence, explicitly
+deferred there until this canonical implementation existed) — this task is
+that canonical implementation.
+
+**Layout:** `features/iframe-pool/{types.ts,constants.ts,rules.ts,index.ts}`
+at the top level (zero React import in any of them — verified), everything
+importing React under `react/` per this repo's React-layout policy:
+`react/pool-context.ts` (the `createContext` call — not itself a hook or a
+component, so it sits directly under `react/` rather than in `hooks/` or
+`components/`), `react/dom-sync.ts` (the imperative iframe-attribute/style
+diffing helpers — these import `CSSProperties` from `react` as a type, so
+they live under `react/` too, per the same policy), `react/hooks/
+useIframeKeepAlivePool.ts`, `react/components/{IframeKeepAliveProvider,
+PooledIframe}.tsx`. No `ports.ts`/`dependencies.ts` — this feature has no
+transport/network dependency (it only manages DOM iframe elements), matching
+the "no ports" precedent already established for `schedule-picker`.
+
+**Genericized key ("a generic key type instead of projectId/fileName," per
+the task brief):** the origin's `PoolEntry` carried `projectId`+`fileName`
+as separate fields, with `previewIframeKeepAliveKey`/`parseKeepAliveKey`
+composing/decomposing them into a `projectId\0fileName` string, and an
+`evictProject(projectId, options)` method built specifically around that
+shape. This task replaces all of it with one opaque `key: string` per entry
+(the host composes whatever string shape it needs, e.g. still
+`${projectId}:${fileName}` if that's their domain) and drops
+`evictProject`/`previewIframeKeepAliveKey`/`parseKeepAliveKey` entirely in
+favor of the strictly more general `evictMatching(predicate, options)` (a
+host wanting "evict everything for project X" passes
+`(entry) => entry.key.startsWith('X:')` against whatever key scheme it
+chose). `rules.ts`'s `selectLruEvictions`/`selectMatchingEvictions` are
+still real TypeScript generics over `TKey` (independently reusable/testable
+outside the iframe-specific runtime), even though the Provider/hook/
+component layer settles on a concrete `string` key — threading a true
+generic `TKey` all the way through a React Context (which can't itself carry
+a type parameter without an `any`-cast escape hatch) would have bought
+nothing a host couldn't already get by encoding structure into a string key,
+so this task deliberately stopped short of that. Flagged explicitly here
+per the "don't design for hypothetical future requirements" instinct, not
+silently narrower than a literal reading of "generic key type" might imply.
+
+**Also genericized/de-branded:** `maxEntries` → `maxMounted` (matching the
+task brief's "max-mounted-count" language); the parking attribute
+`data-od-active` → `data-pool-active`; `OD_PREVIEW_KEEP_ALIVE` (an exported
+`process.env.OD_PREVIEW_KEEP_ALIVE`-driven toggle used by OD's own test
+infra to force-disable keep-alive) — **dropped entirely**, not ported under
+a new name. It read a bundler-injected env var by a hardcoded product-
+specific name, which doesn't translate to "host-configurable" in a package
+with no bundler/env assumptions of its own; a host that wants the pool
+disabled can simply not mount `IframeKeepAliveProvider` (every `PooledIframe`
+still works standalone via the per-instance fallback pool, just without the
+cross-remount keep-alive benefit).
+
+**Two real, disclosed bugs found and fixed while porting (not silently
+carried over), matching this package's established "fix and disclose,
+don't silently port" precedent (see the `mention-autocomplete` section
+above):**
+
+1. **`syncStyle` never appended a unit to numeric style values.** A normal
+   React element auto-appends `px` to unitless numbers for style properties
+   that need a length (`style={{ width: 10 }}` → `width: 10px`) via React's
+   own inline-style patcher — but this component bypasses that patcher
+   entirely (`frame.style.setProperty(cssKey, String(value))`), so
+   `style={{ width: 10 }}` on the origin silently produced the CSS-invalid
+   `width: 10` and the browser dropped it, leaving the iframe unsized. Caught
+   by this task's own tests failing against jsdom's real `CSSStyleDeclaration`
+   (which enforces the same length-value validity rules a real browser does)
+   rather than assumed from reading the source. Fixed with a small
+   `UNITLESS_NUMBER_PROPERTIES` allowlist mirroring React's own
+   (`opacity`/`zIndex`/`lineHeight`/etc. stay bare; everything else numeric
+   gets `px`), in `react/dom-sync.ts`'s new `styleValueToString`.
+2. **Reattaching a parked (previously-released) entry never undid
+   `parkIframeElement`'s markers.** `release()` sets
+   `aria-hidden="true"`/`tabindex="-1"`/`data-pool-active="false"` on the
+   iframe before parking it off-DOM — correct while parked — but the origin's
+   `attach()` never reversed this on reuse, so a keep-alive iframe coming
+   back into active use stayed hidden from assistive tech and out of tab
+   order forever after its first release, defeating the point of "keep
+   alive" (the whole reason to reuse the element is so it looks and behaves
+   like it never went away). Caught the same way: a test asserting the
+   reused element loses `aria-hidden` on reattachment failed until fixed.
+   Fixed with a new `unparkIframeElement` (in `react/dom-sync.ts`), called
+   from the Provider's `attach()` exactly when reusing an existing,
+   currently-inactive entry.
+
+**What ships:** `IframeKeepAliveProvider` (context + refs-based pool: attach/
+release/evict/evictMatching, LRU-evicts parked entries once over
+`maxMounted`, never evicts an active entry, parks released elements into a
+hidden `<div>` instead of destroying them), `useIframeKeepAlivePool` (reads
+the nearest Provider, or falls back to a local single-entry pool with no
+LRU/limit so a standalone `PooledIframe` still works without a Provider
+mounted), `PooledIframe`/`ClientPooledIframe` (an `<iframe>` that renders
+plainly during SSR — real node-environment test via `renderToStaticMarkup`,
+not just an assumption — and otherwise manually diffs/syncs its props onto
+the pool-owned element every render instead of letting React manage it,
+since remounting the real DOM node would defeat the entire keep-alive
+point).
+
+### i18n
+
+None needed — every user-facing string surface in this feature is zero: no
+rendered text, no `aria-label`/`title` default values on any exported
+component (`PooledIframe`'s props pass through arbitrary iframe attributes
+a *host* supplies, including any `title`/`aria-label` the host chooses, but
+this feature itself introduces none). Noted explicitly per the i18n policy
+rather than silently skipped.
+
+### Phase 9.6 (async/network test-category gate)
+
+Exempt, stated explicitly rather than skipped silently: this feature has no
+network requests and no async state of its own (iframe `src`/`onLoad` are
+host-supplied passthrough props, not something this feature awaits or
+parses a response from).
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/iframe-pool/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/iframe-pool
+  --coverage`): **7 test files, 50 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`constants.ts`, `rules.ts`,
+  `index.ts`, `react/pool-context.ts`, `react/dom-sync.ts`, both components,
+  the hook — `types.ts` excluded per the documented zero-executable-
+  statement carve-out, verified via the standard grep and added to
+  `vitest.config.ts`'s exclude list alongside the existing
+  `list-detail-panel`/`settings-dialog`/`html-viewer` carve-outs). Reached
+  via the Phase 9.5 classify-then-fix loop: two branches
+  (`PooledIframe.tsx`'s `if (!host)`/`if (!frame)` guards) were refactored
+  away as genuinely dead (both refs are populated synchronously during the
+  same commit, before either effect can run, by the same argument already
+  established for `IframeKeepAliveProvider`'s `parkedHostRef` — see the
+  non-null-assertion comments at each site) rather than tested around; every
+  other gap was a real reachable path (an unattached-key no-op for
+  `release`/`evict`, `evictMatching`'s `includeActive` true/false split, the
+  LRU-vs-never-evict-active interaction) that got a real test. No
+  `/* v8 ignore */` used anywhere.
