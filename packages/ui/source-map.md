@@ -1916,3 +1916,182 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 - `pnpm --filter @jini/ui exec vitest run`: **495 tests, 70 files, all green** (package-wide, including every pre-existing test) — this feature alone contributes 152 new tests across 22 new test files (shell: 15 hook + 14 component; appearance: 6; notifications: 9; language: 4; instructions: 5; privacy: 12 rules + 8 component; integrations: 16 rules + 5 dependencies + 2+5 hooks + 5+5+3+6 components).
 - Full monorepo `pnpm -r run typecheck`: fails at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — pre-existing, unrelated to this task; the same two packages the connectors canary section above already documented as broken. Verified every other real (non-stub) package individually: `protocol`/`core`/`platform`/`sidecar`/`chat-core`/`ui`/`deploy`(*) all typecheck clean in isolation — `daemon` and `deploy` fail only on cross-package `@jini/protocol`/`@jini/core` resolution because those packages' `dist/` isn't built in this checkout (pre-existing, needs `pnpm -r run build` first, not a regression from this task).
 - `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+## Section: `features/asset-tree-browser/` — file-tree browser + preview pane (2026-07-18)
+
+Source: a real design-tool origin project's web tree, branch
+`refactor/web-memory-slice` @ commit `d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d`,
+file `apps/web/src/components/DesignFilesPanel.tsx` (1,731 lines), read in
+full and re-verified line-by-line while porting each piece (per
+`docs/jini-port/skills/fixing-open-design-web.md`'s standing instruction —
+never invent behavior from a summary). Task brief: extract a generic
+`AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>` UI feature into
+`packages/ui/src/features/asset-tree-browser/`. This had never been
+attempted before this session — no prior branch or partial work existed.
+
+Structural precedent: `features/asset-grid/` (the shipped `types.ts`/
+`constants.ts`/`rules.ts`/`ports.ts`/`dependencies.ts`/`index.ts` +
+`react/hooks/`+`react/components/` layout, the `Selectors<TAsset>`
+accessor-object discipline, and the "ship a real browser-generic port,
+fake only the genuinely host-specific one" split).
+
+### What shipped — `packages/ui/src/features/asset-tree-browser/`
+
+| File | Contents |
+|---|---|
+| `types.ts` | `AssetTreeFileItem`/`AssetTreeFolderItem` (`{path: string}` identity constraints, mirroring `AssetGridItem`'s `{id: string}`), `AssetTreeSelectors<TFile>` (`getSize`/`getModifiedAt`/`getKind`/optional `getLocalPath`), `AssetTreeKindConfig`/`AssetTreeKindConfigMap` (host-supplied label+glyph per kind), `AssetTreeSection<TFile>`, `AssetTreeNavState`, `AssetTreeToolbarAction`, `AssetTreeBreadcrumbSegment`, `AssetTreeRelativeTime` (the `{label, translatable, params?}` i18n-safe shape — see the i18n section below), `AssetTreeRenameState`, `AssetTreeMenuPosition`. |
+| `constants.ts` | `DEFAULT_KIND_CONFIG_MAP`/`DEFAULT_KIND_GLYPH`/`DEFAULT_SECTION_ORDER` (all empty — an unconfigured host still gets every kind rendered, just under its raw key), `EMPTY_TOOLBAR_ACTIONS` (a stable `[]` so omitting `toolbarActions`/`emptyStateActions` doesn't allocate a fresh array every render), `ROW_MENU_ESTIMATED_HEIGHT_PX`/`ROW_MENU_SAFE_PADDING_PX`, `COPY_LOCAL_PATH_CONFIRM_MS` (1600ms, matching the origin), `DOUBLE_ACTIVATION_WINDOW_MS` (300ms, matching the origin's keyboard double-Enter-to-open window). |
+| `rules.ts` | `deriveTreeChildren` (dirs/files at the current level — preserves a genuinely surprising origin behavior verbatim, see below), `groupFilesByKind` (kind sections ordered by host `sectionOrder`, unconfigured kinds appended in first-seen order — a generification the origin never needed since its `SECTION_ORDER` enumerated every possible kind), `nextExistingAncestorDir` (the auto-navigate-up-when-the-viewed-dir-vanishes logic), `countFilesUnderDir`, `toggleInSet`/`pruneMissingPaths` (selection, path-keyed instead of id-keyed), `basenameForRename`/`resolveRenameCommit` (the rename-commit decision, extracted from inline branching), `computeMenuPosition` (the row-menu's pure viewport-flip math), `canCopyLocalPath`, `isDoubleActivation`, `resolveKindConfig`, `humanBytes` (verbatim, no i18n — matches the origin, which never translated it either), `relativeTimeResult` (returns `{label, translatable, params?}`, not a finished string — see i18n section), `fileExtensionLabel`, `buildBreadcrumbSegments`, the clipboard-paste parsing quartet (`filesFromClipboardData`/`normalizePastedFile`/`extensionForMimeType`/`shouldIgnoreClipboardFilePaste`), and the drag-drop recursive-folder-expansion quartet (`filesFromDataTransfer`/`filesFromFileSystemEntry` + two private helpers) — all ported near-verbatim from the origin, reusing the already-shipped `utils/file-system-errors.ts` for the read-failure wrapping instead of reimplementing it. |
+| `ports.ts` | `AssetTreeClipboardPort` (`copyToClipboard`), `AssetTreeDomBridgePort` (`subscribeOutsideDismiss`/`subscribeGlobalPaste`/`getViewportHeight`), `AssetTreeDependencies`. See the "deliberate correction" note below for `subscribeOutsideDismiss`'s signature. |
+| `dependencies.ts` | `createBrowserAssetTreeClipboardPort`/`createBrowserAssetTreeDomBridgePort`/`createBrowserAssetTreeDependencies` — all REAL, SSR-guarded implementations (both ports are genuinely browser-generic, same reasoning `asset-grid`'s `createBrowserSseLiveUpdatesPort` used), bound to the already-shipped `utils/copy-to-clipboard.ts` and `utils/dom-subscriptions.ts` rather than reimplemented. `createFakeAssetTreeDependencies` — an inert test double for this feature's own tests (and any host's). |
+| `react/hooks/useAssetTreeNavigation.ts` | Current-directory state (seeded from `navState`, reported upward via `onNavStateChange` — a one-time seed + report-upward callback, not a fully controlled prop, matching the origin's own `navState`/`onNavStateChange` pair), `dirsAtCurrentDir`/`filesAtCurrentDir`/`sections` derivations, the ancestor-correction effect. |
+| `react/hooks/useAssetTreeSelection.ts` | Path-keyed `Set` selection: toggle/clear, reset-on-nav, prune-on-vanish, `renamePath` (carries a selection over to a renamed path), and `pendingRenamePath` — a fix discovered while writing the orchestrator's own integration test, see below. |
+| `react/hooks/useAssetTreePreview.ts` | Which file is previewed (resolved against the FULL `files` list, not just the current directory — the origin never clears the preview on navigation, so neither does this), one-time auto-initial-preview via an optional host `selectInitialPreviewFile`, clear-on-vanish. |
+| `react/hooks/useAssetTreeRename.ts` | Start/edit/commit/cancel. One deliberate behavior change from the origin: a failed rename surfaces as `renameError` state instead of a blocking native `alert()` — see below. |
+| `react/hooks/useAssetTreeRowMenu.ts` | The `⋯` context menu's open/positioned/dismiss state, wired to `AssetTreeDomBridgePort`. |
+| `react/hooks/useAssetTreeDragUpload.ts` | Drag-depth-tracked drag-over overlay + the drop handler (recursive folder expansion via `rules.ts`). |
+| `react/hooks/useAssetTreeClipboardPasteUpload.ts` | The global paste listener (parsing/filtering already done by the DOM bridge port — see dependencies.ts). |
+| `react/hooks/useAssetTreeBatchActions.ts` | Batch delete (busy-gated, deliberately doesn't clear `selected` itself — matches the origin's own "leave the selection intact for retry" comment) + optional batch download (`triggerBrowserDownload`, a real anchor-click download trigger). |
+| `react/hooks/useAssetTreeCopyLocalPath.ts` | The row menu's "copy local path" action + its transient "Copied" confirmation (setTimeout-based revert). |
+| `react/components/AssetTreeBreadcrumbs.tsx` | Root label (non-interactive at the root, a button once navigated away) + one segment per path component. |
+| `react/components/AssetTreeToolbar.tsx` | Renders host-supplied `toolbarActions` — this package ships zero built-in toolbar buttons (the origin's New-Sketch/Paste/Upload/Library/project-menu buttons are all OD-specific product actions with no generic equivalent). |
+| `react/components/AssetTreeSelectionBar.tsx` | Selected count, optional batch-download button, batch-delete (busy-gated), clear. |
+| `react/components/AssetTreeFileRow.tsx` | Hover-revealed checkbox + `⋯` menu trigger, click-to-preview/dblclick-to-open on the icon/name/size/time cells, inline rename input, keyboard parity (Enter/Space previews, a second activation within `DOUBLE_ACTIVATION_WINDOW_MS` opens — mirrors the origin's mouse double-click via keyboard). |
+| `react/components/AssetTreeFolderRow.tsx` | Navigates on click (both the row and its name button, matching the origin's doubled click targets), shows the deep (not just immediate-level) file count via `countFilesUnderDir`. |
+| `react/components/AssetTreeRowMenu.tsx` | The popover itself: open / rename / copy-local-path (disabled unless `getLocalPath` resolves one) / download (hidden unless `getFileUrl` is supplied) / delete. |
+| `react/components/FilePreviewPane.tsx` | The separately-named export the task explicitly calls for: thumbnail slot (host-supplied `renderThumbnail`, defaults to a glyph placeholder) + meta footer (full path, kind, modified/size/extension stats, download link) + Open action. `thumbnailIsInteractive` generifies the origin's hardcoded `kind !== 'audio' && kind !== 'video'` check (this package has no fixed kind enum to hardcode against). |
+| `react/components/AssetTreeEmptyState.tsx` | Shown when the directory has no files, folders, or persisted folders at all; renders host-supplied `emptyStateActions`. |
+| `react/components/AssetTreeUploadErrorBanner.tsx` | A dismissible banner for a failed drag-drop-folder read. |
+| `react/components/AssetTreeBrowser.tsx` | The orchestrator — composes all 9 hooks, renders the Folders section (pinned above kind sections), each kind section, the preview pane, and the row menu. Defaults `dependencies` to `createBrowserAssetTreeDependencies()`. |
+| `index.ts` | Public barrel — every type/constant/rule/port/dependency-factory/hook/component, matching `asset-grid/index.ts`'s re-export granularity. Also wired into the package-wide `src/index.ts` barrel (`export * from './features/asset-tree-browser/index.js';`), placed alongside the `asset-grid` line. |
+
+### Dropped (origin-specific, non-separable) — cross-checked line-by-line against the real file, not assumed
+
+- **The "live artifacts" section** (`liveArtifacts` prop, `LiveArtifactBadges`, `onOpenLiveArtifact`) — a workspace-tabs-pointing-at-a-live-preview concept, a different domain entirely from file-tree browsing.
+- **"Plugin folders" section** (`getPluginFolderCandidates`, `PluginFolderAgentAction`, install/publish/contribute buttons, `buildActionNotice`/`escapeRegExp` notice-parsing) — a plugin-ecosystem feature specific to the origin product.
+- **The project menu** (`onCreateDesignSystem(FromProject)`, `onDuplicateProject`, the dropdown) — origin-specific project actions; a host that wants these back adds them via `toolbarActions`.
+- **`RotatingTip` footer + the entire tip-copy array** — hardcoded marketing copy with literal social-media links. Product content, full stop — not even the typewriter *mechanism* is ported. A host supplies its own `footer` slot if it wants one; this package ships none by default.
+- **`onRefreshFiles`** — declared in the origin's own `Props` interface but genuinely dead: grepped the full 1,731-line file and confirmed it's never called anywhere in the component body (the parent evidently wires the actual refresh button elsewhere). Not ported at all — including a no-op prop for it would be inventing behavior the origin itself doesn't have.
+- **"Select from library" special-casing** (`LIBRARY_UI_VISIBLE`/`onSelectFromLibrary`) — generalizes into just another `toolbarActions` entry; no dedicated prop.
+- **Analytics** (`useAnalytics()`/`trackFileManagerClick`) — fire-and-forget tracking pings gating no actual behavior; dropped entirely, no `onAction` telemetry callback added either (would be inventing a hook the origin's own calls don't need).
+- **`buildSrcdoc`-based HTML iframe preview** and **Excalidraw-shaped sketch-JSON preview** — both are file-kind-specific rendering strategies this generic package cannot know about. Replaced by the single `renderPreviewThumbnail` host slot on `AssetTreeBrowser` (threaded to `FilePreviewPane`'s `renderThumbnail`), defaulting to a generic glyph-in-a-box placeholder.
+- **`projectFileUrl`/`projectRawUrl`** (daemon-REST-endpoint builders) — fully replaced by the host-supplied `getFileUrl` callback prop; the builder functions themselves aren't ported at all.
+- **The stylesheet-splitting display refinement** (`FileCategory = ProjectFileKind | 'stylesheet'`, the `STYLESHEET_EXTENSIONS` extension-sniffing carve-out that gave CSS/SCSS/etc. their own section separate from `code`) — this is presentation policy layered atop a fixed kind enum this package doesn't have. A host that wants the same effect encodes it directly in its own `getKind` implementation (return `'stylesheet'` for CSS-family extensions).
+- **`kindFilter`/`page`/`pageSize`** on the origin's `DesignFilesNavState` — re-verified against the real file per the task brief's own instruction to double-check this: the origin component itself never applies a kind filter or paginates its own rendering (no filter UI, no pager UI anywhere in the file); those fields exist only to be reported upward to a parent outside this component. Confirmed absent from `AssetTreeNavState`, which carries only `currentDir`.
+
+### Two corrections discovered while writing the orchestrator's own integration tests
+
+Both are documented inline in the source, not just here:
+
+1. **`useAssetTreeSelection` gained an optional `pendingRenamePath` param.** The origin's `commitRename` calls `await onRenameFile(...)` then patches `selected`/`preview` afterward — but its selection-pruning effect depends on `[files]` independently, with no coordination between the two. A host that updates its `files` prop as soon as `onRenameFile` resolves (a very plausible, even synchronous, real-world pattern — this session's own `AssetTreeBrowser.test.tsx` rename test hit it immediately with a stateful test harness) can re-render *before* the orchestrator's own `onRenamed` callback gets to run, pruning the in-flight old path out of the selection before it ever gets swapped for the new one — silently dropping the user's selection on every rename. `pendingRenamePath` (the path `useAssetTreeRename` currently has in flight, if any) exempts it from pruning until the rename actually resolves, closing the race. Proven by two dedicated `useAssetTreeSelection.test.ts` cases (with and without `pendingRenamePath`, showing the fix and the bug it fixes side by side) plus the orchestrator's own "renames a file, carrying an active selection and preview over to the new path" end-to-end test, which uses a small stateful `RenameHarness` wrapper specifically to exercise this race realistically rather than against a static `files` array.
+2. **The row menu's copy-local-path action no longer closes the popover on click.** The origin's equivalent handler called `setMenuPos(null)` immediately before `copyLocalPath(name)` — every other menu action does this too, but for copy-local-path specifically it means the dedicated `copiedLocalPath`/"Copied" confirmation state can *never actually be seen*, since it only ever renders inside the now-unmounted popover. This reads as a real latent bug in the origin rather than intentional design (the whole point of a transient-confirmation label is to be visible). Fixed by not closing the menu for this one action; the existing outside-dismiss/Escape handling still closes it normally afterward. Proven by the orchestrator's "gates copy-local-path..." test, which asserts the "Copied" label actually renders.
+
+Also, `useAssetTreeRename`'s failed-rename path surfaces `renameError` state instead of calling a blocking native `alert()` (the origin's own behavior) — a deliberate divergence, not an oversight: this package ships into a headless, agent-drivable engine (per this repo's own `AGENTS.md`), where a hardcoded blocking dialog call is exactly the kind of host-hostile side effect a generic UI feature must not own.
+
+And `AssetTreeDomBridgePort.subscribeOutsideDismiss` takes a `container` parameter not present in the task brief's original type sketch — it binds to the already-shipped `utils/dom-subscriptions.ts`'s real `subscribeOutsideClickOrEscape(container, onClose)` signature (proper containment-based outside-click detection) instead of the origin's cruder "any `mousedown` anywhere closes the menu, and the popover manually stops its own `mousedown` from bubbling to protect itself" trick. Documented inline in `ports.ts`.
+
+### The root-level "flattened tree" quirk — verified, not assumed, and preserved
+
+`deriveTreeChildren` preserves a genuinely surprising piece of the origin's own `dirsAtCurrentDir`/`filesAtCurrentDir` `useMemo` verbatim: at the tree root (`currentDir === ''`), **every** file is pushed into `filesAtCurrentDir` — both root-level files and files nested under a subdirectory (which *also* separately contribute their top segment to `dirsAtCurrentDir`) — so the root view is a flattened "everything" listing with folders offered only as a secondary drill-down. Once navigated into any non-root directory, only files strictly at that one level are included. This asymmetry looked enough like a bug to warrant re-reading the real source line-by-line before committing to it (per the task's own "don't trust it blindly" instruction) — but it's exactly what the code does, so it's preserved rather than "fixed," with a `rules.test.ts` case asserting it explicitly (`'at the root, flattens every file (including nested) and surfaces the top-level dir'`).
+
+### i18n wiring
+
+Every user-facing string in every new component is routed through `useT()`,
+English string as the key. Two pure `rules.ts` functions return
+i18n-safe discriminated shapes instead of finished strings, so a caller can
+translate without minting a new dictionary key per distinct value:
+- `relativeTimeResult(ts, now)` returns `{label, translatable, params?}` —
+  `translatable: true` means `label` is a stable template key
+  (`'{n}m ago'`/`'Just now'`/etc.) to pass through `t(label, params)`;
+  `translatable: false` means `label` is already a locale-formatted date
+  string (`Date#toLocaleDateString`), which isn't a sensible translation key
+  since it varies per call — mirrors `asset-grid/rules.ts`'s
+  `dayHeadingResult`'s exact same `{label, translatable}` reasoning.
+- Folder/section file counts and the selection/batch-bar counts use the same
+  discipline directly at the call site (`t('{n} files', { n: count })`,
+  `t('{n} selected', { n: count })`) rather than a dedicated rules.ts
+  helper, since there's no branching logic to extract — just an
+  interpolated template.
+
+Verified end-to-end (not just that `t()` calls compile) by
+`AssetTreeBrowser.test.tsx`'s "renders translated copy when mounted under an
+I18nProvider with a matching dictionary" test, mounting under a French
+dictionary and asserting `Fichiers`/`Dossiers` actually render in place of
+the English `Files`/`Folders` fallbacks.
+
+### Phase 8.5-equivalent audit — what it caught
+
+- **Inline JSX callbacks with real branching**: the row's keyboard-Enter
+  double-activation dispatch (`handleNameKeyDown` in `AssetTreeFileRow.tsx`)
+  and the menu-trigger's click/keydown dispatch (`handleMenuTrigger`) were
+  both extracted to named functions inside the component (not `rules.ts`,
+  since they call the row's own props/refs directly) rather than left as
+  inline arrows; the underlying *decision* logic each dispatches to
+  (`isDoubleActivation`, `computeMenuPosition`) is pure and lives in
+  `rules.ts`, unit-tested in isolation. The row menu popover's own
+  `onMouseDown`/`onClick` `stopPropagation()` one-liners were left inline —
+  the same single-line "don't bubble" idiom already established as
+  acceptable inline elsewhere in this package (e.g. `asset-grid`'s
+  `DeleteConfirmDialog.tsx` backdrop click).
+- **Multi-line/inline-construction `useMemo`/derivation bodies**: none of
+  the 9 hooks compute anything beyond a one-line call into an already-pure
+  `rules.ts` function or a plain default-selection expression — the target
+  end state, no extraction needed.
+- **Orphaned `useState`/`useRef`**: enumerated every one across all 9 hooks
+  and the orchestrator by hand — `useAssetTreeNavigation`'s `currentDir`,
+  `useAssetTreeSelection`'s `selected`, `useAssetTreePreview`'s
+  `previewPath` + `autoPreviewAppliedRef`, `useAssetTreeRename`'s
+  `renaming`/`renameError`, `useAssetTreeRowMenu`'s `menuPos` +
+  `containerRef`, `useAssetTreeDragUpload`'s `draggingFiles`/
+  `dropReadError` + `dragDepthRef` + `onUploadFilesRef`,
+  `useAssetTreeClipboardPasteUpload`'s two latest-value-bridging refs,
+  `useAssetTreeBatchActions`'s `deleting`/`downloading`/`downloadError`,
+  `useAssetTreeCopyLocalPath`'s `copiedPath`, `AssetTreeFileRow`'s
+  `lastActivationRef` — every one traced to a real read site, none
+  unassigned.
+
+`pnpm --filter @jini/ui run typecheck` was re-run clean after every fix in
+this pass.
+
+### Purity grep — reported verbatim per this task's own instructions
+
+```
+$ grep -rn "Open Design\|OD_\|--od-stamp\|open-design\.ai\|openDesignDesktop\|@open-design/" packages/ui/src/features/asset-tree-browser/
+(no output — clean)
+
+$ grep -rn "od-" packages/ui/src/features/asset-tree-browser/
+(no output — clean)
+```
+
+One doc comment in `AssetTreeBrowser.tsx` initially read "Ported from Open
+Design's `DesignFilesPanel.tsx`" — caught by the first grep above during
+this same pass and reworded to "Ported from a design-tool origin project's
+file-manager panel," matching this section's own prose-only provenance
+convention (bare source filenames like `DesignFilesPanel.tsx` are fine to
+cite — 15 files across this feature do — the product name itself is not).
+
+### Test/coverage/typecheck/guard results — verbatim
+
+- `pnpm --filter @jini/ui run typecheck`: **clean, zero errors** (confirmed both mid-pass and as the final check).
+- `pnpm --filter @jini/ui exec vitest run src/features/asset-tree-browser --coverage --coverage.reporter=json-summary --coverage.reporter=json`: **251 tests, 22 files, all green.** Coverage read from the real `coverage-summary.json` (not the v8 text table, which silently drops rows — per this task's own Phase 9.5 method), aggregated across every file in the feature:
+  ```
+  statements 1223 / 1223  100.00%
+  branches    476 /  476  100.00%
+  functions    94 /   94  100.00%
+  lines      1223 / 1223  100.00%
+  ```
+  **Every individual file is 100% on all four metrics** — no file needed a specific call-out, no `/* v8 ignore */` anywhere. The loop closed in two passes: pass 1 landed at 99.92% statements / 96.30% branches / 91.49% functions aggregate; classifying every uncovered line found one genuinely dead ternary arm in `rules.ts`'s `filesFromDataTransfer` (refactored away — the `if (rejected)` guard above it already proves every remaining result is fulfilled) and one genuinely-unreachable ternary arm in `AssetTreeBrowser.tsx`'s copy-local-path handler (the button is `disabled` whenever the arm would matter, so a real click can never reach it — replaced with an asserted non-null read + comment); every other gap was a reachable-but-untested line/branch, closed with a real test (see the "corrections" and audit sections above for the interesting ones: the non-FileSystemReadError rethrow, the cancel-during-in-flight-rename race, the omitted-`folders`/omitted-`dependencies` default paths, the vanishing-menu-file race, the two-level-nested-folder path template branch).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **1460 tests, 162 files, all green** (no regressions in any other feature).
+- Full monorepo `pnpm -r --no-bail --if-present run typecheck`: `packages/ui typecheck: Done` (clean). Summary: 9 fails, 7 passes — every failure pre-existing and unrelated to this task, the identical set the `asset-grid` section above already documented: `agent-runtime`/`chat-react`/`cli`/`http`/`node-host`/`renderers-react`/`sqlite` (7 stub packages genuinely missing a `tsconfig.json`) and `daemon`/`deploy` (2 packages failing only on unbuilt `@jini/protocol`/`@jini/core` workspace `dist/` output in this fresh checkout — a build-order issue, not a type error).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### Dependencies installed, not skipped
+
+`node_modules` did not exist anywhere in this repo checkout at the start of
+this task (confirmed: no root `node_modules`, no `vitest` binary resolvable
+via `pnpm --filter @jini/ui exec vitest`). Per this task's own instruction
+("do NOT run `pnpm install` at the repo root unless you find dependencies
+are missing"), ran `pnpm install` once at the repo root — this genuinely
+qualified as the documented exception, not a shortcut.
+
+---
