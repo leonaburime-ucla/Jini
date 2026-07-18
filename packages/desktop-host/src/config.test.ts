@@ -29,6 +29,24 @@ describe('loadHostConfigFile', () => {
     expect(config).toEqual({ hello: 'world' });
   });
 
+  it('falls back to process.env when no env is supplied', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-config-'));
+    const config = await loadHostConfigFile({ candidatePaths: [join(dir, 'missing.json')] });
+    expect(config).toEqual({});
+  });
+
+  it('falls through to candidatePaths when the explicit-path env var is set but empty', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-config-'));
+    const configPath = join(dir, 'config.json');
+    await writeFile(configPath, JSON.stringify({ fallback: true }), 'utf8');
+    const config = await loadHostConfigFile<{ fallback: boolean }>({
+      explicitPathEnvVar: 'JINI_HOST_CONFIG_PATH',
+      candidatePaths: [configPath],
+      env: { JINI_HOST_CONFIG_PATH: '' },
+    });
+    expect(config).toEqual({ fallback: true });
+  });
+
   it('prefers the explicit-path env var override and throws if that file is missing', async () => {
     dir = await mkdtemp(join(tmpdir(), 'jini-desktop-host-config-'));
     await expect(

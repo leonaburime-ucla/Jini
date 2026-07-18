@@ -64,4 +64,30 @@ describe('syncWindowsUninstallDisplayVersion', () => {
     expect(result).toBe(false);
     expect(exec).toHaveBeenCalledTimes(1);
   });
+
+  it('falls back to process.platform when platform is not supplied, and is a no-op on this (non-Windows) test runner', async () => {
+    const exec = vi.fn();
+    const result = await syncWindowsUninstallDisplayVersion({
+      resolveUninstallRegistryKey: (ns) => `Software\\Jini\\${ns}`,
+      namespace: 'stable',
+      version: '1.2.3',
+      exec,
+    });
+    expect(process.platform).not.toBe('win32');
+    expect(result).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the real execFile-based exec when none is supplied, and treats a real reg.exe-not-found failure as "entry does not exist"', async () => {
+    const result = await syncWindowsUninstallDisplayVersion({
+      resolveUninstallRegistryKey: (ns) => `Software\\Jini\\${ns}`,
+      namespace: 'stable',
+      version: '1.2.3',
+      platform: 'win32',
+    });
+    // No `exec` override on a non-Windows test runner: the real execFileAsync
+    // is used, `reg.exe` does not exist, and the query rejects — exercising
+    // the `input.exec ?? execFileAsync` fallback for real, not a fake.
+    expect(result).toBe(false);
+  });
 });

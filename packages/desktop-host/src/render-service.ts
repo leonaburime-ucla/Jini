@@ -104,11 +104,16 @@ export async function withRenderTimeout<T>(promise: Promise<T>, timeoutMs: numbe
 
   return await new Promise<T>((resolve, reject) => {
     let settled = false;
+    // No `if (settled) return` guard here (unlike the other three settling
+    // sites below): every other path that can settle first (`onAbort`, both
+    // `promise.then` handlers) calls `clearTimeout(timer)` as part of
+    // settling, and a cleared `setTimeout` is guaranteed by the platform to
+    // never invoke its callback — so this callback can only ever run while
+    // `settled` is still `false`. Guarding it anyway would be dead code.
     const timer =
       timeoutMs == null
         ? null
         : setTimeout(() => {
-            if (settled) return;
             settled = true;
             reject(new RenderServiceError(`render timed out after ${timeoutMs}ms`, 'timeout'));
           }, timeoutMs);

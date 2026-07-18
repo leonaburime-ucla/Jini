@@ -46,7 +46,11 @@ const HOME_PREFIX_RE = /^(~|\$\{HOME\}|\$HOME)[/\\](.*)$/;
 function expandHomePrefix(raw: string): string {
   if (HOME_BARE_TOKENS.has(raw)) return homedir();
   const match = HOME_PREFIX_RE.exec(raw);
-  if (match) return join(homedir(), match[2] ?? '');
+  // Non-null assertion, not a coverage gap to test: `noUncheckedIndexedAccess`
+  // types capture-group access as possibly-undefined, but group 2 is `(.*)`
+  // — it always participates once the overall regex matches (empty string
+  // at worst, e.g. a bare trailing separator), never `undefined`.
+  if (match) return join(homedir(), match[2]!);
   return raw;
 }
 
@@ -55,7 +59,11 @@ function scopedNamespaceOf(raw: string): string | null {
   const last = parts.length - 1;
   if (last < 2) return null;
   if (parts[last - 2] !== 'namespaces' || parts[last] !== 'data') return null;
-  return parts[last - 1] ?? null;
+  // Non-null assertion, not a coverage gap to test: `noUncheckedIndexedAccess`
+  // types every index access as possibly-undefined, but `last >= 2` (checked
+  // above) guarantees index `last - 1` is within `parts`, and `String.split`
+  // never produces holes/undefined elements — this index is always a string.
+  return parts[last - 1]!;
 }
 
 function resolveDataRoot(namespaceRoot: string, namespace: string, dataDirOverrideEnvVar: string | undefined, env: NodeJS.ProcessEnv): string {
