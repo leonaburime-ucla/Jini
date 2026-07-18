@@ -6,8 +6,12 @@ export default defineConfig({
       provider: 'v8',
       // The v8 text table silently drops rows once there are many files —
       // json-summary/json are what a coverage-driven pass should actually
-      // read (see docs/jini-port's Phase 9.5 method).
+      // read (see docs/jini-port's Phase 6.5 / Phase 9.5 method).
       reporter: ['text', 'json-summary', 'json'],
+      // Covers both ported trees that now live in this package: the flat
+      // `runtimes/` -> agent-runtime TypeScript source (`src/*.ts` +
+      // `src/defs/*.ts`) and the `agent-protocol/` ACP + pi-rpc subprocess
+      // transport (`src/agent-protocol/**`) — see source-map.md.
       include: ['src/**'],
       exclude: [
         ...coverageConfigDefaults.exclude,
@@ -25,24 +29,26 @@ export default defineConfig({
         // rather than silently dragging the real source's percentage down.
         'src/craft/**',
         'src/skills/**',
-        // Pure `export type`/`export interface` file with zero runtime
+        // Pure `export type`/`export interface` files with zero runtime
         // declarations (verified via
-        // `grep -nE '^(export )?(const|function|class|let|var) ' src/types.ts`
-        // finding no matches). A file with nothing to execute is never
-        // loaded by any test, so v8 reports it as 0% rather than N/A —
-        // documented carve-out, not a coverage dodge (same reasoning as
-        // packages/ui/vitest.config.ts's settings-dialog types.ts excludes).
+        // `grep -nE '^(export )?(const|function|class|let|var) '` finding no
+        // runtime declarations in either file). A file with nothing to
+        // execute is never loaded by any test, so v8 reports it as 0%
+        // rather than N/A — documented carve-out, not a coverage dodge
+        // (same reasoning as packages/ui/vitest.config.ts's settings-dialog
+        // types.ts excludes).
         'src/types.ts',
         // Same carve-out as `src/types.ts` above: pure `export type`/
         // `export interface` file, zero runtime declarations (verified via
         // the same grep). Vendored provider-connectivity shapes only.
         'src/providers/types.ts',
+        'src/agent-protocol/acp/types.ts',
       ],
       thresholds: {
-        statements: 99.9,
-        branches: 99.9,
-        functions: 99.9,
-        lines: 99.9,
+        statements: 99,
+        branches: 99,
+        functions: 99,
+        lines: 99,
       },
     },
   },

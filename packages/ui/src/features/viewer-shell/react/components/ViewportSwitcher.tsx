@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from 'react';
-import { Icon } from '../../../../components/Icon.js';
-import { RemixIcon } from '../../../../components/RemixIcon.js';
+import { Icon } from '../../../../react/components/Icon.js';
+import { RemixIcon } from '../../../../react/components/RemixIcon.js';
 import { useDismissOnOutsideOrEscape } from '../../../../browser/useDismissOnOutsideOrEscape.js';
 import type { ViewportPreset } from '../../types.js';
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RegistryEntrySchema,
+  RegistryManifestSchema,
   RegistryPublishOutcomeSchema,
   RegistryYankOutcomeSchema,
   type RegistryBackend,
@@ -95,6 +96,19 @@ describe('registry protocol', () => {
       ok: true,
       dryRun: true,
     });
+  });
+
+  it('parses a manifest envelope of entries and rejects a missing entries array', () => {
+    const manifest = RegistryManifestSchema.parse({
+      specVersion: '1.0.0',
+      name: 'fixture-registry',
+      version: '0.0.0',
+      entries: [entry],
+    });
+    expect(manifest.entries).toHaveLength(1);
+    expect(() =>
+      RegistryManifestSchema.parse({ specVersion: '1.0.0', name: 'fixture-registry', version: '0.0.0' }),
+    ).toThrow();
   });
 
   it('requires a non-empty reason on a yank outcome', () => {

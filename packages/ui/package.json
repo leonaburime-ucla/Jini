@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
+    "@jini/renderers-react": "workspace:*",
     "micromark": "^4.0.0",
     "micromark-extension-gfm": "^3.0.0",
     "react": "^19.2.0",

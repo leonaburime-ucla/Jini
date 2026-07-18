@@ -17,13 +17,21 @@ audience: contributor
 > against it) — never edit that copy. This file is the one to read instead
 > for any Jini backend/daemon capability-barrel work (e.g. the still-unbuilt
 > `AgentExecutor`/`ToolExecutor`/`createDaemon` pieces of `@jini/daemon`, or
-> the `daemon.ts` client-side port work). Jini-specific change from the
-> original, made 2026-07-17: **the original has no coverage-discipline
-> section at all.** Added "Phase 6.5 — Coverage-driven refactor loop" below,
-> ported from the sibling `fixing-open-design-web` skill's Phase 9.5 (which
-> already had this) and adapted to backend vocabulary, with the same
-> ≥99%/100%-goal bar and the same absolute ban on coverage-suppression
-> comments. Everything else below is unchanged from the original.
+> the `daemon.ts` client-side port work). Jini-specific changes from the
+> original:
+> 1. (2026-07-17) **the original has no coverage-discipline section at
+>    all.** Added "Phase 6.5 — Coverage-driven refactor loop" below, ported
+>    from the sibling `fixing-open-design-web` skill's Phase 9.5 (which
+>    already had this) and adapted to backend vocabulary, with the same
+>    ≥99%/100%-goal bar and the same absolute ban on coverage-suppression
+>    comments.
+> 2. (2026-07-18) Added "Phase 6.6 — Async/network test-category gate"
+>    below: coverage percentage alone doesn't catch this bug class. OD PR
+>    #5228's `MemorySection.tsx` decomposition attempt found the original had
+>    passing, 100%-happy-path tests that hid real, pre-existing async/state
+>    bugs (malformed-response trust, a concurrency race, no error handling,
+>    stale state on retry) — none of them caught by coverage numbers alone.
+> Everything else below is unchanged from the original.
 
 # fixing-open-design — capability-barrel refactor template
 
@@ -144,6 +152,17 @@ Run with `json-summary`+`json` reporters (the v8 text table drops rows). While a
 3. **Never fake the number. Coverage-suppression comments (`/* v8 ignore */`, `/* istanbul ignore */`, or any equivalent) are NEVER a valid outcome of this loop, under any classification above, no exceptions.** If a branch truly cannot be justified by any of the four classifications, that's a signal the branch shouldn't exist — refactor it out.
 4. Re-run coverage after each batch of fixes; repeat from step 1 until every metric clears 99% aggregate and per file (and ideally 100%) for every module the refactor touched. Record the final numbers (aggregate + any file that needed a specific call-out) in the PR body's Validation section, alongside the Phase 6 numbers.
 
+## Phase 6.6 — Async/network test-category gate (Jini addition, 2026-07-18)
+
+Phase 6.5's coverage percentage does not by itself catch this class of bug. On OD PR #5228, a `MemorySection.tsx` decomposition attempt surfaced real, pre-existing async/state-correctness bugs in the original — malformed-response trust, a concurrency race, missing error handling, and stale state on retry — none of them caught, because the original's tests were 100% happy-path. For any module this refactor touches that makes a network request or holds async state, write explicit tests for all 4 of the following before treating Phase 6.5 as satisfied:
+
+1. **Malformed-but-technically-successful response** — a 2xx response missing an expected field must fail/throw, not get silently treated as empty/not-found.
+2. **Racing async operations** — a stale request that completes after a newer one must not clobber the newer state.
+3. **Rejected promise with no handler** — must surface visibly to the caller/logs, never become an unhandled rejection.
+4. **Stale state after retry** — a retry's success handler must not clear/overwrite state without checking whether the world moved on during the async call.
+
+A module with no network/async surface is exempt — say so explicitly rather than skipping silently.
+
 ## Phase 7 — Open the PR
 
 Use the template in `$SKILL_DIR/templates/pr-body.md` and the process in `references/merge-and-pr.md`:
@@ -163,4 +182,5 @@ Use the template in `$SKILL_DIR/templates/pr-body.md` and the process in `refere
 - [ ] Every file has a `@module` docblock; every exported function has JSDoc; module `README.md` written.
 - [ ] Phase 6 validation all green, numbers recorded; baseline matched or beaten.
 - [ ] **Phase 6.5: coverage ≥99% on all 4 metrics (statements/branches/functions/lines) for every touched module, aggregate and per file, 100% as the actual goal — never a coverage-suppression comment, no exceptions.**
-- [ ] PR opened with Why / What users will see / What this does / Scope / Surface area / Validation (including the Phase 6.5 coverage numbers), pushed to the correct remote.
+- [ ] **Phase 6.6: every touched module with a network/async surface has explicit tests for all 4 bug categories (malformed 2xx response, racing async ops, unhandled rejection, stale state after retry) — see the OD PR #5228 postmortem.**
+- [ ] PR opened with Why / What users will see / What this does / Scope / Surface area / Validation (including the Phase 6.5 and 6.6 numbers), pushed to the correct remote.

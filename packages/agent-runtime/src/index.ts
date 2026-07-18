@@ -3,6 +3,19 @@
  *
  * Public barrel. See `docs/jini-port/extraction-plan.md` for the target
  * architecture and `source-map.md` for full provenance.
+ *
+ * This barrel merges two independently-ported trees:
+ * - the flat `runtimes/` -> agent-runtime TypeScript source (`src/*.ts` +
+ *   `src/defs/*.ts`): the runtime-adapter registry, detection, launch, and
+ *   stream-parser modules;
+ * - the `agent-protocol/` capability barrel (`src/agent-protocol/**`): the
+ *   ACP + pi-rpc subprocess transport the registry's ACP-based defs call
+ *   into for live model discovery.
+ *
+ * Two names are exported by both ported trees under the same identifier
+ * and are aliased below to avoid a duplicate-export error; see
+ * source-map.md's "Barrel merge (2026-07-18)" section for the full
+ * rationale.
  */
 
 // Core contract + vendored diagnostic types.
@@ -42,7 +55,24 @@ export { createCopilotStreamHandler } from './copilot-stream.js';
 
 // Ports (injected seams — see each module's doc comment for what OD logic it replaces).
 export * from './amr-profile-resolver.js';
-export * from './acp-model-probe.js';
+// `detectAcpModels` collides by name with the real ACP transport re-exported
+// below from `./agent-protocol/index.js`. This module's own `detectAcpModels`
+// is a no-op-by-default injectable seam (used internally by
+// `defs/shared.ts` for 8 ACP-based def literals so they don't need to
+// depend on the full ACP transport) — aliased to `probeAcpModels` here so
+// the real transport keeps the plain name. See source-map.md.
+export {
+  type AcpModelProbe,
+  type AcpModelProbeRequest,
+  noopAcpModelProbe,
+  setAcpModelProbe,
+  detectAcpModels as probeAcpModels,
+} from './acp-model-probe.js';
+// `parsePiModels` is exported under its plain name from this standalone
+// module (it has real internal consumers in this package: `defs/shared.ts`
+// / the `pi` def). `agent-protocol/pi-rpc`'s own copy of the identical OD
+// origin function is aliased to `parsePiRpcModels` below to avoid the
+// barrel-level name clash.
 export * from './pi-models.js';
 export * from './prompt-augmenter.js';
 export * from './artifact-taxonomy.js';
@@ -50,3 +80,38 @@ export * from './telemetry-sink.js';
 
 // LLM-provider integrations (BYOK model catalogs, OAuth+PKCE, gateway helpers).
 export * from './providers/index.js';
+
+/** @jini/agent-runtime — public barrel (agent-protocol/ half).
+ * Re-exports the agent-protocol/ capability barrel's public surface (ACP +
+ * pi-rpc subprocess protocol adapters over a shared JSON-line-stream core).
+ * See src/agent-protocol/README.md and source-map.md for provenance.
+ *
+ * Two of this barrel's exports collide by name with the `runtimes/`-ported
+ * modules above and are aliased here (see source-map.md's "Barrel merge"
+ * section for the full reasoning):
+ * - `detectAcpModels` — the REAL ACP subprocess transport (spawns the CLI,
+ *   performs the `initialize` + `session/new` JSON-RPC handshake). Kept
+ *   under its plain name; `acp-model-probe.ts`'s same-named seam function
+ *   is aliased to `probeAcpModels` above instead.
+ * - `parsePiModels` — aliased to `parsePiRpcModels` below. Both this file's
+ *   copy and the standalone `pi-models.ts` copy exported above are
+ *   independent, verified-identical ports of the same OD origin function
+ *   (`apps/daemon/src/pi-rpc.ts#parsePiModels`); `pi-models.ts`'s copy keeps
+ *   the plain name since it has real internal consumers in this package.
+ */
+export {
+  createJsonLineStream,
+  type AcpMcpServerInput,
+  type ModelOption,
+  type AttachAcpSessionOptions,
+  type AccountFailure,
+  type AccountFailureClassifier,
+  buildAcpSessionNewParams,
+  normalizeModels,
+  detectAcpModels,
+  attachAcpSession,
+  noopAccountFailureClassifier,
+  mapPiRpcEvent,
+  attachPiRpcSession,
+  parsePiModels as parsePiRpcModels,
+} from './agent-protocol/index.js';
