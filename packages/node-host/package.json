@@ -3,8 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -16,7 +23,8 @@
     "@jini/daemon": "workspace:*",
     "@jini/http": "workspace:*",
     "@jini/sqlite": "workspace:*",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "fastify": "^5.10.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

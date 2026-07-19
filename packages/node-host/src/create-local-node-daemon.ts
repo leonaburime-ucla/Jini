@@ -4,30 +4,44 @@
  * The "host preset" (extraction-plan.md §2.4) that lets a brand-new product boot a running daemon
  * process by implementing zero interfaces: assembles `@jini/sqlite`'s durable `EventLog`,
  * `@jini/daemon`'s `RunLifecycle` and `AgentExecutor` (the driver that actually spawns an agent
- * CLI subprocess for the 9 v1-supported defs — see `@jini/daemon`'s own source-map.md), an Express
+ * CLI subprocess for the 9 v1-supported defs — see `@jini/daemon`'s own source-map.md), an HTTP
  * app wrapped in `@jini/http`'s route-registration guard and security middleware, a caller's own
  * `@jini/core` packs, and the generic daemon-status routes, then listens and returns `{url, server,
  * stop}`. Generalized from OD's `startServer()` — see `source-map.md` for the exact line-by-line
  * provenance and drop-list (every plugin/design-system/connector/routine/media/marketplace/
  * telemetry/project route `startServer` also wires is explicitly out of scope; this is the generic
  * assembly skeleton only).
+ *
+ * The HTTP transport itself is switchable — {@link CreateLocalNodeDaemonConfig.transport} picks
+ * `'express'` (the default, for drop-in compatibility with every existing caller) or `'fastify'`
+ * (a radix-tree router, meaningfully faster than Express's regex-array one). Both branches wire
+ * the matching namespace off `@jini/http`'s barrel (`express`/`fastify`) for the route guard,
+ * security middleware, and daemon-status routes; `mountPackHttp` is transport-agnostic (it only
+ * ever forwards `app` straight through to a pack's own `http(app, services)`) and is therefore
+ * called once, outside the branch. Both transports converge on the same raw `node:http` `Server`
+ * before `.listen()` resolves (Fastify exposes its own internal one via `app.server`) so the rest
+ * of the boot lifecycle — `keepAliveTimeout`/`headersTimeout` tuning, bound-port resolution, and
+ * `stop()`'s graceful `closeHttpServer` — stays a single, transport-agnostic implementation
+ * instead of being duplicated per transport. `stop()` closes that raw server directly rather than
+ * calling Fastify's own `app.close()`, so a Fastify-transport daemon skips Fastify's own
+ * `onClose` hook run on shutdown — no caller in this codebase registers one today (see
+ * `source-map.md`'s risk log for this known gap).
  */
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 
 import express, { type Express } from 'express';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { bindings, createDaemon, type Bindings, type Daemon } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
 import { AgentExecutorToken, createAgentExecutor, createRunLifecycle, EventLogToken, RunLifecycleToken } from '@jini/daemon';
 import { createSqliteEventLog } from '@jini/sqlite';
 import {
   configuredAllowedOrigins,
-  installRouteRegistrationGuard,
+  express as httpExpress,
+  fastify as httpFastify,
   mountPackHttp,
-  registerApiBearerAuthMiddleware,
-  registerApiOriginGuardMiddleware,
-  registerDaemonStatusRoutes,
 } from '@jini/http';
 
 import { closeHttpServer, normalizeDaemonBindHost } from './host-bootstrap.js';
@@ -95,6 +109,8 @@ export interface CreateLocalNodeDaemonConfig<
   port?: number;
   /** Host/address to bind to. Defaults to `'127.0.0.1'` (loopback-only). */
   host?: string;
+  /** Which `@jini/http` transport namespace assembles the HTTP app. Defaults to `'express'`. */
+  transport?: 'express' | 'fastify';
   /** Env var names for the optional bearer-token gate. Defaults to `JINI_API_TOKEN` / `JINI_DISABLE_API_AUTH`. */
   apiToken?: { tokenEnvVar?: string; disableEnvVar?: string };
   /** Invoked once the HTTP listener has fully closed, before the durable `EventLog` is closed. Any rejection still lets shutdown finish (see `stop()`'s doc), but propagates to the `stop()` caller. */
@@ -227,29 +243,9 @@ export async function createLocalNodeDaemon(
     bindings: boundBindings,
   });
 
-  const app: Express = express();
-  installRouteRegistrationGuard(app);
-  app.use(express.json());
-
-  registerApiBearerAuthMiddleware(app, {
-    tokenConfig: {
-      tokenEnvVar: config.apiToken?.tokenEnvVar ?? DEFAULT_TOKEN_ENV_VAR,
-      disableEnvVar: config.apiToken?.disableEnvVar ?? DEFAULT_DISABLE_ENV_VAR,
-    },
-    env,
-  });
-
   // Shared by the origin guard middleware and the daemon-status routes' same-origin gate below —
   // both must observe the exact same "has the real port resolved yet" state.
   const resolvedPortRef = { current: requestedPort };
-  registerApiOriginGuardMiddleware(app, {
-    host,
-    extraAllowedOrigins: configuredAllowedOrigins(env),
-    getResolvedPort: () => resolvedPortRef.current,
-    env,
-  });
-
-  mountPackHttp(app, config.packs, daemon);
 
   let shuttingDown = false;
   let stopPromise: Promise<void> | null = null;
@@ -273,20 +269,87 @@ export async function createLocalNodeDaemon(
     return stopPromise;
   }
 
-  registerDaemonStatusRoutes(
-    app,
-    {
-      getVersion: () => packageVersion,
-      host,
-      getPort: () => resolvedPortRef.current,
-      dataDir: config.dataDir,
-      isShuttingDown: () => shuttingDown,
-      requestShutdown: () => {
-        void stop();
-      },
+  // Built once and passed to whichever transport branch below wires them — the deps shapes are
+  // either literally the same type (`DaemonStatusDeps`, since `@jini/http`'s fastify namespace
+  // re-exports it from the express module rather than duplicating it) or structurally identical
+  // ones (`ApiBearerAuthMiddlewareDeps`/`ApiOriginGuardMiddlewareDeps`, deliberately duplicated
+  // per-transport in `@jini/http` but with matching field shapes), so one object literal for each
+  // satisfies both namespaces without a cast.
+  const daemonStatusDeps = {
+    getVersion: () => packageVersion,
+    host,
+    getPort: () => resolvedPortRef.current,
+    dataDir: config.dataDir,
+    isShuttingDown: () => shuttingDown,
+    requestShutdown: () => {
+      void stop();
     },
-    { resolvedPortRef },
-  );
+  };
+  const apiTokenConfig = {
+    tokenEnvVar: config.apiToken?.tokenEnvVar ?? DEFAULT_TOKEN_ENV_VAR,
+    disableEnvVar: config.apiToken?.disableEnvVar ?? DEFAULT_DISABLE_ENV_VAR,
+  };
+  const originGuardDeps = {
+    host,
+    extraAllowedOrigins: configuredAllowedOrigins(env),
+    getResolvedPort: () => resolvedPortRef.current,
+    env,
+  };
+
+  // Assembles the concrete HTTP app and wires @jini/http's transport-specific route-registration
+  // guard, `/api` security middleware, and daemon-status routes from the matching namespace off
+  // its barrel — `mountPackHttp` above is already transport-agnostic and is called identically in
+  // both branches. `listen` is the one seam where the two transports' own APIs genuinely diverge
+  // (Express's callback/event-based `.listen()` vs Fastify's promise-based one, which also
+  // internally awaits Fastify's own `.ready()`) — both branches converge back to the same
+  // `() => Promise<Server>` shape so the shared boot-completion logic below (keep-alive tuning,
+  // bound-port resolution, resolving `{url, server, stop}`) never needs to know which transport
+  // produced the server it received.
+  let listen: () => Promise<Server>;
+  if (config.transport === 'fastify') {
+    const app: FastifyInstance = Fastify();
+    httpFastify.installRouteRegistrationGuard(app);
+    // Unlike Express, Fastify parses `application/json` request bodies out of the box — no
+    // equivalent to `app.use(express.json())` is needed here.
+    httpFastify.registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
+    httpFastify.registerApiOriginGuardMiddleware(app, originGuardDeps);
+    mountPackHttp(app, config.packs, daemon);
+    httpFastify.registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
+
+    listen = async () => {
+      await app.listen({ port: requestedPort, host });
+      // Fastify's own `.close()` also runs its `onClose` plugin-lifecycle hooks; `stop()` below
+      // closes this raw server directly (shared with the Express branch) so no caller-registered
+      // Fastify `onClose` hook would fire on shutdown — no caller in this codebase registers one
+      // today (see this module's own top-of-file doc and source-map.md's risk log).
+      return app.server;
+    };
+  } else {
+    const app: Express = express();
+    httpExpress.installRouteRegistrationGuard(app);
+    app.use(express.json());
+    httpExpress.registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
+    httpExpress.registerApiOriginGuardMiddleware(app, originGuardDeps);
+    mountPackHttp(app, config.packs, daemon);
+    httpExpress.registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
+
+    listen = () =>
+      new Promise<Server>((resolve, reject) => {
+        let listeningServer: Server;
+        try {
+          listeningServer = app.listen(requestedPort, host);
+        } catch (error) {
+          reject(error);
+          return;
+        }
+        listeningServer.once('listening', () => resolve(listeningServer));
+        // `app.listen` throws synchronously when the port is already in use on some Node
+        // versions, but emits an `error` event on others (and for EACCES/EADDRNOTAVAIL even on
+        // the same Node) — wiring both paths means this promise always settles instead of
+        // hanging forever, matching Fastify's own always-settles `.listen()` promise contract.
+        listeningServer.on('error', (error) => reject(error));
+      });
+  }
 
   return await new Promise<LocalNodeDaemon>((resolve, reject) => {
     const failToBind = (error: unknown) => {
@@ -295,37 +358,26 @@ export async function createLocalNodeDaemon(
       void eventLog.close().finally(() => reject(error));
     };
 
-    try {
-      server = app.listen(requestedPort, host);
-    } catch (error) {
-      failToBind(error);
-      return;
-    }
+    listen()
+      .then((listeningServer) => {
+        server = listeningServer;
+        // Widen the between-request idle window so kept-alive sockets survive gaps between bursts
+        // (e.g. an SSE stream's idle periods); `headersTimeout` must exceed `keepAliveTimeout` per
+        // the Node docs, or a slow-loris client could stall request parsing.
+        server.keepAliveTimeout = 120_000;
+        server.headersTimeout = 125_000;
 
-    server.once('listening', () => {
-      // Widen the between-request idle window so kept-alive sockets survive gaps between bursts
-      // (e.g. an SSE stream's idle periods); `headersTimeout` must exceed `keepAliveTimeout` per
-      // the Node docs, or a slow-loris client could stall request parsing.
-      server.keepAliveTimeout = 120_000;
-      server.headersTimeout = 125_000;
+        const boundPort = resolveBoundPort(server.address());
+        if (!boundPort) {
+          failToBind(
+            new Error(`@jini/node-host: daemon failed to resolve listening port (address=${JSON.stringify(server.address())})`),
+          );
+          return;
+        }
+        resolvedPortRef.current = boundPort;
 
-      const boundPort = resolveBoundPort(server.address());
-      if (!boundPort) {
-        failToBind(
-          new Error(`@jini/node-host: daemon failed to resolve listening port (address=${JSON.stringify(server.address())})`),
-        );
-        return;
-      }
-      resolvedPortRef.current = boundPort;
-
-      resolve({ url: `http://${resolveReportHost(host)}:${boundPort}`, server, stop });
-    });
-
-    // `app.listen` throws synchronously when the port is already in use on some Node versions,
-    // but emits an `error` event on others (and for EACCES/EADDRNOTAVAIL even on the same Node) —
-    // wiring both paths means this promise always settles instead of hanging forever.
-    server.on('error', (error) => {
-      failToBind(error);
-    });
+        resolve({ url: `http://${resolveReportHost(host)}:${boundPort}`, server, stop });
+      })
+      .catch((error) => failToBind(error));
   });
 }

@@ -186,6 +186,9 @@ importers:
       express:
         specifier: ^4.21.0
         version: 4.22.2
+      fastify:
+        specifier: ^5.10.0
+        version: 5.10.0
     devDependencies:
       '@types/express':
         specifier: ^4.17.21
