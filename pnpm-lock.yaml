@@ -99,9 +99,15 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@jini/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      '@jini/platform':
+        specifier: workspace:*
+        version: link:../platform
       '@jini/protocol':
         specifier: workspace:*
         version: link:../protocol

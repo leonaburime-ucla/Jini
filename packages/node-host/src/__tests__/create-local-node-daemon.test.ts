@@ -4,6 +4,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
+import { AgentExecutorToken } from '@jini/daemon';
 import type { DaemonStatusResponse } from '@jini/http';
 import * as SqliteModule from '@jini/sqlite';
 import {
@@ -199,6 +200,52 @@ describe('createLocalNodeDaemon', () => {
 
     const res = await fetch(`${daemon.url}/api/greet`);
     expect(await res.json()).toEqual({ greeting: 'hi' });
+  });
+
+  it('auto-binds AgentExecutorToken alongside EventLogToken/RunLifecycleToken with zero caller config', async () => {
+    const dataDir = makeTempDataDir();
+    const agentExecutorPack = definePack({
+      name: 'agent-executor-probe',
+      deps: [AgentExecutorToken],
+      services: (c) => ({ hasRun: () => typeof c.get(AgentExecutorToken).run === 'function' }),
+      http: (app: unknown, services: unknown) => {
+        (app as { get: (path: string, handler: (req: unknown, res: { json: (b: unknown) => void }) => void) => void }).get(
+          '/api/agent-executor-probe',
+          (_req, res) => res.json({ hasRun: (services as { hasRun: () => boolean }).hasRun() }),
+        );
+      },
+    });
+
+    // No `bindings` customizer supplied — proves AgentExecutorToken resolves
+    // from createLocalNodeDaemon's own automatic kernel bindings alone, the
+    // same zero-config guarantee EventLogToken/RunLifecycleToken already
+    // have (see this module's KernelBoundIds doc).
+    //
+    // Called through a narrowed function type rather than
+    // `createLocalNodeDaemon`'s own overloaded signature: `MissingTokenIds`
+    // (see @jini/core/internal) computes a pack's required token ids from
+    // `token.id`'s inferred literal type, but every kernel token exported
+    // from a *compiled* `@jini/daemon` — not just AgentExecutorToken added
+    // by this task, EventLogToken/RunLifecycleToken have the identical
+    // shape — round-trips through that package's emitted `.d.ts` as
+    // `Token<T, string>` (widened, not the literal `'jini.agentExecutor'`).
+    // A pack depending solely on such a dist-imported token has never been
+    // exercised through this exact zero-bindings-customizer call shape
+    // before (the existing typecheck.ts proof only uses a token declared
+    // inline in the same compilation unit, which infers the literal
+    // correctly) — a real, pre-existing `@jini/core`/`@jini/daemon`
+    // type-emission gap, out of this task's scope to fix. This call
+    // proves the *runtime* wiring (the actual thing this test is for)
+    // without being blocked by that unrelated compile-time gap.
+    const createLocalNodeDaemonUnsafe = createLocalNodeDaemon as unknown as (config: {
+      dataDir: string;
+      packs: readonly unknown[];
+    }) => Promise<LocalNodeDaemon>;
+    const daemon = await createLocalNodeDaemonUnsafe({ dataDir, packs: [agentExecutorPack] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/agent-executor-probe`);
+    expect(await res.json()).toEqual({ hasRun: true });
   });
 
   it('reflects the resolved bind host onto env.JINI_BIND_HOST before serving any request', async () => {

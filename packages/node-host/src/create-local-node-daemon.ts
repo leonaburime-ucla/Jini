@@ -3,12 +3,14 @@
  *
  * The "host preset" (extraction-plan.md §2.4) that lets a brand-new product boot a running daemon
  * process by implementing zero interfaces: assembles `@jini/sqlite`'s durable `EventLog`,
- * `@jini/daemon`'s `RunLifecycle`, an Express app wrapped in `@jini/http`'s route-registration
- * guard and security middleware, a caller's own `@jini/core` packs, and the generic daemon-status
- * routes, then listens and returns `{url, server, stop}`. Generalized from OD's `startServer()` —
- * see `source-map.md` for the exact line-by-line provenance and drop-list (every plugin/design-
- * system/connector/routine/media/marketplace/telemetry/project route `startServer` also wires is
- * explicitly out of scope; this is the generic assembly skeleton only).
+ * `@jini/daemon`'s `RunLifecycle` and `AgentExecutor` (the driver that actually spawns an agent
+ * CLI subprocess for the 9 v1-supported defs — see `@jini/daemon`'s own source-map.md), an Express
+ * app wrapped in `@jini/http`'s route-registration guard and security middleware, a caller's own
+ * `@jini/core` packs, and the generic daemon-status routes, then listens and returns `{url, server,
+ * stop}`. Generalized from OD's `startServer()` — see `source-map.md` for the exact line-by-line
+ * provenance and drop-list (every plugin/design-system/connector/routine/media/marketplace/
+ * telemetry/project route `startServer` also wires is explicitly out of scope; this is the generic
+ * assembly skeleton only).
  */
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -17,7 +19,7 @@ import type { Server } from 'node:http';
 import express, { type Express } from 'express';
 import { bindings, createDaemon, type Bindings, type Daemon } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
-import { createRunLifecycle, EventLogToken, RunLifecycleToken } from '@jini/daemon';
+import { AgentExecutorToken, createAgentExecutor, createRunLifecycle, EventLogToken, RunLifecycleToken } from '@jini/daemon';
 import { createSqliteEventLog } from '@jini/sqlite';
 import {
   configuredAllowedOrigins,
@@ -73,7 +75,7 @@ export function resolveReportHost(bindHost: string): string {
 }
 
 /** The token ids `createLocalNodeDaemon` always binds itself, before any caller customization runs. */
-export type KernelBoundIds = 'jini.eventLog' | 'jini.runLifecycle';
+export type KernelBoundIds = 'jini.eventLog' | 'jini.runLifecycle' | 'jini.agentExecutor';
 
 export interface CreateLocalNodeDaemonConfig<
   Packs extends readonly AnyPack[],
@@ -194,8 +196,19 @@ export async function createLocalNodeDaemon(
 
   const eventLog = createSqliteEventLog(join(config.dataDir, 'events.db'));
   const runLifecycle = createRunLifecycle({ eventLog });
+  // Zero-config default, unlike ToolExecutorToken (which needs a caller-supplied
+  // ToolRegistry and is therefore NOT auto-bound here — see this file's own
+  // KernelBoundIds doc and packages/daemon/source-map.md's AgentExecutor
+  // section): createAgentExecutor's own defaults already resolve the real
+  // @jini/agent-runtime registry, launch resolution, and node:child_process
+  // spawn, so every caller gets a working AgentExecutor with no additional
+  // wiring.
+  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle });
 
-  const kernelBindings = bindings().bind(EventLogToken, eventLog).bind(RunLifecycleToken, runLifecycle);
+  const kernelBindings = bindings()
+    .bind(EventLogToken, eventLog)
+    .bind(RunLifecycleToken, runLifecycle)
+    .bind(AgentExecutorToken, agentExecutor);
   const boundBindings = config.bindings ? config.bindings(kernelBindings) : kernelBindings;
 
   // `createDaemon`'s own compile-time gate can't be satisfied by this function's own
