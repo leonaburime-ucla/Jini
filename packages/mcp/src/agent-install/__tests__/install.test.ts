@@ -9,7 +9,7 @@ import {
   type McpLaunchSpec,
   type PlanContext,
   type JsonInstallPlan,
-} from './install.js';
+} from '../install.js';
 
 function spec(env: Record<string, string> = {}): McpLaunchSpec {
   return { command: '/usr/bin/node', args: ['/app/cli.js', 'mcp'], env };

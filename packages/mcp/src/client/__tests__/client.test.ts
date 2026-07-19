@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMcpIdleExitController, extractRelativeRefs, isTextualMime } from './client.js';
+import { createMcpIdleExitController, extractRelativeRefs, isTextualMime } from '../client.js';
 
 describe('createMcpIdleExitController', () => {
   afterEach(() => {
@@ -158,11 +158,11 @@ describe('extractRelativeRefs', () => {
 
   it('extracts JS/TS import/require/dynamic-import specifiers', () => {
     const js = [
-      "import a from './a.js';",
+      "import a from '../a.js';",
       'import { b } from "b/mod.js";',
-      "const c = require('./c.js');",
+      "const c = require('../c.js');",
       'const d = await import("d.js");',
-      "export { x } from './x.js';",
+      "export { x } from '../x.js';",
       "import 'https://cdn/y.js';",
     ].join('\n');
     const refs = extractRelativeRefs(js, 'src/index.js', 'application/javascript');
@@ -178,10 +178,10 @@ describe('extractRelativeRefs', () => {
   it('selects pattern sets by extension when the mime is blank', () => {
     expect(extractRelativeRefs('<img src="a.png">', 'page.htm', '')).toEqual(['a.png']);
     expect(extractRelativeRefs('.a{background:url(a.png)}', 'a.css', '')).toEqual(['a.png']);
-    expect(extractRelativeRefs("import x from './m.tsx'", 'a.tsx', '')).toEqual(['m.tsx']);
+    expect(extractRelativeRefs("import x from '../m.tsx'", 'a.tsx', '')).toEqual(['m.tsx']);
   });
 
   it('recognizes typescript mime as JS-like', () => {
-    expect(extractRelativeRefs("import x from './m.ts'", 'a.unknownext', 'application/typescript')).toEqual(['m.ts']);
+    expect(extractRelativeRefs("import x from '../m.ts'", 'a.unknownext', 'application/typescript')).toEqual(['m.ts']);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import * as mcp from './index.js';
+import * as mcp from '../index.js';
 
 // Exercises the public root barrel (and, transitively, the core / client /
 // agent-install sub-barrels it re-exports through).

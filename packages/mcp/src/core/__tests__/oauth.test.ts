@@ -17,7 +17,7 @@ import {
   beginAuth,
   type AuthorizationServerMetadata,
   type PendingAuthState,
-} from './oauth.js';
+} from '../oauth.js';
 
 const tmpDirs: string[] = [];
 function tmp(): string {

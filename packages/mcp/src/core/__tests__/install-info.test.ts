@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMcpInstallPayload, type BuildMcpInstallPayloadInputs } from './install-info.js';
+import { buildMcpInstallPayload, type BuildMcpInstallPayloadInputs } from '../install-info.js';
 
 function base(overrides: Partial<BuildMcpInstallPayloadInputs> = {}): BuildMcpInstallPayloadInputs {
   return {

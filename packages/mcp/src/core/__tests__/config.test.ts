@@ -13,7 +13,7 @@ import {
   buildAcpMcpServers,
   buildOpenCodeMcpConfigContent,
   type McpServerConfig,
-} from './index.js';
+} from '../index.js';
 
 const tmpDirs: string[] = [];
 function tmp(): string {

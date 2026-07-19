@@ -32,7 +32,7 @@ import {
   readAllTokens,
   isTokenExpired,
   type StoredMcpToken,
-} from './tokens.js';
+} from '../tokens.js';
 
 const tmpDirs: string[] = [];
 function tmp(): string {
