@@ -128,10 +128,18 @@ export function normalizeConversationSessionMode(value: unknown): ChatSessionMod
   return value === 'chat' || value === 'plan' ? value : 'design';
 }
 
-/** @internal Produces a single-key object `{ [key]: number }` only when value is a finite number, omitting the key entirely otherwise. */
-function numberProperty(key: string, value: unknown) {
+/**
+ * @internal Produces a single-key object `{ [key]: number }` only when value is a finite number,
+ * omitting the key entirely otherwise. Generic over `key` (rather than plain `string`) so the
+ * spread of its return type into a caller's object literal carries a real, statically-known
+ * optional property instead of collapsing to an index signature the compiler then can't see
+ * through at the call site.
+ */
+function numberProperty<K extends string>(key: K, value: unknown): Partial<Record<K, number>> {
   const n = value == null ? undefined : Number(value);
-  return typeof n === 'number' && Number.isFinite(n) ? { [key]: n } : {};
+  return typeof n === 'number' && Number.isFinite(n)
+    ? ({ [key]: n } as Record<K, number>)
+    : {};
 }
 
 /** @internal Queries the most recent assistant run summary for a conversation (used by getConversation's per-row fetch path). */
