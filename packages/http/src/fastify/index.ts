@@ -48,6 +48,8 @@ export { guardSameOrigin } from './origin.js';
 
 export { rawInput, validationError } from './request.js';
 
+export { registerRunStreamRoute } from './run-stream.js';
+
 export { sendApiError, sendJson, statusForError } from './response.js';
 
 export type { InstallRouteRegistrationGuardOptions, RouteRegistration } from './route-registration-guard.js';

@@ -41,5 +41,11 @@ export {
 
 export { mountPackHttp } from './pack-http.js';
 
+export type { CreateSseResponseOptions, SseConnection } from './sse.js';
+export { createSseResponse } from './sse.js';
+
+export type { RunStreamDeps } from './run-stream.js';
+export { handleRunStreamRequest, RUN_STREAM_ROUTE_PATH } from './run-stream.js';
+
 export * as express from './express/index.js';
 export * as fastify from './fastify/index.js';

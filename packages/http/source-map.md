@@ -457,3 +457,80 @@ Part A completion task (2026-07-19): `pnpm --filter @jini/http exec vitest run -
 --coverage.include='src/**'` → 337 passed, 100/100/100/100 across every file. No coverage gaps were
 found in this package itself; the gaps closed in this pass were one layer up, in
 `@jini/node-host`'s integration suite — see that package's own source-map.md.
+
+## 2026-07-19 — SSE primitive + AG-UI run-stream route (Part B.7)
+
+This section fills the "Explicitly deferred: SSE" gap noted above (this package was previously
+JSON-route-only). Unlike `express/`/`fastify/`'s deliberate per-transport duplication, SSE is a
+raw-stream concern both frameworks expose identically underneath: Express's `Response` literally
+extends Node's `http.ServerResponse`; Fastify's `reply.raw`/`request.raw` give you that exact
+underlying `http.ServerResponse`/`http.IncomingMessage` pair directly. Building it once therefore
+turned out to be genuinely less total work than building it twice, not a design compromise.
+
+### New files (shared root)
+
+| File | Job |
+|---|---|
+| `src/sse.ts` | `createSseResponse(req, res, options)` — opens `res` as an SSE stream (writes `text/event-stream`/`no-cache`/`keep-alive` headers immediately), returns an `SseConnection` (`send(data)`/`close()`/`closed`). Arms a keepalive interval (`: ping\n\n` comment lines, default every 15s) so an idle connection survives gaps between events, and wires `req.on('close', ...)` so a client disconnect closes the connection and runs an optional caller-supplied `onClose` cleanup hook exactly once. Typed only against `node:http`'s `IncomingMessage`/`ServerResponse` — no Express or Fastify import anywhere in this file. |
+| `src/run-stream.ts` | `handleRunStreamRequest(req, res, runId, {lifecycle})` — the framework-agnostic core of the AG-UI SSE route: opens the connection via `createSseResponse`, subscribes to `runId` via `@jini/daemon`'s `RunLifecycle.stream`, encodes every delivered event through a fresh `@jini/agui` `createAguiEncoder()`, and forwards each non-null result. Closes the connection once the run's own terminal `'end'` event has been forwarded (nothing follows it, by `RunLifecycle`'s own contract), and unsubscribes from the run if the client disconnects first (wired through `createSseResponse`'s `onClose` hook) so a dropped client never leaves a dangling subscriber. A non-`'ok'` `StreamSubscribeResult` (`unknown-run`/`replay-gap`/`invalid-cursor`) is reported as one `{ error: <kind> }` SSE data event before closing — there is no JSON-status-code channel left once SSE headers are already committed, which is why this differs from a `JsonRouteSpec`'s `Result`-based error path. Also exports `RUN_STREAM_ROUTE_PATH` (`/api/runs/:runId/agui-stream`) as a plain string constant with zero framework coupling, so both transport subtrees' glue files import the identical path from one place rather than each hardcoding it. |
+| `src/express/run-stream.ts` | `registerRunStreamRoute(app, deps)` — the Express-specific sliver: resolves `req.params.runId` and hands `req`/`res` straight through to `handleRunStreamRequest` (Express's `req`/`res` already *are* the raw Node objects the shared handler wants). A few lines, not a reimplementation. |
+| `src/fastify/run-stream.ts` | `registerRunStreamRoute(app, deps)` — the Fastify-specific sliver: calls `reply.hijack()` (tells Fastify this handler owns the raw response and Fastify's own reply lifecycle must not act on it further — see the empirical finding below for why this specific call is load-bearing, not just doc-driven), resolves `request.params.runId`, and hands `request.raw`/`reply.raw` straight through. |
+
+### Empirical finding: `reply.hijack()` is load-bearing, verified by a real server test, not assumed from Fastify's docs
+
+Writing directly to `reply.raw` without calling `reply.hijack()` first is a well-known Fastify
+footgun: Fastify's own reply lifecycle expects the handler to either call `reply.send(...)` or
+return a value for it to serialize, and will otherwise try to act on a response this handler has
+already written to and ended directly — this typically surfaces as either a "reply already sent"
+warning/error, or an attempt to serialize this async handler's `undefined` return value on top of
+an already-ended response. Rather than trusting that reasoning alone,
+`src/fastify/__tests__/run-stream.test.ts` proves it empirically: it boots a real Fastify server on
+an ephemeral port, drives a real run through `emit()`/`finish()`, and reads the actual SSE bytes
+back over a real `fetch()` connection twice in sequence (once for a live event, once for the
+terminal `run.lifecycle` event) — if `hijack()` were wrong or missing, this test would hang, throw,
+or receive a malformed/incomplete response instead of cleanly observing both events and a clean
+close.
+
+### New dependencies: `@jini/daemon` and `@jini/agui`
+
+`@jini/http`'s dependency list grows by two workspace packages this task: `@jini/daemon` (for
+`RunLifecycle`'s type, consumed by `run-stream.ts`) and `@jini/agui` (for `createAguiEncoder`).
+Verified this introduces no dependency cycle before adding either: `@jini/daemon`'s own
+dependencies are `@jini/agent-runtime`/`@jini/core`/`@jini/platform`/`@jini/protocol` (none of
+which depend on `@jini/http`), and `@jini/agui` depends only on `@jini/protocol` — so
+`@jini/http → @jini/daemon`/`@jini/agui` is a new downward edge, not a cycle. This is a real,
+deliberate architectural addition: `@jini/http` was previously "HTTP/SSE transport + route-pack
+registrar" with no dependency on the run/agent kernel at all; it now also depends on
+`@jini/daemon`'s `RunLifecycle` and `@jini/agui`'s encoder specifically to implement the SSE route
+this task's brief asked for in this package. Whether that coupling should eventually move (e.g. the
+route registrar living in `@jini/node-host`, which already depends on both, mounting a purely
+transport-agnostic primitive from `@jini/http`) is a reasonable question for a future architecture
+review — not revisited here since the task brief was explicit that this route belongs in
+`packages/http/src/`, mirroring `daemon-status.ts`'s own registration shape.
+
+### Not wired into `createLocalNodeDaemon`
+
+`@jini/node-host`'s `createLocalNodeDaemon` does not call `registerRunStreamRoute` today — this
+task built the route inside `@jini/http` (as scoped) but did not extend `createLocalNodeDaemon` to
+mount it automatically, since that wiring wasn't part of this task's brief and doing it without
+being asked would be scope creep into a different package's already-tested assembly path. A future
+task can add it the same way `registerDaemonStatusRoutes` is already wired in.
+
+### Tests
+
+11 new tests in `src/__tests__/sse.test.ts` (the primitive, via fake req/res `EventEmitter`/`vi.fn`
+objects — headers, `send`/`close`/idempotent-`close`/send-after-close, the keepalive interval and
+its cadence/default/stop-on-close, client-disconnect-triggers-close, `onClose` firing exactly once
+either way). 7 new tests in `src/__tests__/run-stream.test.ts` (the shared handler, using a real
+`@jini/daemon` `createRunLifecycle`/`createInMemoryEventLog` pair for genuine integration
+confidence rather than a hand-rolled fake lifecycle — plus two fake-lifecycle tests for the
+`replay-gap`/`invalid-cursor` `StreamSubscribeResult` kinds a real in-memory log's own happy paths
+can't produce): text_delta forwarding, close-on-'end', replaying an already-terminal run, unsubscribe-
+on-client-disconnect (proven by checking a post-disconnect `emit()` no longer produces a new
+`res.write` call), and the `unknown-run`/`replay-gap`/`invalid-cursor` error-and-close paths. Plus
+one real-server integration test per transport (`src/express/__tests__/run-stream.test.ts`,
+`src/fastify/__tests__/run-stream.test.ts`) — see the `hijack()` finding above for why the Fastify
+one specifically matters. 357 tests total for the package (was 337 before this addition), 100%
+coverage on all 4 metrics across every file including all four new ones.
+`pnpm --filter @jini/http exec vitest run --coverage --coverage.include='src/**'` → 357 passed,
+100/100/100/100.

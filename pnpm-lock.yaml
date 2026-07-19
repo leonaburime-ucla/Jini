@@ -146,9 +146,15 @@ importers:
 
   packages/http:
     dependencies:
+      '@jini/agui':
+        specifier: workspace:*
+        version: link:../agui
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      '@jini/daemon':
+        specifier: workspace:*
+        version: link:../daemon
       '@jini/protocol':
         specifier: workspace:*
         version: link:../protocol

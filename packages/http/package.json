@@ -18,7 +18,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@jini/agui": "workspace:*",
     "@jini/core": "workspace:*",
+    "@jini/daemon": "workspace:*",
     "@jini/protocol": "workspace:*"
   },
   "peerDependencies": {
