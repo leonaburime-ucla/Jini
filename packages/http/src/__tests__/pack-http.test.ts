@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bindings, createDaemon, definePack, token } from '@jini/core';
-import { mountPackHttp } from './pack-http.js';
+import { mountPackHttp } from '../pack-http.js';
 
 interface Greeter {
   greeting: string;

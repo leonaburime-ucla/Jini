@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import * as HttpBarrel from './index.js';
+import * as HttpBarrel from '../index.js';
 
 /**
  * A barrel-only smoke test: every other test in this package imports its target

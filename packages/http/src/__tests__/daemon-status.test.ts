@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { isLocalSameOrigin } from './origin-validation.js';
+import { isLocalSameOrigin } from '../origin-validation.js';
 import {
   daemonShutdownRoute,
   daemonStatusRoute,
   registerDaemonStatusRoutes,
   type DaemonStatusDeps,
-} from './daemon-status.js';
+} from '../daemon-status.js';
 
-vi.mock('./origin-validation.js', () => ({
+vi.mock('../origin-validation.js', () => ({
   isLocalSameOrigin: vi.fn(() => true),
 }));
 

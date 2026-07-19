@@ -8,7 +8,7 @@ import {
   isLoopbackOrPrivateLanHost,
   isPrivateIpv4,
   parseHostHeader,
-} from './origin-validation.js';
+} from '../origin-validation.js';
 
 const PORT = 7456;
 

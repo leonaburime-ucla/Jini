@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { sendApiError, sendJson, statusForError } from './response.js';
+import { sendApiError, sendJson, statusForError } from '../response.js';
 
 function makeRes() {
   return {

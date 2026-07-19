@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createCompatApiError, createCompatApiErrorResponse, sendApiError } from './compat.js';
+import { createCompatApiError, createCompatApiErrorResponse, sendApiError } from '../compat.js';
 
 function makeRes() {
   return {

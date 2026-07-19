@@ -6,7 +6,7 @@ import {
   normalizeLocalAuthority,
   requireLocalDaemonRequest,
   validateLocalDaemonRequest,
-} from './local-daemon-request.js';
+} from '../local-daemon-request.js';
 
 describe('normalizeLocalAuthority', () => {
   it('parses a bare hostname', () => {
