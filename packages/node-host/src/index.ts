@@ -1,1 +1,13 @@
-// @jini/node-host — placeholder. See docs/jini-port/extraction-plan.md for the target.
+/**
+ * @module @jini/node-host
+ *
+ * The Node.js host preset (extraction-plan.md §2.4): `createLocalNodeDaemon`, the piece that
+ * assembles `@jini/core`/`@jini/daemon`/`@jini/sqlite`/`@jini/http` into an actually-runnable
+ * daemon process, plus the generic host-lifecycle primitives it's built on. See `source-map.md`
+ * for full provenance and scope-decision notes.
+ */
+export type { CreateLocalNodeDaemonConfig, KernelBoundIds, LocalNodeDaemon } from './create-local-node-daemon.js';
+export { createLocalNodeDaemon, resolveBoundPort, resolveReportHost } from './create-local-node-daemon.js';
+
+export type { CloseHttpServerOptions } from './host-bootstrap.js';
+export { DEFAULT_DAEMON_BIND_HOST, closeHttpServer, normalizeDaemonBindHost } from './host-bootstrap.js';

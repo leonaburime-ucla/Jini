@@ -1,0 +1,534 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import net from 'node:net';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { definePack } from '@jini/core';
+import type { DaemonStatusResponse } from '@jini/http';
+import * as SqliteModule from '@jini/sqlite';
+import {
+  createLocalNodeDaemon,
+  resolveBoundPort,
+  resolveReportHost,
+  type LocalNodeDaemon,
+} from '../create-local-node-daemon.js';
+
+/**
+ * Real-socket integration suite for `createLocalNodeDaemon` — mirrors the established pattern in
+ * `packages/platform/src/__tests__/index.test.ts` (`createServer(...).listen(0)` + `fetch()`, no
+ * `supertest`). Every test here boots an actual daemon on an OS-assigned ephemeral port against a
+ * real (tmp-dir) sqlite file; nothing about `@jini/core`/`@jini/daemon`/`@jini/sqlite`/`@jini/http`
+ * is mocked. `createSqliteEventLog` is the one exception — spied on (not replaced) in a handful of
+ * tests specifically to observe that `stop()` really calls the returned `EventLog`'s `close()`,
+ * since reopening the same sqlite file afterward succeeds regardless of whether the original
+ * handle was closed (verified empirically: `better-sqlite3` in WAL mode permits two concurrently
+ * open handles on one file within a single process) and would not, on its own, prove anything.
+ */
+
+const ENV_KEYS = ['JINI_API_TOKEN', 'JINI_DISABLE_API_AUTH', 'JINI_ALLOWED_ORIGINS', 'JINI_WEB_PORT', 'JINI_BIND_HOST'] as const;
+let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
+
+beforeEach(() => {
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) savedEnv[key] = value;
+    delete process.env[key];
+  }
+});
+
+afterEach(() => {
+  for (const key of ENV_KEYS) delete process.env[key];
+  Object.assign(process.env, savedEnv);
+});
+
+const tempDirs: string[] = [];
+function makeTempDataDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'jini-node-host-test-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const daemonsToStop: LocalNodeDaemon[] = [];
+afterEach(async () => {
+  while (daemonsToStop.length > 0) {
+    const daemon = daemonsToStop.pop();
+    if (daemon) await daemon.stop().catch(() => {});
+  }
+});
+
+function makePingPack() {
+  return definePack({
+    name: 'ping',
+    deps: [],
+    services: () => ({}),
+    http: (app: unknown) => {
+      (app as { get: (path: string, handler: (req: unknown, res: { json: (b: unknown) => void }) => void) => void }).get(
+        '/api/ping',
+        (_req, res) => res.json({ ok: true }),
+      );
+    },
+  });
+}
+
+/** The first routable, non-loopback IPv4 address this machine has, or `null` if none — used only
+ * by the bearer-auth 401 test below, whose loopback-exemption design makes it untestable via a
+ * loopback-bound fetch (see that test's own comment). */
+function findExternalIPv4Address(): string | null {
+  const ifaces = networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const iface of entries ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
+
+describe('resolveBoundPort', () => {
+  it('returns the port from a real AddressInfo-shaped address', () => {
+    expect(resolveBoundPort({ port: 7456 })).toBe(7456);
+  });
+
+  it('returns null for a null address (not yet listening)', () => {
+    expect(resolveBoundPort(null)).toBeNull();
+  });
+
+  it('returns null for a string address (a Unix domain socket path)', () => {
+    expect(resolveBoundPort('/tmp/some.sock')).toBeNull();
+  });
+
+  it('returns null for a non-positive port', () => {
+    expect(resolveBoundPort({ port: 0 })).toBeNull();
+  });
+});
+
+describe('resolveReportHost', () => {
+  it('substitutes 127.0.0.1 for an all-interfaces IPv4 bind host', () => {
+    expect(resolveReportHost('0.0.0.0')).toBe('127.0.0.1');
+  });
+
+  it('substitutes 127.0.0.1 for an all-interfaces IPv6 bind host', () => {
+    expect(resolveReportHost('::')).toBe('127.0.0.1');
+  });
+
+  it('echoes back any other host unchanged', () => {
+    expect(resolveReportHost('192.168.1.10')).toBe('192.168.1.10');
+    expect(resolveReportHost('127.0.0.1')).toBe('127.0.0.1');
+  });
+});
+
+describe('createLocalNodeDaemon', () => {
+  it('boots on an ephemeral port and reports a URL reflecting the real bound port', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    expect(daemon.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const port = Number(new URL(daemon.url).port);
+    expect(port).toBeGreaterThan(0);
+    const address = daemon.server.address();
+    expect(address && typeof address === 'object' ? address.port : null).toBe(port);
+  });
+
+  it('substitutes 127.0.0.1 into the reported URL when bound to 0.0.0.0', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], host: '0.0.0.0' });
+    daemonsToStop.push(daemon);
+
+    expect(daemon.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const res = await fetch(`${daemon.url}/api/ping`);
+    expect(res.status).toBe(200);
+  });
+
+  it('serves GET /api/daemon/status', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/daemon/status`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DaemonStatusResponse;
+    expect(body).toMatchObject({ ok: true, host: '127.0.0.1', dataDir, shuttingDown: false });
+    expect(typeof body.version).toBe('string');
+    expect(body.port).toBe(Number(new URL(daemon.url).port));
+    expect(typeof body.pid).toBe('number');
+  });
+
+  it("mounts a caller pack's own route (proves mountPackHttp ordering)", async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('composes a pack whose deps are satisfied via the bindings customizer', async () => {
+    const dataDir = makeTempDataDir();
+    interface Greeter {
+      greeting: string;
+    }
+    const { token } = await import('@jini/core');
+    const GreeterToken = token<Greeter>('test.greeter');
+    const greetPack = definePack({
+      name: 'greet',
+      deps: [GreeterToken],
+      services: (c) => ({ say: () => c.get(GreeterToken).greeting }),
+      http: (app: unknown, services: unknown) => {
+        (app as { get: (path: string, handler: (req: unknown, res: { json: (b: unknown) => void }) => void) => void }).get(
+          '/api/greet',
+          (_req, res) => res.json({ greeting: (services as { say: () => string }).say() }),
+        );
+      },
+    });
+
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [greetPack],
+      bindings: (b) => b.bind(GreeterToken, { greeting: 'hi' }),
+    });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/greet`);
+    expect(await res.json()).toEqual({ greeting: 'hi' });
+  });
+
+  it('reflects the resolved bind host onto env.JINI_BIND_HOST before serving any request', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], host: '127.0.0.1' });
+    daemonsToStop.push(daemon);
+
+    expect(process.env.JINI_BIND_HOST).toBe('127.0.0.1');
+  });
+
+  it('allows an unauthenticated request when no apiToken is configured (default)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`);
+    expect(res.status).toBe(200);
+  });
+
+  it('allows a loopback caller with a correct bearer token when apiToken is configured', async () => {
+    process.env.JINI_API_TOKEN = 'integration-secret';
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, { headers: { Authorization: 'Bearer integration-secret' } });
+    expect(res.status).toBe(200);
+  });
+
+  it('honors a custom apiToken env var name', async () => {
+    process.env['CUSTOM_TOKEN'] = 'custom-secret';
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [makePingPack()],
+      apiToken: { tokenEnvVar: 'CUSTOM_TOKEN' },
+    });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, { headers: { Authorization: 'Bearer custom-secret' } });
+    expect(res.status).toBe(200);
+    delete process.env['CUSTOM_TOKEN'];
+  });
+
+  const lanAddress = findExternalIPv4Address();
+  // The bearer-auth middleware unconditionally exempts loopback peers (by design — see
+  // packages/http/src/api-security-middleware.ts's own doc), so the 401 branch can only be
+  // observed via a real, non-loopback TCP connection. Requires a routable non-loopback IPv4
+  // interface on the machine running this suite; skips gracefully (rather than failing) in a
+  // fully loopback-only sandbox. The loopback-vs-non-loopback branch itself already has 100%
+  // coverage at the unit level in packages/http/src/__tests__/api-security-middleware.test.ts —
+  // this test's job is only to prove the real, assembled pipeline rejects too, not to re-derive
+  // that unit coverage.
+  it.skipIf(lanAddress == null)(
+    'rejects a non-loopback caller with 401 when apiToken is configured and no bearer token is sent',
+    async () => {
+      process.env.JINI_API_TOKEN = 'integration-secret';
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], host: '0.0.0.0' });
+      daemonsToStop.push(daemon);
+
+      const port = Number(new URL(daemon.url).port);
+      const res = await fetch(`http://${lanAddress}:${port}/api/ping`);
+      expect(res.status).toBe(401);
+    },
+  );
+
+  it('allows a same-origin-shaped GET request through the origin guard', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, {
+      headers: { Origin: daemon.url, Host: new URL(daemon.url).host },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a disallowed cross-origin POST with 403', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example.com' },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('honors JINI_ALLOWED_ORIGINS as an extra allow-listed cross-origin source', async () => {
+    process.env.JINI_ALLOWED_ORIGINS = 'https://trusted.example.com';
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    // POST (not GET) so the portless-loopback GET fallback can't coincidentally let this through
+    // for an unrelated reason — a 403 here would mean the origin guard rejected it; the ping pack
+    // has no POST handler, so a 404 (route dispatch proceeding past the guard, finding no match)
+    // is the correct signal that JINI_ALLOWED_ORIGINS actually admitted this origin.
+    const res = await fetch(`${daemon.url}/api/ping`, {
+      method: 'POST',
+      headers: { Origin: 'https://trusted.example.com' },
+    });
+    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+  });
+
+  it('stop() closes the listener: a post-stop fetch rejects', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+
+    await daemon.stop();
+    await expect(fetch(`${daemon.url}/api/ping`)).rejects.toThrow();
+  });
+
+  it('stop() releases the sqlite file handle: reopening the same path afterward does not throw', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+
+    await daemon.stop();
+
+    const reopened = SqliteModule.createSqliteEventLog(join(dataDir, 'events.db'));
+    await expect(reopened.append({ runId: 'probe', event: 'probe', data: {} })).resolves.toBeDefined();
+    await reopened.close();
+  });
+
+  it("stop() actually calls the durable EventLog's close(), and is idempotent under concurrent + repeated calls", async () => {
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return { ...real, close: vi.fn(real.close) };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created).toBeDefined();
+
+      await Promise.all([daemon.stop(), daemon.stop()]);
+      await daemon.stop();
+
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('runs the onShutdown hook during stop()', async () => {
+    const dataDir = makeTempDataDir();
+    let called = false;
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [makePingPack()],
+      onShutdown: () => {
+        called = true;
+      },
+    });
+    await daemon.stop();
+    expect(called).toBe(true);
+  });
+
+  it('awaits an async onShutdown hook before stop() resolves', async () => {
+    const dataDir = makeTempDataDir();
+    let resolved = false;
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [makePingPack()],
+      onShutdown: async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        resolved = true;
+      },
+    });
+    await daemon.stop();
+    expect(resolved).toBe(true);
+  });
+
+  it('still closes the EventLog (and propagates the error) when onShutdown rejects', async () => {
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return { ...real, close: vi.fn(real.close) };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({
+        dataDir,
+        packs: [makePingPack()],
+        onShutdown: () => {
+          throw new Error('onShutdown failed');
+        },
+      });
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+
+      await expect(daemon.stop()).rejects.toThrow('onShutdown failed');
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('the POST /api/daemon/shutdown route triggers the same graceful stop(), reflected in isShuttingDown', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+
+    const statusBefore = (await (await fetch(`${daemon.url}/api/daemon/status`)).json()) as DaemonStatusResponse;
+    expect(statusBefore.shuttingDown).toBe(false);
+
+    const shutdownRes = await fetch(`${daemon.url}/api/daemon/shutdown`, { method: 'POST' });
+    expect(shutdownRes.status).toBe(200);
+    expect(await shutdownRes.json()).toEqual({ ok: true, scheduled: true });
+
+    // requestShutdown is deferred via setImmediate (daemon-status.ts's own documented ordering,
+    // preserved here) — poll until the listener has actually closed.
+    await vi.waitFor(
+      async () => {
+        await expect(fetch(`${daemon.url}/api/ping`)).rejects.toThrow();
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  it('rejects rather than hanging when a second instance boots on a port already in use (EADDRINUSE)', async () => {
+    const dataDirA = makeTempDataDir();
+    const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()] });
+    daemonsToStop.push(daemonA);
+    const fixedPort = Number(new URL(daemonA.url).port);
+
+    const dataDirB = makeTempDataDir();
+    await expect(
+      createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()], port: fixedPort }),
+    ).rejects.toThrow();
+  });
+
+  it('propagates a synchronous throw from app.listen() (e.g. an out-of-range port) as a rejection', async () => {
+    const dataDir = makeTempDataDir();
+    // http.Server#listen validates the port range synchronously and throws before ever emitting
+    // 'error' — a real, deterministic way to exercise the `try { app.listen(...) } catch` branch
+    // (as opposed to EADDRINUSE, which this Node/OS combination reports via the async 'error'
+    // event instead, per the other rejection test below).
+    await expect(
+      createLocalNodeDaemon({ dataDir, packs: [makePingPack()], port: 70_000 }),
+    ).rejects.toThrow(/port/i);
+  });
+
+  it('closes the durable EventLog it already opened when app.listen() throws synchronously', async () => {
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return { ...real, close: vi.fn(real.close) };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()], port: 70_000 })).rejects.toThrow();
+
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("rejects when server.address() somehow resolves to null right as 'listening' fires", async () => {
+    // Belt-and-braces branch ported verbatim from the origin daemon (see this module's own
+    // comment) — genuinely unreachable via any real bind, since a listening TCP server always has
+    // a resolvable AddressInfo. `resolveBoundPort` itself already has full branch coverage in
+    // isolation above; this only proves the (trivial, two-line) call site actually routes through
+    // it. Spying on the shared `net.Server.prototype.address` (which `http.Server` inherits) is
+    // the only way to reach this without faking the entire Express surface.
+    const addressSpy = vi.spyOn(net.Server.prototype, 'address').mockReturnValue(null);
+    try {
+      const dataDir = makeTempDataDir();
+      await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow(
+        /failed to resolve listening port/,
+      );
+    } finally {
+      addressSpy.mockRestore();
+    }
+  });
+
+  it('closes the durable EventLog it already opened when the resolved address is unusable', async () => {
+    const addressSpy = vi.spyOn(net.Server.prototype, 'address').mockReturnValue(null);
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return { ...real, close: vi.fn(real.close) };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow();
+
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      addressSpy.mockRestore();
+    }
+  });
+
+  it('closes the durable EventLog it already opened when the port bind itself fails', async () => {
+    const dataDirA = makeTempDataDir();
+    const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()] });
+    daemonsToStop.push(daemonA);
+    const fixedPort = Number(new URL(daemonA.url).port);
+
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return { ...real, close: vi.fn(real.close) };
+      });
+    try {
+      const dataDirB = makeTempDataDir();
+      await expect(
+        createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()], port: fixedPort }),
+      ).rejects.toThrow();
+
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
