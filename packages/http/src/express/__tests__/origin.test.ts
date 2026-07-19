@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { guardSameOrigin } from '../origin.js';
-import { isLocalSameOrigin } from '../origin-validation.js';
+import { isLocalSameOrigin } from '../../origin-validation.js';
 
-vi.mock('../origin-validation.js', () => ({
+vi.mock('../../origin-validation.js', () => ({
   isLocalSameOrigin: vi.fn(),
 }));
 

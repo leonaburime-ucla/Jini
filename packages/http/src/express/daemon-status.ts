@@ -13,7 +13,7 @@
  */
 import type { Express } from 'express';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
-import { ok } from './types.js';
+import { ok } from '../types.js';
 
 /**
  * Everything the two routes below need, supplied by the caller. `requestShutdown`

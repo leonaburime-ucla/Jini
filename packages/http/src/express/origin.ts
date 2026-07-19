@@ -4,8 +4,8 @@
  */
 import type { Request } from 'express';
 import { createApiError } from '@jini/protocol';
-import { isLocalSameOrigin } from './origin-validation.js';
-import { err, ok, type Result } from './types.js';
+import { isLocalSameOrigin } from '../origin-validation.js';
+import { err, ok, type Result } from '../types.js';
 
 /** The subset of server startup state `guardSameOrigin` needs: the resolved local port. */
 export interface OriginContext {

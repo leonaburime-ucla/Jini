@@ -5,7 +5,7 @@
  */
 import type { Request } from 'express';
 import { createApiError, type ApiError, type ApiValidationIssue } from '@jini/protocol';
-import type { RouteInputContext } from './types.js';
+import type { RouteInputContext } from '../types.js';
 
 /**
  * Extracts `body`/`query`/`params` from an Express `Request` into a `RouteInputContext`, so a

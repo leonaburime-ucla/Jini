@@ -8,7 +8,7 @@ import { createApiError } from '@jini/protocol';
 import { rawInput } from './request.js';
 import { sendApiError, sendJson, statusForError } from './response.js';
 import { guardSameOrigin, type OriginContext } from './origin.js';
-import type { JsonRouteSpec } from './types.js';
+import type { JsonRouteSpec } from '../types.js';
 
 /** Server startup state a mounted route needs to evaluate its same-origin guard. */
 export interface AdapterContext extends OriginContext {}

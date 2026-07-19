@@ -1,10 +1,16 @@
 /**
  * @module @jini/http
  *
- * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
- * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
- * legacy-shaped compat error helpers, a route-pack registrar, and generic daemon status/shutdown
- * routes. See `source-map.md` for full provenance and scope-decision notes.
+ * JSON-route transport for a `@jini/core` daemon composition. This root barrel exports only the
+ * pieces that are genuinely framework-agnostic: the `Result`/route-spec types, the same-origin
+ * validation predicates, and the route-pack registrar (`mountPackHttp`, which only ever passes
+ * `app` straight through to a pack's own `http(app, services)` — see `pack-http.ts`'s doc). Every
+ * transport-specific piece (request/response plumbing, the mounting Adapter, the `/api` security
+ * middleware, the route-registration guard, the loopback request guard, compat error helpers, and
+ * the daemon-status routes) now lives in one of two independent, self-contained, idiomatically
+ * native subtrees — `./express/index.js` or `./fastify/index.js` — so a consumer picks a
+ * transport namespace explicitly instead of getting an Express-shaped surface by default. See
+ * `source-map.md` for full provenance and scope-decision notes.
  */
 export type {
   Handler,
@@ -15,13 +21,6 @@ export type {
   RouteInputContext,
 } from './types.js';
 export { err, ok } from './types.js';
-
-export { rawInput, validationError } from './request.js';
-
-export { sendApiError, sendJson, statusForError } from './response.js';
-
-export type { OriginContext } from './origin.js';
-export { guardSameOrigin } from './origin.js';
 
 export type {
   ParsedHostHeader,
@@ -40,43 +39,7 @@ export {
   parseHostHeader,
 } from './origin-validation.js';
 
-export type { AdapterContext } from './adapter.js';
-export { defineJsonRoute, mountJsonRoute } from './adapter.js';
-
 export { mountPackHttp } from './pack-http.js';
 
-export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
-export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
-
-export type { InstallRouteRegistrationGuardOptions, RouteRegistration } from './route-registration-guard.js';
-export {
-  getRouteRegistrationInventory,
-  guardedRouteKey,
-  installRouteRegistrationGuard,
-} from './route-registration-guard.js';
-
-export {
-  isLoopbackHostname,
-  isLoopbackPeerAddress,
-  localOriginFromHeader,
-  normalizeLocalAuthority,
-  requireLocalDaemonRequest,
-  validateLocalDaemonRequest,
-} from './local-daemon-request.js';
-
-export type {
-  DaemonShutdownResponse,
-  DaemonStatusDeps,
-  DaemonStatusResponse,
-} from './daemon-status.js';
-export { daemonShutdownRoute, daemonStatusRoute, registerDaemonStatusRoutes } from './daemon-status.js';
-
-// Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
-// above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
-// `(code, message, init)` — same job, different call-site generation, so it is re-exported here
-// under a distinct name to avoid a duplicate export.
-export {
-  createCompatApiError,
-  createCompatApiErrorResponse,
-  sendApiError as sendCompatApiError,
-} from './compat.js';
+export * as express from './express/index.js';
+export * as fastify from './fastify/index.js';
