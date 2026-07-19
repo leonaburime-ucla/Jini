@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import fs, { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applySandboxRuntimeEnv,
@@ -115,6 +115,45 @@ describe('@jini/platform — sandbox-env — imported project root allowed', () 
     expect(sandboxImportedProjectRootUnavailableReason(CONFIG, outsideRoot, env)).toMatch(
       /Imported-folder projects are not available/,
     );
+  });
+
+  it('falls back to the raw normalized candidate, without hanging, when no ancestor (down to the filesystem root) can be realpath-resolved', () => {
+    // Adversarial case for the candidate-canonicalization walk-up: if
+    // `fs.realpathSync.native` fails for every ancestor including the
+    // filesystem root itself (e.g. a permission-denied edge case), the walk
+    // must terminate instead of looping forever on `dirname('/') === '/'`.
+    const nativeSpy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(() => {
+      throw new Error('simulated: no ancestor is resolvable');
+    });
+    try {
+      const env = {
+        [CONFIG.modeEnvVar]: '1',
+        [CONFIG.importAllowedRootsEnvVar]: '/unresolvable-root',
+      };
+      expect(isSandboxImportedProjectRootAllowed(CONFIG, '/unresolvable-root/nested', env)).toBe(true);
+      expect(isSandboxImportedProjectRootAllowed(CONFIG, '/elsewhere/nested', env)).toBe(false);
+    } finally {
+      nativeSpy.mockRestore();
+    }
+  });
+
+  it('also terminates (rather than hanging) when a relative candidate root has no resolvable ancestor', () => {
+    // Same invariant as above, but for a *relative* candidate: the walk-up's
+    // fixed point for a relative path is '.' (path.dirname('.') === '.'),
+    // not '/' — a guard that only checked against the absolute filesystem
+    // root would spin forever here instead of falling back.
+    const nativeSpy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(() => {
+      throw new Error('simulated: no ancestor is resolvable, including cwd');
+    });
+    try {
+      const env = {
+        [CONFIG.modeEnvVar]: '1',
+        [CONFIG.importAllowedRootsEnvVar]: '/unresolvable-root',
+      };
+      expect(isSandboxImportedProjectRootAllowed(CONFIG, 'relative/nested/root', env)).toBe(false);
+    } finally {
+      nativeSpy.mockRestore();
+    }
   });
 });
 
