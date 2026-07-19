@@ -224,3 +224,116 @@ product noun extraction-plan.md §Task-4-Port-2 already flags as OD's model,
 not the engine's) — a Jini host application supplies its own equivalent
 composition (`new LocalBlobStorage(root)` / `new S3BlobStorage({...})`
 directly, or its own env-var convention) rather than inheriting OD's.
+
+## `db/` module — daemon SQLite persistence (connection + schema + conversations/messages/projects/agent-sessions)
+
+Ported across two sessions from `open-design`'s `refactor/db-barrel` branch
+(`be33bd4f9`, "refactor(daemon): split db.ts god-file into capability-barrel
+db/ module"), which decomposed OD's monolithic `apps/daemon/src/db.ts` into a
+per-concern `apps/daemon/src/db/` barrel. Only the four generic engine tables
+(`projects`, `conversations`, `messages`, `agent_sessions`) are ported; five
+OD-product tables in the same barrel (`preview_comments`, `tabs`/`tabs_state`,
+`deployments`, `routines`/`routine_runs`/`routine_schedule_claims`,
+`templates`) are excluded — `deployments` overlaps with the separately-designed
+`@jini/deploy` package (different design, not conflated); `routines` is OD's
+automation-scheduling feature, explicitly excluded from the kernel per
+`extraction-plan.md` §2.1; `preview_comments` is OD's canvas-annotation
+feature; `tabs`/`templates` are OD UI-specific. This file-map table was not
+updated when the first slice (`core/`, `connection/`, `schema/`,
+`conversations/`, commit `2ad9cf6b0`) landed; it is being added retroactively
+now, together with the three modules that complete the barrel.
+
+| Jini file | Origin file (`refactor/db-barrel`) | Transform |
+|---|---|---|
+| `src/db/core/types.ts` | *(new — shared type aliases, no direct OD origin file; the aliases themselves — `SqliteDb`, `DbRow`, `JsonObject`, `ChatSessionMode` — are inferred from how every other `db/*` module in the barrel used `Database.Database`/loosely-typed rows)* | `SqliteDb = Database.Database`, `DbRow = Record<string, any>`, `JsonObject = Record<string, unknown>`, `ChatSessionMode = 'design' \| 'chat' \| 'plan'`. |
+| `src/db/core/rows.ts` | `apps/daemon/src/db/core/rows.ts` | Verbatim (`row`/`rows` narrowing helpers). |
+| `src/db/core/json.ts` | `apps/daemon/src/db/core/json.ts` | Verbatim (`parseJsonOrUndef`). |
+| `src/db/core/index.ts` | `apps/daemon/src/db/core/index.ts` | Verbatim barrel. |
+| `src/db/connection/connection.ts` | `apps/daemon/src/db/connection/connection.ts` | Verbatim `openDatabase`/`closeDatabase` singleton lifecycle. **Identity-stripped**: default data directory `.od` → `.jini`. |
+| `src/db/connection/index.ts` | `apps/daemon/src/db/connection/index.ts` | Verbatim barrel. |
+| `src/db/schema/migrate.ts` | `apps/daemon/src/db/schema/migrate.ts` (405 ln) | Only the 4 generic `CREATE TABLE`s (`projects`, `conversations`, `agent_sessions`, `messages`) + their 2 indexes are kept; the 5 product tables above, their indexes, `migratePreviewCommentsSlideKey`, and the calls to `migrateCritique`/`migrateMediaTasks`/`migrateLibrary`/`migratePlugins` are dropped. OD's forward-compatible `ALTER TABLE … ADD COLUMN` machinery (the whole second half of the original function, plus its `PRAGMA table_info` checks) is dropped — Jini is greenfield, so every column the barrel eventually reaches via `ALTER` (e.g. `messages.run_id`/`run_status`/`telemetry_finalized_at`, `projects.metadata_json`/`custom_instructions`, `agent_sessions.stable_prompt_hash`/`model`/`cwd`/`last_message_id`) is folded directly into the base `CREATE TABLE`. Also pre-drops, per base `CREATE`, the OD-product JSON columns `messages.comment_attachments_json`/`produced_files_json`/`trace_object_files_json`/`feedback_json`/`pre_turn_file_names_json`/`applied_plugin_snapshot_json` and `projects.skill_id`/`design_system_id`/`applied_plugin_snapshot_id` — see the `db/messages` and `db/projects` rows below for why. |
+| `src/db/schema/index.ts` | `apps/daemon/src/db/schema/index.ts` | Verbatim barrel. |
+| `src/db/conversations/conversations.ts` | `apps/daemon/src/db/conversations/conversations.ts` | Near-verbatim (no OD-specific fields existed on `conversations` to begin with). One behavioral no-op typing change made in this session: `numberProperty`'s `key` parameter was made generic (`<K extends string>`) so its `Partial<Record<K, number>>` return type survives an object-literal spread at the call site — the original's plain `string`-keyed return widened to an index signature under this repo's `strict`/`noUncheckedIndexedAccess` tsconfig, which `tsc --noEmit` (not `vitest run`, which uses esbuild and doesn't full-typecheck) flagged as `totalDurationMs` "not existing" on `getConversation`'s/`listConversations`' return type. |
+| `src/db/conversations/index.ts` | `apps/daemon/src/db/conversations/index.ts` | Verbatim barrel. |
+| `src/db/messages/messages.ts` | `apps/daemon/src/db/messages/messages.ts` (303 ln) | Drops six OD-product JSON columns/fields with no generic engine equivalent: `comment_attachments_json`/`commentAttachments` (the preview-comments feature, out of scope per this task's explicit instruction), `produced_files_json`/`producedFiles` and `trace_object_files_json`/`traceObjectFiles` (design-canvas file output tracking), `feedback_json`/`feedback` (Critique Theater's scoring feedback), `pre_turn_file_names_json`/`preTurnFileNames` (design-canvas per-turn file context), `applied_plugin_snapshot_json`/`appliedPluginSnapshot` (OD's plugin host). `upsertMessage`'s insert value count drops from 24 to 18 accordingly. Everything else — CRUD, position sequencing, the `telemetry_finalized_at` one-way latch, `appendMessageStatusEvent`/`appendMessageAgentEvent`'s dedupe-consecutive-event logic — is verbatim. |
+| `src/db/messages/index.ts` | `apps/daemon/src/db/messages/index.ts` | Verbatim barrel. |
+| `src/db/projects/projects.ts` | `apps/daemon/src/db/projects/projects.ts` (358 ln) | Drops three OD-product columns/fields with no generic engine equivalent: `skill_id`/`skillId` (OD's agent-skill marketplace selection), `design_system_id`/`designSystemId` (OD's Design System feature), `applied_plugin_snapshot_id`/`appliedPluginSnapshotId` (OD's plugin host). Everything else — CRUD, the four `listLatest*`/`listFirst*RunStatuses` run-status reducers, the `<question-form>`/`<ask-question>` awaiting-input detection queries, `normalizeProjectRunStatus`'s status-enum collapsing — is verbatim; none of it is OD-specific (see "kernel-noun exclusion" note below). |
+| `src/db/projects/index.ts` | `apps/daemon/src/db/projects/index.ts` | Verbatim barrel. |
+| `src/db/agent-sessions/agent-sessions.ts` | `apps/daemon/src/db/agent-sessions/agent-sessions.ts` (192 ln) | Verbatim — the upstream CLI resume-identity-guard session cache has no OD-specific fields at all; every column (`session_id`, `stable_prompt_hash`, `model`, `cwd`, `last_message_id`) is generic resume bookkeeping already matched 1:1 by the schema. |
+| `src/db/agent-sessions/index.ts` | `apps/daemon/src/db/agent-sessions/index.ts` | Verbatim barrel. |
+| `src/db/index.ts` | `apps/daemon/src/db/index.ts` (barrel entrypoint) | Re-exports only the four ported concerns' public surface (not the five excluded product tables' modules, which don't exist in this port). |
+
+### Design decisions
+
+**1. `projects` vs. the kernel-noun exclusion in `extraction-plan.md` §2.1.**
+That doc's kernel-noun list excludes "projects... conversations" from the
+*kernel* (`@jini/core`/`@jini/daemon`). This does not block porting either
+table into `@jini/sqlite`, because `@jini/sqlite` is a generic *optional*
+storage adapter any consumer may use — not the kernel itself, which knows
+nothing about either table. `conversations` already shipped under this
+reasoning in the first slice; `projects` follows the identical precedent
+here: the table is de-branded into a generic workspace/container row-store
+(id/name/prompt/metadata/instructions/timestamps) with every OD-specific
+field (`skill_id`, `design_system_id`, `applied_plugin_snapshot_id`) dropped,
+the same way `conversations` (and now `messages`) had their OD-specific
+fields dropped.
+
+**2. The `<question-form>`/`<ask-question>` awaiting-input queries were kept,
+not dropped.** These pattern-match a markup convention embedded in assistant
+message *content* (not a schema column, not a product noun) to detect
+whether the latest assistant turn is waiting on a user reply. Nothing about
+the mechanism is OD-branded or tied to a design/marketplace/plugin concept —
+any chat-agent host that embeds structured forms in message text can reuse
+it as-is. Kept verbatim in `db/projects/projects.ts`'s
+`listProjectsAwaitingInput`/`listConversationsAwaitingInput`.
+
+**3. `schema/migrate.ts` needed no changes for this task.** The prior
+session's foundation-slice port had already pre-trimmed the `messages`,
+`projects`, and `agent_sessions` `CREATE TABLE` column lists to exactly the
+neutral set these three new CRUD modules need (verified column-by-column
+against `messages.ts`'s `MESSAGE_COLS`, `projects.ts`'s `PROJECT_COLS`, and
+`agent-sessions.ts`'s literal column list before writing any of the three
+modules) — so the task brief's "extend schema/migrate.ts if needed" branch
+did not apply.
+
+**4. Two pre-existing `tsc --noEmit` failures in the already-committed
+foundation slice were fixed in this session**, both discovered only because
+this task's Definition of Done requires a full repo-wide `pnpm typecheck`
+pass (the foundation slice had only been verified via `vitest run`, which
+transpiles with esbuild and does not full-typecheck): `conversations.ts`'s
+`numberProperty` helper (see the `conversations.ts` file-map row above), and
+`db/__tests__/db.test.ts`'s `list[0].latestRun` access under
+`noUncheckedIndexedAccess` (changed to `list[0]?.latestRun`). Both are
+non-behavioral typing-only fixes.
+
+**5. Coverage-only defensive-branch tests use a fake-driver `Proxy`,
+matching this package's own established precedent.** A handful of branches
+ported verbatim from upstream are provably unreachable through real SQLite
+query results given this schema (e.g. `messages.ts`'s
+`(max?.m ?? -1) + 1` — the position-max query's `COALESCE(MAX(position), -1)`
+guarantees a row; `row.createdAt ?? undefined` — `created_at` is `NOT NULL`;
+`projects.ts`'s `listFirstConversationRunStatuses`/`listLatestRunStatuses`
+`row.runId ?? undefined` — both queries filter `run_id IS NOT NULL`). Rather
+than strip these defensive fallbacks (losing upstream fidelity) or leave
+100% coverage unmet, `db/__tests__/db.test.ts` adds a small
+`withStubbedStatement` helper that wraps a real `SqliteDb` in a `Proxy`
+intercepting only `.prepare()` calls matching a given SQL predicate, letting
+every other statement hit the real database — the same technique
+`src/__tests__/db-inspect.test.ts` already uses (a hand-built fake
+`Database.Database`-shaped object) for its own otherwise-unreachable
+`better-sqlite3` error paths, generalized here to a reusable wrapper since
+`upsertMessage`/`listMessages`/`listFirstConversationRunStatuses`/
+`listLatestRunStatuses` each needed it for a different single statement
+while still exercising the surrounding real-database code path (writes still
+land in the real underlying file; only the one targeted `.get()`/`.all()` is
+stubbed).
+
+### Not ported (explicitly out of scope for this task)
+
+`deployments`/`preview_comments`/`routines`(+`routine_runs`+
+`routine_schedule_claims`)/`tabs`(+`tabs_state`)/`templates` and their
+per-table CRUD modules — flagged explicitly out of scope in this task's
+brief; the barrel branch was not searched for a reason any of them might
+actually belong, since none surfaced while reading `messages/`, `projects/`,
+or `agent-sessions/` (none of those three modules reference any of the five
+excluded tables).

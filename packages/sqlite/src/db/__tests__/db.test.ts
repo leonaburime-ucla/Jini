@@ -12,6 +12,29 @@ import {
   insertConversation,
   updateConversation,
   deleteConversation,
+  listMessages,
+  upsertMessage,
+  getMessageTelemetryFinalizationState,
+  appendMessageStatusEvent,
+  appendMessageAgentEvent,
+  deleteMessage,
+  listProjects,
+  listLatestProjectRunStatuses,
+  listLatestConversationRunStatuses,
+  listFirstConversationRunStatuses,
+  listLatestRunStatuses,
+  listProjectsAwaitingInput,
+  listConversationsAwaitingInput,
+  getProject,
+  insertProject,
+  updateProject,
+  deleteProject,
+  getAgentSession,
+  upsertAgentSession,
+  getAgentSessionRecord,
+  latestCompletedAssistantMessageId,
+  updateAgentSessionStableHash,
+  clearAgentSession,
   parseJsonOrUndef,
   row,
   rows,
@@ -27,6 +50,42 @@ function tmp(): string {
 function seedProject(db: SqliteDb, id = 'p1'): string {
   db.prepare(`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(id, 'P', 1, 1);
   return id;
+}
+
+/**
+ * Wraps a real SqliteDb so that `.prepare(sql)` calls matching `matches(sql)` return a stub
+ * statement instead of the real prepared statement, while every other statement passes through
+ * to the real database untouched. Used to force otherwise-unreachable defensive branches (e.g. "the
+ * row vanished between write and read") that cannot be produced through normal SQLite query
+ * results — the same fake-driver technique `db-inspect.test.ts` already established in this
+ * package for its own otherwise-unreachable error paths.
+ * @param realDb - The live database handle to wrap.
+ * @param matches - Predicate over the raw SQL text identifying which statement to stub.
+ * @param stub - Partial stand-in results; omitted methods default to empty/no-op.
+ */
+function withStubbedStatement(
+  realDb: SqliteDb,
+  matches: (sql: string) => boolean,
+  stub: { get?: () => unknown; all?: () => unknown[] },
+): SqliteDb {
+  return new Proxy(realDb, {
+    get(target, prop, receiver) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          if (matches(sql)) {
+            return {
+              get: stub.get ?? (() => undefined),
+              all: stub.all ?? (() => []),
+              run: () => ({ changes: 0, lastInsertRowid: 0 }),
+            };
+          }
+          return target.prepare(sql);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as SqliteDb;
 }
 interface SeedMsg {
   id: string;
@@ -52,6 +111,13 @@ function seedMessage(db: SqliteDb, m: SeedMsg): void {
     endedAt: m.endedAt ?? null,
     eventsJson: m.eventsJson ?? null,
   });
+}
+
+/** Opens a fresh temp-dir database seeded with one project ('p1'), ready for conversation/message/project/agent-session writes. */
+function freshDb(): SqliteDb {
+  const db = openDatabase('/r', { dataDir: tmp() });
+  seedProject(db);
+  return db;
 }
 
 afterEach(() => {
@@ -104,12 +170,6 @@ describe('connection + schema', () => {
 });
 
 describe('conversations CRUD', () => {
-  function freshDb(): SqliteDb {
-    const db = openDatabase('/r', { dataDir: tmp() });
-    seedProject(db);
-    return db;
-  }
-
   it('inserts and reads back a conversation, defaulting title/sessionMode', () => {
     const db = freshDb();
     const created = insertConversation(db, { id: 'c1', projectId: 'p1', title: 'T', sessionMode: 'chat', createdAt: 10, updatedAt: 20 });
@@ -189,7 +249,7 @@ describe('conversations CRUD', () => {
     insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 5 });
     seedMessage(db, { id: 'm0', cid: 'c1', role: 'user', position: 0 }); // no run_status
     const list = listConversations(db, 'p1');
-    expect(list[0].latestRun).toBeUndefined();
+    expect(list[0]?.latestRun).toBeUndefined();
     expect(getConversation(db, 'c1')?.latestRun).toBeUndefined();
   });
 
@@ -221,6 +281,591 @@ describe('conversations CRUD', () => {
     insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
     deleteConversation(db, 'c1');
     expect(getConversation(db, 'c1')).toBeNull();
+  });
+});
+
+describe('messages CRUD', () => {
+  function freshConversation(db: SqliteDb, id = 'c1'): string {
+    insertConversation(db, { id, projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    return id;
+  }
+
+  it('inserts a message with every optional field populated and bumps the parent conversation', () => {
+    const db = freshDb();
+    freshConversation(db);
+    const before = getConversation(db, 'c1')!.updatedAt;
+
+    const created = upsertMessage(db, 'c1', {
+      id: 'm1',
+      role: 'assistant',
+      content: 'hello',
+      agentId: 'a1',
+      agentName: 'Agent One',
+      runId: 'r1',
+      runStatus: 'succeeded',
+      lastRunEventId: 'e1',
+      events: [{ kind: 'text', text: 'hi' }],
+      attachments: [{ name: 'f.txt' }],
+      sessionMode: 'chat',
+      runContext: { foo: 1 },
+      telemetryFinalized: true,
+      startedAt: 100,
+      endedAt: 200,
+      createdAt: 50,
+    });
+
+    expect(created).toMatchObject({
+      id: 'm1',
+      role: 'assistant',
+      content: 'hello',
+      agentId: 'a1',
+      agentName: 'Agent One',
+      runId: 'r1',
+      runStatus: 'succeeded',
+      lastRunEventId: 'e1',
+      events: [{ kind: 'text', text: 'hi' }],
+      attachments: [{ name: 'f.txt' }],
+      sessionMode: 'chat',
+      runContext: { foo: 1 },
+      startedAt: 100,
+      endedAt: 200,
+      createdAt: 50,
+    });
+    expect(getMessageTelemetryFinalizationState(db, 'm1')).toMatchObject({ exists: true, finalizedAt: expect.any(Number) });
+    expect(getConversation(db, 'c1')!.updatedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('inserts messages with all optional fields omitted, defaulting createdAt and incrementing position', () => {
+    const db = freshDb();
+    freshConversation(db);
+
+    const first = upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'hi' });
+    expect(first).toMatchObject({
+      id: 'm1',
+      role: 'user',
+      content: 'hi',
+      agentId: undefined,
+      agentName: undefined,
+      runId: undefined,
+      runStatus: undefined,
+      lastRunEventId: undefined,
+      events: undefined,
+      attachments: undefined,
+      sessionMode: undefined,
+      runContext: undefined,
+      startedAt: undefined,
+      endedAt: undefined,
+    });
+    expect(first!.createdAt).toEqual(expect.any(Number));
+    expect(getMessageTelemetryFinalizationState(db, 'm1')).toMatchObject({ exists: true, finalizedAt: null });
+
+    const second = upsertMessage(db, 'c1', { id: 'm2', role: 'user', content: 'again' });
+    expect(listMessages(db, 'c1').map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(second).not.toBeNull();
+  });
+
+  it('treats a non-finite createdAt as absent and falls back to now', () => {
+    const db = freshDb();
+    freshConversation(db);
+    const before = Date.now();
+    const created = upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'x', createdAt: Number.NaN });
+    expect(created!.createdAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('updates an existing message in place: content/fields change, position is preserved, telemetry_finalized_at is a one-way latch', () => {
+    const db = freshDb();
+    freshConversation(db);
+    upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'v1' });
+
+    // update with all fields populated, not yet finalizing telemetry
+    const updated = upsertMessage(db, 'c1', {
+      id: 'm1',
+      role: 'assistant',
+      content: 'v2',
+      agentId: 'a1',
+      agentName: 'A',
+      runId: 'r1',
+      runStatus: 'running',
+      lastRunEventId: 'e1',
+      events: [{ kind: 'status', label: 'thinking' }],
+      attachments: [{ name: 'x' }],
+      sessionMode: 'plan',
+      runContext: { a: 1 },
+      startedAt: 10,
+      endedAt: null,
+    });
+    expect(updated).toMatchObject({ id: 'm1', role: 'assistant', content: 'v2', runStatus: 'running', sessionMode: 'plan' });
+    expect(getMessageTelemetryFinalizationState(db, 'm1')).toMatchObject({ exists: true, finalizedAt: null });
+
+    // finalize telemetry for the first time -> latch sets finalizedAt
+    upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: 'v3', telemetryFinalized: true, endedAt: 20 });
+    const firstFinalize = getMessageTelemetryFinalizationState(db, 'm1');
+    expect(firstFinalize).toMatchObject({ exists: true, finalizedAt: expect.any(Number) });
+
+    // finalizing again does not move the already-set timestamp forward
+    upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: 'v4', telemetryFinalized: true });
+    expect(getMessageTelemetryFinalizationState(db, 'm1').finalizedAt).toBe(firstFinalize.finalizedAt);
+
+    // updating with all optional fields omitted clears them back to undefined and leaves position untouched
+    // (position is fetched by the internal SELECT but intentionally not part of normalizeMessage's
+    // public shape, matching upstream — assert the raw column directly instead.)
+    const cleared = upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'v5' });
+    expect(cleared).toMatchObject({ agentId: undefined, runId: undefined, sessionMode: undefined });
+    const rawPosition = db.prepare(`SELECT position FROM messages WHERE id = ?`).get('m1') as { position: number };
+    expect(rawPosition.position).toBe(0);
+  });
+
+  it('getMessageTelemetryFinalizationState reports not-found for an unknown id', () => {
+    const db = freshDb();
+    expect(getMessageTelemetryFinalizationState(db, 'missing')).toEqual({ exists: false, finalizedAt: null });
+  });
+
+  it('upsertMessage returns null if the row vanishes between write and read (defensive race guard)', () => {
+    const db = freshDb();
+    freshConversation(db);
+    const proxied = withStubbedStatement(
+      db,
+      (sql) => sql.includes('agent_id AS agentId') && sql.includes('WHERE id = ?'),
+      {},
+    );
+    expect(upsertMessage(proxied, 'c1', { id: 'ghost', role: 'user', content: 'x' })).toBeNull();
+  });
+
+  it('falls back to position 0 when the position-max query unexpectedly returns no row (defensive fallback; COALESCE guarantees a row in real usage)', () => {
+    const db = freshDb();
+    freshConversation(db);
+    const proxied = withStubbedStatement(db, (sql) => sql.includes('COALESCE(MAX(position), -1)'), {});
+    const created = upsertMessage(proxied, 'c1', { id: 'm1', role: 'user', content: 'x' });
+    expect(created).not.toBeNull();
+    const rawPosition = db.prepare(`SELECT position FROM messages WHERE id = ?`).get('m1') as { position: number };
+    expect(rawPosition.position).toBe(0);
+  });
+
+  it('normalizeMessage falls back to undefined for a null createdAt (defensive fallback; created_at is NOT NULL by schema in real usage)', () => {
+    const db = freshDb();
+    freshConversation(db);
+    const fakeRow = {
+      id: 'm1', role: 'user', content: 'x', agentId: null, agentName: null,
+      runId: null, runStatus: null, lastRunEventId: null, eventsJson: null,
+      attachmentsJson: null, sessionMode: null, runContextJson: null,
+      createdAt: null, startedAt: null, endedAt: null, position: 0,
+    };
+    const proxied = withStubbedStatement(
+      db,
+      (sql) => sql.includes('agent_id AS agentId') && sql.includes('WHERE conversation_id = ?'),
+      { all: () => [fakeRow] },
+    );
+    const [msg] = listMessages(proxied, 'c1');
+    expect(msg!.createdAt).toBeUndefined();
+  });
+
+  describe('appendMessageStatusEvent', () => {
+    it('returns null for a missing message or an empty/whitespace label', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+      expect(appendMessageStatusEvent(db, 'missing', { label: 'x' })).toBeNull();
+      expect(appendMessageStatusEvent(db, 'm1', { label: '' })).toBeNull();
+      expect(appendMessageStatusEvent(db, 'm1', {})).toBeNull();
+    });
+
+    it('appends a status event with and without detail, and dedupes consecutive identical ones', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+
+      const first = appendMessageStatusEvent(db, 'm1', { label: 'Thinking' });
+      expect(first).toEqual([{ kind: 'status', label: 'Thinking' }]);
+
+      // identical consecutive event (no detail on either side) -> deduped, array unchanged
+      const deduped = appendMessageStatusEvent(db, 'm1', { label: '  Thinking  ' });
+      expect(deduped).toEqual([{ kind: 'status', label: 'Thinking' }]);
+
+      const withDetail = appendMessageStatusEvent(db, 'm1', { label: 'Running', detail: 'step 1' });
+      expect(withDetail).toEqual([
+        { kind: 'status', label: 'Thinking' },
+        { kind: 'status', label: 'Running', detail: 'step 1' },
+      ]);
+
+      // identical consecutive event with the same detail -> deduped again
+      const dedupedWithDetail = appendMessageStatusEvent(db, 'm1', { label: 'Running', detail: 'step 1' });
+      expect(dedupedWithDetail).toHaveLength(2);
+    });
+
+    it('parses malformed existing events_json as an empty array before appending', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+      db.prepare(`UPDATE messages SET events_json = ? WHERE id = ?`).run('not-json', 'm1');
+      expect(appendMessageStatusEvent(db, 'm1', { label: 'Recovered' })).toEqual([{ kind: 'status', label: 'Recovered' }]);
+    });
+  });
+
+  describe('appendMessageAgentEvent', () => {
+    it('returns null for a non-object event, an event with no kind, or a missing message', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+      expect(appendMessageAgentEvent(db, 'm1', null as any)).toBeNull();
+      expect(appendMessageAgentEvent(db, 'm1', {})).toBeNull();
+      expect(appendMessageAgentEvent(db, 'missing', { kind: 'text', text: 'hi' })).toBeNull();
+    });
+
+    it('streams text deltas into content and appends non-text events without touching content', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+
+      appendMessageAgentEvent(db, 'm1', { kind: 'text', text: 'Hel' });
+      appendMessageAgentEvent(db, 'm1', { kind: 'text', text: 'lo' });
+      appendMessageAgentEvent(db, 'm1', { kind: 'tool_call', name: 'search' });
+
+      const msg = listMessages(db, 'c1')[0]!;
+      expect(msg.content).toBe('Hello');
+      expect(msg.events).toEqual([
+        { kind: 'text', text: 'Hel' },
+        { kind: 'text', text: 'lo' },
+        { kind: 'tool_call', name: 'search' },
+      ]);
+    });
+
+    it('dedupes a byte-identical consecutive event', () => {
+      const db = freshDb();
+      freshConversation(db);
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '' });
+      appendMessageAgentEvent(db, 'm1', { kind: 'tool_call', name: 'search' });
+      const result = appendMessageAgentEvent(db, 'm1', { kind: 'tool_call', name: 'search' });
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  it('deletes a message', () => {
+    const db = freshDb();
+    freshConversation(db);
+    upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'x' });
+    deleteMessage(db, 'm1');
+    expect(listMessages(db, 'c1')).toHaveLength(0);
+  });
+});
+
+describe('projects CRUD', () => {
+  it('inserts a project with all fields populated and reads it back', () => {
+    const db = freshDb();
+    const created = insertProject(db, {
+      id: 'p2',
+      name: 'Widgets',
+      pendingPrompt: 'draft something',
+      metadata: { theme: 'dark' },
+      customInstructions: 'be terse',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(created).toMatchObject({
+      id: 'p2',
+      name: 'Widgets',
+      pendingPrompt: 'draft something',
+      metadata: { theme: 'dark' },
+      customInstructions: 'be terse',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(getProject(db, 'p2')).toMatchObject({ id: 'p2', name: 'Widgets' });
+    expect(getProject(db, 'missing')).toBeNull();
+  });
+
+  it('inserts a project with optional fields omitted, defaulting them to undefined', () => {
+    const db = freshDb();
+    const created = insertProject(db, { id: 'p2', name: 'Bare', createdAt: 1, updatedAt: 1 });
+    expect(created).toMatchObject({
+      id: 'p2',
+      name: 'Bare',
+      pendingPrompt: undefined,
+      metadata: undefined,
+      customInstructions: undefined,
+    });
+  });
+
+  it('lists projects newest-updated first', () => {
+    const db = freshDb(); // seeds 'p1' with updatedAt: 1
+    insertProject(db, { id: 'pa', name: 'A', createdAt: 1, updatedAt: 2 });
+    insertProject(db, { id: 'pb', name: 'B', createdAt: 1, updatedAt: 5 });
+    expect(listProjects(db).map((p) => p.id)).toEqual(['pb', 'pa', 'p1']);
+  });
+
+  it('recovers from malformed metadata_json by treating it as absent', () => {
+    const db = freshDb();
+    insertProject(db, { id: 'p2', name: 'X', createdAt: 1, updatedAt: 1 });
+    db.prepare(`UPDATE projects SET metadata_json = ? WHERE id = ?`).run('not-json', 'p2');
+    expect(getProject(db, 'p2')!.metadata).toBeUndefined();
+  });
+
+  it('updates name/pendingPrompt/metadata/customInstructions, defaults updatedAt, and returns null for a missing id', () => {
+    const db = freshDb();
+    insertProject(db, { id: 'p2', name: 'Old', createdAt: 1, updatedAt: 1 });
+
+    const updated = updateProject(db, 'p2', { name: 'New', pendingPrompt: 'go', metadata: { a: 1 }, customInstructions: 'terse', updatedAt: 99 });
+    expect(updated).toMatchObject({ name: 'New', pendingPrompt: 'go', metadata: { a: 1 }, customInstructions: 'terse', updatedAt: 99 });
+
+    const before = Date.now();
+    const again = updateProject(db, 'p2', { name: 'Newer' });
+    expect(again).toMatchObject({ name: 'Newer', pendingPrompt: 'go' });
+    expect(again!.updatedAt).toBeGreaterThanOrEqual(before);
+
+    expect(updateProject(db, 'missing', { name: 'X' })).toBeNull();
+  });
+
+  it('updates a bare project (no pendingPrompt/metadata/customInstructions) with a patch that also omits them, persisting null for all three', () => {
+    const db = freshDb();
+    insertProject(db, { id: 'p2', name: 'Bare', createdAt: 1, updatedAt: 1 });
+    const updated = updateProject(db, 'p2', { name: 'Still Bare' });
+    expect(updated).toMatchObject({
+      name: 'Still Bare',
+      pendingPrompt: undefined,
+      metadata: undefined,
+      customInstructions: undefined,
+    });
+  });
+
+  it('deletes a project', () => {
+    const db = freshDb();
+    insertProject(db, { id: 'p2', name: 'X', createdAt: 1, updatedAt: 1 });
+    deleteProject(db, 'p2');
+    expect(getProject(db, 'p2')).toBeNull();
+  });
+
+  describe('run-status aggregation (latest/first, per-project/per-conversation/per-run)', () => {
+    function seedRunMessage(db: SqliteDb, cid: string, m: { id: string; runId?: string; runStatus?: string; position: number; endedAt?: number; startedAt?: number; createdAt?: number }): void {
+      db.prepare(
+        `INSERT INTO messages (id, conversation_id, role, content, position, created_at, run_id, run_status, started_at, ended_at)
+         VALUES (@id, @cid, 'assistant', '', @position, @createdAt, @runId, @runStatus, @startedAt, @endedAt)`,
+      ).run({
+        id: m.id,
+        cid,
+        position: m.position,
+        createdAt: m.createdAt ?? m.position,
+        runId: m.runId ?? null,
+        runStatus: m.runStatus ?? null,
+        startedAt: m.startedAt ?? null,
+        endedAt: m.endedAt ?? null,
+      });
+    }
+
+    it('collapses repeated runs per project/conversation/run to only the latest, ordered by recency', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', runId: 'run-a', runStatus: 'starting', position: 0, endedAt: 100 });
+      seedRunMessage(db, 'c1', { id: 'm1', runId: 'run-a', runStatus: 'succeeded', position: 1, endedAt: 200 });
+
+      const byProject = listLatestProjectRunStatuses(db);
+      expect(byProject.get('p1')).toMatchObject({ value: 'succeeded', runId: 'run-a' });
+
+      const byConversation = listLatestConversationRunStatuses(db);
+      expect(byConversation.get('c1')).toMatchObject({ value: 'succeeded' });
+
+      const byRun = listLatestRunStatuses(db);
+      expect(byRun.get('run-a')).toMatchObject({ value: 'succeeded' });
+
+      const firstByConversation = listFirstConversationRunStatuses(db);
+      expect(firstByConversation.get('c1')).toMatchObject({ value: 'running' }); // 'starting' normalizes to 'running'
+    });
+
+    it('reports runId: undefined for a run-status row with no run_id (the project/conversation queries have no run_id filter)', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', runStatus: 'succeeded', position: 0, endedAt: 100 }); // no runId
+      expect(listLatestProjectRunStatuses(db).get('p1')).toMatchObject({ value: 'succeeded', runId: undefined });
+      expect(listLatestConversationRunStatuses(db).get('c1')).toMatchObject({ value: 'succeeded', runId: undefined });
+    });
+
+    it('normalizes a defensively-null runId to undefined in the per-run/first-turn queries (unreachable via real rows since both queries require run_id IS NOT NULL; exercised via a stubbed row)', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+
+      const proxiedFirst = withStubbedStatement(
+        db,
+        (sql) => sql.includes('run_id IS NOT NULL') && sql.includes('conversationId'),
+        { all: () => [{ conversationId: 'c1', runId: null, status: 'succeeded', updatedAt: 100, position: 0 }] },
+      );
+      expect(listFirstConversationRunStatuses(proxiedFirst).get('c1')).toMatchObject({ value: 'succeeded', runId: undefined });
+
+      const proxiedLatestRun = withStubbedStatement(
+        db,
+        (sql) => sql.includes('run_id IS NOT NULL') && !sql.includes('conversationId'),
+        { all: () => [{ runId: null, status: 'succeeded', updatedAt: 100, position: 0 }] },
+      );
+      const [onlyEntry] = [...listLatestRunStatuses(proxiedLatestRun).values()];
+      expect(onlyEntry).toMatchObject({ value: 'succeeded', runId: undefined });
+    });
+
+    it('normalizes cancelled -> canceled and unknown statuses -> not_started', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', runId: 'run-a', runStatus: 'cancelled', position: 0, endedAt: 100 });
+      expect(listLatestRunStatuses(db).get('run-a')).toMatchObject({ value: 'canceled' });
+    });
+
+    it.each(['queued', 'running', 'succeeded', 'failed', 'canceled'])('passes the known status %s through unchanged', (status) => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', runId: 'run-a', runStatus: status, position: 0, endedAt: 100 });
+      expect(listLatestRunStatuses(db).get('run-a')).toMatchObject({ value: status });
+    });
+
+    it('defaults an unrecognized status to not_started', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', runId: 'run-a', runStatus: 'some-future-status', position: 0, endedAt: 100 });
+      expect(listLatestRunStatuses(db).get('run-a')).toMatchObject({ value: 'not_started' });
+    });
+
+    it('returns empty maps when no message carries a run_status', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedRunMessage(db, 'c1', { id: 'm0', position: 0 });
+      expect(listLatestProjectRunStatuses(db).size).toBe(0);
+      expect(listLatestConversationRunStatuses(db).size).toBe(0);
+      expect(listFirstConversationRunStatuses(db).size).toBe(0);
+      expect(listLatestRunStatuses(db).size).toBe(0);
+    });
+  });
+
+  describe('awaiting-input detection', () => {
+    it('flags a project/conversation whose latest assistant turn asked a question-form and has no user reply yet', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: 'Please fill out <question-form>...</question-form>', createdAt: 10 });
+
+      expect(listProjectsAwaitingInput(db)).toEqual(new Set(['p1']));
+      expect(listConversationsAwaitingInput(db)).toEqual(new Set(['c1']));
+    });
+
+    it('recognizes the <ask-question> alias tag', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '<ask-question>Which one?</ask-question>', createdAt: 10 });
+      expect(listConversationsAwaitingInput(db)).toEqual(new Set(['c1']));
+    });
+
+    it('clears once the user replies after the question', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: '<question-form/>', createdAt: 10 });
+      upsertMessage(db, 'c1', { id: 'm2', role: 'user', content: 'here is my answer', createdAt: 20 });
+      expect(listProjectsAwaitingInput(db)).toEqual(new Set());
+      expect(listConversationsAwaitingInput(db)).toEqual(new Set());
+    });
+
+    it('does not flag ordinary assistant messages with no question artifact', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      upsertMessage(db, 'c1', { id: 'm1', role: 'assistant', content: 'just chatting', createdAt: 10 });
+      expect(listProjectsAwaitingInput(db)).toEqual(new Set());
+      expect(listConversationsAwaitingInput(db)).toEqual(new Set());
+    });
+  });
+});
+
+describe('agent-sessions CRUD', () => {
+  it('returns null/not-found shapes when no session exists yet', () => {
+    const db = freshDb();
+    expect(getAgentSession(db, 'c1', 'a1')).toBeNull();
+    expect(getAgentSessionRecord(db, 'c1', 'a1')).toBeNull();
+  });
+
+  it('creates a session with all optional fields populated and reads it back both ways', () => {
+    const db = freshDb();
+    insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    upsertAgentSession(db, {
+      conversationId: 'c1',
+      agentId: 'a1',
+      sessionId: 's1',
+      stablePromptHash: 'hash1',
+      model: 'gpt',
+      cwd: '/work',
+      lastMessageId: 'm1',
+    });
+    expect(getAgentSession(db, 'c1', 'a1')).toBe('s1');
+    expect(getAgentSessionRecord(db, 'c1', 'a1')).toEqual({
+      sessionId: 's1',
+      stablePromptHash: 'hash1',
+      model: 'gpt',
+      cwd: '/work',
+      lastMessageId: 'm1',
+    });
+  });
+
+  it('creates a session with optional fields omitted, defaulting them to null', () => {
+    const db = freshDb();
+    insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    upsertAgentSession(db, { conversationId: 'c1', agentId: 'a1', sessionId: 's1' });
+    expect(getAgentSessionRecord(db, 'c1', 'a1')).toEqual({
+      sessionId: 's1',
+      stablePromptHash: null,
+      model: null,
+      cwd: null,
+      lastMessageId: null,
+    });
+  });
+
+  it('upserts (replaces) the session for the same (conversation, agent) pair on conflict', () => {
+    const db = freshDb();
+    insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    upsertAgentSession(db, { conversationId: 'c1', agentId: 'a1', sessionId: 's1', model: 'gpt' });
+    upsertAgentSession(db, { conversationId: 'c1', agentId: 'a1', sessionId: 's2', model: 'claude' });
+    expect(getAgentSession(db, 'c1', 'a1')).toBe('s2');
+    expect(getAgentSessionRecord(db, 'c1', 'a1')?.model).toBe('claude');
+  });
+
+  it('updates only the stable prompt hash, leaving other fields untouched', () => {
+    const db = freshDb();
+    insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    upsertAgentSession(db, { conversationId: 'c1', agentId: 'a1', sessionId: 's1', model: 'gpt', cwd: '/work' });
+    updateAgentSessionStableHash(db, 'c1', 'a1', 'hash2');
+    expect(getAgentSessionRecord(db, 'c1', 'a1')).toMatchObject({ sessionId: 's1', model: 'gpt', cwd: '/work', stablePromptHash: 'hash2' });
+  });
+
+  it('clears a session, forcing the next lookup to miss', () => {
+    const db = freshDb();
+    insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+    upsertAgentSession(db, { conversationId: 'c1', agentId: 'a1', sessionId: 's1' });
+    clearAgentSession(db, 'c1', 'a1');
+    expect(getAgentSession(db, 'c1', 'a1')).toBeNull();
+  });
+
+  describe('latestCompletedAssistantMessageId (resume identity guard cursor)', () => {
+    function seedAssistant(db: SqliteDb, cid: string, id: string, position: number, runStatus: string | null): void {
+      db.prepare(
+        `INSERT INTO messages (id, conversation_id, role, content, position, created_at, run_status)
+         VALUES (?, ?, 'assistant', '', ?, ?, ?)`,
+      ).run(id, cid, position, position, runStatus);
+    }
+
+    it('returns null when there is no prior completed assistant turn', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      expect(latestCompletedAssistantMessageId(db, 'c1', 'in-flight')).toBeNull();
+    });
+
+    it('finds the latest succeeded turn, excluding the current in-flight placeholder', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedAssistant(db, 'c1', 'm1', 0, 'succeeded');
+      seedAssistant(db, 'c1', 'm2', 1, null); // in-flight placeholder
+      expect(latestCompletedAssistantMessageId(db, 'c1', 'm2')).toBe('m1');
+    });
+
+    it('excludes a failed/canceled turn unless it matches resumableMessageId', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      seedAssistant(db, 'c1', 'm1', 0, 'succeeded');
+      seedAssistant(db, 'c1', 'm2', 1, 'failed');
+
+      // a different later failed turn stays excluded -> falls back to the last succeeded one
+      expect(latestCompletedAssistantMessageId(db, 'c1', 'm3', null)).toBe('m1');
+
+      // the failed turn's own id, passed as resumableMessageId, is admitted through the filter
+      expect(latestCompletedAssistantMessageId(db, 'c1', 'm3', 'm2')).toBe('m2');
+    });
   });
 });
 
