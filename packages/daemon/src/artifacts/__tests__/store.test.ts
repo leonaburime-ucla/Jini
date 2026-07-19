@@ -4,8 +4,8 @@ import {
   ArtifactManifestRequiredError,
   createInMemoryArtifactStore,
   resolveArtifactManifest,
-} from './store.js';
-import type { ArtifactManifestTaxonomy, ManifestInferrer } from './manifest.js';
+} from '../store.js';
+import type { ArtifactManifestTaxonomy, ManifestInferrer } from '../manifest.js';
 
 const taxonomy: ArtifactManifestTaxonomy = {
   allowedKinds: new Set(['html']),

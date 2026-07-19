@@ -5,7 +5,7 @@ import {
   createXmlTagTextSuppressor,
   emitWithTextSuppressor,
   type ArtifactTextSuppressor,
-} from './text-suppression.js';
+} from '../text-suppression.js';
 
 describe('createXmlTagTextSuppressor', () => {
   it('suppresses a complete tagged block delivered in one chunk', () => {

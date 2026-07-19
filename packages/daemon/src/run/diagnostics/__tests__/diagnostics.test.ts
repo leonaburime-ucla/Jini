@@ -4,8 +4,8 @@ import {
   collectStdoutTailSummary,
   stderrLineCountBucket,
   summarizeRunDiagnosticsForAnalytics,
-} from './diagnostics.js';
-import type { RunEventForDiagnostics } from './diagnostics.js';
+} from '../diagnostics.js';
+import type { RunEventForDiagnostics } from '../diagnostics.js';
 
 describe('stderrLineCountBucket', () => {
   it('maps line counts to low-cardinality buckets across every boundary', () => {

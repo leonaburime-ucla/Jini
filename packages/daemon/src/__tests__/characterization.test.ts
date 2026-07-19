@@ -40,8 +40,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RunProtocolEvent } from '@jini/protocol';
-import { createInMemoryEventLog } from './event-log.js';
-import { createRunLifecycle } from './run-lifecycle.js';
+import { createInMemoryEventLog } from '../event-log.js';
+import { createRunLifecycle } from '../run-lifecycle.js';
 
 describe('characterization — ordered event sequence parity with OD\'s documented run-engine invariants', () => {
   it('reproduces the exact start -> agent* -> end -> (resume) -> agent* -> end ordering', async () => {

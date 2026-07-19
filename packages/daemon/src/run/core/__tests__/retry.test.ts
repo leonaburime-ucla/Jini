@@ -7,13 +7,13 @@ import {
   TRANSIENT_RETRY_BASE_DELAY_MS,
   computeRetryBackoffMs,
   decideSafeRunRetry,
-} from './retry.js';
+} from '../retry.js';
 import type {
   RunFailureCategory,
   RunFailureDetail,
   RunFailureStage,
-} from './failure-taxonomy.js';
-import type { RunRetryFailureSignal, RunRetrySideEffectState } from './retry.js';
+} from '../failure-taxonomy.js';
+import type { RunRetryFailureSignal, RunRetrySideEffectState } from '../retry.js';
 
 describe('constants', () => {
   it('caps automatic same-run retries at one attempt with the transient strategy', () => {

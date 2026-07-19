@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { classifyRunCloseStatus, createInactivityWatchdog, resolveTimeoutMs } from './close-status.js';
+import { classifyRunCloseStatus, createInactivityWatchdog, resolveTimeoutMs } from '../close-status.js';
 
 describe('classifyRunCloseStatus', () => {
   it('classifies cancellation ahead of exit code, even when the code looks successful', () => {

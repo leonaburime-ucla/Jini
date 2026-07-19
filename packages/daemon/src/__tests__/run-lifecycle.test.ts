@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunProtocolEvent } from '@jini/protocol';
-import { createInMemoryEventLog } from './event-log.js';
-import { createRunLifecycle } from './run-lifecycle.js';
+import { createInMemoryEventLog } from '../event-log.js';
+import { createRunLifecycle } from '../run-lifecycle.js';
 
 function makeLifecycle(maxEntriesPerRun?: number) {
   const eventLog = createInMemoryEventLog(maxEntriesPerRun !== undefined ? { maxEntriesPerRun } : {});

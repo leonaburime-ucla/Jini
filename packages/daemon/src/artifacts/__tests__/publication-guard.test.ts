@@ -9,7 +9,7 @@ import {
   isPublicationGuardedKind,
   shouldBlockPublication,
   type PublicationGuardConfig,
-} from './publication-guard.js';
+} from '../publication-guard.js';
 
 const config: PublicationGuardConfig = {
   guardedKinds: new Set(['html', 'deck']),

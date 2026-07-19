@@ -13,7 +13,7 @@ import {
   type ConfirmationDecision,
   type ExecutionDelegate,
   type ToolConfirmationRequest,
-} from './tool-executor.js';
+} from '../tool-executor.js';
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();

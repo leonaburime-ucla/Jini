@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveRunErrorCode, runResultFromStatus } from './result.js';
+import { deriveRunErrorCode, runResultFromStatus } from '../result.js';
 
 describe('runResultFromStatus', () => {
   it('maps succeeded/canceled to success/cancelled and everything else to failed', () => {

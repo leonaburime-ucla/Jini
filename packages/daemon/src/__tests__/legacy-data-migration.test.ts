@@ -20,7 +20,7 @@ import {
   migrateLegacyDataDirSync,
   promoteStaged,
   type LegacyDataMigrationConfig,
-} from './legacy-data-migration.js';
+} from '../legacy-data-migration.js';
 
 const config: LegacyDataMigrationConfig = {
   payloadEntries: ['app.sqlite', 'app-config.json', 'media-config.json', 'projects', 'artifacts'],

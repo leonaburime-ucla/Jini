@@ -28,7 +28,7 @@ import {
   slugifyArtifactIdentifier,
   type ArtifactStubGuardConfig,
   type PriorArtifactSibling,
-} from './stub-guard.js';
+} from '../stub-guard.js';
 
 describe('slugifyArtifactIdentifier', () => {
   it('lowercases and hyphenates non-alphanumeric runs', () => {

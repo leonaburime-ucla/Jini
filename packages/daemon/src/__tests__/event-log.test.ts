@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createInMemoryEventLog } from './event-log.js';
+import { createInMemoryEventLog } from '../event-log.js';
 
 describe('createInMemoryEventLog — ordered append + replay', () => {
   it('assigns strictly increasing string cursors in append order', async () => {

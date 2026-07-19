@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import * as artifacts from './index.js';
+import * as artifacts from '../index.js';
 
 describe('artifacts barrel', () => {
   it('re-exports the public surface of every artifacts module', () => {

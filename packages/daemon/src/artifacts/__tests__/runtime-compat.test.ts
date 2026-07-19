@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeRuntimeCompatNormalizers, noopRuntimeCompatNormalizer, type RuntimeCompatNormalizer } from './runtime-compat.js';
+import { composeRuntimeCompatNormalizers, noopRuntimeCompatNormalizer, type RuntimeCompatNormalizer } from '../runtime-compat.js';
 
 describe('noopRuntimeCompatNormalizer', () => {
   it('returns the body unchanged', () => {

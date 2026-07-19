@@ -6,7 +6,7 @@ import {
   sanitizeManifest,
   validateArtifactManifestInput,
   type ArtifactManifestTaxonomy,
-} from './manifest.js';
+} from '../manifest.js';
 
 const taxonomy: ArtifactManifestTaxonomy = {
   allowedKinds: new Set(['html', 'markdown']),
