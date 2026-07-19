@@ -55,4 +55,15 @@ describe('@jini/http barrel', () => {
     expect(typeof HttpBarrel.isLoopbackPeerAddress).toBe('function');
     expect(typeof HttpBarrel.localOriginFromHeader).toBe('function');
   });
+
+  it('re-exports the api security middlewares', () => {
+    expect(typeof HttpBarrel.registerApiBearerAuthMiddleware).toBe('function');
+    expect(typeof HttpBarrel.registerApiOriginGuardMiddleware).toBe('function');
+  });
+
+  it('re-exports the route-registration guard', () => {
+    expect(typeof HttpBarrel.installRouteRegistrationGuard).toBe('function');
+    expect(typeof HttpBarrel.getRouteRegistrationInventory).toBe('function');
+    expect(typeof HttpBarrel.guardedRouteKey).toBe('function');
+  });
 });
