@@ -108,6 +108,37 @@ function canonicalizePathForContainment(value: string): string {
   }
 }
 
+// A containment *candidate* (e.g. a project root that hasn't been imported/
+// created yet) may not fully exist on disk, so a bare realpath attempt
+// throws. Unlike `canonicalizePathForContainment` above — used only for the
+// *configured allowed roots*, which are expected to already exist when they
+// matter — this walks up to the nearest existing ancestor, realpaths that,
+// and rejoins the not-yet-existing suffix. Without this, comparing a raw
+// candidate against a realpath'd allowed root misfires whenever the roots
+// sit under a symlinked prefix (macOS's /tmp -> /private/tmp, /var ->
+// /private/var): the candidate would keep the raw prefix while the allowed
+// root was resolved through the symlink, so a legitimately-nested path
+// would look like it climbs above the root.
+function canonicalizeContainmentCandidate(value: string): string {
+  const resolved = path.normalize(value);
+  let existing = resolved;
+  const trailingSegments: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(existing), ...trailingSegments);
+    } catch {
+      // `path.dirname(x) === x` is the fixed point for both an absolute
+      // filesystem root ('/') and a relative reference ('.') — walking
+      // further would just retry the same path forever, so bail out to the
+      // raw normalized value instead of looping.
+      const parent = path.dirname(existing);
+      if (parent === existing) return resolved;
+      trailingSegments.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
 function isPathInsideDir(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -134,7 +165,7 @@ export function isSandboxImportedProjectRootAllowed(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   if (!isSandboxModeEnabled(config, env)) return true;
-  const candidate = canonicalizePathForContainment(projectRoot);
+  const candidate = canonicalizeContainmentCandidate(projectRoot);
   return sandboxImportAllowedRoots(config, env).some((root) => isPathInsideDir(root, candidate));
 }
 

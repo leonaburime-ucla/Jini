@@ -79,6 +79,14 @@ export function createFsAttachmentStaging(cwd: string, options: AttachmentStagin
       const uploadRootReal = uploadRoot ? await fs.promises.realpath(uploadRoot).catch(() => null) : null;
       await fs.promises.mkdir(stagingDir, { recursive: true });
       await pruneStagedAttachments(stagingDir, maxAgeMs);
+      // `root` is guaranteed to exist at this point (the recursive mkdir above
+      // created it if it didn't already). Resolve its real path once so the
+      // "already inside cwd" check below compares like-for-like against
+      // `real` (itself always realpath'd) — comparing a realpath'd candidate
+      // against a raw `root` misfires whenever `cwd` sits under a symlinked
+      // prefix (e.g. macOS's /tmp -> /private/tmp, /var -> /private/var),
+      // causing an unnecessary copy instead of returning the path as-is.
+      const rootReal = await fs.promises.realpath(root).catch(() => root);
 
       const staged: string[] = [];
       for (const inputPath of imagePaths) {
@@ -89,7 +97,7 @@ export function createFsAttachmentStaging(cwd: string, options: AttachmentStagin
           if (uploadRootReal && !isWithinRoot(uploadRootReal, real)) continue;
           const stat = await fs.promises.stat(real);
           if (!stat.isFile()) continue;
-          if (isWithinRoot(root, real)) {
+          if (isWithinRoot(rootReal, real)) {
             staged.push(real);
             continue;
           }
