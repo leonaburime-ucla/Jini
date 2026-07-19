@@ -337,3 +337,35 @@ named as "plausibly generic" (`chat.ts`, `runs.ts`, `terminal.ts`, `telemetry.ts
 This is a partial port by design, not an incomplete one: the 32-file classification
 above is complete and is this task's primary deliverable regardless of how much
 porting followed it.
+
+## 2026-07-19 addition — `api-security-middleware.ts` + `route-registration-guard.ts` (node-host keystone task)
+
+Ported as part of `@jini/node-host`'s `createLocalNodeDaemon` keystone task (see
+`packages/node-host/source-map.md`) — these two files are the security/inventory middleware
+`createLocalNodeDaemon` assembles onto its Express app, but they live here rather than in
+`node-host` because they are pure `@jini/http` transport concerns (Express middleware, no daemon
+composition logic), consistent with this package's existing role as "HTTP/SSE transport + route-
+pack registrar." Origin: `apps/daemon/src/http/api-security-middleware.ts` and
+`apps/daemon/src/route-registration-guard.ts` on the user's `arch/server-startserver-endgame`
+branch (`leonaburime-ucla/open-design`, reference-only clone at
+`/Users/la/Desktop/Programming/OSS-Repos/open-design`), read via `git show` (branch not checked
+out there).
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/api-security-middleware.ts` | `apps/daemon/src/http/api-security-middleware.ts` (new file on the barrel branch) | `registerApiBearerAuthMiddleware`/`registerApiOriginGuardMiddleware`, genericized. Bearer-auth config (`ApiTokenAuthEnvConfig`) is injectable, consuming `@jini/core`'s `isApiTokenMiddlewareEnabled`/`apiTokenFromEnv`. The origin guard reuses this package's **own** `origin-validation.ts` (not `@jini/core`'s separate copy — see "Known duplication" below). **Dropped** (all OD-product-specific, no generic meaning): the project-preview-scope GET exemption, the zero-config "OD Clipper" browser-extension bypass, the live-artifacts-preview bypass, and the `Origin: null` safe-GET allow-list regex (`_NULL_ORIGIN_SAFE_GET_RE`, which named literal OD routes) — `Origin: null` is therefore now always rejected, not conditionally allowed. |
+| `src/route-registration-guard.ts` | `apps/daemon/src/route-registration-guard.ts` (already generic) | `installRouteRegistrationGuard`/`getRouteRegistrationInventory`/`guardedRouteKey`, logic verbatim. The origin's hardcoded 2-route `guardedRouteKeys` Set (`POST /api/projects/:id/export/pdf`, `.../media/generate` — both OD product routes) is now an injectable `ReadonlySet<string>` parameter, default empty. `guardedRouteKey` additionally takes the guarded set as an explicit third parameter (was a closure-captured module-level Set in the origin) so it stays a pure, independently unit-testable function. |
+
+**Known duplication, not fixed here (flagged as follow-up):** `@jini/core` has its own
+`origin-validation.ts` (a separately-injectable-`env`-config variant), ported on a different task
+than this package's own `origin-validation.ts`. `api-security-middleware.ts` deliberately uses
+*this* package's copy (`allowedBrowserPorts`/`isAllowedBrowserOrigin` from the sibling file) rather
+than `@jini/core`'s, so the new middleware stays consistent with `guardSameOrigin`/`adapter.ts`'s
+existing behavior instead of introducing a second, independently-configurable origin decision into
+the same request path. Consolidating the two copies is real, valuable follow-up work — out of
+scope here since it would mean editing already-tested `adapter.ts`/`origin.ts` internals for a
+different task's blast radius.
+
+Tests: `src/__tests__/api-security-middleware.test.ts`, `src/__tests__/route-registration-guard.test.ts`
+— 100% coverage on all 4 metrics, no new dependencies (both files use only this package's existing
+exports plus `express`, already a dependency).
