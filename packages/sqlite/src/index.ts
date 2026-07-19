@@ -8,3 +8,4 @@
 export * from './event-log.js';
 export * from './backend-config.js';
 export * from './db-inspect.js';
+export * from './db/index.js';
