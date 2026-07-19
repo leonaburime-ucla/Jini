@@ -50,7 +50,31 @@ export type RunAgentPayload =
   | { type: 'tool_input_delta'; id: string; name: string; delta: string }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
   | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number }
-  | { type: 'raw'; line: string };
+  | { type: 'raw'; line: string }
+  /**
+   * Announces a named sub-stage of a multi-step agent run beginning/ending — generic scaffolding
+   * for any driver that structures its work into stages (a build pipeline, a multi-pass review,
+   * a plan/execute/verify loop), not tied to any one product's own pipeline concept. Added for
+   * `@jini/agui`'s generalization of OD's `pipeline_stage_started`/`pipeline_stage_completed`
+   * events — see `packages/agui/source-map.md` for the full reasoning and two-consumer
+   * justification. Flows through the existing `RunLifecycle.emit('agent', ...)` channel exactly
+   * like `tool_use`/`tool_result` already do; no driver in this codebase produces these yet.
+   */
+  | { type: 'stage_start'; stageId: string; label?: string; iteration?: number }
+  | { type: 'stage_end'; stageId: string; iteration?: number }
+  /**
+   * A human-in-the-loop request/response pair: the agent asks a structured question (with an
+   * opaque, caller-defined `payload`) and gets an arbitrary `value` back. Generic scaffolding for
+   * "the agent needs the user to answer something mid-run" — not a UI component/data-binding
+   * protocol (see the real, much larger A2UI spec at a2ui.org for that different, out-of-scope
+   * problem). Added for `@jini/agui`'s generalization of OD's `genui_surface_request`/
+   * `genui_surface_response`/`genui_surface_timeout` events — see `packages/agui/source-map.md`.
+   * A timeout is represented as a `surface_response` with `respondedBy: 'auto'`, mirroring OD's
+   * own collapsing of its two response-shaped event kinds into one. No driver in this codebase
+   * produces these yet.
+   */
+  | { type: 'surface_request'; surfaceId: string; surfaceKind: 'form' | 'choice' | 'confirmation' | 'oauth-prompt'; payload: unknown }
+  | { type: 'surface_response'; surfaceId: string; value: unknown; respondedBy: 'user' | 'agent' | 'auto' | 'cache' };
 
 export type RunProtocolEvent =
   | RunEvent<'start', RunStartPayload>
