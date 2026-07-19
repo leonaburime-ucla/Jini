@@ -426,3 +426,97 @@ call, plus an already-aborted and a mid-flight external `AbortSignal`),
 output truncation (both the truncated and untruncated string cases, plus
 non-string pass-through), and audit-record retrieval (including the
 `null` case for an unknown id).
+
+## run/ — generic run-orchestration primitives (2026-07-18)
+
+Origin: `apps/daemon/src/run/` — OD's run capability-barrel
+(`analytics/ artifacts/ core/ diagnostics/ tools/`). Only the product-neutral
+run-*orchestration* primitives were ported; the execution engine
+(`apps/daemon/src/runtimes/`) was already ported to `@jini/agent-runtime` and
+is NOT re-ported here.
+
+### File map (`src/run/`)
+
+- `core/result.ts` — `RunResult`, `RunStatusForAnalytics`,
+  `runResultFromStatus`, `deriveRunErrorCode`. Faithful lift; the
+  "`failed` always carries a non-empty `error_code`" invariant and its
+  `AGENT_SIGNAL_*` / `AGENT_EXIT_*` / `AGENT_TERMINATED_UNKNOWN` fallback chain
+  are the load-bearing bit. Zero external deps.
+- `core/failure-taxonomy.ts` — neutral string-literal unions
+  (`RunFailureCategory` / `RunFailureDetail` / `RunFailureStage` /
+  `RunFailureResult` / `RunRetryStrategy` / `RunRetrySuppressedReason`)
+  replacing the `@open-design/contracts/analytics` `Tracking*` import. The
+  single vendor-account-balance detail (`amr_insufficient_balance`) was dropped
+  as product-specific; everything else is a generic failure vocabulary. This is
+  a declaration-only module (emits no JS under `isolatedModules` /
+  `verbatimModuleSyntax`), so it has nothing to cover.
+- `core/retry.ts` — the safe-run retry policy: backoff constants,
+  `computeRetryBackoffMs` (exponential + equal jitter, injectable `random`),
+  and `decideSafeRunRetry` (transient-vs-non-retryable classification + the
+  side-effect guards that suppress a retry once a run produced user-visible
+  output / a tool call / an artifact). This is the run-orchestration keystone.
+  Two redundant `?.` optional-chains on the already-null-checked `failure`
+  were dropped (they compiled to an unreachable branch v8 could never cover —
+  same dead-branch discipline as `tool-executor.ts`'s `finally` note above).
+- `diagnostics/diagnostics.ts` — post-run stderr/stdout tail collection
+  (line-count bucketing, last-20-lines + 4 KB byte cap, truncation flags) and
+  `summarizeRunDiagnosticsForAnalytics` (scans the event stream for the
+  diagnostic source, rpc-close reason, and observed-flag signals). **Genericized
+  one dependency:** OD hard-imported `redactSecrets` from a daemon-local
+  `redact.ts`; here the tail redactor is an injected `TailRedactor` (identity
+  default) so the engine owns the tail *mechanism* while a consumer supplies the
+  scrubbing *policy* (e.g. `@jini/core`'s `redactSecrets`). This also keeps the
+  module dependency-free.
+- `core/index.ts`, `diagnostics/index.ts`, `run/index.ts` — barrels; the root
+  `run/index.ts` re-exports only the ported surface (explicit named exports).
+  Wired into `src/index.ts`.
+
+### Not ported / explicitly out of scope
+
+- **`runtimes/`** — already ported to `@jini/agent-runtime`; not re-ported.
+- **`run/diagnostics/failure.ts`** (the ~800-line `classifyRunFailure`) —
+  SKIPPED as product-saturated. It depends on `integrations/vela-errors.ts`
+  (a vendor account/auth product module) and `runtimes/auth.ts`, and its body is
+  a wall of vendor-specific regex (a specific model-router service, named
+  third-party agent CLIs, provider-specific non-English error strings). A
+  faithful lift would drag product classification in. The retry keystone stands
+  without it: `decideSafeRunRetry` consumes a `RunRetryFailureSignal` that a
+  consumer's own classifier supplies. The neutral taxonomy those signals use is
+  kept (`failure-taxonomy.ts`).
+- **`run/analytics/`** (`analytics.ts`, `lifecycle-tracer.ts`) — SKIPPED as OD
+  telemetry. `runtimeTypeForRunAnalytics` / `amrUserIdForRunAnalytics` bind to a
+  vendor sign-in status and model-router runtime types; the timing/usage
+  summarizers target that product's `run_finished` v2 analytics event and its
+  provider-specific token-usage alias matrix. Product, not engine.
+- **`run/artifacts/`** (`artifact-fs.ts`, `html-version-snapshots.ts`) —
+  SKIPPED (overlap + product). `artifact-fs` depends on
+  `runtimes/run-artifacts.ts`'s design-system/preview-module path taxonomy
+  (`DESIGN.md`, `preview/*.html` — OD design-output concepts) and overlaps the
+  already-ported `src/artifacts/`; `html-version-snapshots` depends on
+  `@open-design/contracts` + a product project-file-versioning service.
+- **`run/tools/tool-bundle.ts`** — SKIPPED (belongs to the MCP barrel). It is
+  squarely MCP-config territory: it depends on `mcp-config.ts`'s
+  `sanitizeMcpServer` / `McpServerConfig` (not present anywhere in `@jini/*`;
+  a separate `port/mcp-barrel` branch owns that surface) and
+  `runtimes/types.ts`'s `RuntimeAgentDef`. Porting it here would either
+  duplicate the MCP-config port or create a cross-barrel dependency.
+
+### Environment note
+
+The worktree's `packages/daemon/node_modules` symlinks into the main checkout,
+whose `@jini/core` **dist** is stale (missing `redact` / `tool-registry` /
+`internal`), which is why the pre-existing `tool-executor.{ts,test.ts}` fail to
+typecheck/run here. The ported `run/` modules are deliberately dependency-free
+(only relative imports), so all three test files run and typecheck without
+touching that stale cross-package dist.
+
+### Validation
+
+`pnpm --filter @jini/daemon typecheck`: no errors in `src/run/**` (the only
+remaining errors are the pre-existing `tool-executor` ones from the stale main
+dist described above). Coverage (`vitest run` over the three new test files,
+`--coverage.include` scoped to the executable modules): `result.ts`,
+`retry.ts`, and `diagnostics.ts` all 100% statements / branches / functions /
+lines (66 tests). `failure-taxonomy.ts` is declaration-only (no executable
+statements). `grep -rInE 'Open Design|OD_|open-design|/tmp/open-design'` over
+the changed files: empty.
