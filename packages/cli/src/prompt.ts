@@ -92,8 +92,8 @@ export interface ReadBodyFromFlagsOptions {
  * `undefined` when neither flag is present, so callers can distinguish "not
  * provided" from an intentionally empty body — unlike {@link
  * readPromptFromFlags}, which treats an empty `--prompt` as unset, this
- * primitive's origin caller (`memory entry edit`) needs to allow clearing a
- * body to an empty string.
+ * primitive's origin caller (`od memory tree edit`) needs to allow clearing
+ * a body to an empty string.
  */
 export async function readBodyFromFlags(
   flags: BodyFlags,
