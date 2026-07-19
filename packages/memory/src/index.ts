@@ -3,12 +3,16 @@
  *
  * Generic daemon-side memory/notes capability: a frontmatter-backed note
  * store (`note-store.ts`), a bounded extraction-attempt log
- * (`extraction-log.ts`), and a pure self-verify scorecard enforcer
- * (`verify.ts`). See `source-map.md` for provenance and the scope decisions
- * (what was generalized vs. explicitly left OD-side).
+ * (`extraction-log.ts`), a pure self-verify scorecard enforcer
+ * (`verify.ts`), and a labeled-line rule-body parser (`rule-body.ts`). See
+ * `source-map.md` for provenance and the scope decisions (what was
+ * generalized vs. explicitly left OD-side).
  */
 export type { EntryFrontmatter } from './entry-frontmatter.js';
 export { parseEntryFrontmatter, renderEntryFrontmatter } from './entry-frontmatter.js';
+
+export type { ParsedRuleBody } from './rule-body.js';
+export { parseRuleBody } from './rule-body.js';
 
 export type {
   NoteChangeEvent,
