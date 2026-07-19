@@ -369,3 +369,91 @@ different task's blast radius.
 Tests: `src/__tests__/api-security-middleware.test.ts`, `src/__tests__/route-registration-guard.test.ts`
 — 100% coverage on all 4 metrics, no new dependencies (both files use only this package's existing
 exports plus `express`, already a dependency).
+
+## 2026-07-19 — Fastify transport split
+
+Everything described above (the "File map" table, the `routes/` classification, and the
+`api-security-middleware.ts`/`route-registration-guard.ts` addition) predates this section and
+described an **Express-only world**. This package is now transport-plural: it ships two
+independent, idiomatically-native transport subtrees plus a small shared root.
+
+### Layout
+
+```
+src/
+  types.ts               shared: Result/route-spec types (framework-agnostic)
+  origin-validation.ts   shared: same-origin/allow-list predicates (framework-agnostic)
+  pack-http.ts           shared: mountPackHttp (app typed `unknown`, never Express-specific)
+  index.ts               shared: root barrel — re-exports the three files above,
+                          plus `export * as express` / `export * as fastify` namespaces
+  express/               every file from the "File map"/"routes/" sections above, unmoved in kind,
+                          moved from src/ root into this subdirectory
+  fastify/               an independent reimplementation of the same nine jobs, native to Fastify's
+                          own hook/plugin model instead of Express's middleware/req/res model
+```
+
+Every symbol a consumer previously imported from the package root (`adapter.ts`, `compat.ts`,
+`daemon-status.ts`, `local-daemon-request.ts`, `origin.ts`, `request.ts`, `response.ts`,
+`route-registration-guard.ts`, `api-security-middleware.ts`) now lives under `express/` — this is a
+breaking import-path change for any pre-existing caller, accepted deliberately since there is
+exactly one caller of this package in the repo (`@jini/node-host`) and it was updated in the same
+change (see that package's own source-map.md).
+
+### `transport?: 'express' | 'fastify'` — the config surface this enables
+
+`@jini/node-host`'s `createLocalNodeDaemon` is the only consumer today; it takes a
+`transport?: 'express' | 'fastify'` option (default `'express'`) and wires the matching namespace
+off this package's barrel (`http.express.*` / `http.fastify.*`) for the route-registration guard,
+the two `/api` security middlewares, and the daemon-status routes. This package itself has no
+opinion on which transport a consumer picks — it just exposes both namespaces.
+
+### Design decision: deliberately duplicated, not a shared interface — with one exception
+
+`express/` and `fastify/`'s nine matching files (`adapter`, `api-security-middleware`, `compat`,
+`daemon-status`, `index`, `local-daemon-request`, `origin`, `request`, `response`,
+`route-registration-guard`) are **independent implementations of the same job, not two adapters
+behind one shared interface.** This was a deliberate choice, not an oversight: Express's
+middleware-chain model (`(req, res, next) => void`, `res.json(...)`, `app.use(...)`) and Fastify's
+hook/plugin model (`onRequest`/`onRoute` hooks, `reply.send(...)`, schema-validated route options)
+are different enough in shape that forcing them behind one abstraction would either leak one
+framework's idioms into the other's native surface, or flatten both down to a lowest-common-
+denominator API that fights each framework's own strengths (Fastify's schema-based validation and
+radix-tree routing, in particular, are not expressible through an Express-shaped adapter without
+losing most of their value). Each subtree is written the way an engineer fluent in that framework
+would write it, and each is independently tested to 100% coverage.
+
+**The one exception: `fastify/daemon-status.ts` reuses `express/daemon-status.ts`'s route-spec
+data directly** — `daemonStatusRoute`/`daemonShutdownRoute` are pure `defineJsonRoute`-shaped
+data plus framework-agnostic `parse`/`handle` functions (see that file's own doc). They never
+reference Express at runtime: `express/daemon-status.ts` only imports `type { Express }` for one
+parameter type, and TypeScript's `verbatimModuleSyntax` erases type-only imports from the compiled
+output entirely — verified there is zero runtime `express` dependency pulled into the `fastify/`
+subtree by this reuse. `fastify/daemon-status.ts`'s own job is only the Fastify-specific mounting
+wrapper (`registerDaemonStatusRoutes`, calling `./adapter.js`'s Fastify `mountJsonRoute`). This is
+the single case where sharing was correct instead of duplication: the route *data* (path, method,
+input parser, pure handler) has no framework opinion in it at all — only the *mounting glue* does,
+and that glue is what actually differs and stays independent per subtree.
+
+### `mountPackHttp` transport-agnosticism does not make a pack's own registrar portable
+
+Documented directly in `pack-http.ts`'s own module doc (see that file) and repeated here since it
+is a frequent point of confusion for pack authors: `mountPackHttp` only ever forwards `app`
+straight through, unmodified, to a pack's own `http(app, services)` registrar. That registrar
+still receives a transport-specific `app` — an Express-shaped handler calling `res.json(...)`
+throws (surfaced as a 500) if mounted on a raw Fastify instance, since Fastify's `reply` has no
+`.json()` method (`reply.send(...)` is the equivalent, which auto-serializes a plain object with a
+200 default status). A pack that must run under both transports should branch on the app shape
+itself, or better, be written against this package's own `defineJsonRoute`/`mountJsonRoute` from
+the matching namespace, which does abstract the difference away. Proven concretely by
+`packages/node-host/src/__tests__/create-local-node-daemon.fastify-transport.test.ts`'s own
+`makePingPack()` fixture doc, which deliberately is NOT the same fixture the Express-transport
+suite uses for exactly this reason.
+
+### Tests
+
+337 tests across 21 test files, 100% coverage on all 4 metrics (statements/branches/functions/lines)
+for both `express/` and `fastify/` subtrees plus the shared root — reverified fresh as part of the
+Part A completion task (2026-07-19): `pnpm --filter @jini/http exec vitest run --coverage
+--coverage.include='src/**'` → 337 passed, 100/100/100/100 across every file. No coverage gaps were
+found in this package itself; the gaps closed in this pass were one layer up, in
+`@jini/node-host`'s integration suite — see that package's own source-map.md.

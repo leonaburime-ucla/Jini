@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
@@ -13,13 +13,13 @@ import { createLocalNodeDaemon, type LocalNodeDaemon } from '../create-local-nod
  * `create-local-node-daemon.test.ts` suite already exhaustively covers for the default
  * (`'express'`/omitted) transport: a caller pack's own route, `GET /api/daemon/status`, a bearer
  * 401 when a token is configured, and `stop()`. This file intentionally does NOT re-derive every
- * edge case from that suite (origin-guard branch matrix, EADDRINUSE, onShutdown ordering, etc.) —
- * that logic lives in the transport-agnostic boot-completion tail both branches share, and is
- * already fully exercised via the default transport. What is NOT yet covered here (left for a
- * follow-up pass, see the branch's handoff note): the loopback-vs-non-loopback 401 branch (the
- * sibling suite's `findExternalIPv4Address()`-gated test was not duplicated for Fastify), and the
- * Fastify-specific `.listen()` rejection paths (EADDRINUSE, invalid port) analogous to the
- * Express branch's own `app.listen()` throw/`'error'`-event tests.
+ * edge case from that suite (origin-guard branch matrix, onShutdown ordering, etc.) — that logic
+ * lives in the transport-agnostic boot-completion tail both branches share, and is already fully
+ * exercised via the default transport. It DOES independently cover the loopback-vs-non-loopback
+ * 401 branch and Fastify's own `.listen()` rejection paths (EADDRINUSE, invalid port) below,
+ * since those two are the genuine per-transport slivers documented in this module's own
+ * top-of-file doc (`app.listen()`'s API — and therefore its rejection shape — is one of the few
+ * places the two transports do not converge).
  *
  * Important finding from writing this suite: `makePingPack()` below is deliberately NOT the same
  * fixture the sibling suite uses — that one's handler calls Express's `res.json(...)`, which does
@@ -55,6 +55,19 @@ function makeTempDataDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'jini-node-host-fastify-test-'));
   tempDirs.push(dir);
   return dir;
+}
+
+/** The first routable, non-loopback IPv4 address this machine has, or `null` if none — see the
+ * sibling Express suite's identical helper for the full rationale. Duplicated rather than shared
+ * because these two test files intentionally do not import from each other. */
+function findExternalIPv4Address(): string | null {
+  const ifaces = networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const iface of entries ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return null;
 }
 
 afterEach(() => {
@@ -145,6 +158,26 @@ describe('createLocalNodeDaemon({ transport: "fastify" })', () => {
     expect(res.status).toBe(200);
   });
 
+  const lanAddress = findExternalIPv4Address();
+  // Same rationale as the Express suite's own `lanAddress`-gated test (see its comment): the
+  // bearer-auth middleware unconditionally exempts loopback peers, so the 401 branch can only be
+  // observed via a real, non-loopback TCP connection. The unit-level loopback/non-loopback branch
+  // already has 100% coverage in packages/http/src/fastify/__tests__/api-security-middleware.test.ts
+  // — this test's job is only to prove the real, assembled Fastify pipeline rejects too.
+  it.skipIf(lanAddress == null)(
+    'rejects a non-loopback caller with 401 when apiToken is configured and no bearer token is sent (Fastify onRequest hook gate)',
+    async () => {
+      process.env.JINI_API_TOKEN = 'integration-secret';
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify', host: '0.0.0.0' });
+      daemonsToStop.push(daemon);
+
+      const port = Number(new URL(daemon.url).port);
+      const res = await fetch(`http://${lanAddress}:${port}/api/ping`);
+      expect(res.status).toBe(401);
+    },
+  );
+
   it('rejects a disallowed cross-origin POST with 403 (Fastify onRequest origin-guard hook)', async () => {
     const dataDir = makeTempDataDir();
     const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
@@ -179,5 +212,32 @@ describe('createLocalNodeDaemon({ transport: "fastify" })', () => {
       },
       { timeout: 2000 },
     );
+  });
+
+  // Fastify's `app.listen(...)` is promise-based end to end — unlike Express's `http.Server#listen`
+  // (which throws synchronously for some errors and emits an async `'error'` event for others, per
+  // the sibling suite's own two separate tests for that), Fastify's own `.listen()` always settles
+  // its returned promise for either failure mode, so a single rejection assertion covers both
+  // shapes here. These prove the Fastify branch's `listen` closure (`create-local-node-daemon.ts`'s
+  // `if (config.transport === 'fastify')` arm) actually propagates a real Fastify listen failure
+  // into the shared `failToBind` tail, rather than that tail having only ever been exercised via
+  // the Express branch.
+  it('rejects rather than hanging when a second Fastify instance boots on a port already in use (EADDRINUSE)', async () => {
+    const dataDirA = makeTempDataDir();
+    const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemonA);
+    const fixedPort = Number(new URL(daemonA.url).port);
+
+    const dataDirB = makeTempDataDir();
+    await expect(
+      createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()], transport: 'fastify', port: fixedPort }),
+    ).rejects.toThrow();
+  });
+
+  it('propagates an out-of-range port from Fastify app.listen() as a rejection', async () => {
+    const dataDir = makeTempDataDir();
+    await expect(
+      createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify', port: 70_000 }),
+    ).rejects.toThrow();
   });
 });

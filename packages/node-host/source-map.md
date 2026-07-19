@@ -106,9 +106,11 @@ within a single process, verified empirically before relying on it), so that ass
 not have proven anything. The bearer-auth 401 case is gated behind
 `it.skipIf(lanAddress == null)` — the middleware unconditionally exempts loopback peers by design,
 so observing a real 401 requires a genuine non-loopback TCP connection; the underlying branch logic
-already has full unit coverage in `packages/http/src/__tests__/api-security-middleware.test.ts`
+already has full unit coverage in `packages/http/src/express/__tests__/api-security-middleware.test.ts`
 regardless of whether this particular integration test can run in a given sandbox. 100% coverage
-on all 4 metrics (statements/branches/functions/lines), 49 tests, 3 test files.
+on all 4 metrics (statements/branches/functions/lines). Test-count/file-count is stated fresh in
+the "2026-07-19" section below, since the Fastify transport split added a second integration suite
+after this section was first written.
 
 ## Dependencies
 
@@ -117,5 +119,70 @@ on all 4 metrics (statements/branches/functions/lines), 49 tests, 3 test files.
 `createRunLifecycle`/`EventLogToken`/`RunLifecycleToken`. `@jini/sqlite` (workspace) —
 `createSqliteEventLog`. `@jini/http` (workspace) — the route-pack registrar, the two security
 middlewares, the route-registration guard, `configuredAllowedOrigins`, and the generic daemon-status
-routes. `express` (`^4.21.0`) + `@types/express` (devDependency) — this package's own composition
-root creates the real Express app.
+routes, from either its `express` or `fastify` namespace (see below). `express` (`^4.21.0`) +
+`@types/express` (devDependency), and `fastify` (`^5.10.0`) — this package's own composition root
+creates the real Express or Fastify app depending on `transport`.
+
+## 2026-07-19 — `transport: 'express' | 'fastify'` switch
+
+`CreateLocalNodeDaemonConfig.transport` (default `'express'`, for drop-in compatibility with every
+existing caller) picks which of `@jini/http`'s two transport namespaces (`express`/`fastify`, see
+that package's own source-map.md "Fastify transport split" section) assembles the HTTP app. Both
+branches wire the matching namespace's route-registration guard, `/api` bearer-auth and
+origin-guard middleware, and daemon-status routes; `mountPackHttp` is already transport-agnostic
+(see `@jini/http`'s `pack-http.ts`) and is therefore called once, outside the branch, not
+duplicated per transport.
+
+**Where the two transports converge vs. diverge, concretely:** everything from bound-port
+resolution (`resolveBoundPort`) through `stop()`'s graceful shutdown is one shared, transport-
+agnostic implementation — both branches produce the same raw `node:http` `Server` (Fastify exposes
+its own internal one via `app.server`) before that shared tail runs. The one place the two
+transports' own APIs genuinely do not converge is `listen()`: Express's `http.Server#listen` throws
+synchronously for some errors (e.g. an out-of-range port) and emits an async `'error'` event for
+others (e.g. `EADDRINUSE`, on this Node/OS combination) — both paths are wired into one `Promise`
+inside the Express branch's `listen` closure. Fastify's own `app.listen({port, host})` is
+promise-based end to end and always settles its returned promise for either failure shape, needing
+no such dual wiring. `stop()` closes the shared raw `Server` directly rather than calling Fastify's
+own `app.close()`, so a Fastify-transport daemon skips Fastify's own `onClose` plugin-lifecycle
+hook run on shutdown — a known, accepted gap since no caller in this codebase registers one today.
+
+**`mountPackHttp` being transport-agnostic does not make a pack's own `http(app, services)`
+registrar portable across transports** — this is documented in full in `@jini/http`'s own
+`pack-http.ts` module doc and its source-map.md, and is why this package's two integration test
+files (`create-local-node-daemon.test.ts` for Express, `create-local-node-daemon.fastify-transport.test.ts`
+for Fastify) deliberately use two different `makePingPack()` fixtures rather than sharing one — an
+Express-shaped handler calling `res.json(...)` throws (surfaced as a 500) when mounted on a raw
+Fastify instance, since Fastify's `reply` has no `.json()` method.
+
+### Coverage gaps closed in this pass (Part A completion, 2026-07-19)
+
+The Fastify integration suite originally shipped as a smaller "smoke coverage" pass (see that
+file's own prior module doc) that explicitly named three gaps left for a follow-up. All three are
+now closed:
+
+1. **The loopback-vs-non-loopback bearer-401 branch, at the assembled-pipeline level.** The
+   Express suite's `it.skipIf(lanAddress == null)`-gated test (a real non-loopback TCP connection is
+   needed to observe the 401, since the middleware unconditionally exempts loopback peers) now has
+   a Fastify equivalent in `create-local-node-daemon.fastify-transport.test.ts`, gated the same way.
+   The underlying unit-level branch itself already had 100% coverage in
+   `packages/http/src/fastify/__tests__/api-security-middleware.test.ts` before this pass — this
+   closes the *integration*-level gap specifically, mirroring the Express suite's own stated
+   rationale for why that level of proof matters independently.
+2. **Fastify's own `.listen()` rejection paths.** Two new tests
+   (`rejects rather than handing when a second Fastify instance boots on a port already in use
+   (EADDRINUSE)`, `propagates an out-of-range port from Fastify app.listen() as a rejection`) prove
+   the Fastify branch's `listen` closure actually propagates a real Fastify listen failure into the
+   shared `failToBind` tail — previously only the Express branch's dual sync-throw/`'error'`-event
+   path had been independently exercised for this.
+3. **No saved dual-boot smoke-test artifact existed.** Added
+   `packages/node-host/scripts/dual-boot-smoke.ts` — a standalone (non-vitest, not coverage-counted)
+   script that boots `createLocalNodeDaemon` twice, once per transport, and for each: fetches a
+   caller-defined pack route, fetches `GET /api/daemon/status`, confirms the bearer-401 branch via a
+   real non-loopback connection (gracefully skipped with a printed note on a fully loopback-only
+   sandbox), and confirms `stop()` closes the listener. Run via
+   `pnpm --filter @jini/node-host exec tsx scripts/dual-boot-smoke.ts`. Its last captured output is
+   in the Part A completion report (this task's handoff), reproduced in full for posterity — both
+   transports passed every check on the machine this port was verified on.
+
+Test suite is now 60 tests across 4 files (was 57/4 before this pass — the Fastify suite gained the
+3 tests above), still 100% coverage on all 4 metrics.

@@ -16,6 +16,16 @@
  * §10 task 6) is explicitly out of scope here — no `ToolExecutor` exists in this codebase yet.
  * `mountPackHttp` only wires the transport-neutral pack composition already built in
  * `@jini/core`; a future task adds delegate injection once the boundary itself exists.
+ *
+ * **Note for pack authors:** `mountPackHttp` being transport-agnostic does NOT make a pack's own
+ * `http(app, services)` registrar automatically portable across transports. `app` is still the
+ * concrete Express or Fastify instance the caller assembled — an Express-shaped handler that calls
+ * `res.json(...)` throws when mounted on a Fastify `reply` (no such method exists there; Fastify's
+ * equivalent is `reply.send(...)`), and vice versa. A pack that must run under either transport
+ * should either branch on the app shape itself, or (preferred) be written against `@jini/http`'s
+ * own `defineJsonRoute`/`mountJsonRoute` from the matching `express`/`fastify` namespace, which do
+ * abstract that difference away. See `source-map.md`'s "2026-07-19 — Fastify transport split"
+ * section for the concrete before/after this was discovered against.
  */
 import type { Daemon, Pack } from '@jini/core';
 
