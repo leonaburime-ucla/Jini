@@ -2,13 +2,15 @@
 
 Continues `session-handoff-2026-07-18-barrel-ports.md` (same day, later session). Read that one first for the barrel-porting method and the disaster-recovery story; this one picks up from its "NEXT STEPS" list.
 
+**Update (same session, later):** the daemon can now also **run a real coding agent**, not just boot — see the `AgentExecutor` section near the end of this file. `main` is now at `a2c598490`.
+
 ## TL;DR
 
 **The daemon now actually boots.** `createLocalNodeDaemon` in `@jini/node-host` — previously a 1-line placeholder, the single most-cited gap in `AGENTS.md`'s ⚠️ PORT STATUS callout — is implemented, tested, and independently verified end-to-end: it assembles `@jini/sqlite`'s `EventLog`, `@jini/daemon`'s `RunLifecycle`, an Express app behind new `@jini/http` security middleware, and a caller's `@jini/core` packs into a real listening process that serves a caller's own routes plus `/api/daemon/status`, and shuts down cleanly. Verified by booting it directly (not via a test file) from a fresh script, twice — once against the isolated worktree's build, once again against fully-integrated `main` after all merges landed.
 
 Four independent workstreams ran **in parallel** this session (5 counting the paused audit), each in its own isolated `git worktree`, zero file-level collisions, all independently verified and merged by the Coordinator before merging. This is the first session that ran multiple porting agents concurrently rather than serially.
 
-State: `main` == `origin/main` at `fc60c765d`, working tree clean, everything pushed. 1312 tests passing across all 9 touched packages on the fully-integrated tree.
+State: `main` == `origin/main` at `fc60c765d` at the time this section was written (superseded — see the `AgentExecutor` update above). 1312 tests passing across all 9 touched packages on the fully-integrated tree at that point.
 
 ## What got done this session (all merged + pushed, in landing order)
 
@@ -43,20 +45,46 @@ Ran 4 Programmer-persona agents concurrently (keystone, db-port-finish, cli/memo
 - Coverage discipline: 100% on all four metrics, `--coverage` flag required (not just `--coverage.include`, see gotcha above). Command: `pnpm --filter <pkg> exec vitest run --coverage --coverage.include='src/**'`.
 - Before porting a "god function," check what's already been independently ported as reusable primitives underneath it — the keystone task turned out to need far less new porting than expected because `@jini/core`'s DI kernel (`createDaemon`/`definePack`/`bindings`) and half of `@jini/http`'s security-predicate logic (`api-token-auth.ts`, `origin-validation.ts`) already existed from *other* tasks. Cross-check with `codebase-memory-mcp`'s indexed call-graph of OD (already indexed, 277k nodes, `Users-la-Desktop-Programming-OSS-Repos-open-design` project) to confirm a god-function's callees really are all product routes before assuming a large port is needed.
 
-## Evidence inspected
+## Evidence inspected (node-host keystone section, above)
 
 `git log 6f361fc7d..HEAD` (this session's merge commits), live coverage runs re-executed independently by the Coordinator for every merged branch (not trusted from agent reports alone), two independent end-to-end boot tests against real built `dist/` output (isolated worktree, then fully-integrated `main`), `codebase-memory-mcp` graph queries against OD `main`'s indexed callgraph, `pnpm install` + full 9-package test suite run on integrated `main` post-merge.
+
+---
+
+## Update: `AgentExecutor` landed (same session, later)
+
+**The daemon can now actually run a coding agent, not just boot.** `AgentExecutor` (new `packages/daemon/src/agent-executor.ts`, `AgentExecutorToken`) is the driver `RunLifecycle`'s own module doc named as the missing piece: it wires `@jini/agent-runtime`'s registry/launch-resolution/stream-parsers (a complete, tested, but previously totally *disconnected* library — zero callers anywhere outside its own package, confirmed by grep) into a real `node:child_process.spawn`, feeds parsed events into `RunLifecycle.emit()` via a new pure `translateAgentRuntimeEvent()` function, and drives the run to a terminal `finish()`. Auto-bound in `createLocalNodeDaemon`'s default kernel bindings alongside `EventLog`/`RunLifecycle`.
+
+**Scope, explicit and important:** only 9 of the 24 built-in agent defs are wired (the JSON-stream-parser family — `claude-stream-json`/`json-event-stream`/`copilot-stream-json`/`qoder-stream-json` — including Claude and Codex, the two most-used). The other 15 (9 `acp-json-rpc`, 1 `pi-rpc`, 5 `plain`) are **explicitly deferred, documented, not silently missing** — a research pass caught that a naive "wire the registry" design would have quietly failed for 62% of the registry; `run()` rejects cleanly with a typed `AgentExecutorError` for any unsupported def rather than mishandling it. See `packages/daemon/source-map.md`'s new `AgentExecutor` section for the full breakdown and every other deferred piece (real-time tool-call gating — matches OD's own "observe only" behavior; retry-signal production — no failure classifier exists anywhere in this codebase, OD's was deliberately never ported; multi-turn tool-continuation — needs `ToolExecutor` wiring first; HTTP/SSE route exposure — the natural next layer).
+
+**Method note — a near-miss, caught and recovered correctly.** The implementing agent briefly worked in the *shared main checkout* instead of its assigned worktree (exactly the failure mode a prior session's disaster was), caught it before committing anything, and recovered using only `git diff`/`git apply`/`git apply -R` plus plain file copies — never a banned command (`reset`/`clean`/`stash`/`checkout <path>`). The Coordinator independently re-verified from scratch afterward: `git status`/`git diff origin/main`/reflog on the main checkout all confirmed genuinely clean before trusting anything else. **Takeaway for future dispatch prompts:** the hard-rule warnings aren't foolproof against a simple `cd` mistake — worth having agents echo `pwd` at the start of every shell block in worktree-isolated tasks, not just stating the rule once.
+
+**Verification performed:** 46 new tests, 100% coverage on `agent-executor.ts` (package-wide aggregate coverage numbers on `@jini/daemon` are misleading via the `--coverage.include='src/**'` CLI override — confirmed via `git diff`-free comparison against unmodified `main` that the `run-lifecycle.ts`/`event-log.ts`/`close-status.ts` gap is 100% pre-existing, and the package's own `vitest.config.ts` deliberately scopes its threshold to files with a real coverage commitment). Full `@jini/daemon` (350 tests) and `@jini/node-host` (50 tests) suites pass, no regressions. Repo-wide typecheck clean, neutrality grep clean, `pnpm guard` clean. Independently smoke-tested by the Coordinator (fresh script, not reused from the agent) against **real codex wire-format JSON** — verified against `json-event-stream.ts`'s actual parsing branches rather than fabricated — split mid-line across two stdout `data` chunks to prove chunk-boundary handling: `thread.started`→`status`, `item.started`(command_execution)→`tool_use`, `turn.started`→`status`, session-resume id correctly dropped (no `RunAgentPayload` field for it), stderr/stdout raw forwarding correct, `close`→`finish()` terminal transition correct. Re-ran clean against fully-integrated `main` after merge. Final full-suite pass across 7 touched/dependent packages: 2609 tests, zero failures.
+
+State: `main` == `origin/main` at `a2c598490`, working tree clean, everything pushed.
+
+## NEXT STEPS (updated, in priority order)
+
+1. **The ACP/pi-rpc driver — the largest remaining registry share (15 of 24 defs, 62%).** `attachAcpSession`/`attachPiRpcSession` (`packages/agent-runtime/src/agent-protocol/`) already call a `send(event, payload)` callback shaped almost exactly like `RunLifecycle`'s `DriverEmittableInput` — strong evidence this is meant to plug in the same way — but they own their own child-process I/O internally, return a synchronous controller instead of an awaitable spawn-confirmed outcome, and treat "completed successfully" as decoupled from process exit (their own code comment: a SIGTERM after clean completion is expected, not an error). Needs a second, structurally distinct `AgentExecutor` driver branch, not a copy-paste of the JSON-stream one.
+2. **HTTP/SSE route exposure.** `AgentExecutor`+`RunLifecycle` are both real and wired into `createLocalNodeDaemon`'s kernel bindings, but nothing calls them from an HTTP route yet — no pack exists that starts a run and streams it back over SSE. This is the natural "make it usable from outside the process" layer.
+3. **`ExecutionDelegate`/`ToolExecutorToken`/HTTP wiring** — still deferred from the node-host keystone task, still relevant now that agents are actually running and producing `tool_use` events a UI might eventually want to gate.
+4. **Fastify as a second `@jini/http` backend** — design already agreed (see the prior version of this section), still unstarted, still unblocked.
+5. **Resume the unverified-packages audit** (paused mid-run, memory-intensive) — 7 of 8 packages (`chat-react`, `renderers-react`, `deploy`, `registry`, `diagnostics`, `metatool`, `capability-providers`) still unchecked.
+6. **A real failure classifier** for `RunRetryFailureSignal` (currently `resumable` is hardcoded `false` — no producer exists anywhere) — a substantial, separately-scoped task if OD's ~20-vendor-CLI text-matching behavior is ever wanted back.
 
 ## Next-agent opening prompt (paste this to start the next session)
 
 > Read `AI-Dev-Shop/AGENTS.md`, then `AGENTS.md`, then
-> `ADS-memory/reports/session-handoff-2026-07-18-keystone-landed.md` (and the prior
-> `session-handoff-2026-07-18-barrel-ports.md` it continues, for the barrel-porting method).
-> **The daemon now boots** — `createLocalNodeDaemon` landed and is verified end-to-end. **Next: the
-> real "make it do something" gap** — no `AgentExecutor` kernel noun exists, `@jini/agent-runtime`'s
-> registry isn't wired to `@jini/daemon` anywhere, `ExecutionDelegate` isn't injected into HTTP. This
-> is unscoped — start by scoping it, it's the next keystone-scale task. Separately queued and
-> unblocked: a Fastify backend for `@jini/http` (design already agreed, see NEXT STEPS item 2). Use
-> an isolated `git worktree` per agent with its own fresh `pnpm install`, NEVER run
-> `git reset/clean/stash` on a shared tree, and independently verify coverage + diff + a real boot
-> test before merging. `main` is clean at `fc60c765d`, all pushed.
+> `ADS-memory/reports/session-handoff-2026-07-18-keystone-landed.md` in full (and the earlier
+> `session-handoff-2026-07-18-barrel-ports.md` it continues, for the barrel-porting method) — it has
+> two updates in it, read to the end. **The daemon now boots AND can run a real coding agent**
+> (`createLocalNodeDaemon` + `AgentExecutor`, both verified end-to-end) — but only for 9 of 24
+> registered agent defs (Claude/Codex/etc.); the other 15 need a structurally different driver
+> (ACP/pi-rpc) and are the single largest remaining scoped-but-unbuilt piece. **Next, in priority
+> order:** the ACP/pi-rpc driver, then HTTP/SSE route exposure (nothing calls `AgentExecutor` from
+> outside the process yet), then the still-deferred `ExecutionDelegate` HTTP wiring, then the
+> already-designed-but-unstarted Fastify backend for `@jini/http`. Use an isolated `git worktree` per
+> agent with its own fresh `pnpm install`, NEVER run `git reset/clean/stash` on a shared tree (and
+> tell agents to `pwd`-check before every shell command in a worktree task — a near-miss happened
+> this session), and independently verify coverage + diff + a real functional test (not just green
+> tests) before merging. `main` is clean at `a2c598490`, all pushed.
