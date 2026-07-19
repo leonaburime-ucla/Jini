@@ -117,3 +117,24 @@ export function positionalArgs(argv: readonly string[], opts: PositionalArgsOpti
   }
   return out;
 }
+
+/** The native type {@link coerceCliValue} can produce from a raw string flag value. */
+export type CoercedCliValue = boolean | number | string;
+
+const NUMERIC_LITERAL_RE = /^-?\d+(\.\d+)?$/;
+
+/**
+ * Coerce a raw `--flag <value>` string into its likely native type:
+ * `'true'`/`'false'` become booleans, a numeric-looking string becomes a
+ * `number`, and anything else passes through unchanged. Ported from OD's
+ * `cli.ts` `coerceCliValue` (see `source-map.md`) — used wherever a CLI
+ * accepts an untyped string flag value that application code should receive
+ * as its natural type (e.g. a config `set` command, or a plugin's dynamic
+ * `--input` flags forwarded as a JSON-typed payload).
+ */
+export function coerceCliValue(raw: string): CoercedCliValue {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (NUMERIC_LITERAL_RE.test(raw)) return Number(raw);
+  return raw;
+}

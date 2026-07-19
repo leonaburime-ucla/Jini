@@ -117,3 +117,104 @@ etc., following `packages/daemon/src/tokens.ts`'s naming precedent), `index.ts` 
 package is imported anywhere in `packages/cli/src/` (verified by `pnpm guard`'s
 OD-noun/import lint, extraction-plan §7). Node built-ins only
 (`node:process`, `node:fs/promises` for `readPromptFromFlags`'s file-read path).
+
+## Barrel branch reconciliation (`cli-capability-barrels`, 2026-07-18)
+
+A later task re-checked this package against OD's `cli-capability-barrels`
+branch (`git diff --stat main...cli-capability-barrels`: 115 files, the bulk
+of which is an unrelated `design-systems/` capability-barrel refactor that
+rode along on the same branch — ignored, out of scope for `@jini/cli`). That
+branch decomposes the same 9,885-line `cli.ts` this package was already
+ported from into a `cli/` directory (`core/` foundation kernel + one
+subdirectory per `od <subcommand>` family), per its own
+`apps/daemon/src/cli/README.md`: "mechanical, byte-identical moves — 252/253
+declaration bodies verified identical." Verified independently rather than
+trusted: diffed `cli/core/flags.ts`, `daemon-url.ts`, `errors.ts` against
+this package's existing `flags.ts`/`daemon-url.ts`/`errors.ts` — same logic,
+confirming no new port work there.
+
+**Two genuinely new, generic, OD-noun-free helpers found and ported** (both
+absent from the original `cli.ts`-based pass — this barrel is the first
+place they were read):
+
+- **`coerceCliValue`** (`cli/core/flags.ts:108`) — `'true'`/`'false'` →
+  boolean, a numeric literal → `number`, else pass through. Used by two
+  independent domains (`cli/system/config.ts:91,93` and
+  `cli/plugin/manage.ts:965` — `git grep coerceCliValue` on the branch
+  confirms both call sites), the same two-domain-reuse bar this package's
+  existing helpers were held to. Ported into `flags.ts` as `coerceCliValue`
+  (`CoercedCliValue` return type), tests in `__tests__/flags.test.ts`.
+- **`readMemoryBodyFromFlags`** (`cli/core/io.ts:15`) — the `--body`/
+  `--body-file`/stdin sibling of the already-ported `readPromptFromFlags`,
+  reused by `cli/memory/memory.ts:423` and `cli/automation/automation.ts:316`
+  (two independent domains, per `git grep readMemoryBodyFromFlags` on the
+  branch — the module's own docblock says as much: "Used by both the memory
+  and automation domains"). This was looked at and explicitly *not* ported
+  in the original pass (see the `readPromptFromFlags` row above: "the OD
+  callers each additionally support a `--body`/`--body-file` synonym pair,
+  which was not ported") — on closer reading here, that verdict undersold
+  it: it isn't a caller-local synonym, it's an independently-reused sibling
+  primitive with different semantics (empty `--body` counts as provided,
+  unlike empty `--prompt`; stdin is drained via async-iteration, not
+  event listeners). Ported into `prompt.ts` as `readBodyFromFlags` (de-branded
+  name — no memory-domain coupling in the logic itself), tests in
+  `__tests__/prompt.test.ts`.
+
+**`LIBRARY_STRING_FLAGS`/`LIBRARY_BOOLEAN_FLAGS`** (`cli/core/flags.ts:16-19`,
+shared by the library and system domains) were considered and declined: these
+are literal flag-name whitelist data (`daemon-url`/`query`/`tag`,
+`help`/`h`/`json`), not parsing logic — a caller can already express the same
+thing as `new Set([...])` against this package's existing `parseFlags`. Same
+reasoning the original pass used to decline porting OD's actual
+`SUBCOMMAND_MAP` object: only the *mechanism* is generic, not the specific
+name list.
+
+**`streamRunEvents`** (`cli/core/run-events.ts`) — re-read, still correctly
+deferred. Confirms deferred-item 4 above: no `@jini/http` route to call yet.
+
+**`daemon start`** (`cli/system/daemon.ts` `runDaemonStart`) — re-read, still
+correctly OD/blocked. It calls `startDaemonRuntime` from
+`daemon-startup.js` (OD's product bootstrap), the exact piece this task was
+told not to build (blocked on `@jini/node-host`'s `createLocalNodeDaemon`,
+in flight on a separate, not-yet-merged branch as of this writing).
+
+**Two rows re-verified as UNCLEAR-but-newly-buildable, deliberately still
+not built:**
+
+- **`daemon status` / `daemon stop`** (`cli/system/daemon.ts`
+  `runDaemonStatus`/`runDaemonStop`) — the original UNCLEAR verdict's
+  blocking condition ("`@jini/http` is a stub... no `/status`/`/shutdown`
+  route to call") **no longer holds**: `@jini/http` now ships
+  `daemonStatusRoute`/`daemonShutdownRoute` (`packages/http/src/daemon-status.ts`,
+  merged in a later task than this package's original port). Not built
+  here anyway, for two reasons: (1) the response shapes differ (`@jini/http`'s
+  `DaemonStatusResponse` has `host`/`pid`/`dataDir`/`shuttingDown`, no
+  `installedPlugins`; OD's has `bindHost`/`installedPlugins`, no `pid`) —
+  encoding one shape into a concrete CLI command ahead of any actual consumer
+  would be guessing at a contract nobody has committed to yet; (2) this
+  package's own `index.ts` docblock already states "no pack has registered
+  against `CommandRegistry` yet because no HTTP-client-mode pack exists in
+  this repo to call" — building the *first* concrete command here, before any
+  consumer, risks exactly the "declared port whose implementation doesn't
+  hold up" failure mode this repo's audit history warns about (see
+  `packages/memory/source-map.md`'s discussion of the same risk for
+  `memory-llm.ts`). Left as a flagged, Coordinator-level opportunity, not a
+  guess.
+- **`mcp install`** (`cli/mcp/install.ts` `runMcpInstall`) — similarly
+  newly-buildable-in-principle: `@jini/mcp` (merged after this package's
+  original port) now has the agent-slug planner and JSON apply/remove
+  primitives (`packages/mcp/src/agent-install/install.ts`) this command
+  would wrap. Not built here for the same reason as above, plus the original
+  UNCLEAR verdict's own open question — "whether '`@jini/cli` can host a
+  generic MCP server for an arbitrary pack's tools' is worth building now,
+  versus deferring until a second MCP-consuming pack exists
+  (extraction-plan §7's two-consumer rule)" — is unresolved by anything found
+  in this reconciliation pass; it is an architecture call, not a helper-port
+  delta.
+
+No other files under `cli-capability-barrels`'s `cli/` tree were found to
+contain generic, OD-noun-free, currently-missing logic; every remaining
+subdirectory (`automation/`, `brand/`, `export/`, `figma/`, `library/`,
+`media/`, `memory/`, `plugin/`, `project/`, `research/`, `share/`,
+`templates/`, `ui/`) is product-command implementation over OD's REST API,
+matching the OD verdicts already recorded in the classification table above.

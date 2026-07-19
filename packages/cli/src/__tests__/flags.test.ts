@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFlags, positionalArgs } from '../flags.js';
+import { coerceCliValue, parseFlags, positionalArgs } from '../flags.js';
 
 describe('parseFlags', () => {
   it('parses a boolean flag', () => {
@@ -74,5 +74,32 @@ describe('positionalArgs', () => {
 
   it('treats "--" as an ordinary flag-prefixed token when stopAtDoubleDash is not set', () => {
     expect(positionalArgs(['a', '--', 'b'])).toEqual(['a', 'b']);
+  });
+});
+
+describe('coerceCliValue', () => {
+  it('coerces "true" and "false" to booleans', () => {
+    expect(coerceCliValue('true')).toBe(true);
+    expect(coerceCliValue('false')).toBe(false);
+  });
+
+  it('coerces an integer literal to a number', () => {
+    expect(coerceCliValue('42')).toBe(42);
+  });
+
+  it('coerces a negative decimal literal to a number', () => {
+    expect(coerceCliValue('-3.5')).toBe(-3.5);
+  });
+
+  it('leaves a non-numeric, non-boolean string unchanged', () => {
+    expect(coerceCliValue('abc')).toBe('abc');
+  });
+
+  it('leaves a partially-numeric string unchanged (the whole value must match)', () => {
+    expect(coerceCliValue('12abc')).toBe('12abc');
+  });
+
+  it('leaves an empty string unchanged', () => {
+    expect(coerceCliValue('')).toBe('');
   });
 });

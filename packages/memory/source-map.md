@@ -105,3 +105,76 @@ shared code).
 
 None beyond Node builtins (`node:fs/promises`, `node:path`, `node:events`,
 `node:crypto`).
+
+## Barrel branch reconciliation (`memory-capability-barrel`, 2026-07-18)
+
+A later task re-checked this package against OD's `memory-capability-barrel`
+branch. That branch decomposes the same 6 files this package was already
+ported from (`memory.ts`, `memory-extractions.ts`, `memory-verify.ts`,
+`memory-llm.ts`, `memory-rules.ts`, `memory-connectors.ts`) into a `memory/`
+capability-barrel directory (`core/`, `store/`, `extractions/`, `verify/`,
+`llm/`, `rules/`, `connectors/`), per its own `apps/daemon/src/memory/
+README.md`: "The moves were purely structural — no logic changes."
+
+Verified independently rather than trusted, because `memory-capability-barrel`
+and this package's original `refactor/web-memory-slice`-based port are two
+different OD branches/points in time and "no logic changes" is exactly the
+kind of claim worth checking: diffed each already-ported file against the
+*true* pre-refactor version at the branch's own merge-base with `main`
+(`0b88ef561`, not `main`'s current tip — `main` has since gained unrelated
+`memory.ts` changes, e.g. a `MemoryEntrySource` field and
+`isHeuristicExtractionArtifact`/`pruneProfileBodyToCanonical` helpers, that
+post-date `memory-capability-barrel`'s fork point and are simply not present
+on that branch; comparing against `main`'s tip would have produced false
+"missing" signals unrelated to the actual refactor).
+
+- **`store/store.ts`** vs. `memory.ts` at the merge-base: after stripping
+  comment-only lines, the only diff is import-path changes and the
+  `memoryEvents`/`MemoryChangeKind`/`MemoryChangeEvent` relocation into
+  `core/events.ts` — zero function-body changes. Already fully covered by
+  this package's existing `note-store.ts` mechanism-port + the documented
+  "not ported" list (type taxonomy, `composeMemoryBody`,
+  `listActiveRuleEntries`, onboarding capture, heuristic regex pack,
+  `maskMemoryExtractionConfig`/config-override fields).
+- **`extractions/extractions.ts`** vs. `memory-extractions.ts` at the
+  merge-base: the only diff, stripped of comments, is the single
+  `memoryEvents` import path. Already fully covered — this package's
+  `extraction-log.ts` is a full port.
+- **`verify/verify.ts`** vs. `memory-verify.ts` at the merge-base: same —
+  only the `memoryEvents` import path differs. Already fully covered —
+  this package's `verify.ts` is a full port (pure algorithm + record log).
+- **`connectors/connectors.ts`**, **`llm/llm.ts`**: re-read in full on the
+  barrel branch; still OD-branded throughout (`OpenDesign`/`Open Design`
+  literal strings in system prompts and comments still present, e.g.
+  `connectors/connectors.ts`'s `CONNECTOR_MEMORY_SYSTEM_PROMPT` and its
+  design-topic regex list). Confirms the original NOT-ported verdicts.
+  `llm/llm.ts`'s `callAnthropic`/`callOpenAI`/`callAzure`/`callGoogle` remain
+  private (non-exported) helpers entangled with `pickProvider`'s
+  agent-CLI-selection logic — not independently extractable without a larger
+  refactor than this reconciliation pass's scope, confirming the original
+  "not cleanly separable" verdict.
+
+**One genuinely new, generic, OD-noun-free piece found and ported:**
+`rules/rules.ts`'s exported `parseRuleBody` function (`git grep parseRuleBody`
+on the branch shows it exported from the domain root barrel alongside
+`distillRulesFromAnnotations`). It parses a rule note body's labeled lines
+(`Assertion:`/`Check:`/`Verified by:`/`Rationale:`) into
+`{ assertion, check, rationale }` — pure text parsing, zero product nouns,
+and — unlike the rest of `rules.ts` — has no call-site coupling to
+`suggestWithLLM`, annotations, or any OD type. The original pass's verdict on
+`memory-rules.ts` ("thin wrapper entirely dependent on the skipped
+`memory-llm.ts`") was about `distillRulesFromAnnotations`, the file's other
+export; it did not separately call out `parseRuleBody`, which turns out to be
+a standalone leaf with no such dependency. It also has a direct, motivated
+integration point already ported in this package: `verify.ts`'s
+`ActiveRuleForVerify.check` is a host-supplied field with no built-in way to
+derive it from a stored rule entry's raw body — `parseRuleBody` is exactly
+that derivation. Ported as `src/rule-body.ts` (`parseRuleBody`,
+`ParsedRuleBody`), re-exported from `index.ts`, tests in
+`__tests__/rule-body.test.ts`, 100% coverage on all 4 metrics.
+
+No other new generic pieces were found. `memory-connectors.ts`/`memory-llm.ts`/
+`memory-rules.ts`'s remaining exports stay un-ported for the same reasons
+recorded in the classification table above; nothing in the barrel's
+structural move surfaced content the original `refactor/web-memory-slice`-based
+read had missed, beyond `parseRuleBody`.
