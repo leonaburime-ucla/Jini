@@ -144,6 +144,8 @@ importers:
         specifier: ^4.17.21
         version: 4.17.25
 
+  packages/mcp: {}
+
   packages/media:
     dependencies:
       '@jini/core':
@@ -158,7 +160,30 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/node-host: {}
+  packages/node-host:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jini/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      '@jini/http':
+        specifier: workspace:*
+        version: link:../http
+      '@jini/sqlite':
+        specifier: workspace:*
+        version: link:../sqlite
+      express:
+        specifier: ^4.21.0
+        version: 4.22.2
+    devDependencies:
+      '@types/express':
+        specifier: ^4.17.21
+        version: 4.17.25
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/platform:
     dependencies:

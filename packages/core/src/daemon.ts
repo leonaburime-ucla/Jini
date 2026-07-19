@@ -2,11 +2,18 @@ import type { Bindings } from './bindings.js';
 import type { Pack, PackContainer } from './pack.js';
 import type { AnyToken, ManyToken, Token } from './token.js';
 
-type AnyPack = Pack<any, any, string>;
+/**
+ * Exported (not just used locally) so `./internal.js` can re-derive `createDaemon`'s exact
+ * compile-time "missing binding" gate for a wrapper composition function (today:
+ * `@jini/node-host`'s `createLocalNodeDaemon`) without duplicating the type-level logic. Not
+ * re-exported from `index.ts` — see `./internal.ts`'s module doc for why this stays off the
+ * public surface (same boundary pattern as `tool-registry.ts`'s `getToolRegistration`).
+ */
+export type AnyPack = Pack<any, any, string>;
 
-type RequiredTokenIds<Packs extends readonly AnyPack[]> = Packs[number]['deps'][number]['id'];
+export type RequiredTokenIds<Packs extends readonly AnyPack[]> = Packs[number]['deps'][number]['id'];
 
-type MissingTokenIds<Packs extends readonly AnyPack[], BoundIds extends string> = Exclude<
+export type MissingTokenIds<Packs extends readonly AnyPack[], BoundIds extends string> = Exclude<
   RequiredTokenIds<Packs>,
   BoundIds
 >;

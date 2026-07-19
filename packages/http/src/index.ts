@@ -45,6 +45,16 @@ export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export { mountPackHttp } from './pack-http.js';
 
+export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
+export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
+
+export type { InstallRouteRegistrationGuardOptions, RouteRegistration } from './route-registration-guard.js';
+export {
+  getRouteRegistrationInventory,
+  guardedRouteKey,
+  installRouteRegistrationGuard,
+} from './route-registration-guard.js';
+
 export {
   isLoopbackHostname,
   isLoopbackPeerAddress,
