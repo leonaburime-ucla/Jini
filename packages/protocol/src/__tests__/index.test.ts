@@ -11,17 +11,30 @@ import {
 
 describe('@jini/protocol', () => {
   it('constructs a full run event sequence through the transport-neutral envelope', () => {
+    const runId = 'run_1';
+    const envelope = (cursor: string, kind: RunProtocolEvent['kind'], payload: unknown) => ({
+      runId,
+      eventId: `${runId}:${cursor}`,
+      opaqueCursor: cursor,
+      protocolVersion: RUN_PROTOCOL_VERSION,
+      ts: Number(cursor),
+      kind,
+      payload,
+      durability: 'durable' as const,
+    });
     const events: RunProtocolEvent[] = [
-      { id: '0', event: 'start', data: { runId: 'run_1', protocolVersion: RUN_PROTOCOL_VERSION, idempotencyKey: 'req_1' } },
-      { id: '1', event: 'agent', data: { type: 'text_delta', delta: 'hello' } },
-      { id: '2', event: 'agent', data: { type: 'tool_use', id: 'tu_1', name: 'read_file', input: { path: 'a.ts' } } },
-      { id: '3', event: 'agent', data: { type: 'tool_result', toolUseId: 'tu_1', content: 'ok' } },
-      { id: '4', event: 'end', data: { code: 0, status: 'succeeded' } },
-    ];
+      envelope('0', 'start', { runId, idempotencyKey: 'req_1' }),
+      envelope('1', 'agent', { type: 'text_delta', delta: 'hello' }),
+      envelope('2', 'agent', { type: 'tool_use', id: 'tu_1', name: 'read_file', input: { path: 'a.ts' } }),
+      envelope('3', 'agent', { type: 'tool_result', toolUseId: 'tu_1', content: 'ok' }),
+      envelope('4', 'end', { code: 0, status: 'succeeded' }),
+    ] as RunProtocolEvent[];
 
     expect(events).toHaveLength(5);
-    expect(events[0]?.event).toBe('start');
-    expect(events.at(-1)?.event).toBe('end');
+    expect(events[0]?.kind).toBe('start');
+    expect(events.at(-1)?.kind).toBe('end');
+    expect(events.every((e) => e.runId === runId)).toBe(true);
+    expect(events.every((e) => e.protocolVersion === RUN_PROTOCOL_VERSION)).toBe(true);
   });
 
   it('carries a generic ApiError without any product-specific error code', () => {

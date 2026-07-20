@@ -34,8 +34,8 @@ only the generic Express-assembly-and-listen skeleton is ported here.
 - **`@jini/agent-runtime` wiring.** `CreateLocalNodeDaemonConfig.agents` is accepted in the type
   for forward-compat but not wired to anything — no registry-to-daemon integration exists anywhere
   in this codebase yet.
-- **SSE.** `@jini/http`'s adapter is JSON-route-only so far (see that package's own "Explicitly
-  deferred" section) — nothing here changes that.
+- **Additional streaming projections.** The generic lifecycle SSE run transport is mounted here;
+  AGUI, terminal sessions, and product-specific stream families remain out of scope.
 
 ## Design decisions
 
@@ -119,3 +119,23 @@ on all 4 metrics (statements/branches/functions/lines), 49 tests, 3 test files.
 middlewares, the route-registration guard, `configuredAllowedOrigins`, and the generic daemon-status
 routes. `express` (`^4.21.0`) + `@types/express` (devDependency) — this package's own composition
 root creates the real Express app.
+
+## 2026-07-19 addition — lifecycle HTTP vertical slice and restart recovery
+
+`createLocalNodeDaemon` now awaits `RunLifecycle.rehydrate()` immediately after
+opening its SQLite event log and before it accepts HTTP traffic. That rebuilds
+the lifecycle's process-local status/idempotency indexes from durable records;
+an interrupted non-terminal run is conclusively recorded as a resumable
+failure because its child process cannot survive a host restart. If rehydration
+itself fails, the SQLite handle is closed before boot rejects.
+
+The composition root registers `@jini/http`'s generic run transport:
+`POST /api/runs`, `GET /api/runs/:runId`,
+`POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` (SSE with
+`Last-Event-ID` replay). `CreateLocalNodeDaemonConfig.onRunStarted` is an
+optional host-owned driver hook invoked only after the lifecycle has durably
+started a run. This keeps agent selection, prompt construction, working-root
+resolution, and capability policy in the consuming host rather than making
+the Node preset a product runtime. The integration test exercises create,
+live SSE, reconnect, idempotency, cancel, stop/restart, and durable replay
+over real sockets.

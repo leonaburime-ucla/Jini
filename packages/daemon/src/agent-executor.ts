@@ -9,22 +9,21 @@
  * a real `node:child_process` spawn, feeding both `RunLifecycle.emit()` and
  * this package's own `@jini/protocol` event envelope.
  *
- * ## v1 scope: 9 of 24 registered agent defs
+ * ## v1 scope: 18 of 24 registered agent defs
  *
  * `@jini/agent-runtime`'s registry ships 24 built-in defs across four
  * `streamFormat` families. Only the JSON-stream-parser family — the four
  * `createXStreamHandler`-shaped parsers (`claude-stream-json`,
  * `json-event-stream`, `copilot-stream-json`, `qoder-stream-json`), covering
  * 9 defs (amp, codebuddy, claude, codex, cursor-agent, opencode, mimo,
- * copilot, qoder) — is wired here. The other 15 defs (`acp-json-rpc` × 9,
- * `pi-rpc` × 1) use `attachAcpSession`/`attachPiRpcSession`, which own their
- * own child-process I/O internally and return a synchronous controller
- * instead of an awaitable spawn-confirmed outcome — a structurally
- * different driver shape, deliberately not built here (see
- * `source-map.md`). `plain` (5 defs) has no existing parser or dispatch
- * branch anywhere in this codebase; its design space isn't decided.
+ * copilot, qoder) — plus all 9 `acp-json-rpc` defs — are wired here. ACP
+ * owns its JSON-RPC handshake and prompt delivery, so it takes its own
+ * lifecycle branch rather than being treated as a stdout-tail parser. The
+ * remaining `pi-rpc` × 1 and `plain` × 5 shapes are still deliberately
+ * unsupported; `plain` has no existing parser or dispatch branch anywhere
+ * in this codebase and pi-rpc has a separately-shaped controller.
  * `run()` rejects cleanly (never a bare throw) with an `AgentExecutorError`
- * for any def outside the supported 9 — see `isSupportedStreamFormat`.
+ * for any def outside the supported 18 — see `isSupportedStreamFormat`.
  *
  * ## Invariant
  *
@@ -50,6 +49,9 @@ import {
   createQoderStreamHandler,
   getAgentDef,
   resolveAgentLaunch,
+  attachAcpSession,
+  type AcpPermissionHandler,
+  type AcpSessionController,
   type AgentLaunchResolution,
   type RuntimeAgentDef,
 } from '@jini/agent-runtime';
@@ -76,10 +78,13 @@ const SUPPORTED_STREAM_FORMATS = [
   'json-event-stream',
   'copilot-stream-json',
   'qoder-stream-json',
+  'acp-json-rpc',
 ] as const;
 
 /** The 4 of the registry's stream-format families this driver implements — see module doc. */
 export type SupportedStreamFormat = (typeof SUPPORTED_STREAM_FORMATS)[number];
+
+type JsonStreamFormat = Exclude<SupportedStreamFormat, 'acp-json-rpc'>;
 
 /**
  * Narrows a `RuntimeAgentDef.streamFormat` string to the 4 supported
@@ -110,7 +115,7 @@ export function isSupportedStreamFormat(value: string): value is SupportedStream
  */
 function createStreamHandlerForDef(
   def: RuntimeAgentDef,
-  streamFormat: SupportedStreamFormat,
+  streamFormat: JsonStreamFormat,
   onEvent: (event: Record<string, unknown>) => void,
 ): StreamHandler {
   switch (streamFormat) {
@@ -397,7 +402,7 @@ interface StdinCloseHandle {
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
   readonly def: RuntimeAgentDef;
-  readonly streamFormat: SupportedStreamFormat;
+  readonly streamFormat: JsonStreamFormat;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
 }
@@ -510,6 +515,116 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
   return { closeStdinOnce };
 }
 
+interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
+  readonly runId: string;
+  readonly child: ChildProcess;
+  readonly lifecycle: RunLifecycle;
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly envFormat: 'array' | 'map' | undefined;
+  readonly onPermissionRequest: AcpPermissionHandler | undefined;
+  readonly attachAcpSession: typeof attachAcpSession;
+}
+
+/**
+ * Maps an ACP session's transport error into the canonical run-error shape.
+ * ACP adapters may add a structured `error` member, but a daemon driver must
+ * never make one vendor's error shape part of the run protocol.
+ */
+function translateAcpError(payload: unknown): RunErrorPayload {
+  if (!isRecord(payload)) return { message: asString(payload, 'ACP agent failed') };
+  const message = asString(payload.message, 'ACP agent failed');
+  const error = isRecord(payload.error) ? payload.error : null;
+  const code = error ? asOptionalString(error.code) : undefined;
+  const retryable = error && typeof error.retryable === 'boolean' ? error.retryable : undefined;
+  return {
+    message,
+    ...(code !== undefined
+      ? {
+          error: {
+            code,
+            message: asString(error?.message, message),
+            ...(retryable !== undefined ? { retryable } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Wires an ACP child to a run. Unlike the JSON-stream path, ACP owns the
+ * prompt protocol and reports its parsed events through `attachAcpSession`'s
+ * callback. This wrapper retains raw stdout/stderr for diagnostics, preserves
+ * event order through the same FIFO discipline, forwards cancellation both as
+ * ACP `session/cancel` and an OS process-tree stop, and uses the controller's
+ * clean-prompt signal rather than SIGTERM (expected ACP cleanup) to determine
+ * success.
+ */
+function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
+  const { runId, child, lifecycle } = ctx;
+  let cancelRequested = false;
+  let emitQueue: Promise<void> = Promise.resolve();
+
+  function enqueueEmit(task: () => Promise<unknown>): void {
+    emitQueue = emitQueue.then(async () => {
+      try {
+        await task();
+      } catch {
+        // A late event racing a terminal lifecycle is intentionally dropped;
+        // it must not prevent subsequent queued cleanup from running.
+      }
+    });
+  }
+
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stdin?.on('error', () => {});
+  child.on('error', () => {});
+
+  let controller: AcpSessionController | null = null;
+  const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
+    cancelRequested = true;
+    controller?.abort();
+    void terminateChildTree(ctx, child);
+  });
+
+  child.on('close', (code, signal) => {
+    void (async () => {
+      await emitQueue;
+      unsubscribeCancel();
+      const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
+      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+    })();
+  });
+
+  controller = ctx.attachAcpSession({
+    child,
+    prompt: ctx.prompt,
+    cwd: ctx.cwd,
+    ...(ctx.envFormat !== undefined ? { envFormat: ctx.envFormat } : {}),
+    ...(ctx.onPermissionRequest !== undefined ? { onPermissionRequest: ctx.onPermissionRequest } : {}),
+    send(event, payload) {
+      if (event === 'agent') {
+        const translation = translateAgentRuntimeEvent(payload);
+        if (translation.kind === 'agent') {
+          enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
+        } else if (translation.kind === 'error') {
+          enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
+        }
+        return;
+      }
+      if (event === 'error') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translateAcpError(payload) }));
+      }
+    },
+  });
+  return controller;
+}
+
 /**
  * Writes the initial user turn to the child's stdin per `def.promptInputFormat`
  * (both branches only run for `promptViaStdin: true` defs — the only shape
@@ -552,6 +667,14 @@ export interface CreateAgentExecutorOptions {
   readonly createCommandInvocation?: typeof createCommandInvocation;
   /** @default `node:child_process`'s `spawn` */
   readonly spawn?: typeof nodeSpawn;
+  /** @default the real `@jini/agent-runtime` ACP session transport */
+  readonly attachAcpSession?: typeof attachAcpSession;
+  /**
+   * Host-owned policy for ACP agents' native tool calls. The ACP agent still
+   * executes its own selected option; Jini-registered tool execution belongs
+   * to `createDelegatedToolBridge`, not this permission callback.
+   */
+  readonly acpPermissionHandler?: AcpPermissionHandler;
   /** @default the real `@jini/platform` process-snapshot enumerator */
   readonly listProcessSnapshots?: typeof listProcessSnapshots;
   /** @default the real `@jini/platform` descendant-PID collector */
@@ -582,6 +705,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const applyAgentLaunchEnvFn = options.applyAgentLaunchEnv ?? applyAgentLaunchEnv;
   const createCommandInvocationFn = options.createCommandInvocation ?? createCommandInvocation;
   const spawnFn = options.spawn ?? nodeSpawn;
+  const attachAcpSessionFn = options.attachAcpSession ?? attachAcpSession;
   const listProcessSnapshotsFn = options.listProcessSnapshots ?? listProcessSnapshots;
   const collectProcessTreePidsFn = options.collectProcessTreePids ?? collectProcessTreePids;
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
@@ -628,7 +752,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         `AgentExecutor: agent "${def.id}" has streamFormat "${streamFormat}", which is not implemented in v1 — only ${SUPPORTED_STREAM_FORMATS.join(', ')} are supported (see packages/daemon/source-map.md for the deferred ACP/pi-rpc/plain formats)`,
       );
     }
-    if (def.promptViaStdin !== true) {
+    if (streamFormat !== 'acp-json-rpc' && def.promptViaStdin !== true) {
       return failBeforeSpawn(
         input.runId,
         'AGENT_RUNTIME_UNSUPPORTED',
@@ -666,16 +790,19 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       );
     }
 
-    const stdinHandle = wireChildLifecycle({
-      runId: input.runId,
-      def,
-      streamFormat,
-      child,
-      lifecycle,
-      listProcessSnapshots: listProcessSnapshotsFn,
-      collectProcessTreePids: collectProcessTreePidsFn,
-      stopProcesses: stopProcessesFn,
-    });
+    const stdinHandle =
+      streamFormat === 'acp-json-rpc'
+        ? null
+        : wireChildLifecycle({
+            runId: input.runId,
+            def,
+            streamFormat,
+            child,
+            lifecycle,
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+          });
 
     try {
       await waitForSpawnOrError(child);
@@ -687,7 +814,40 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       );
     }
 
-    writePromptToStdin(def, child, input.prompt, stdinHandle);
+    if (streamFormat === 'acp-json-rpc') {
+      try {
+        wireAcpLifecycle({
+          runId: input.runId,
+          child,
+          lifecycle,
+          prompt: input.prompt,
+          cwd: input.cwd,
+          envFormat: def.acpMcpEnvFormat,
+          onPermissionRequest: options.acpPermissionHandler,
+          attachAcpSession: attachAcpSessionFn,
+          listProcessSnapshots: listProcessSnapshotsFn,
+          collectProcessTreePids: collectProcessTreePidsFn,
+          stopProcesses: stopProcessesFn,
+        });
+      } catch (err) {
+        void terminateChildTree(
+          {
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+          },
+          child,
+        );
+        await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
+        throw new AgentExecutorError(
+          'AGENT_SPAWN_FAILED',
+          `AgentExecutor: could not attach ACP session for agent \"${def.id}\": ${errorMessage(err)}`,
+        );
+      }
+      return;
+    }
+
+    writePromptToStdin(def, child, input.prompt, stdinHandle!);
   }
 
   return { run };

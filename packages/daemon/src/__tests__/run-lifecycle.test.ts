@@ -20,7 +20,7 @@ describe('RunLifecycle — start', () => {
     const result = await lifecycle.stream(run.id, (event) => delivered.push(event));
     expect(result.kind).toBe('ok');
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ event: 'start', data: { runId: run.id, agentId: 'agent-a' } });
+    expect(delivered[0]).toMatchObject({ kind: 'start', payload: { runId: run.id, agentId: 'agent-a' } });
   });
 
   it('never keys a run on a product-scoped record identifier — only an opaque contextRef', async () => {
@@ -48,6 +48,42 @@ describe('RunLifecycle — start', () => {
     const b = await lifecycle.start({ contextRef: 'ctx-1', idempotencyKey: 'k2' });
     expect(a.run.id).not.toBe(b.run.id);
   });
+
+  it('rehydrates durable terminal state, context grouping, idempotency, and replay after a lifecycle restart', async () => {
+    const eventLog = createInMemoryEventLog();
+    const first = createRunLifecycle({ eventLog });
+    const started = await first.start({ contextRef: 'ctx-restart', runId: 'run-restart', idempotencyKey: 'same-request' });
+    await first.emit(started.run.id, { event: 'agent', data: { type: 'text_delta', delta: 'durable output' } });
+    await first.finish({ runId: started.run.id, status: 'failed', code: 1, signal: null, resumable: true });
+
+    const recovered = createRunLifecycle({ eventLog });
+    await recovered.rehydrate();
+
+    expect(await recovered.get(started.run.id)).toMatchObject({ id: started.run.id, state: 'failed' });
+    expect((await recovered.list('ctx-restart')).map((run) => run.id)).toEqual([started.run.id]);
+    const duplicate = await recovered.start({ contextRef: 'ctx-restart', idempotencyKey: 'same-request' });
+    expect(duplicate).toEqual({ run: expect.objectContaining({ id: started.run.id, state: 'failed' }), started: false });
+
+    const events: RunProtocolEvent[] = [];
+    await recovered.stream(started.run.id, (event) => events.push(event));
+    expect(events.map((event) => event.kind)).toEqual(['start', 'agent', 'end']);
+    expect(events[0]?.payload).toMatchObject({ contextRef: 'ctx-restart' });
+  });
+
+  it('marks an active run interrupted by a restart as a resumable failure instead of leaving a dead driver running', async () => {
+    const eventLog = createInMemoryEventLog();
+    const first = createRunLifecycle({ eventLog });
+    const { run } = await first.start({ contextRef: 'ctx-interrupted', runId: 'run-interrupted' });
+
+    const recovered = createRunLifecycle({ eventLog });
+    await recovered.rehydrate();
+
+    expect(await recovered.get(run.id)).toMatchObject({ state: 'failed' });
+    expect(await recovered.resume(run.id)).toEqual({ run: expect.objectContaining({ state: 'running' }), resumed: true });
+    const replay = await eventLog.replay(run.id, null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') expect(replay.entries.filter((entry) => entry.event === 'end')).toHaveLength(1);
+  });
 });
 
 describe('RunLifecycle — emit', () => {
@@ -61,7 +97,7 @@ describe('RunLifecycle — emit', () => {
     await lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'Thinking' } });
     await lifecycle.emit(run.id, { event: 'agent', data: { type: 'text_delta', delta: 'Hello' } });
 
-    expect(delivered.map((e) => e.event)).toEqual(['start', 'agent', 'agent']);
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent', 'agent']);
   });
 
   it('throws on an unknown runId', async () => {
@@ -271,10 +307,10 @@ describe('RunLifecycle — stream (reconnect)', () => {
     const delivered: RunProtocolEvent[] = [];
     const result = await lifecycle.stream(run.id, (e) => delivered.push(e));
     expect(result.kind).toBe('ok');
-    expect(delivered.map((e) => e.event)).toEqual(['start', 'agent']);
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent']);
 
     await lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'b' } });
-    expect(delivered.map((e) => e.event)).toEqual(['start', 'agent', 'agent']);
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent', 'agent']);
 
     if (result.kind === 'ok') {
       result.unsubscribe();
@@ -306,14 +342,14 @@ describe('RunLifecycle — stream (reconnect)', () => {
 
     const fullReplayDelivered: RunProtocolEvent[] = [];
     await lifecycle.stream(run.id, (e) => fullReplayDelivered.push(e));
-    const lastCursor = fullReplayDelivered[fullReplayDelivered.length - 1]!.id;
+    const lastCursor = fullReplayDelivered[fullReplayDelivered.length - 1]!.opaqueCursor;
 
     // Reconnect with a cursor already at the very last (end) event.
     const delivered: RunProtocolEvent[] = [];
     const result = await lifecycle.stream(run.id, (e) => delivered.push(e), { afterCursor: lastCursor });
     expect(result.kind).toBe('ok');
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ event: 'end' });
+    expect(delivered[0]).toMatchObject({ kind: 'end' });
   });
 });
 

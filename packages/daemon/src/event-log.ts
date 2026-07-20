@@ -55,7 +55,24 @@ export interface EventLogAppendInput<Payload = unknown> {
  * storage-shape problem and should not be conflated with a real gap.
  */
 export type EventLogReplayResult<Payload = unknown> =
-  | { readonly kind: 'ok'; readonly entries: readonly EventLogEntry<Payload>[] }
+  | {
+      readonly kind: 'ok';
+      readonly entries: readonly EventLogEntry<Payload>[];
+      /**
+       * `true` only when `afterCursor` was `null` (a first-time subscribe) AND this run's
+       * earliest entries have already been evicted, so `entries` starts after cursor 1 rather
+       * than at the true beginning. Omitted (not `false`) on every non-truncated result, so
+       * existing exact-match assertions against untruncated replays are unaffected. This does
+       * NOT make a first-time null-cursor replay a `'replay-gap'` — that would break the
+       * documented "nothing was ever promised to a caller that never asked" contract below and
+       * turn every legitimate first-time subscribe of a long-lived, intentionally-bounded run
+       * into a hard error. It exists so a caller that *cares* (a dashboard, a consumer with its
+       * own durability expectations) can distinguish "this run only ever had N events" from
+       * "this run had more, but some were evicted before I asked" instead of the two being
+       * silently indistinguishable on the wire.
+       */
+      readonly truncated?: true;
+    }
   | {
       readonly kind: 'replay-gap';
       readonly requestedCursor: string;
@@ -87,12 +104,20 @@ export interface EventLog {
    * nothing was ever promised to this caller).
    */
   replay(runId: string, afterCursor: string | null): Promise<EventLogReplayResult>;
+  /** Lists every run for which this log retains durable state. Used by a host at boot to rehydrate its `RunLifecycle` index. */
+  listRunIds(): Promise<readonly string[]>;
   /** Discards all retained state for `runId` (e.g. once a terminal run's retention window has passed). */
   drop(runId: string): Promise<void>;
 }
 
 export interface InMemoryEventLogOptions {
-  /** Maximum entries retained per run before the oldest are evicted. Defaults to 2000 (OD's own ring size). */
+  /**
+   * Maximum entries retained per run before the oldest are evicted. Eviction is opt-in: if
+   * omitted, retention is unbounded and nothing is ever silently dropped. Pass an explicit
+   * value only when bounded memory (or, for `@jini/sqlite`, bounded disk) is a deliberate
+   * choice — the caller then owns the tradeoff, rather than inheriting a hidden 2000-entry
+   * cap OD's own in-memory ring happened to use.
+   */
   readonly maxEntriesPerRun?: number;
 }
 
@@ -102,24 +127,22 @@ interface RunLog {
   dedupeIndex: Map<string, EventLogEntry>;
 }
 
-const DEFAULT_MAX_ENTRIES_PER_RUN = 2_000;
-
 /**
- * Reference `EventLog` implementation: a per-run FIFO array capped at
- * `maxEntriesPerRun`, functionally a ring buffer (oldest entries evicted once
- * the cap is exceeded) without needing an actual circular-index structure at
- * this scale. This is the in-memory half only — no durable copy — matching
- * this task's scope (a real persistent adapter is `@jini/sqlite`'s job).
+ * Reference `EventLog` implementation: a per-run FIFO array, optionally capped at
+ * `maxEntriesPerRun` (opt-in — see {@link InMemoryEventLogOptions}), functionally a ring
+ * buffer once a cap is set (oldest entries evicted once the cap is exceeded) without needing
+ * an actual circular-index structure at this scale. This is the in-memory half only — no
+ * durable copy — matching this task's scope (a real persistent adapter is `@jini/sqlite`'s
+ * job).
  *
  * @param options.maxEntriesPerRun - Retention cap per run, see {@link InMemoryEventLogOptions}.
  * @returns An `EventLog` port implementation.
  * @complexity `append`/`drop` are O(1) amortized (O(k) only on the eviction
  * splice, k = entries over cap, which is normally 1). `replay` is O(n) in
  * the number of retained entries for the run.
- * @overallScore 100/100
  */
 export function createInMemoryEventLog(options: InMemoryEventLogOptions = {}): EventLog {
-  const maxEntriesPerRun = options.maxEntriesPerRun ?? DEFAULT_MAX_ENTRIES_PER_RUN;
+  const maxEntriesPerRun = options.maxEntriesPerRun;
   const runs = new Map<string, RunLog>();
 
   function getOrCreateRunLog(runId: string): RunLog {
@@ -151,7 +174,7 @@ export function createInMemoryEventLog(options: InMemoryEventLogOptions = {}): E
       if (input.dedupeKey !== undefined) {
         runLog.dedupeIndex.set(input.dedupeKey, entry as EventLogEntry);
       }
-      if (runLog.entries.length > maxEntriesPerRun) {
+      if (maxEntriesPerRun !== undefined && runLog.entries.length > maxEntriesPerRun) {
         runLog.entries.splice(0, runLog.entries.length - maxEntriesPerRun);
       }
       return entry;
@@ -163,7 +186,13 @@ export function createInMemoryEventLog(options: InMemoryEventLogOptions = {}): E
         return { kind: 'unknown-run' };
       }
       if (afterCursor === null) {
-        return { kind: 'ok', entries: runLog.entries.slice() };
+        const oldest = runLog.entries[0];
+        const truncated = oldest !== undefined && Number(oldest.id) > 1;
+        return {
+          kind: 'ok',
+          entries: runLog.entries.slice(),
+          ...(truncated ? { truncated: true as const } : {}),
+        };
       }
       const afterCursorNum = Number(afterCursor);
       if (!Number.isFinite(afterCursorNum)) {
@@ -182,6 +211,10 @@ export function createInMemoryEventLog(options: InMemoryEventLogOptions = {}): E
         kind: 'ok',
         entries: runLog.entries.filter((entry) => Number(entry.id) > afterCursorNum),
       };
+    },
+
+    async listRunIds(): Promise<readonly string[]> {
+      return Array.from(runs.keys()).sort();
     },
 
     async drop(runId: string): Promise<void> {

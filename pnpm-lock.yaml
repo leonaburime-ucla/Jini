@@ -32,7 +32,17 @@ importers:
         specifier: ^24.0.0
         version: 24.13.3
 
-  examples/minimal-host: {}
+  examples/minimal-host:
+    dependencies:
+      '@jini/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
+      '@jini/daemon':
+        specifier: workspace:*
+        version: link:../../packages/daemon
+      '@jini/node-host':
+        specifier: workspace:*
+        version: link:../../packages/node-host
 
   integrations/open-design: {}
 
@@ -41,6 +51,16 @@ importers:
       '@jini/platform':
         specifier: workspace:*
         version: link:../platform
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
+
+  packages/artifacts:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@vitest/coverage-v8':
         specifier: ^2.1.9
@@ -139,6 +159,9 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      '@jini/daemon':
+        specifier: workspace:*
+        version: link:../daemon
       '@jini/protocol':
         specifier: workspace:*
         version: link:../protocol

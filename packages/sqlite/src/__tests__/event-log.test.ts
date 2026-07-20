@@ -127,7 +127,7 @@ describe('createSqliteEventLog — idempotency-key dedup', () => {
 });
 
 describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () => {
-  it('evicts oldest entries once maxEntriesPerRun is exceeded', async () => {
+  it('evicts oldest entries once maxEntriesPerRun is exceeded, and flags the null-cursor replay as truncated', async () => {
     const capped = createSqliteEventLog(':memory:', { maxEntriesPerRun: 3 });
     for (let i = 0; i < 5; i += 1) {
       await capped.append({ runId: 'r1', event: 'agent', data: i });
@@ -136,8 +136,23 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') {
       expect(replay.entries.map((e) => e.id)).toEqual(['3', '4', '5']);
+      expect(replay.truncated).toBe(true);
     }
     await capped.close();
+  });
+
+  it('does not cap retention when maxEntriesPerRun is omitted (eviction is opt-in, not a silent default)', async () => {
+    const uncapped = createSqliteEventLog(':memory:');
+    for (let i = 0; i < 2500; i += 1) {
+      await uncapped.append({ runId: 'r1', event: 'agent', data: i });
+    }
+    const replay = await uncapped.replay('r1', null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') {
+      expect(replay.entries).toHaveLength(2500);
+      expect(replay.truncated).toBeUndefined();
+    }
+    await uncapped.close();
   });
 
   it('returns a distinguishable replay-gap when the requested cursor falls before the oldest retained entry', async () => {
@@ -166,7 +181,7 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     await capped.close();
   });
 
-  it('a first-time replay(null) after eviction is not treated as a gap', async () => {
+  it('a first-time replay(null) after eviction is not treated as a gap, but IS flagged truncated', async () => {
     const capped = createSqliteEventLog(':memory:', { maxEntriesPerRun: 2 });
     for (let i = 0; i < 10; i += 1) {
       await capped.append({ runId: 'r1', event: 'agent', data: i });
@@ -175,6 +190,7 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') {
       expect(replay.entries).toHaveLength(2);
+      expect(replay.truncated).toBe(true);
     }
     await capped.close();
   });
@@ -199,6 +215,21 @@ describe('createSqliteEventLog — durability across a restart', () => {
     try {
       const replay = await reopened.replay('r1', null);
       expect(replay).toEqual({ kind: 'ok', entries: [a, b] });
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it('keeps the known-run index across a restart', async () => {
+    await log.append({ runId: 'run-b', event: 'start', data: {} });
+    await log.append({ runId: 'run-a', event: 'start', data: {} });
+    await log.close();
+
+    const reopened = createSqliteEventLog(dbPath);
+    try {
+      expect(await reopened.listRunIds()).toEqual(['run-a', 'run-b']);
+      await reopened.drop('run-a');
+      expect(await reopened.listRunIds()).toEqual(['run-b']);
     } finally {
       await reopened.close();
     }

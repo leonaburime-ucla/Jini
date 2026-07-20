@@ -172,7 +172,7 @@ async function collectEvents(lifecycle: RunLifecycle, runId: string): Promise<Ru
 }
 
 function agentPayloadTypes(events: RunProtocolEvent[]): string[] {
-  return events.filter((event) => event.event === 'agent').map((event) => (event.data as RunAgentPayload).type);
+  return events.filter((event) => event.kind === 'agent').map((event) => (event.payload as RunAgentPayload).type);
 }
 
 describe('AgentExecutor — successful run end-to-end', () => {
@@ -221,19 +221,19 @@ describe('AgentExecutor — successful run end-to-end', () => {
     const events = await collectEvents(lifecycle, run.id);
     expect(agentPayloadTypes(events)).toEqual(['status', 'status', 'tool_use', 'tool_result', 'text_delta', 'usage']);
 
-    const stdoutChunks = events.filter((e) => e.event === 'stdout').map((e) => (e.data as { chunk: string }).chunk);
+    const stdoutChunks = events.filter((e) => e.kind === 'stdout').map((e) => (e.payload as { chunk: string }).chunk);
     expect(stdoutChunks.join('')).toContain('"thread_id":"sess-abc"');
     expect(stdoutChunks.some((chunk) => chunk === '{"type":"thread.started",')).toBe(true);
 
-    const stderrEvents = events.filter((e) => e.event === 'stderr');
+    const stderrEvents = events.filter((e) => e.kind === 'stderr');
     expect(stderrEvents).toHaveLength(1);
-    expect((stderrEvents[0]?.data as { chunk: string }).chunk).toBe('warning: low disk space\n');
+    expect((stderrEvents[0]?.payload as { chunk: string }).chunk).toBe('warning: low disk space\n');
 
-    const toolUseEvent = events.find((e) => e.event === 'agent' && (e.data as RunAgentPayload).type === 'tool_use');
-    expect(toolUseEvent?.data).toMatchObject({ id: 'call-1', name: 'Bash', input: { command: 'echo hi' } });
+    const toolUseEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'tool_use');
+    expect(toolUseEvent?.payload).toMatchObject({ id: 'call-1', name: 'Bash', input: { command: 'echo hi' } });
 
     const endEvent = events[events.length - 1];
-    expect(endEvent).toMatchObject({ event: 'end', data: { status: 'succeeded', code: 0, signal: null } });
+    expect(endEvent).toMatchObject({ kind: 'end', payload: { status: 'succeeded', code: 0, signal: null } });
   });
 });
 
@@ -256,8 +256,8 @@ describe('AgentExecutor — pre-spawn failure paths never bare-throw', () => {
     }
   });
 
-  it('rejects with AGENT_RUNTIME_UNSUPPORTED for a def whose streamFormat is not one of the 4 implemented formats', async () => {
-    const { lifecycle, executor } = createHarness({ def: createFakeDef({ streamFormat: 'acp-json-rpc' }) });
+  it('rejects with AGENT_RUNTIME_UNSUPPORTED for a def whose streamFormat has no implemented driver', async () => {
+    const { lifecycle, executor } = createHarness({ def: createFakeDef({ streamFormat: 'pi-rpc' }) });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
 
     await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' })).rejects.toMatchObject({
@@ -457,9 +457,9 @@ describe('AgentExecutor — a parsed error-typed stream event routes to the erro
     await lifecycle.waitForTerminal(run.id);
 
     const events = await collectEvents(lifecycle, run.id);
-    const errorEvent = events.find((e) => e.event === 'error');
-    expect(errorEvent?.data).toEqual({ message: 'boom' });
-    expect(events.some((e) => e.event === 'agent')).toBe(false);
+    const errorEvent = events.find((e) => e.kind === 'error');
+    expect(errorEvent?.payload).toEqual({ message: 'boom' });
+    expect(events.some((e) => e.kind === 'agent')).toBe(false);
   });
 });
 
@@ -581,18 +581,18 @@ describe('AgentExecutor — defensive listeners never crash the host process', (
     await lifecycle.waitForTerminal(run.id);
 
     const events = await collectEvents(lifecycle, run.id);
-    const rawEvent = events.find((e) => e.event === 'agent' && (e.data as RunAgentPayload).type === 'raw');
-    expect(rawEvent?.data).toEqual({ type: 'raw', line: 'not json at all' });
+    const rawEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'raw');
+    expect(rawEvent?.payload).toEqual({ type: 'raw', line: 'not json at all' });
   });
 });
 
 describe('isSupportedStreamFormat', () => {
-  it('accepts exactly the 4 v1-implemented formats and rejects everything else', () => {
+  it('accepts the JSON-stream and ACP formats with real drivers, and rejects the remaining formats', () => {
     expect(isSupportedStreamFormat('claude-stream-json')).toBe(true);
     expect(isSupportedStreamFormat('json-event-stream')).toBe(true);
     expect(isSupportedStreamFormat('copilot-stream-json')).toBe(true);
     expect(isSupportedStreamFormat('qoder-stream-json')).toBe(true);
-    expect(isSupportedStreamFormat('acp-json-rpc')).toBe(false);
+    expect(isSupportedStreamFormat('acp-json-rpc')).toBe(true);
     expect(isSupportedStreamFormat('pi-rpc')).toBe(false);
     expect(isSupportedStreamFormat('plain')).toBe(false);
   });

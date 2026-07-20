@@ -71,6 +71,23 @@ export type {
 } from './daemon-status.js';
 export { daemonShutdownRoute, daemonStatusRoute, registerDaemonStatusRoutes } from './daemon-status.js';
 
+export type {
+  RunCancelResponse,
+  RunCreateRequest,
+  RunHttpDeps,
+  RunStartContext,
+  RunStartHandler,
+  RunStartResponse,
+  RunStatusResponse,
+} from './runs.js';
+export {
+  registerRunEventStream,
+  registerRunRoutes,
+  runCancelRoute,
+  runStartRoute,
+  runStatusRoute,
+} from './runs.js';
+
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
 // `(code, message, init)` — same job, different call-site generation, so it is re-exported here

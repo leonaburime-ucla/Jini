@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
 import { AgentExecutorToken } from '@jini/daemon';
-import type { DaemonStatusResponse } from '@jini/http';
+import type { DaemonStatusResponse, RunStartContext } from '@jini/http';
 import * as SqliteModule from '@jini/sqlite';
 import {
   createLocalNodeDaemon,
@@ -77,6 +77,24 @@ function makePingPack() {
       );
     },
   });
+}
+
+function parseSseEvents(body: string): Array<{ id: string; event: string; data: Record<string, unknown> }> {
+  return body
+    .trim()
+    .split('\n\n')
+    .filter((frame) => frame.length > 0)
+    .map((frame) => {
+      const fields = Object.fromEntries(
+        frame
+          .split('\n')
+          .map((line) => {
+            const separator = line.indexOf(': ');
+            return separator < 0 ? [line, ''] : [line.slice(0, separator), line.slice(separator + 2)];
+          }),
+      );
+      return { id: fields.id!, event: fields.event!, data: JSON.parse(fields.data!) as Record<string, unknown> };
+    });
 }
 
 /** The first routable, non-loopback IPv4 address this machine has, or `null` if none — used only
@@ -160,6 +178,89 @@ describe('createLocalNodeDaemon', () => {
     expect(typeof body.version).toBe('string');
     expect(body.port).toBe(Number(new URL(daemon.url).port));
     expect(typeof body.pid).toBe('number');
+  });
+
+  it('serves the complete HTTP run vertical slice: create, SSE replay/reconnect, cancel, and durable replay after restart', async () => {
+    const dataDir = makeTempDataDir();
+    let completedRunId = '';
+    const activeRunLifecycles = new Map<string, RunStartContext['lifecycle']>();
+    const onRunStarted = async ({ request, run, lifecycle }: RunStartContext) => {
+      if (request.agentId === 'complete') {
+        await lifecycle.emit(run.id, { event: 'agent', data: { type: 'text_delta', delta: 'hello from driver' } });
+        await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+        return;
+      }
+      activeRunLifecycles.set(run.id, lifecycle);
+      lifecycle.onCancelRequested(run.id, () => {
+        void lifecycle.finish({ runId: run.id, status: 'cancelled', code: null, signal: 'SIGTERM', resumable: false });
+      });
+    };
+
+    const first = await createLocalNodeDaemon({ dataDir, packs: [], onRunStarted });
+    try {
+      const createdResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-restart-context', idempotencyKey: 'completed-request', agentId: 'complete' }),
+      });
+      expect(createdResponse.status).toBe(201);
+      const created = (await createdResponse.json()) as { run: { id: string; state: string }; started: boolean };
+      expect(created).toMatchObject({ started: true, run: { state: 'succeeded' } });
+      completedRunId = created.run.id;
+
+      const eventResponse = await fetch(`${first.url}/api/runs/${created.run.id}/events`);
+      expect(eventResponse.headers.get('content-type')).toContain('text/event-stream');
+      const events = parseSseEvents(await eventResponse.text());
+      expect(events.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
+      expect(events[1]?.data.payload).toMatchObject({ type: 'text_delta', delta: 'hello from driver' });
+
+      const reconnect = await fetch(`${first.url}/api/runs/${created.run.id}/events`, {
+        headers: { 'Last-Event-ID': events[events.length - 1]!.id },
+      });
+      const reconnectEvents = parseSseEvents(await reconnect.text());
+      expect(reconnectEvents.map((event) => event.event)).toEqual(['end']);
+
+      const duplicateResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-restart-context', idempotencyKey: 'completed-request', agentId: 'complete' }),
+      });
+      expect(await duplicateResponse.json()).toMatchObject({ started: false, run: { id: created.run.id } });
+
+      const cancellableResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-cancel-context', agentId: 'wait' }),
+      });
+      const cancellable = (await cancellableResponse.json()) as { run: { id: string } };
+      // This request stays open until the driver emits/finishes below. It
+      // verifies that the HTTP route is not merely replaying terminal history:
+      // a client which was already subscribed receives a live event.
+      const liveEventResponse = await fetch(`${first.url}/api/runs/${cancellable.run.id}/events`);
+      expect(liveEventResponse.headers.get('content-type')).toContain('text/event-stream');
+      await activeRunLifecycles.get(cancellable.run.id)!.emit(cancellable.run.id, {
+        event: 'agent',
+        data: { type: 'status', label: 'waiting for cancellation' },
+      });
+      const cancelled = await fetch(`${first.url}/api/runs/${cancellable.run.id}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'test cancellation' }),
+      });
+      expect(cancelled.status).toBe(200);
+      const liveEvents = parseSseEvents(await liveEventResponse.text());
+      expect(liveEvents.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
+      expect(liveEvents[1]?.data.payload).toMatchObject({ type: 'status', label: 'waiting for cancellation' });
+      expect(await (await fetch(`${first.url}/api/runs/${cancellable.run.id}`)).json()).toMatchObject({ run: { state: 'cancelled' } });
+    } finally {
+      await first.stop();
+    }
+
+    const restarted = await createLocalNodeDaemon({ dataDir, packs: [] });
+    daemonsToStop.push(restarted);
+    expect(await (await fetch(`${restarted.url}/api/runs/${completedRunId}`)).json()).toMatchObject({ run: { id: completedRunId, state: 'succeeded' } });
+    const replayed = parseSseEvents(await (await fetch(`${restarted.url}/api/runs/${completedRunId}/events`)).text());
+    expect(replayed.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
   });
 
   it("mounts a caller pack's own route (proves mountPackHttp ordering)", async () => {

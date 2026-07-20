@@ -2,19 +2,44 @@
  * Jini repo guard — aggregates the boundary + neutrality checks.
  * Run via `pnpm guard`. See docs/jini-port/extraction-plan.md §7 (guardrails) and §12 C-series.
  *
- * STATUS: skeleton. The rule engine (AST via ts.resolveModuleName, modeled on OD's
- * scripts/check-web-slice-boundaries.ts) is implemented in the two checks below.
+ * STATUS (2026-07-19 hardening pass): `checkEngineBoundaries` and `checkProtocolPurity` are
+ * real (R1/R2/R3/R5/R6/R7 — see their own module docs), replacing the literal `return []`
+ * stubs the 2026-07-19 swarm-consensus debate found (guard printed "ok" unconditionally for
+ * weeks; see ADS-memory/reports/swarm-consensus/runs/2026-07-19T1632-consensus-report.md).
+ * Two rules from the original TODO list are still genuinely unimplemented, not silently
+ * dropped — see the bottom of this file.
+ *
+ * Fail-closed guarantee: before trusting either check against the real repo, `runGuardSelfTest`
+ * runs both against known-bad fixtures and refuses to report "ok" on the real repo unless the
+ * checks demonstrably still catch what they're supposed to. This is what makes "silently
+ * regress to a no-op again" a self-test failure instead of a silent false "ok."
  */
 import { checkEngineBoundaries } from './check-engine-boundaries.js';
 import { checkProtocolPurity } from './check-protocol-purity.js';
+import { runGuardSelfTest } from './lib/self-test.js';
 
 async function main() {
+  const selfTestFailures = await runGuardSelfTest();
+  if (selfTestFailures.length) {
+    console.error('[guard] SELF-TEST FAILED — refusing to trust the checks against the real repo.');
+    for (const f of selfTestFailures) {
+      console.error(`[guard] self-test: ${f.expectation}`);
+    }
+    console.error(
+      '\nA guard check no longer detects a known-bad fixture (scripts/lib/self-test.ts). This is' +
+        ' exactly the failure mode that let guard.ts print "ok" unconditionally for weeks — see' +
+        ' the self-test file before touching check-engine-boundaries.ts / check-protocol-purity.ts.',
+    );
+    process.exit(1);
+  }
+
   const results = [
     await checkEngineBoundaries(),
     await checkProtocolPurity(),
-    // TODO: product-neutrality string scan (no "Open Design"/OD_/--od-stamp in packages/@jini/**)
-    // TODO: vocabulary-firewall check (automation/** must not import engine domain types)
-    // TODO: residual-JS allowlist
+    // TODO: vocabulary-firewall check (automation/** must not import engine domain types) —
+    // genuinely unimplemented, not covered by either check above (both are scoped to packages/).
+    // TODO: residual-JS allowlist — genuinely unimplemented; scope not yet specified precisely
+    // enough to build without guessing.
   ];
   const violations = results.flat();
   if (violations.length) {
@@ -22,6 +47,9 @@ async function main() {
     console.error(`\n${violations.length} guard violation(s).`);
     process.exit(1);
   }
-  console.log('[guard] ok (skeleton — rules pending implementation during extraction)');
+  console.log(
+    '[guard] ok — self-test passed (checks proven against known-bad fixtures) and zero violations' +
+      ' found in packages/. Vocabulary-firewall and residual-JS-allowlist checks are still TODO.',
+  );
 }
 main();

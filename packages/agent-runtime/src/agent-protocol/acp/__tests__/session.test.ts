@@ -927,34 +927,91 @@ describe('attachAcpSession', () => {
   });
 
   describe('permission requests', () => {
-    it('auto-approves using approve_for_session when available', () => {
+    it('fails closed when no permission handler was configured', () => {
       const child = new FakeAcpChild();
-      attachAcpSession(baseOptions(child));
+      const controller = attachAcpSession(baseOptions(child));
       handshakeToSessionNew(child);
       emitPermissionRequest(child, 10, [
         { optionId: 'once', kind: 'allow_once' },
         { optionId: 'approve_for_session' },
       ]);
+      expect(controller.hasFatalError()).toBe(true);
+    });
+
+    it('delegates a permission choice to an auditable injected handler', async () => {
+      const child = new FakeAcpChild();
+      const onPermissionRequest = vi.fn((request) => {
+        expect(request).toMatchObject({
+          requestId: 13,
+          sessionId: 'sess-1',
+          toolCall: { toolCallId: 'call-1', title: 'write file' },
+          options: [{ optionId: 'reject', kind: 'reject_once' }],
+        });
+        return { outcome: 'selected' as const, optionId: 'reject' };
+      });
+      attachAcpSession(baseOptions(child, { onPermissionRequest }));
+      handshakeToSessionNew(child);
+      emitLine(child, {
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'sess-1',
+          toolCall: { toolCallId: 'call-1', title: 'write file' },
+          options: [{ optionId: 'reject', kind: 'reject_once' }],
+        },
+      });
+      expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
       expect(lastWrite(child)).toEqual({
         jsonrpc: '2.0',
-        id: 10,
-        result: { outcome: { outcome: 'selected', optionId: 'approve_for_session' } },
+        id: 13,
+        result: { outcome: { outcome: 'selected', optionId: 'reject' } },
       });
     });
 
-    it('fails when no approvable permission option is found', () => {
+    it('awaits an asynchronous permission decision before replying', async () => {
+      const child = new FakeAcpChild();
+      attachAcpSession(
+        baseOptions(child, {
+          onPermissionRequest: async () => ({ outcome: 'selected', optionId: 'allow' }),
+        }),
+      );
+      handshakeToSessionNew(child);
+      emitPermissionRequest(child, 14, [{ optionId: 'allow', kind: 'allow_once' }]);
+      expect(lastWrite(child)?.id).not.toBe(14);
+      await Promise.resolve();
+      expect(lastWrite(child)).toEqual({
+        jsonrpc: '2.0',
+        id: 14,
+        result: { outcome: { outcome: 'selected', optionId: 'allow' } },
+      });
+    });
+
+    it('fails when an injected handler selects an unavailable option', async () => {
       const child = new FakeAcpChild();
       const send = vi.fn();
-      const controller = attachAcpSession(baseOptions(child, { send }));
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          send,
+          onPermissionRequest: () => ({ outcome: 'selected', optionId: 'allow' }),
+        }),
+      );
       handshakeToSessionNew(child);
       emitPermissionRequest(child, 11, [{ optionId: 'deny', kind: 'reject_once' }]);
+      await Promise.resolve();
       expect(controller.hasFatalError()).toBe(true);
     });
 
     it('fails when the permission request has a non-JSON-RPC-id id', () => {
       const child = new FakeAcpChild();
       const send = vi.fn();
-      const controller = attachAcpSession(baseOptions(child, { send }));
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          send,
+          onPermissionRequest: () => ({ outcome: 'selected', optionId: 'approve_for_session' }),
+        }),
+      );
       handshakeToSessionNew(child);
       emitLine(child, {
         jsonrpc: '2.0',
@@ -965,19 +1022,43 @@ describe('attachAcpSession', () => {
       expect(controller.hasFatalError()).toBe(true);
     });
 
-    it('fails when the stdin write for the permission reply throws', () => {
+    it('fails when the stdin write for the permission reply throws', async () => {
       const child = new FakeAcpChild();
       const send = vi.fn();
-      const controller = attachAcpSession(baseOptions(child, { send }));
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          send,
+          onPermissionRequest: () => ({ outcome: 'selected', optionId: 'approve_for_session' }),
+        }),
+      );
       handshakeToSessionNew(child);
       child.stdin!.failWith = new Error('EPIPE');
       emitPermissionRequest(child, 12, [{ optionId: 'approve_for_session' }]);
+      await Promise.resolve();
       expect(controller.hasFatalError()).toBe(true);
       expect(send).toHaveBeenCalledWith('error', expect.objectContaining({ message: expect.stringContaining('stdin write failed') }));
     });
   });
 
   describe('abort', () => {
+    it('cancels a pending asynchronous permission request before closing stdin', () => {
+      const child = new FakeAcpChild();
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          onPermissionRequest: () => new Promise(() => {}),
+        }),
+      );
+      handshakeToSessionNew(child);
+      emitPermissionRequest(child, 15, [{ optionId: 'allow', kind: 'allow_once' }]);
+      controller.abort();
+      expect(writesOf(child)).toContainEqual({
+        jsonrpc: '2.0',
+        id: 15,
+        result: { outcome: { outcome: 'cancelled' } },
+      });
+      expect(child.stdin!.ended).toBe(true);
+    });
+
     it('sends session/cancel and closes stdin when a session is already established', () => {
       const child = new FakeAcpChild();
       const controller = attachAcpSession(baseOptions(child));

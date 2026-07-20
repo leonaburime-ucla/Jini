@@ -4,7 +4,7 @@
  * The "host preset" (extraction-plan.md §2.4) that lets a brand-new product boot a running daemon
  * process by implementing zero interfaces: assembles `@jini/sqlite`'s durable `EventLog`,
  * `@jini/daemon`'s `RunLifecycle` and `AgentExecutor` (the driver that actually spawns an agent
- * CLI subprocess for the 9 v1-supported defs — see `@jini/daemon`'s own source-map.md), an Express
+ * CLI subprocess for the 18 currently-supported defs — see `@jini/daemon`'s own source-map.md), an Express
  * app wrapped in `@jini/http`'s route-registration guard and security middleware, a caller's own
  * `@jini/core` packs, and the generic daemon-status routes, then listens and returns `{url, server,
  * stop}`. Generalized from OD's `startServer()` — see `source-map.md` for the exact line-by-line
@@ -25,9 +25,11 @@ import {
   configuredAllowedOrigins,
   installRouteRegistrationGuard,
   mountPackHttp,
+  registerRunRoutes,
   registerApiBearerAuthMiddleware,
   registerApiOriginGuardMiddleware,
   registerDaemonStatusRoutes,
+  type RunStartHandler,
 } from '@jini/http';
 
 import { closeHttpServer, normalizeDaemonBindHost } from './host-bootstrap.js';
@@ -107,6 +109,8 @@ export interface CreateLocalNodeDaemonConfig<
    * codebase today (see extraction-plan.md and this package's `source-map.md`).
    */
   agents?: unknown[];
+  /** Optional host-owned driver attached immediately after `POST /api/runs` durably starts a run. */
+  onRunStarted?: RunStartHandler;
 }
 
 export interface LocalNodeDaemon {
@@ -196,13 +200,24 @@ export async function createLocalNodeDaemon(
 
   const eventLog = createSqliteEventLog(join(config.dataDir, 'events.db'));
   const runLifecycle = createRunLifecycle({ eventLog });
+  try {
+    await runLifecycle.rehydrate();
+  } catch (error) {
+    // Rehydration happens before the HTTP server exists, so it cannot use the
+    // later bind-failure cleanup path. Never leak the sqlite handle on corrupt
+    // or otherwise unreadable durable history.
+    await eventLog.close();
+    throw error;
+  }
   // Zero-config default, unlike ToolExecutorToken (which needs a caller-supplied
   // ToolRegistry and is therefore NOT auto-bound here — see this file's own
   // KernelBoundIds doc and packages/daemon/source-map.md's AgentExecutor
   // section): createAgentExecutor's own defaults already resolve the real
   // @jini/agent-runtime registry, launch resolution, and node:child_process
   // spawn, so every caller gets a working AgentExecutor with no additional
-  // wiring.
+  // wiring. ACP agents intentionally still require a host-injected permission
+  // policy before any native tool request can proceed; that fail-closed
+  // authority decision has no safe zero-config default.
   const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle });
 
   const kernelBindings = bindings()
@@ -248,6 +263,12 @@ export async function createLocalNodeDaemon(
     getResolvedPort: () => resolvedPortRef.current,
     env,
   });
+
+  registerRunRoutes(
+    app,
+    { lifecycle: runLifecycle, ...(config.onRunStarted === undefined ? {} : { onStarted: config.onRunStarted }) },
+    { resolvedPortRef },
+  );
 
   mountPackHttp(app, config.packs, daemon);
 

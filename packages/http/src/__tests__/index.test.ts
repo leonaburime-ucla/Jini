@@ -35,6 +35,14 @@ describe('@jini/http barrel', () => {
     expect(typeof HttpBarrel.mountPackHttp).toBe('function');
   });
 
+  it('re-exports run lifecycle HTTP routes and registrars', () => {
+    expect(HttpBarrel.runStartRoute.path).toBe('/api/runs');
+    expect(HttpBarrel.runStatusRoute.path).toBe('/api/runs/:runId');
+    expect(HttpBarrel.runCancelRoute.path).toBe('/api/runs/:runId/cancel');
+    expect(typeof HttpBarrel.registerRunEventStream).toBe('function');
+    expect(typeof HttpBarrel.registerRunRoutes).toBe('function');
+  });
+
   it('re-exports the compat error helpers', () => {
     expect(typeof HttpBarrel.createCompatApiError).toBe('function');
     expect(typeof HttpBarrel.createCompatApiErrorResponse).toBe('function');

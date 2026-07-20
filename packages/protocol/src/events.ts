@@ -1,16 +1,47 @@
 import type { RunErrorPayload } from './errors.js';
 
+export const RUN_PROTOCOL_VERSION = 1;
+
 /**
  * Transport-neutral run-event envelope. HTTP/SSE, CLI JSON-lines, MCP
  * notifications, and the sidecar wire format are each a projection of this
  * shape — none of them owns it (extraction-plan §12 C2: one canonical event
  * envelope, not an SSE-shaped one).
+ *
+ * **Fixed 2026-07-19** (swarm-consensus architecture debate, Claude Fable 5 finding F-B —
+ * see `ADS-memory/reports/swarm-consensus/runs/2026-07-19T1632-consensus-report.md`): the
+ * shipped shape used to be exactly `{ id, event, data }` — SSE's own three wire fields, the
+ * literal anti-pattern this module's doc comment already warned against while not actually
+ * avoiding it. The fields below are C2's full envelope.
  */
 export interface RunEvent<Name extends string, Payload> {
-  /** Monotonic cursor for replay/reconnect (a transport's Last-Event-ID is one projection of this). Always assigned by the durable EventLog kernel port. */
-  id: string;
-  event: Name;
-  data: Payload;
+  /** The run this event belongs to. Lets one multiplexed connection carrying many runs' events attribute each event without external bookkeeping (impossible with the pre-fix shape). */
+  runId: string;
+  /**
+   * Globally unique id for this specific event delivery, for client-side at-least-once-
+   * delivery dedup (extraction-plan §12 C2: "delivery is at-least-once and the client
+   * reducer deduplicates"). Distinct from `opaqueCursor`: this identifies the event, that
+   * identifies a position to resume *from*. Today derived deterministically as
+   * `` `${runId}:${opaqueCursor}` ``, never caller-supplied.
+   */
+  eventId: string;
+  /** Monotonic per-run cursor for replay/reconnect (a transport's Last-Event-ID is one projection of this). Always assigned by the durable EventLog kernel port — never by a caller or a transport. */
+  opaqueCursor: string;
+  readonly protocolVersion: typeof RUN_PROTOCOL_VERSION;
+  /** Epoch-ms wall-clock time the event was recorded (`EventLogEntry.recordedAt`). Silently dropped by the pre-fix envelope. */
+  ts: number;
+  kind: Name;
+  payload: Payload;
+  /**
+   * `'durable'` for every event today: `opaqueCursor` only ever references committed,
+   * replayable entries — there is no ephemeral/non-replayable delivery channel implemented
+   * yet. `RunAgentPayload`'s `tool_input_delta`/`thinking_delta` streaming-preview variants
+   * are the likely first candidates for a future `'ephemeral'` channel (extraction-plan §12
+   * C2: "ephemeral previews... are a separate explicitly-non-replayable channel"), but
+   * building that channel is separate, larger work. This field exists now so a future
+   * ephemeral producer doesn't have to widen the envelope type again.
+   */
+  durability: 'durable' | 'ephemeral';
 }
 
 export type RunEventName<Event> = Event extends RunEvent<infer Name, unknown> ? Name : never;
@@ -19,12 +50,11 @@ export type RunEventPayload<Event, Name extends string> = Event extends RunEvent
   ? Payload
   : never;
 
-export const RUN_PROTOCOL_VERSION = 1;
-
 export interface RunStartPayload {
   runId: string;
+  /** Opaque caller-owned grouping reference. Persisted so a lifecycle can rebuild its run index after a host restart. */
+  contextRef: string;
   agentId?: string;
-  protocolVersion?: typeof RUN_PROTOCOL_VERSION;
   /** Caller-supplied idempotency key; a duplicate start with the same key must replay the existing run rather than starting a second one. */
   idempotencyKey?: string;
 }

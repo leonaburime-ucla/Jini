@@ -22,7 +22,14 @@ import type {
 } from '@jini/daemon';
 
 export interface SqliteEventLogOptions {
-  /** Maximum entries retained per run before the oldest are evicted. Defaults to 2000 (matches the in-memory reference adapter). */
+  /**
+   * Maximum entries retained per run before the oldest are evicted. Eviction is opt-in: if
+   * omitted, retention is unbounded and nothing is ever silently dropped. Pass an explicit
+   * value only when bounded disk usage is a deliberate choice — the caller then owns the
+   * tradeoff, rather than inheriting a hidden 2000-entry cap OD's own in-memory ring happened
+   * to use. `createLocalNodeDaemon` does not currently pass this option, so the shipped
+   * default preset retains full history.
+   */
   readonly maxEntriesPerRun?: number;
 }
 
@@ -45,8 +52,6 @@ interface EntryRow {
   dedupe_key: string | null;
 }
 
-const DEFAULT_MAX_ENTRIES_PER_RUN = 2_000;
-
 function rowToEntry(row: EntryRow): EventLogEntry {
   return {
     id: String(row.cursor),
@@ -66,7 +71,7 @@ export function createSqliteEventLog(
   dbPath: string,
   options: SqliteEventLogOptions = {},
 ): SqliteEventLog {
-  const maxEntriesPerRun = options.maxEntriesPerRun ?? DEFAULT_MAX_ENTRIES_PER_RUN;
+  const maxEntriesPerRun = options.maxEntriesPerRun;
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
@@ -124,6 +129,9 @@ export function createSqliteEventLog(
   const selectOldestStmt = db.prepare<[string], EntryRow>(
     'SELECT * FROM jini_event_log_entries WHERE run_id = ? ORDER BY cursor ASC LIMIT 1',
   );
+  const selectRunIdsStmt = db.prepare<[], { run_id: string }>(
+    'SELECT run_id FROM jini_event_log_runs ORDER BY run_id ASC',
+  );
   const deleteRunEntriesStmt = db.prepare<[string]>(
     'DELETE FROM jini_event_log_entries WHERE run_id = ?',
   );
@@ -158,9 +166,11 @@ export function createSqliteEventLog(
       );
       updateNextCursorStmt.run(cursor + 1, input.runId);
 
-      const { count } = countEntriesStmt.get(input.runId)!;
-      if (count > maxEntriesPerRun) {
-        evictOldestStmt.run(input.runId, input.runId, count - maxEntriesPerRun);
+      if (maxEntriesPerRun !== undefined) {
+        const { count } = countEntriesStmt.get(input.runId)!;
+        if (count > maxEntriesPerRun) {
+          evictOldestStmt.run(input.runId, input.runId, count - maxEntriesPerRun);
+        }
       }
 
       return {
@@ -178,7 +188,13 @@ export function createSqliteEventLog(
       return { kind: 'unknown-run' };
     }
     if (afterCursor === null) {
-      return { kind: 'ok', entries: selectAllStmt.all(runId).map(rowToEntry) };
+      const oldestRow = selectOldestStmt.get(runId);
+      const truncated = oldestRow !== undefined && oldestRow.cursor > 1;
+      return {
+        kind: 'ok',
+        entries: selectAllStmt.all(runId).map(rowToEntry),
+        ...(truncated ? { truncated: true as const } : {}),
+      };
     }
     const afterCursorNum = Number(afterCursor);
     if (!Number.isFinite(afterCursorNum)) {
@@ -210,6 +226,9 @@ export function createSqliteEventLog(
     },
     async replay(runId: string, afterCursor: string | null): Promise<EventLogReplayResult> {
       return replaySync(runId, afterCursor);
+    },
+    async listRunIds(): Promise<readonly string[]> {
+      return selectRunIdsStmt.all().map((row) => row.run_id);
     },
     async drop(runId: string): Promise<void> {
       dropTxn(runId);

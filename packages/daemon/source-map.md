@@ -165,64 +165,16 @@ produces/consumes exactly those types, not parallel ones, per the task
 brief. `node:crypto` (`randomUUID`) — Node built-in, no new external
 dependency.
 
-## artifacts/ — generic artifact-store kernel port (2026-07-18)
+## artifacts/ — MOVED to `@jini/artifacts` (2026-07-19)
 
-Origin: `apps/daemon/src/artifacts/` (6 files) on the real fork clone
-`leonaburime-ucla/open-design`, read directly from `/tmp/od-source` for this
-task. Per `docs/jini-port/recon/r1-daemon.md` TASK 1's MIXED-classification
-entry for `artifacts/`: "the artifact store concept is a generic engine
-port, but OD's artifact = HTML prototype / design output. Extract the store
-interface; keep OD's file-kind classification as adapter."
+Originally ported here 2026-07-18 as a generic artifact-store kernel port (6 files from OD's
+`apps/daemon/src/artifacts/`). Moved out into a standalone `@jini/artifacts` package on
+2026-07-19 after the swarm-consensus architecture debate found `ArtifactStoreToken` had been
+declared alongside this package's genuine kernel tokens — a real violation of the locked
+kernel-noun set (extraction-plan.md §2.1: "NO ... artifacts ... in the kernel"). Full original
+provenance, file map, and validation record preserved unedited at
+`packages/artifacts/source-map.md`.
 
-**Home decision: `@jini/daemon`, not `@jini/core`.** Both packages' existing
-scope was checked first per the task brief. `@jini/core` (per
-`docs/jini-port/extraction-plan.md` §3) owns `ProviderRegistry`/
-`ToolRegistry`/DI tokens+resolver/`Principal`/`Authorizer` — pure
-registries and composition machinery, not stateful storage. `@jini/daemon`
-already owns `RunLifecycle` + the durable `EventLog` kernel port
-(extraction-plan §12 C1) via the exact async-port-plus-in-memory-reference-
-implementation shape (`event-log.ts` / `createInMemoryEventLog`) this task
-needed to mirror for `ArtifactStore` / `createInMemoryArtifactStore`. The
-extraction-plan's own §10 roadmap-appendix text also describes artifacts as
-tied to runs producing output — kernel-adjacent, matching `@jini/daemon`'s
-existing charter. `ArtifactStoreToken` was added to `src/tokens.ts`
-alongside `RunLifecycleToken`/`EventLogToken`, same pattern.
-
-**No duplicate primitive.** `@jini/agent-runtime` already has an
-`ArtifactTaxonomy` (`isArtifact`/`classify` — a pure path-classification
-predicate, ported from OD's `runtimes/run-artifacts.ts` in an earlier task)
-whose own doc comment explicitly deferred `ArtifactStore` (actual
-create/read/manifest persistence) as "a later storage/sqlite task's
-concern" — confirmed by reading that file before starting this one. This
-task's `ArtifactStore` is exactly that deferred follow-up, a different
-concern (storage, not classification) in a different package — not a
-duplicate of `ArtifactTaxonomy`.
-
-### File map
-
-| Jini file | OD origin file(s) | Transform |
-|---|---|---|
-| `artifacts/manifest.ts` | `artifacts/manifest.ts` | De-branded: `ALLOWED_KINDS`/`ALLOWED_RENDERERS`/`ALLOWED_EXPORTS` (including a literal `'design-system'` kind — OD's own product concept) were hardcoded module constants; now a caller-supplied `ArtifactManifestTaxonomy`. `status` (`'streaming'\|'complete'\|'error'`) kept as a fixed literal union — a generic artifact-lifecycle concept, not a product taxonomy. `sourceSkillId`/`designSystemId` fields collapsed into one generic `sourceContextId` (opaque to the engine). Two coverage-driven refactors (Phase 6.5 category 4): the redundant `typeof manifest.kind/renderer !== 'string'` re-checks after `validateBoundedString` already returned for any non-string value, and the `typeof JSON.stringify(...) !== 'string'` check (always a string for a plain-object argument) — all three replaced with type assertions + comments. `inferLegacyManifest` (OD's HTML/deck/markdown/svg extension-based inference) is **not ported** — see `ManifestInferrer` below. |
-| `artifacts/store.ts` | `artifacts/create.ts` | Not a lift: the origin's `createProjectArtifactFile` took OD's own product-shaped workspace/file-tree writer as an injected dependency, and a companion `postCreateArtifactRequest` built a request body for OD's own per-workspace HTTP upload route — neither is a generic engine concern. Defines `ArtifactStore` (create/get/list) + `createInMemoryArtifactStore` reference implementation directly, mirroring `event-log.ts`'s `EventLog`/`createInMemoryEventLog` shape. `resolveArtifactManifest` ports the origin's require-explicit-OR-infer-OR-throw resolution logic (`ArtifactManifestRequiredError`/`ArtifactManifestInvalidError` kept, same codes). `ManifestInferrer` is the injection seam replacing OD's `inferLegacyManifest` call — a no-op default (`noopManifestInferrer` in `manifest.ts`) until a host supplies its own file-kind classification, per the task brief's explicit instruction to keep that OD-owned. |
-| `artifacts/publication-guard.ts` | `artifacts/publication-guard.ts` | De-branded: the origin hardcoded `UNRESOLVED_ARTIFACT_PLACEHOLDERS` (5 literal strings lifted from one bundled example template's pitch-deck fill-in-the-blank convention) and `PUBLICATION_GUARDED_ARTIFACT_KINDS = {'html','deck'}`. Both are now a caller-supplied `PublicationGuardConfig` (`guardedKinds` + `blockedPlaceholders`), empty by default (blocks nothing until configured) — the guard *mechanism* is generic, the marker strings were 100% one template's own content. API also folds the kind-gate into `assertArtifactPublicationAllowed` itself (`isPublicationGuardedKind` check now inside the assert) rather than leaving it a separate check the caller must remember to run first, as the origin did — a deliberate port-time design improvement, not a preserved-behavior requirement. |
-| `artifacts/runtime-compat.ts` | `artifacts/runtime-compat.ts` | **Not a lift — the seam only.** The origin, `normalizeArtifactRuntimeImports`, is entirely a fix for one specific CDN-bundle bug (rewriting a vanilla Motion UMD `<script>` tag to the `framer-motion` bundle when React-hook usage is detected) that OD's own system prompt steers models toward hitting — pure product/library-specific knowledge, explicitly out of scope per the task brief ("keep OD's specific logic as adapter"). This module defines only the generic `RuntimeCompatNormalizer` hook type + `noopRuntimeCompatNormalizer` default + a `composeRuntimeCompatNormalizers` helper for layering several a host might need; the Motion-CDN fix itself is not ported anywhere. |
-| `artifacts/stub-guard.ts` | `artifacts/stub-guard.ts` | De-branded: `STUB_GUARDED_MANIFEST_KINDS = {'html','deck'}` and a literal `.html`/`.htm` sibling-matching extension were hardcoded; `siblingExtensions` is now a caller-supplied config field (`extensionAlternation` builds the regex generically from it). `readArtifactStubGuardConfigFromEnv` read three `OD_ARTIFACT_STUB_GUARD*` env vars (see `source-map.md` for exact original names); renamed `ARTIFACT_STUB_GUARD*` (no product prefix), same three-var shape/defaults. Two coverage-driven refactors (Phase 6.5): a `candidateIdentifiers.length === 0` guard made dead by the preceding regex-match precondition was removed (the next line's `.some()` on an empty array already produces the same `continue`); a `largest === null` guard after a loop that (given the already-checked non-empty `priors`) always assigns on its first iteration was replaced with a non-null assertion + comment. |
-| `artifacts/text-suppression.ts` | `artifacts/text-suppression.ts` | The core (`createTaggedTextSuppressor`) was already fully generic in the origin (open/close regex + predicates as parameters, no product coupling) — ported verbatim. De-branded the origin's two pre-built instances: `createDsmlArtifactTextSuppressor` hardcoded OD's own "DSML" two-word tag-family (`<\|DSML artifact>...<\|/DSML\|>`); replaced with `createXmlTagTextSuppressor(tagNames)`, a generic factory over a caller-supplied tag-name list supporting both `<tagName>...</tagName>` and a `<\|tagName>...<\|/tagName\|>` bracket-pipe variant (a different, simpler bracket-pipe convention than OD's own two-word "DSML tagname" form, which doesn't generalize to arbitrary tag names). `createToolCallTextSuppressor` (`<tool_call>`/`<edit>` blocks) is a generic agent-protocol convention, not OD-branded, and is kept as a named instance. Two coverage-driven refactors (Phase 6.5): `compactTagCandidate`'s and the tool-call predicates' `!text.startsWith('<')` checks were dead — their only caller (`possibleTagStart`) always passes a tail slice starting at a `<` position — removed with a comment, keeping only the (real, reachable) `.includes('>')` check. |
-| `artifacts/index.ts` | *(new — barrel)* | Re-exports every module above. |
-
-### Not ported / explicitly out of scope
-
-- `artifacts/create.ts`'s `buildCreateArtifactRequestBody`/`postCreateArtifactRequest` — OD's own HTTP request-shape builder for its `/api/projects/:id/files` route; an HTTP route shape is a product/transport-layer surface, not a kernel port concern (an OD adapter's own `@jini/http` pack would own the equivalent request handling against this port).
-- `artifacts/manifest.ts`'s `inferLegacyManifest` (the HTML/deck/markdown/svg extension-based classification logic) — OD's own file-kind taxonomy; the `ManifestInferrer` injection seam replaces it, per the task brief's explicit instruction.
-- `artifacts/publication-guard.ts`'s `UNRESOLVED_ARTIFACT_PLACEHOLDERS` literal strings — one bundled example template's own pitch-deck content, not a generic mechanism.
-- `artifacts/runtime-compat.ts`'s Motion/Framer-Motion CDN-bundle rewrite logic in full — a third-party-library-specific fix, not a generic engine concern.
-
-### Validation
-
-- `pnpm --filter @jini/daemon typecheck` (src + tests): zero errors, zero TS2307.
-- `pnpm --filter @jini/daemon test` (full package): 178/178 passing, including the pre-existing `identifier-lint.test.ts` vocabulary-firewall check (a doc-comment `projectId` mention was caught and genericized by this exact lint during this task — the lint earning its keep).
-- **Coverage** (`json-summary`+`json` reporters, `pnpm exec vitest run --root . src/artifacts/ --coverage`, real aggregate for the whole `src/artifacts/` folder): **statements 100%, branches 100%, functions 100%, lines 100%** — every individual file at 100% on all four metrics, no exceptions, no coverage-suppression comments anywhere in this task's files.
-- **Purity**: `grep -rniE "open[- ]design|\bod_|--od-stamp|/tmp/open-design|@open-design" src/artifacts/` — zero matches. `pnpm guard` (repo root) passes (skeleton, rules pending implementation — see the agent-runtime source-map's identical caveat).
 ## Addendum: `legacy-data-migration.ts` (2026-07-18, Part D of the backend
 registry/memory/services/migration task)
 
@@ -556,12 +508,13 @@ kernel code informed by that shape.
 | Jini file | Contents |
 |---|---|
 | `src/agent-executor.ts` | `AgentExecutor` interface, `createAgentExecutor(...)` factory, `translateAgentRuntimeEvent` (the pure event-translation function), the stream-parser dispatch table, spawn/stdin/cancellation wiring. |
+| `src/delegated-tool-bridge.ts` | **New, generic composition code** — adapts a Jini-owned delegated tool request to the existing `ToolExecutor`, with canonical run `tool_use`/`tool_result` events and run-cancellation propagation. It intentionally supplies no wire server. |
 | `src/tokens.ts` (edited) | Added `AgentExecutorToken` alongside `RunLifecycleToken`/`EventLogToken`/`ArtifactStoreToken`/`ToolExecutorToken`, same convention. |
 | `src/index.ts` (edited) | Re-exports `./agent-executor.js`; module doc updated to mention `AgentExecutor`. |
 | `package.json` (edited) | Added `@jini/agent-runtime` and `@jini/platform` as direct dependencies (both previously zero-cross-referenced with `@jini/daemon`; `@jini/platform` added directly rather than relied on transitively through `@jini/agent-runtime`, per the task brief — no cycle: neither package imports `@jini/daemon`). |
 | `packages/node-host/src/create-local-node-daemon.ts` (edited, different package) | `KernelBoundIds` extended to `'jini.eventLog' \| 'jini.runLifecycle' \| 'jini.agentExecutor'`; `AgentExecutorToken` bound automatically alongside `EventLogToken`/`RunLifecycleToken` via `createAgentExecutor({ lifecycle: runLifecycle })` — a genuine zero-config default (unlike `ToolExecutorToken`, deliberately NOT auto-bound, since it needs a caller-supplied `ToolRegistry` with no sensible default). |
 
-### v1 scope: 9 of 24 registered agent defs
+### v1 scope: 18 of 24 registered agent defs
 
 `@jini/agent-runtime`'s registry ships 24 built-in defs. Only the 9 using one
 of the four `createXStreamHandler`-family JSON-stream parsers are wired:
@@ -571,25 +524,23 @@ cursor-agent, opencode, mimo — `mimo` shares `opencode`'s `eventParser`
 Confirmed by reading every one of the 9 defs' `buildArgs`/`promptViaStdin`/
 `promptInputFormat` fields in full: **all 9 use `promptViaStdin: true`** —
 `claude` and `codebuddy` use `promptInputFormat: 'stream-json'`, the
-remaining 7 use the default `'text'`. `AgentExecutor.run()` therefore only
-implements the stdin-delivery path; a def whose `streamFormat` is supported
-but whose `promptViaStdin` is not `true` also rejects with
-`AGENT_RUNTIME_UNSUPPORTED` (a defensive guard for a future registry change,
-not reachable by any of the current 24 defs).
+remaining 7 use the default `'text'`. Alongside those JSON-stream adapters,
+all 9 `acp-json-rpc` defs (hermes, devin, amr, vibe, kimi, reasonix, kiro,
+trae-cli, kilo) now use a separate branch: the real `attachAcpSession`
+handshake owns prompt delivery and parsed events; the driver preserves raw
+stdio, uses the controller's clean-prompt result rather than its expected
+cleanup SIGTERM, and sends cancellation through both ACP and process-tree
+termination. Its subprocess integration fixture proves launch → handshake →
+audited permission choice → stream → lifecycle completion.
+
+A non-ACP supported def still requires `promptViaStdin: true`; ACP does not,
+because its prompt is the `session/prompt` JSON-RPC call.
 
 **Deferred, not built this task** (all still callable/tested inside
 `@jini/agent-runtime` itself — only the *driver* wiring is deferred):
 
-- **The 15 ACP/pi-rpc defs** (`acp-json-rpc` × 9: hermes, devin, amr, vibe,
-  kimi, reasonix, kiro, trae-cli, kilo; `pi-rpc` × 1: pi). These use
-  `attachAcpSession`/`attachPiRpcSession`, which already accept a `send(event,
-  payload)` callback shaped close to `DriverEmittableInput`, but own their
-  own child-process I/O internally and return a synchronous controller
-  instead of an awaitable spawn-confirmed outcome — and treat "completed
-  successfully" as decoupled from process exit (their own source comment:
-  a SIGTERM on clean completion is expected, not an error). This is a
-  second, structurally distinct driver branch — the natural fast-follow,
-  flagged explicitly rather than silently dropped.
+- **The one pi-rpc def** (`pi`). It uses the separately-shaped
+  `attachPiRpcSession` controller; no driver has been added for it yet.
 - **`plain` (5 defs: antigravity, grok-build, aider, deepseek, qwen)** has
   zero existing consuming code anywhere in this codebase — no parser, no
   dispatch branch. The design space (a single final chunk on `flush()`? raw
@@ -685,19 +636,24 @@ despite being an exact fit; `AgentExecutor` is their first real caller.
 This catches MCP-server/tool-subprocess descendants an OD-style
 POSIX-process-group-only kill would miss.
 
-**8. Real-time tool-call authorize/confirm gating is intentionally
-absent.** `AgentExecutor` emits `tool_use`/`tool_result` as ordinary
-durable `'agent'` events — it never gates them before/after execution.
-This matches OD's own actual behavior (`tool-loop-guard.ts` only
-*observes* for runaway repetition; it never gates a call before it runs —
-see this file's `ToolExecutor` section above for the fuller account of why
-no OD source exists to lift for gating).
+**8. Native-agent authorization and Jini tool execution are two explicit
+paths.** ACP's `onPermissionRequest` seam receives the tool-call metadata and
+offered option ids before the ACP agent executes its own tool; without an
+injected policy it fails closed, while a runnable host records and chooses an
+offered allow/reject/cancel outcome. The
+autonomous JSON-stream CLIs still report `tool_use` only after their internal
+execution, so their telemetry remains observational. Separately,
+`createDelegatedToolBridge` is the actual Jini-tool path: it emits a matching
+run event pair around `ToolExecutor.execute`, so registry policy,
+confirmation, timeout, cancellation, and the executor audit all apply. It is
+transport-neutral by design; an MCP or other server must decode a concrete
+delegated request before calling it.
 
 ### Explicitly out of scope (same deferral discipline as the node-host keystone)
 
 - `ExecutionDelegate`/`ToolExecutorToken`/HTTP wiring (`mountPackHttp`) —
   separate, already-deferred task per `packages/http/source-map.md`.
-- The 15 ACP/pi-rpc defs and the 5 `plain` defs — see "v1 scope" above.
+- The one pi-rpc def and the 5 `plain` defs — see "v1 scope" above.
 - Retry-loop *orchestration* (deciding to start a second run) and
   retry-*signal production* (the failure classifier `decideSafeRunRetry`
   consumes) — both separate, unscoped tasks; `resumable` stays `false`
@@ -705,7 +661,7 @@ no OD source exists to lift for gating).
 - A concrete HTTP/SSE-exposed "chat pack" wiring `AgentExecutorToken` +
   `RunLifecycleToken` into routes — the natural next layer beyond "create
   `AgentExecutor` and wire agent-runtime into it."
-- Persistence, MCP-server injection, prompt composition (skill/memory
+- A generic MCP stdio server shell, persistence, MCP-server injection, prompt composition (skill/memory
   injection, transcript recomposition), and telemetry — all OD-product or
   transport-layer concerns with no kernel-port home; `AgentExecutor`
   receives an already-composed `prompt` string and does nothing to it

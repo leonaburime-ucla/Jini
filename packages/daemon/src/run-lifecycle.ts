@@ -92,6 +92,8 @@ export interface StreamOptions {
 export type StreamSubscribeResult = { readonly kind: 'ok'; readonly unsubscribe: Unsubscribe } | Exclude<EventLogReplayResult, { kind: 'ok' }>;
 
 export interface RunLifecycle {
+  /** Rebuilds the in-memory run index from durable EventLog records. Hosts must await this once during boot before accepting run requests. */
+  rehydrate(): Promise<void>;
   start(input: StartRunInput): Promise<StartRunResult>;
   get(runId: string): Promise<RunStatus | undefined>;
   list(contextRef?: string): Promise<readonly RunStatus[]>;
@@ -119,7 +121,7 @@ export interface RunLifecycle {
 }
 
 interface RunRecord {
-  contextRef: string;
+  contextRef: string | undefined;
   status: {
     id: string;
     state: RunState;
@@ -158,8 +160,35 @@ function toPublicStatus(record: RunRecord): RunStatus {
   return status;
 }
 
-function toRunEvent(entry: EventLogEntry): RunProtocolEvent {
-  return { id: entry.id, event: entry.event, data: entry.data } as RunProtocolEvent;
+/**
+ * Bridges `@jini/daemon`'s own `EventLogEntry` (`{id, event, data, recordedAt}`) to
+ * `@jini/protocol`'s canonical `RunEvent` envelope. `EventLogEntry` carries no `runId` of its
+ * own (the log is already scoped by the `runId` parameter every `EventLog` method takes), so
+ * this is the one place that stamps it onto the outgoing envelope.
+ */
+function toRunEvent(runId: string, entry: EventLogEntry): RunProtocolEvent {
+  return {
+    runId,
+    eventId: `${runId}:${entry.id}`,
+    opaqueCursor: entry.id,
+    protocolVersion: RUN_PROTOCOL_VERSION,
+    ts: entry.recordedAt,
+    kind: entry.event,
+    payload: entry.data,
+    durability: 'durable',
+  } as RunProtocolEvent;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function terminalStateFromEndEntry(entry: EventLogEntry): { state: TerminalRunOutcome; resumable: boolean } {
+  if (!isRecord(entry.data)) return { state: 'failed', resumable: false };
+  const status = entry.data.status;
+  const state: TerminalRunOutcome =
+    status === 'succeeded' ? 'succeeded' : status === 'canceled' ? 'cancelled' : 'failed';
+  return { state, resumable: entry.data.resumable === true };
 }
 
 export interface CreateRunLifecycleInput {
@@ -178,6 +207,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
   const { eventLog } = input;
   const runs = new Map<string, RunRecord>();
   const idempotencyIndex = new Map<string, string>();
+  let hydration: Promise<void> | null = null;
 
   function requireRun(runId: string): RunRecord {
     const record = runs.get(runId);
@@ -189,7 +219,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
 
   async function appendEvent(runId: string, record: RunRecord, event: string, data: unknown): Promise<RunProtocolEvent> {
     const entry = await eventLog.append({ runId, event, data });
-    const runEvent = toRunEvent(entry);
+    const runEvent = toRunEvent(runId, entry);
     for (const subscriber of record.subscribers) {
       subscriber(runEvent);
     }
@@ -222,6 +252,56 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
   }
 
   const lifecycle: RunLifecycle = {
+    async rehydrate(): Promise<void> {
+      if (hydration) return hydration;
+      hydration = (async () => {
+        const rehydratedNonTerminalRunIds: string[] = [];
+        for (const runId of await eventLog.listRunIds()) {
+          if (runs.has(runId)) continue;
+          const replay = await eventLog.replay(runId, null);
+          if (replay.kind !== 'ok' || replay.entries.length === 0) continue;
+
+          const entries = replay.entries;
+          const startEntry = entries.find((entry) => entry.event === 'start');
+          const endEntry = [...entries].reverse().find((entry) => entry.event === 'end');
+          const startData = startEntry && isRecord(startEntry.data) ? startEntry.data : null;
+          const firstEntry = entries[0]!;
+          const lastEntry = entries[entries.length - 1]!;
+          const terminal = endEntry === undefined ? null : terminalStateFromEndEntry(endEntry);
+          const contextRef = typeof startData?.contextRef === 'string' ? startData.contextRef : undefined;
+          const idempotencyKey = typeof startData?.idempotencyKey === 'string' ? startData.idempotencyKey : undefined;
+          const record: RunRecord = {
+            contextRef,
+            status: {
+              id: runId,
+              state: terminal?.state ?? 'running',
+              startedAt: startEntry?.recordedAt ?? firstEntry.recordedAt,
+              updatedAt: lastEntry.recordedAt,
+              endedAt: endEntry?.recordedAt,
+            },
+            resumable: terminal?.resumable ?? false,
+            cancelRequested: false,
+            lastCancelRequest: undefined,
+            cancelListeners: new Set(),
+            subscribers: new Set(),
+            terminalWaiters: [],
+            terminalEndEntry: endEntry,
+            watchdog: undefined,
+          };
+          runs.set(runId, record);
+          if (idempotencyKey !== undefined) idempotencyIndex.set(idempotencyKey, runId);
+          if (terminal === null) rehydratedNonTerminalRunIds.push(runId);
+        }
+
+        // A process restart cannot retain an in-memory child process or cancellation listener.
+        // Persist an honest terminal outcome instead of advertising an orphaned run as still live.
+        for (const runId of rehydratedNonTerminalRunIds) {
+          await lifecycle.finish({ runId, status: 'failed', code: null, signal: null, resumable: true });
+        }
+      })();
+      return hydration;
+    },
+
     async start(startInput: StartRunInput): Promise<StartRunResult> {
       if (startInput.idempotencyKey !== undefined) {
         const existingRunId = idempotencyIndex.get(startInput.idempotencyKey);
@@ -256,7 +336,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
 
       const startPayload: RunStartPayload = {
         runId,
-        protocolVersion: RUN_PROTOCOL_VERSION,
+        contextRef: startInput.contextRef,
         ...(startInput.agentId !== undefined ? { agentId: startInput.agentId } : {}),
         ...(startInput.idempotencyKey !== undefined ? { idempotencyKey: startInput.idempotencyKey } : {}),
       };
@@ -347,7 +427,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
       };
       const endEntry = await eventLog.append({ runId: finishInput.runId, event: 'end', data: endPayload });
       record.terminalEndEntry = endEntry;
-      const endEvent = toRunEvent(endEntry);
+      const endEvent = toRunEvent(finishInput.runId, endEntry);
       for (const subscriber of record.subscribers) {
         subscriber(endEvent);
       }
@@ -396,28 +476,47 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
       if (!record) {
         return { kind: 'unknown-run' };
       }
+      // Subscribe before awaiting the durable replay. Any event appended while the replay query is
+      // in flight is buffered, then delivered after the replay entries, so a reconnect cannot lose
+      // the narrow replay→subscribe interval or observe the live event ahead of older history.
+      let replaying = true;
+      const bufferedLiveEvents: RunProtocolEvent[] = [];
+      const subscriber = (event: RunProtocolEvent) => {
+        if (replaying) bufferedLiveEvents.push(event);
+        else onEvent(event);
+      };
+      record.subscribers.add(subscriber);
       const replay = await eventLog.replay(runId, options.afterCursor ?? null);
       if (replay.kind !== 'ok') {
+        record.subscribers.delete(subscriber);
         return replay;
       }
+      const deliveredEventIds = new Set<string>();
       for (const entry of replay.entries) {
-        onEvent(toRunEvent(entry));
+        const event = toRunEvent(runId, entry);
+        deliveredEventIds.add(event.eventId);
+        onEvent(event);
       }
 
       const terminal = isTerminalRunState(record.status.state);
       if (terminal && record.terminalEndEntry) {
         const lastDelivered = replay.entries[replay.entries.length - 1];
         if (!lastDelivered || lastDelivered.id !== record.terminalEndEntry.id) {
-          onEvent(toRunEvent(record.terminalEndEntry));
+          onEvent(toRunEvent(runId, record.terminalEndEntry));
         }
       }
 
+      for (const event of bufferedLiveEvents) {
+        if (!deliveredEventIds.has(event.eventId)) onEvent(event);
+      }
+      replaying = false;
+
       if (terminal) {
+        record.subscribers.delete(subscriber);
         return { kind: 'ok', unsubscribe: () => {} };
       }
 
-      record.subscribers.add(onEvent);
-      return { kind: 'ok', unsubscribe: () => record.subscribers.delete(onEvent) };
+      return { kind: 'ok', unsubscribe: () => record.subscribers.delete(subscriber) };
     },
   };
 

@@ -5,6 +5,11 @@
 export { createJsonLineStream } from './core/index.js';
 export {
   type AcpMcpServerInput,
+  type AcpPermissionDecision,
+  type AcpPermissionHandler,
+  type AcpPermissionOption,
+  type AcpPermissionRequest,
+  type AcpSessionController,
   type ModelOption,
   type AttachAcpSessionOptions,
   type AccountFailure,

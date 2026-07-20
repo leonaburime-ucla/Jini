@@ -12,8 +12,9 @@ Per extraction-plan.md §3: `@jini/http` is "HTTP/SSE transport + route-pack
 registrar + injects `ExecutionDelegate`". This task ports the JSON-route
 transport half (the capability-barrel module) and adds a route-pack registrar
 that plugs into `@jini/core`'s existing `Pack`/`createDaemon` composition
-contract. SSE and `ExecutionDelegate` injection are explicitly **not** part of
-this port — see "Explicitly deferred" below.
+contract. The generic lifecycle SSE projection was added in the 2026-07-19
+vertical-slice pass; `ExecutionDelegate` injection remains explicitly deferred
+— see "Explicitly deferred" below.
 
 ## File map
 
@@ -29,6 +30,7 @@ this port — see "Explicitly deferred" below.
 | `src/pack-http.ts` | *(new)* | `mountPackHttp` — the route-pack registrar. See "Design decisions" below. |
 | `src/index.ts` | `apps/daemon/src/http/index.ts` | Root barrel, re-export set unchanged in kind (adds `mountPackHttp`). Flattened to reference sibling files directly instead of subdirectory barrels, since this package has no subdirectories (the capability-barrel *pattern* — foundation/leaf/orchestration layering — is preserved in the module's internal dependency shape even though the directory nesting was collapsed). |
 | `src/daemon-status.ts` | `apps/daemon/src/routes/daemon.ts` (`GET /api/daemon/status`, `POST /api/daemon/shutdown` only — see the routes-classification table below for the rest of that file's verdict) | *(port/backend-routes task, added after the above)* Fully dependency-injected rewrite, not a lift: `getVersion`/`host`/`getPort`/`dataDir`/`isShuttingDown`/`requestShutdown` are all supplied by the caller rather than read from `db`/`env`/process globals the way the origin did. Dropped the origin's `installedPlugins` (a raw `SELECT COUNT(*) FROM installed_plugins` — an OD-product table), a product-specific config-dir field, and a sandbox-mode flag — none of those concepts exist in the engine kernel. The shutdown route reuses the existing `requireSameOrigin: true` `JsonRouteSpec` flag (the same gate `origin.ts`/`guardSameOrigin` already provides) instead of inventing a parallel "local daemon request" gate — this is the pre-existing mechanism, not a new one. `requestShutdown` stays a plain injected callback (not this module calling `process.emit('SIGTERM')` itself) because whether that terminates the process depends on a listener the *caller* registers; preserved the origin's respond-then-`setImmediate`-then-shutdown ordering so the HTTP response is always written before the shutdown callback runs. |
+| `src/runs.ts` | `apps/daemon/src/routes/runs.ts`'s thin lifecycle delegations plus new transport design | **New generic transport seam, not a lift.** `POST /api/runs`, `GET /api/runs/:runId`, `POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` project only `RunLifecycle`; no project, conversation, plugin, or artifact semantics cross this boundary. The SSE endpoint uses the canonical `RunProtocolEvent` envelope and `Last-Event-ID`/`afterCursor` reconnect cursors. `RunStartHandler` is deliberately host-owned: after the start record is durable, a host attaches its chosen driver; the route never makes an agent/tool policy decision itself. |
 
 Every file the origin module's barrel actually exported has a Jini equivalent
 exporting the same name (`compat`'s `sendApiError` is still re-exported as
@@ -85,13 +87,11 @@ registrar are silently skipped (a CLI-only or headless pack is not an error).
 **3. `ExecutionDelegate` injection is explicitly out of scope, not
 overlooked.** Extraction-plan.md §3 describes `@jini/http` as also
 "injects `ExecutionDelegate`" (§2.5's tool-execution-boundary confirm/authorize
-callback pair, transport-specific by design). No `ToolExecutor` or
-`ExecutionDelegate` exists anywhere in this codebase yet — that boundary is
-task 6 in extraction-plan.md §8's ten-task list and has not been started. This
-task builds only the transport plumbing and the pack registrar; delegate
-injection is a real, named follow-up for whichever task builds the
-`ToolExecutor` boundary itself, not something this port could sensibly stub
-without inventing the boundary's shape unilaterally.
+callback pair, transport-specific by design). `ToolExecutor` now exists in
+`@jini/daemon`, but the external CLI stream currently reports a tool use after
+the CLI has executed it; it is not a pre-execution request/response protocol.
+This transport therefore does not pretend to inject a post-hoc callback as an
+authorization gate. A controlled agent protocol is a real, named follow-up.
 
 **4. `ERROR_STATUS_BY_CODE` was re-scoped to `@jini/protocol`'s codes, not
 copied 1:1.** See the `src/response.ts` file-map row above for the exact
@@ -102,13 +102,9 @@ back to the conservative 500 default, same as OD's unmapped-code behavior).
 
 ## Explicitly deferred (not part of this port)
 
-- **SSE.** Extraction-plan.md §3 names "HTTP/**SSE**" as part of this
-  package's eventual scope. The `http/` module ported here is entirely
-  request/response JSON routing; OD's SSE streaming lives elsewhere in
-  `apps/daemon` (the runs/stream routes) and was not part of the
-  capability-barrel module this task was scoped to. A future task should
-  extract SSE transport into this package alongside `adapter.ts`, likely
-  keyed on `@jini/daemon`'s `EventLog`/replay-cursor port.
+- **Additional streaming projections.** The lifecycle SSE run transport now
+  exists, but AGUI mapping, terminal sessions, and product-specific stream
+  families remain out of scope.
 - **`ExecutionDelegate` injection.** See Design decision 3 above.
 - **The OD-sync patch-router** (extraction-plan.md §4.3's "a patch touching a
   `delegated-to-jini` path fails CI until the equivalent package patch
