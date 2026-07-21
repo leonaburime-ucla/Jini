@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CLI_EXIT_CODES } from '../errors.js';
-import { postJsonToDaemon, surfaceFetchError } from '../http.js';
+import { getJsonFromDaemon, postJsonToDaemon, surfaceFetchError } from '../http.js';
 
 class ExitSentinel extends Error {
   constructor(public code: number) {
@@ -345,5 +345,57 @@ describe('postJsonToDaemon', () => {
     ).rejects.toThrow(ExitSentinel);
     const combined = write.mock.calls.map((call) => String(call[0])).join('');
     expect(combined).not.toContain('hunter2');
+  });
+});
+
+describe('getJsonFromDaemon', () => {
+  it('issues a GET request with no body and returns the parsed JSON on a 2xx response', async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => jsonResponse(200, { runs: [] }));
+    const data = await getJsonFromDaemon('http://d.example', '/api/runs', { fetchImpl });
+    expect(data).toEqual({ runs: [] });
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('http://d.example/api/runs');
+    expect(init?.method).toBe('GET');
+    expect(init).not.toHaveProperty('body');
+    expect(init?.headers).not.toHaveProperty('content-type');
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('merges caller-supplied headers without adding a content-type', async () => {
+    const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) => jsonResponse(200, {}));
+    await getJsonFromDaemon('http://d.example', '/api/runs', { fetchImpl, headers: { 'x-token': 't' } });
+    const call = fetchImpl.mock.calls[0]!;
+    expect(call[1]?.headers).toEqual({ 'x-token': 't' });
+  });
+
+  it('exits via the structured-error path on a network failure', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('network down'); });
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      getJsonFromDaemon('http://d.example', '/api/runs', { fetchImpl, exit, write }),
+    ).rejects.toThrow(ExitSentinel);
+    expect(exit).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['daemon-not-running']);
+  });
+
+  it('falls back to a plain write + exit(1) for an error code not in any table, using GET in the message', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(500, { error: { code: 'totally-unmapped' } }));
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      getJsonFromDaemon('http://d.example', '/api/runs', { fetchImpl, exit, write }),
+    ).rejects.toThrow(ExitSentinel);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('GET /api/runs failed: 500'));
+  });
+
+  it('defaults fetchImpl to the global fetch when not injected', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(200, { ok: true }) as Response);
+    try {
+      const data = await getJsonFromDaemon('http://d.example', '/api/runs');
+      expect(data).toEqual({ ok: true });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

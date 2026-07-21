@@ -218,3 +218,81 @@ subdirectory (`automation/`, `brand/`, `export/`, `figma/`, `library/`,
 `media/`, `memory/`, `plugin/`, `project/`, `research/`, `share/`,
 `templates/`, `ui/`) is product-command implementation over OD's REST API,
 matching the OD verdicts already recorded in the classification table above.
+
+## 2026-07-21 addition — the first concrete `run` commands (`feat/http-routes-and-cli-commands`)
+
+This package's own "What was ported" section above already ends with: "no pack has registered
+against `CommandRegistry` yet because no HTTP-client-mode pack exists in this repo to call." That
+gap is what this addition closes — not a port from OD's `cli.ts` (that file's `run` subcommand,
+per the classification table's own `run` row, is OD-bodied: every request carries
+`projectId`/`skillId`/`pluginId`/`conversationId`/`designSystemId`, none of which exist in the
+kernel). Instead, `run-command.ts` is a fresh, thin CLI transport over `@jini/http`'s actual run
+routes (`packages/http/src/runs.ts`, all already real on this branch): `POST /api/runs`,
+`GET /api/runs` (added alongside this task — see `packages/http/source-map.md`'s matching entry),
+`POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` (SSE).
+
+**Commands added**: `run start --context-ref <ref> [--agent-id <id>] [--idempotency-key <key>]`,
+`run list [--context-ref <ref>]`, `run cancel <runId> [--reason <text>]`, and
+`run watch <runId> [--after-cursor <cursor>]`. Each parses its own flags via this package's
+existing `flags.ts`, resolves the daemon base URL via a caller-supplied `resolveBaseUrl` callback
+(deliberately not wired to a concrete `resolveDaemonUrl()` call here — that decision belongs to
+whatever pack registers these commands for real, matching this file's stance of staying
+transport-thin), calls `postJsonToDaemon`/`getJsonFromDaemon` exactly as they already exist, and
+prints the daemon's JSON response. `registerRunCommands(registry, deps)` registers a single `run`
+top-level command against `CommandRegistry` and hand-dispatches its first remaining token to one
+of the four handlers (the same "look at the next token, dispatch, fall through to usage" shape
+`command-registry.ts` itself documents as ported from OD's root router) — a pack that also
+supports the CommandRegistry's `override` option can replace it.
+
+**`getJsonFromDaemon` — a new sibling to `postJsonToDaemon`, not a rewrite.** `http.ts`'s
+`postJsonToDaemon` was POST-only; `run list` and `run watch`'s initial SSE-stream request are GET
+requests, and the task's own ground rules require reusing this package's already-hardened
+transport rather than reintroducing unbounded I/O or raw error disclosure for a new GET path. The
+POST-specific body/timeout/size-cap/structured-error logic was extracted into a private
+`requestJsonFromDaemon(base, route, {method, body?}, options)`; `postJsonToDaemon` and
+`getJsonFromDaemon` are now both thin wrappers over it that only fix `method`/`body` at their own
+call site. This is a behavior-preserving extraction, verified by re-running the pre-existing
+`http.test.ts` unchanged against the refactored file before adding a single new test — all 27
+original assertions still pass byte-for-byte. `getJsonFromDaemon` carries the identical
+timeout/size-cap/structured-error/redaction contract; it just never sends a body or a
+`content-type` header.
+
+**`run watch`'s SSE consumption — the mechanics this package's own deferred-item 4 above named,
+now built.** No existing SSE client existed anywhere in `@jini/cli` to reuse (the CLI package had
+never consumed a streaming response before this). `readSseFrames` parses the wire format
+`@jini/http`'s `runs.ts` `formatSseEvent` actually emits (`id: <cursor>\nevent: <kind>\ndata:
+<json>\n\n`) into one frame per blank-line-terminated block, translating each to one NDJSON line
+on stdout and stopping at the canonical `RunProtocolEvent` terminal `'end'` kind — exactly the
+pattern this file's own module docblock and this package's `source-map.md` (in the section above)
+described as the target shape. A frame with no `data:` line (e.g. a bare heartbeat/comment) is
+silently dropped rather than emitted as an empty line. Per this task's own ground rules (bounded
+I/O, no unbounded reads), the frame-accumulation buffer is capped at 10MB (mirroring `http.ts`'s
+`readJsonWithLimit` byte cap) — a daemon that never terminates a frame cannot grow memory without
+bound; exceeding the cap (or any other stream-read failure) exits via the same structured-error
+contract as every other failure in this file, not as an unhandled rejection. Each frame's `data` is
+run through `redact.ts`'s `stripControlSequences` (not the fuller `sanitizeUntrustedText`, which
+also truncates and secret-redacts) before being written: it is untrusted network content from a
+prompt-influenced agent run and must not be able to inject terminal escapes, but it is the run's
+actual event payload the user asked to watch, not incidental diagnostic text, so it is not
+truncated or redacted the way an error message is.
+
+**Not built**: a concrete `resolveDaemonUrl()`-backed default for `resolveBaseUrl`, and a `run get
+<runId>` command (the underlying `GET /api/runs/:runId` route already exists in
+`packages/http/src/runs.ts` but was not asked for in this pass's exact four-command scope — a
+trivial follow-up given the route is real). Also not built: any wiring of this file's commands
+into an actual bootable CLI entrypoint (`packages/cli/src/index.ts` remains a barrel only, per
+extraction-plan's node-host/CLI-bootstrap gap) — `registerRunCommands` is ready for a future pack
+to call, matching this package's established "no pack has registered yet" caveat.
+
+Tests: `src/__tests__/run-command.test.ts` (46 tests) plus `src/__tests__/http.test.ts`'s new
+`getJsonFromDaemon` describe block — 100% coverage on all 4 metrics for both `run-command.ts` and
+the touched portions of `http.ts`'s new code paths (the pre-existing `readJsonWithLimit`
+content-length/`.text()`-fallback gaps in `http.ts` predate this task and were not introduced or
+widened by it — confirmed by diffing coverage against the unmodified file before this change).
+
+## Dependencies (updated)
+
+No new dependency. `run-command.ts` uses only this package's own existing exports
+(`flags.ts`/`errors.ts`/`http.ts`/`redact.ts`/`usage.ts`/`command-registry.ts`) plus Node/Web
+platform primitives (`fetch`, `ReadableStream`, `TextDecoder`) already implicitly available in
+this package's runtime target.

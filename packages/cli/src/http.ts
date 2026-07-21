@@ -140,21 +140,27 @@ export interface PostJsonToDaemonOptions {
   maxResponseBytes?: number;
 }
 
+/** `GET`'s options are identical to {@link PostJsonToDaemonOptions} minus the (POST-only) request body. */
+export type GetJsonFromDaemonOptions = PostJsonToDaemonOptions;
+
+interface RequestInit_ {
+  readonly method: 'GET' | 'POST';
+  readonly body?: unknown;
+}
+
 /**
- * `POST` a JSON body to `<base><route>` and return the parsed JSON response.
- * A network failure or a non-2xx daemon response both exit via the
- * structured error contract (`errors.ts`) instead of returning — this
- * function either resolves with the parsed body or never returns.
- *
- * Per CR-004/SEC-RB-009, this now enforces a request deadline (combined with
- * an optional caller `signal`) and a maximum response size, and redacts
- * daemon-supplied error detail before it reaches stderr instead of dumping
- * it verbatim.
+ * Shared transport core behind {@link postJsonToDaemon} and {@link getJsonFromDaemon}: fetch
+ * `<base><route>` with a bounded timeout and response-size cap, and map a network failure or a
+ * non-2xx daemon response through the structured error contract (`errors.ts`) instead of
+ * returning — this function either resolves with the parsed body or never returns. Per
+ * CR-004/SEC-RB-009, daemon-supplied error detail is redacted before it reaches stderr rather than
+ * dumped verbatim. Both public wrappers exist only to fix `init.method`/`init.body` at their own
+ * call site — nothing method-specific lives here beyond that.
  */
-export async function postJsonToDaemon(
+async function requestJsonFromDaemon(
   base: string,
   route: string,
-  body: unknown,
+  init: RequestInit_,
   options: PostJsonToDaemonOptions = {},
 ): Promise<unknown> {
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -184,9 +190,9 @@ export async function postJsonToDaemon(
   try {
     try {
       resp = await fetchImpl(`${base}${route}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...options.headers },
-        body: JSON.stringify(body),
+        method: init.method,
+        headers: init.method === 'POST' ? { 'content-type': 'application/json', ...options.headers } : { ...options.headers },
+        ...(init.method === 'POST' ? { body: JSON.stringify(init.body) } : {}),
         signal,
       });
     } catch (err) {
@@ -224,10 +230,44 @@ export async function postJsonToDaemon(
       );
     }
     const rawExcerpt = describeUnrecognizedDaemonPayload(data);
-    write(`POST ${route} failed: ${resp.status}${rawExcerpt}\n`);
+    write(`${init.method} ${route} failed: ${resp.status}${rawExcerpt}\n`);
     return exit(1);
   }
   return data;
+}
+
+/**
+ * `POST` a JSON body to `<base><route>` and return the parsed JSON response.
+ * A network failure or a non-2xx daemon response both exit via the
+ * structured error contract (`errors.ts`) instead of returning — this
+ * function either resolves with the parsed body or never returns.
+ *
+ * Per CR-004/SEC-RB-009, this now enforces a request deadline (combined with
+ * an optional caller `signal`) and a maximum response size, and redacts
+ * daemon-supplied error detail before it reaches stderr instead of dumping
+ * it verbatim.
+ */
+export async function postJsonToDaemon(
+  base: string,
+  route: string,
+  body: unknown,
+  options: PostJsonToDaemonOptions = {},
+): Promise<unknown> {
+  return requestJsonFromDaemon(base, route, { method: 'POST', body }, options);
+}
+
+/**
+ * `GET` `<base><route>` and return the parsed JSON response. Same transport contract as
+ * {@link postJsonToDaemon} (timeout, response-size cap, structured-error mapping, redaction) with
+ * no request body — for read-only daemon routes such as `@jini/http`'s `GET /api/runs` and
+ * `GET /api/runs/:runId`.
+ */
+export async function getJsonFromDaemon(
+  base: string,
+  route: string,
+  options: GetJsonFromDaemonOptions = {},
+): Promise<unknown> {
+  return requestJsonFromDaemon(base, route, { method: 'GET' }, options);
 }
 
 /** A bounded, redacted excerpt of an unrecognized daemon error payload — never the full raw body. */

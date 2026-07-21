@@ -16,4 +16,5 @@ export * from './prompt.js';
 export * from './redact.js';
 export * from './usage.js';
 export * from './command-registry.js';
+export * from './run-command.js';
 export * from './tokens.js';
