@@ -36,7 +36,12 @@ export interface MediaExecutionPolicy {
   readonly allowedModels?: readonly string[];
 }
 
-export const DEFAULT_MEDIA_EXECUTION_POLICY: MediaExecutionPolicy = { mode: 'enabled' };
+// SEC-RB-010: deny by default. A host must explicitly opt into `mode:
+// 'enabled'` (and, if it cares about restricting models, explicitly supply
+// `allowedModels`) rather than getting an unrestricted default merely by
+// not passing a policy at all — media generation is a real-money, costly
+// capability, not something that should be on by default.
+export const DEFAULT_MEDIA_EXECUTION_POLICY: MediaExecutionPolicy = { mode: 'disabled' };
 
 /**
  * Host-injected policy port. `@jini/media` never calls this itself — a
@@ -62,13 +67,18 @@ export function createAllowlistMediaPolicy(policy: MediaExecutionPolicy = DEFAUL
       if (policy.allowedSurfaces && policy.allowedSurfaces.length > 0 && !policy.allowedSurfaces.includes(target.surface)) {
         return { code: 'MEDIA_SURFACE_DENIED', message: `media surface "${target.surface}" is not allowed for this run` };
       }
-      if (
-        target.model &&
-        policy.allowedModels &&
-        policy.allowedModels.length > 0 &&
-        !policy.allowedModels.includes(target.model)
-      ) {
-        return { code: 'MEDIA_MODEL_DENIED', message: `media model "${target.model}" is not allowed for this run` };
+      // SEC-RB-010: a model allowlist must not be bypassable by omitting the
+      // model field. If the host restricted models at all, an unspecified
+      // (or blank-after-normalization) model can't be verified against that
+      // allowlist and must be denied, not silently waved through.
+      const normalizedModel = target.model?.trim();
+      if (policy.allowedModels && policy.allowedModels.length > 0) {
+        if (!normalizedModel || !policy.allowedModels.includes(normalizedModel)) {
+          return {
+            code: 'MEDIA_MODEL_DENIED',
+            message: `media model ${normalizedModel ? `"${normalizedModel}"` : '(none specified)'} is not allowed for this run`,
+          };
+        }
       }
       return null;
     },

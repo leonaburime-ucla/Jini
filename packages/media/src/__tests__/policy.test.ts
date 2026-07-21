@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { createAllowlistMediaPolicy, DEFAULT_MEDIA_EXECUTION_POLICY } from '../policy.js';
 
 describe('createAllowlistMediaPolicy', () => {
-  it('defaults to enabled/unrestricted when constructed with no argument', () => {
+  it('SEC-RB-010: defaults to disabled (deny by default) when constructed with no argument', () => {
     const policy = createAllowlistMediaPolicy();
-    expect(policy.evaluate({ surface: 'image' })).toBeNull();
-    expect(policy.evaluate({ surface: 'video', model: 'anything' })).toBeNull();
+    expect(policy.evaluate({ surface: 'image' })?.code).toBe('MEDIA_EXECUTION_DISABLED');
+    expect(policy.evaluate({ surface: 'video', model: 'anything' })?.code).toBe('MEDIA_EXECUTION_DISABLED');
   });
 
-  it('DEFAULT_MEDIA_EXECUTION_POLICY is mode: enabled with no allowlists', () => {
-    expect(DEFAULT_MEDIA_EXECUTION_POLICY).toEqual({ mode: 'enabled' });
+  it('DEFAULT_MEDIA_EXECUTION_POLICY is mode: disabled with no allowlists', () => {
+    expect(DEFAULT_MEDIA_EXECUTION_POLICY).toEqual({ mode: 'disabled' });
   });
 
   it('denies everything when mode is disabled', () => {
@@ -43,9 +43,22 @@ describe('createAllowlistMediaPolicy', () => {
     expect(policy.evaluate({ surface: 'video', model: 'sora-2' })).toBeNull();
   });
 
-  it('does not deny on allowedModels when the target has no model', () => {
+  it('SEC-RB-010: denies (does not bypass) allowedModels when the target has no model', () => {
     const policy = createAllowlistMediaPolicy({ mode: 'enabled', allowedModels: ['sora-2'] });
-    expect(policy.evaluate({ surface: 'video' })).toBeNull();
+    expect(policy.evaluate({ surface: 'video' })).toEqual({
+      code: 'MEDIA_MODEL_DENIED',
+      message: 'media model (none specified) is not allowed for this run',
+    });
+  });
+
+  it('SEC-RB-010: denies allowedModels when the target model is blank/whitespace-only after normalization', () => {
+    const policy = createAllowlistMediaPolicy({ mode: 'enabled', allowedModels: ['sora-2'] });
+    expect(policy.evaluate({ surface: 'video', model: '   ' })?.code).toBe('MEDIA_MODEL_DENIED');
+  });
+
+  it('trims a model before comparing it against allowedModels', () => {
+    const policy = createAllowlistMediaPolicy({ mode: 'enabled', allowedModels: ['sora-2'] });
+    expect(policy.evaluate({ surface: 'video', model: '  sora-2  ' })).toBeNull();
   });
 
   it('an empty allowedModels array means unrestricted', () => {

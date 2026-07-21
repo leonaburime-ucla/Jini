@@ -79,6 +79,19 @@ describe('createInMemoryMediaTaskStore — lifecycle', () => {
     });
   });
 
+  it('update() patches a non-null error', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1' });
+    const updated = await store.update('t1', { status: 'failed', error: { message: 'upstream 500', status: 500 } });
+    expect(updated?.error).toEqual({ message: 'upstream 500', status: 500 });
+  });
+
+  it('create() accepts a non-null error', async () => {
+    const store = createInMemoryMediaTaskStore();
+    const created = await store.create({ id: 't1', ownerRef: 'run-1', status: 'failed', error: { message: 'boom' } });
+    expect(created.error).toEqual({ message: 'boom' });
+  });
+
   it('update() with an empty patch keeps status/progress but bumps updatedAt', async () => {
     const store = createInMemoryMediaTaskStore();
     const created = await store.create({ id: 't1', ownerRef: 'run-1' });
@@ -191,5 +204,73 @@ describe('createInMemoryMediaTaskStore — reconcileOnBoot', () => {
     expect(created.endedAt).toBeNull();
     const result = await store.reconcileOnBoot({ terminalTtlMs: 1, now: created.updatedAt + 1000 });
     expect(result.deleted).toBe(1);
+  });
+
+  it('CR-013: rejects a negative or non-finite terminalTtlMs', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await expect(store.reconcileOnBoot({ terminalTtlMs: -1 })).rejects.toThrow(RangeError);
+    await expect(store.reconcileOnBoot({ terminalTtlMs: Number.NaN })).rejects.toThrow(RangeError);
+    await expect(store.reconcileOnBoot({ terminalTtlMs: Number.POSITIVE_INFINITY })).rejects.toThrow(RangeError);
+  });
+});
+
+describe('createInMemoryMediaTaskStore — CR-013 invariants', () => {
+  it('rejects create() with a duplicate id instead of silently overwriting', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1', surface: 'video' });
+    await expect(store.create({ id: 't1', ownerRef: 'run-2', surface: 'image' })).rejects.toThrow(/already exists/);
+    // the original row must be untouched
+    expect((await store.get('t1'))?.ownerRef).toBe('run-1');
+  });
+
+  it('rejects an illegal transition out of a terminal state (done -> running)', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1', status: 'done' });
+    await expect(store.update('t1', { status: 'running' })).rejects.toThrow(/Invalid media task transition/);
+  });
+
+  it('rejects an illegal transition out of a terminal state (failed -> queued)', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1', status: 'failed' });
+    await expect(store.update('t1', { status: 'queued' })).rejects.toThrow(/Invalid media task transition/);
+  });
+
+  it('allows a same-state update (progress-only) without touching status legality', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1', status: 'running' });
+    const updated = await store.update('t1', { progress: ['halfway'] });
+    expect(updated?.status).toBe('running');
+    expect(updated?.progress).toEqual(['halfway']);
+  });
+
+  it('returns immutable snapshots: mutating a returned task does not corrupt the stored row', async () => {
+    const store = createInMemoryMediaTaskStore();
+    const created = await store.create({ id: 't1', ownerRef: 'run-1', progress: ['a'], file: { url: 'x' } });
+    (created.progress as string[]).push('mutated');
+    (created.file as { url: string }).url = 'mutated';
+    const fetched = await store.get('t1');
+    expect(fetched?.progress).toEqual(['a']);
+    expect(fetched?.file).toEqual({ url: 'x' });
+  });
+
+  it('does not let a caller-supplied array/object mutate stored state after create()', async () => {
+    const store = createInMemoryMediaTaskStore();
+    const progress = ['a'];
+    const file = { url: 'x' };
+    await store.create({ id: 't1', ownerRef: 'run-1', progress, file });
+    progress.push('caller mutated after create');
+    file.url = 'caller mutated after create';
+    const fetched = await store.get('t1');
+    expect(fetched?.progress).toEqual(['a']);
+    expect(fetched?.file).toEqual({ url: 'x' });
+  });
+
+  it('two get() calls for the same task return distinct object references', async () => {
+    const store = createInMemoryMediaTaskStore();
+    await store.create({ id: 't1', ownerRef: 'run-1' });
+    const first = await store.get('t1');
+    const second = await store.get('t1');
+    expect(first).not.toBe(second);
+    expect(first?.progress).not.toBe(second?.progress);
   });
 });
