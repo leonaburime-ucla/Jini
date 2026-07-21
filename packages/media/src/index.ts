@@ -18,3 +18,4 @@ export * from './policy.js';
 export * from './staging.js';
 export * from './tokens.js';
 export * from './dispatch/index.js';
+export * from './sqlite-task-store.js';

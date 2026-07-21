@@ -273,3 +273,88 @@ above the package's configured 99% threshold gate
 tsc --noEmit` clean. `pnpm guard` (repo root) clean. `pnpm --dir
 packages/protocol exec vitest run` (unmodified, but exercised more heavily
 via `RegistryPublishRequestSchema`) still 10/10 passing.
+
+## 2026-07-21 — production-hardening audit, part 2: closing the one flagged gap, confirming no other genuine gaps
+
+Follow-up pass specifically scoped to "what production-hardening work is
+still open" (as opposed to the hardening pass above, which was a fresh
+line-by-line audit of every file). Re-read `database-backend.ts`,
+`github-backend.ts`, `static-backend.ts`, `versioning.ts`, and
+`@jini/protocol`'s `registry.ts` schemas in full, specifically hunting for
+rate limiting, additional validation, and concurrency edge cases beyond what
+the hardening pass above already found/fixed/deferred/accepted. Also
+`grep`ed the whole package for `TODO`/`FIXME`/`XXX` (none found).
+
+**Findings:**
+
+- **The one concrete gap this session's own hardening-pass section already
+  named but did not close: `versioning.ts`'s 99.3% branch coverage.** The
+  pass above fixed four other files but explicitly left this one
+  "untouched." Reading `versioning.ts` line-by-line to find the actual
+  uncovered branch (rather than assuming it was cosmetic) surfaced a real,
+  previously-untested correctness case: `resolveRegistryEntryVersion`'s
+  final yanked check (`packages/registry/src/versioning.ts:73`,
+  `if (versionRecord?.yanked) return null;`) is reachable two ways — (a) a
+  caller requests a *specific* version/dist-tag that turns out to be
+  yanked (already tested — `resolveRequestedVersion`'s own
+  `versionExists` filters that case before this line is even reached with a
+  non-null `targetVersion`), and (b) **no range is requested at all**, so
+  resolution falls through to `distTags.latest`/`entry.version` — and *that*
+  default can itself name a version that is present in the `versions`
+  ledger but marked `yanked` there. Case (b) had no test: every existing
+  yanked-related test either requested an explicit version/range, or
+  exercised the "no `version`/`distTags` at all" fallback (which walks
+  `versions.find(v => !v.yanked)` and therefore can never land on a yanked
+  record in the first place). Without this line, a caller asking for
+  "whatever the default/latest version is" on an entry whose declared
+  default happens to be yanked would silently receive that version's
+  source/integrity instead of `null` — i.e. the exact "don't silently serve
+  a yanked release" property `resolveRequestedVersion`'s own doc comment
+  already promises for the *explicit*-request path, but which had no test
+  proving it also holds for the *default* path. Fixed by adding
+  `packages/registry/src/__tests__/versioning.test.ts`'s "returns null
+  instead of silently serving a yanked version when it is the resolved
+  DEFAULT (no range requested)" test, covering both the `distTags.latest`
+  and bare `entry.version` routes to that line. No production code changed
+  — the guard already existed and was already correct; only the missing
+  proof was added. `versioning.ts` is now 100/100/100/100, and the
+  package-wide aggregate is 100/100/100/100 (up from the prior
+  100/99.68/100/100 baseline).
+
+**Re-confirmed as already covered by the pass above (not re-litigated):**
+signature/trust verification remains proposal-gated
+(`ADS-memory/reports/proposals/PROP-registry-signature-trust-verification-2026-07-21.md`,
+untouched); the `GithubRegistryBackend.yank()` no-existence-check asymmetry,
+`RegistryListFilter`'s missing result-count bound, and the absent
+`GithubRegistryClient` HTTP implementation all remain as previously reasoned
+(acceptable / out of this package's boundary / nothing to harden yet).
+
+**No rate limiting was added.** Searched deliberately for a rate-limiting
+gap (the task's own suggested example of "production hardening" work) and
+found none to close within this package's boundary: `database-backend.ts`
+has no network calls to rate-limit (pure sqlite I/O); `static-backend.ts`
+has no I/O at all; `github-backend.ts`'s `GithubRegistryClient` is a
+caller-injected interface with — as already noted above — **no concrete
+implementation in this repo**, so there is no real outbound HTTP call site
+in this package to attach a rate limiter to. Rate-limiting a call this
+package never actually makes would be speculative surface with nothing to
+validate it against; deferred, consistent with the "nothing to harden until
+a real client implementation is built" reasoning already on record above.
+
+**No new concurrency edge case was found beyond the ones already fixed in
+the pass above** (`DatabaseRegistryBackend.yank()`'s atomic
+read-modify-write). `DatabaseRegistryBackend.publish()`'s
+`upsertRegistryEntry` is a single `INSERT ... ON CONFLICT DO UPDATE`
+statement — atomic at the SQLite level already, no read-then-write window to
+race. `GithubRegistryBackend.publish()`/`yank()` each open exactly one PR
+per call with no local mutable state shared across calls; two concurrent
+publishes for the same name/version would (at worst) open two PRs against
+the same branch name, which GitHub itself rejects/reconciles at the git
+level — a real client-implementation concern (see above), not a gap in this
+package's own logic.
+
+**Verification:** `pnpm --dir packages/registry exec vitest run --coverage`
+— 104/104 tests pass (one new test added), package-wide aggregate
+100/100/100/100 statements/branches/functions/lines (up from
+100/99.68/100/100), above the package's configured 99% threshold gate.
+`pnpm --dir packages/registry exec tsc --noEmit` clean.

@@ -219,9 +219,16 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      better-sqlite3:
+        specifier: ^11.10.0
+        version: 11.10.0
       undici:
         specifier: ^7.25.0
         version: 7.28.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.11
+        version: 7.6.13
 
   packages/memory: {}
 

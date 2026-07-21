@@ -228,3 +228,134 @@ OD-specific state themselves, only the shape of the object handed to them.
 Tests: `src/__tests__/llm-provider.test.ts` — 56 tests, **100% coverage on all 4 metrics** (statements/branches/functions/lines) on `llm-provider.ts`, covering: every vendor's URL/header/body construction and default-vs-custom `baseUrl`/`apiVersion`, the `appendVersionedApiPath` doubled-`/v1` guard in both directions, every `describeFetchError` branch (plain message, non-Error throw, null/non-object/empty-object cause, code-only, message-only, duplicate-of-head message, code-contains-message-dedup vs. code+message-both-shown, the `AggregateError`-style `errors[]` fallback loop finding a candidate on a later entry vs. exhausting with none vs. a non-array `errors` field), every `parseStrictJson` branch (direct parse, non-object JSON values, both fence styles, regex-fallback success, regex-fallback-found-but-still-invalid, no-braces-at-all, truncated vs. untruncated error previews), config validation (empty/whitespace `apiKey`/`model`, azure-without-`baseUrl`, an unrecognized provider id via a type-bypassing cast — a defensive runtime guard exercised deliberately since this package ships plain JS too), `extraHeaders` unable to clobber required auth headers, `requestInit` passthrough with explicit fields still winning, `timeoutMs` default/custom/`NaN`/non-positive resolution (verified via `vi.spyOn(AbortSignal, 'timeout')`, matching this repo's established real-fetch-mock testing style rather than asserting on internal state), a network-level fetch rejection routed through `describeFetchError`, an empty-200-body response, and both `callLlmProviderForJson` success and JSON-parse-failure propagation.
 
 Dependencies: none beyond Node/web-standard builtins already available in this package's runtime target (global `fetch`, `Response`, `URL`, `AbortSignal.timeout` — Node `~24` per the repo's `engines` field, matching the precedent already set by `packages/media`'s provider files calling `AbortSignal.timeout` directly with no polyfill).
+
+## 2026-07-21 addition — `extract-facts.ts`, the generic extraction pipeline `llm-provider.ts` was ported to support
+
+Closes the gap the `llm-provider.ts` addition above flagged implicitly: that
+module is only the "call an LLM HTTP API, get strict JSON back" primitive —
+it was never itself an extraction pipeline. This addition is that pipeline:
+`extractFacts(llmConfig, { content, sourceLabel? }, options?)` calls
+`callLlmProvider` with a generic extraction-shaped system+user prompt, then
+`parseStrictJson` + sanitizes/validates the model's response into
+`ExtractedFact[]` (`{ statement, category?, entities?, confidence?,
+sourceQuote? }`).
+
+**Why this is safe to build now, unlike the pieces still left un-ported.**
+Re-read this package's own classification table above before writing any
+code, specifically to re-confirm which of the origin's un-ported pieces this
+new work must NOT reintroduce, and why each was excluded in the first place:
+
+- **`memory-connectors.ts` (NOT ported: OD-branded connector-mining)** — its
+  exclusion reason was "there is no generic 'connector fact-mining'
+  mechanism left over once the design-topic filtering and OD branding are
+  removed — the whole file *is* that filtering." `extract-facts.ts` has no
+  topic filter of any kind — every piece of `content` a caller hands it is
+  extracted from as given, with no "is this design-relevant?" gate. Nothing
+  from that file was reused or reintroduced.
+- **`memory-llm.ts` concerns (2)/(3) (NOT ported: OD system prompts +
+  coding-agent-CLI transport)** — concern (2) was OD's product copy
+  ("personal AI design assistant") tied to a fixed `MEMORY_TYPES` taxonomy;
+  concern (3) was local subprocess execution, a different transport
+  entirely. `extract-facts.ts`'s `DEFAULT_SYSTEM_PROMPT` names no
+  product/assistant identity and has no fixed category enum
+  (`ExtractedFact.category` is a free-form string; the model chooses it,
+  optionally steered by a caller-supplied `suggestedCategories` *hint*,
+  never an enforced/rejecting filter) — and it only ever calls
+  `callLlmProvider`, the HTTP-only primitive concern (1) already ported.
+  Concerns (2)/(3) stay un-ported, unchanged.
+- **`memory-rules.ts` (NOT ported: thin wrapper over the skipped LLM
+  concerns)** — irrelevant here; this addition has no relationship to rule
+  distillation.
+- **`memory.ts`'s dropped pieces** (`MEMORY_TYPES` taxonomy,
+  `composeMemoryBody`, the heuristic regex pack, `maskMemoryExtractionConfig`)
+  — none reused. In particular, no fixed type taxonomy was reintroduced:
+  {@link factToNoteDraft} (see below) takes `type` as a caller-supplied
+  parameter, exactly matching `note-store.ts`'s own already-established
+  `NoteStoreConfig.validTypes`/`defaultType` host-supplied-taxonomy
+  pattern — this module derives `type` from nothing of its own.
+
+**What was built, precisely** (`packages/memory/src/extract-facts.ts`, no
+OD origin — new work assembled from the already-ported `llm-provider.ts`
+primitives, same category of "new design work" as `packages/deploy/src/
+tool.ts` was for its own package):
+
+- `extractFacts(llmConfig, input, options?)` — the pipeline itself. Empty/
+  whitespace-only `input.content` short-circuits to `{ facts: [], raw: '' }`
+  with no network call. Builds a user prompt folding in `input.sourceLabel`
+  (free text, never a taxonomy value) and `options.prompt.suggestedCategories`
+  (a hint), calls `callLlmProvider` with `DEFAULT_SYSTEM_PROMPT` (or a
+  caller override via `options.prompt.systemPrompt`), then
+  `parseStrictJson`s the response and sanitizes each candidate: drops any
+  candidate with no usable `statement`, drops non-string `entities` and
+  omits an empty `entities` array entirely, clamps `confidence` to `[0, 1]`
+  and drops it if non-numeric, trims/drops empty `category`/`sourceQuote`,
+  and caps the result at `options.prompt.maxFacts` (default
+  `DEFAULT_MAX_FACTS = 20`, matching the same order of magnitude as the
+  origin's own cap of 6 for a narrower single-turn case, scaled up for a
+  potentially longer document/conversation excerpt — not copied from the
+  origin, which this module has no schema/behavior tie to).
+- **Optional `ExtractionLog` integration** (`options.logging: { log, kind }`)
+  — when supplied, records `startExtraction` → `markProvider` →
+  `markProposed` → `markSuccess`/`markFailed` through the already-ported
+  `extraction-log.ts`, reusing it rather than inventing a second attempt-log
+  shape. Documented explicitly (in both the option's JSDoc and an inline
+  comment at the call site) that "success" here means "the extraction call
+  itself succeeded," not "facts were persisted" — this module never writes
+  to any store, so `markSuccess`'s `writtenCount`/`writtenIds` fields
+  reflect facts *extracted*, with `writtenIds` always `[]`; a caller that
+  goes on to actually persist some of the returned facts may call
+  `log.markSuccess(attemptId, ...)` again with the real outcome, since
+  `ExtractionLog` records are mutable/overwritable by id, not append-only.
+- `factToNoteDraft(fact, type)` — a small, deliberately optional bridge to
+  `note-store.ts`'s `NoteStore.upsertEntry({ name, description, type })`
+  input shape, NOT a requirement for using `extractFacts`. Truncates a long
+  `statement` to 80 chars for `name` (note-store names are short labels, not
+  bodies), keeps the full `statement` (plus a `Source: "..."` line when
+  `sourceQuote` is present) as `description`, and takes `type` as a plain
+  caller-supplied parameter with no validation against any particular
+  store's `validTypes` — the taxonomy is 100% the caller's, matching
+  `note-store.ts`'s own already-generalized design.
+
+**What was deliberately NOT built:** any automatic wiring from
+`extractFacts`'s output into `note-store.ts` (no "extract and write" combined
+function) — persistence is a policy decision (which facts to keep, under
+which type, deduping against existing entries) squarely in the "caller
+decision" territory this package's whole `note-store.ts` port already drew
+that line around; a fixed/default category taxonomy; any topic/relevance
+filter; any provider-selection policy (still the host's job via `llmConfig`,
+per `llm-provider.ts`'s own already-established boundary).
+
+**Tests:** `src/__tests__/extract-facts.test.ts`, 19 tests, **100% coverage
+on all 4 metrics** on `extract-facts.ts` — empty-content short-circuit with
+no network call; default-prompt call shape (system prompt, user-prompt
+content/maxFacts framing); `sourceLabel`/`suggestedCategories` folded into
+the prompt; full system-prompt override; every sanitize-per-candidate branch
+(missing/blank statement, non-object candidate, non-string/blank entities,
+empty entities array omitted entirely, confidence clamped high/low/non-
+numeric, category/sourceQuote trimmed-or-omitted); non-array `facts` field
+treated as zero facts; default `maxFacts` cap (20) and a caller-supplied cap
+including the floor/non-positive-value fallback branches; network/HTTP-error
+and invalid-JSON-response propagation (both unchanged from what
+`callLlmProvider`/`parseStrictJson` themselves throw); the full
+`ExtractionLog` integration (start→provider→proposed→success on success,
+failed-attempt recording on both an LLM-call error and a JSON-parse error,
+and "no log passed" leaving nothing to break); and `factToNoteDraft`'s
+short/long/with-quote formatting branches.
+
+**Verification:** `pnpm --dir packages/memory exec vitest run --coverage` —
+204/204 tests pass; `extract-facts.ts` itself is 100/100/100/100
+(statements/branches/functions/lines). Package-wide aggregate is
+98.96/98.95/100/98.96, which does **not** clear this package's configured
+99% global threshold (`packages/memory/vitest.config.ts`) — but this is a
+**pre-existing** shortfall, not something this addition introduced: verified
+by stashing this change and re-running coverage against the unmodified tree,
+which already failed the same gate at 98.86/98.79/100/98.86 (the gap is
+entirely `note-store.ts`'s own pre-existing uncovered lines 204-207/253-255,
+untouched by this task and out of this task's scope — item 1 was scoped to
+building the extraction pipeline, not auditing `note-store.ts`). Adding this
+addition's fully-covered code *improved* the aggregate (98.86 → 98.96 stmts/
+lines, 98.79 → 98.95 branches) rather than regressing it. `pnpm --dir
+packages/memory exec tsc --noEmit` clean.
+
+Dependencies: none beyond what `llm-provider.ts`/`extraction-log.ts` already
+require (no new package dependency).

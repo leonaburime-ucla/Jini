@@ -80,6 +80,29 @@ describe('resolveRegistryEntryVersion', () => {
     expect(resolveRegistryEntryVersion(e)?.version).toBe('1.1.0');
   });
 
+  it('returns null instead of silently serving a yanked version when it is the resolved DEFAULT (no range requested)', () => {
+    // Distinct from the "specific yanked version requested directly" case
+    // further down: here no range/version is requested at all, so
+    // resolution falls through to `distTags.latest`/`entry.version` — which
+    // can themselves name a version that is present in the `versions`
+    // ledger but marked yanked there. Without this final yanked check, a
+    // caller asking for "whatever the default is" would silently receive a
+    // yanked release's source/integrity instead of `null`.
+    const viaDistTagsLatest = entry({
+      version: '9.9.9', // deliberately different from distTags.latest, so this proves distTags wins
+      distTags: { latest: '1.0.0' },
+      versions: [{ version: '1.0.0', source: 's1', yanked: true }],
+    });
+    expect(resolveRegistryEntryVersion(viaDistTagsLatest)).toBeNull();
+
+    const viaTopLevelVersion = entry({
+      version: '1.0.0',
+      distTags: undefined,
+      versions: [{ version: '1.0.0', source: 's1', yanked: true }],
+    });
+    expect(resolveRegistryEntryVersion(viaTopLevelVersion)).toBeNull();
+  });
+
   it('picks the highest matching version for a caret range, ignoring out-of-major candidates', () => {
     const e = entry({
       version: '2.0.0',

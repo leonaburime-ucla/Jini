@@ -246,3 +246,124 @@ boundary implementation, not a test double of it. No cycle: `@jini/daemon` does 
   itself throws (e.g. a `DeployError` for an unknown `targetId`, or a `TypeError` further down a
   target's own file-iteration if `files` isn't actually an array) — same posture `publishDeploy`
   already had before this task, not a regression, but also not hardened further here.
+
+## 2026-07-21 addition — `NetlifyDeployTarget` (`src/netlify.ts`), the second-of-two roadmap deploy targets
+
+**Verified the "still deferred" note above against current code before doing anything else, per
+this task's instruction not to trust a possibly-stale deferred-note without checking**: re-read
+`src/tool.ts` in full. Real `ToolExecutor`/`ToolRegistry` wiring is genuinely done (the
+"historical" section above's sketch became real code in the 2026-07-21 `tool.ts` addition already
+documented further up this file, commit `416f9dc8a`) — nothing further to do there. The
+`PROP-deploy-cancellation-contract-2026-07-21.md` proposal remains untouched and unimplemented,
+exactly as it should stay pending architect sign-off — no code in this addition changes
+`DeployTarget.publish`/`checkReachability`'s signature, and `netlify.ts` has the same
+un-cancellable-in-flight-fetch posture the "What's still NOT done" list above already documents for
+Vercel/Cloudflare (not a new gap this addition introduces — see below).
+
+**What was open and cleanly scopeable:** of the two roadmap-named-but-never-origin-implemented
+targets (GitHub Pages, Netlify — see "Explicitly deferred" above), Netlify was picked because its
+deploy protocol is the closer analog to `VercelDeployTarget`'s already-ported shape (create a
+deployment from a content-addressed file manifest, poll a `state`/`readyState` field to a terminal
+value, then wait for the resulting URL to become reachable) — GitHub Pages has no equivalent
+digest-deploy API and would need a materially different design (Pages "deployments" are created
+from a pre-uploaded tar.gz artifact via a separate Actions-artifact-adjacent upload flow), left
+deferred, unchanged from the note above.
+
+**Built against Netlify's own published OpenAPI 2.0 contract** (`https://open-api.netlify.com`,
+fetched and parsed directly — not an LLM summary of the docs, which two independent doc-page
+fetches during this task actually disagreed with each other on the deploy `state` enum, exactly the
+kind of hallucination risk worth cross-checking a primary source for on real external-API code).
+The ground truth used: `POST /sites/{site_id}/deploys` (async SHA1 file-digest manifest → `{id,
+required[], state}`), `PUT /deploys/{deploy_id}/files/{path}` (per-required-hash upload), `GET
+/deploys/{deploy_id}` (status poll), `GET /sites?name=&filter=all` / `POST /sites` (find-or-create
+the target site), and — the one field this API's own inline JSON-schema types as a bare `string`
+with no enum, so it was cross-checked against the *canonical* source for that exact field: the
+`state` **query-filter enum** on `GET /sites/{site_id}/deploys` (the same field, used as a request
+filter, which *is* enumerated) — `new, pending_review, accepted, rejected, enqueued, building,
+uploading, uploaded, preparing, prepared, processing, processed, ready, error, retrying`. `'ready'`
+is the only success terminal state; `'error'`/`'rejected'` are the only failure terminal states
+(`NETLIFY_FAILURE_STATES`); everything else keeps polling.
+
+| Jini file | Origin | Transform |
+|---|---|---|
+| `src/netlify.ts` | *(new — no OD origin; `deploy.ts` never implemented a Netlify target)* | `NetlifyDeployTarget implements DeployTarget`, same shape as `VercelDeployTarget`/`CloudflarePagesDeployTarget`. |
+
+**Design decisions:**
+
+- **Site find-or-create, keyed off a deterministic derived name** — `deriveNetlifySiteName(projectName)`
+  is `jini-<safeDnsLabel(projectName)>`, the same deterministic (no random suffix) pattern
+  `cloudflare-pages.ts`'s `deriveCloudflarePagesProjectName` already established, so repeated
+  publishes of the same logical project land on the same Netlify site. Unlike Cloudflare Pages
+  (whose project-lookup-by-name endpoint is a direct `GET .../pages/projects/{name}`), Netlify has
+  no "get site by bare name" endpoint — `GET /sites/{site_id}` requires the real `site_id` (a UUID
+  or a full `*.netlify.app`/custom domain), so lookup goes through the documented `GET
+  /sites?name=&filter=all` list-and-filter endpoint instead, matching on the returned `name` field
+  case-insensitively.
+- **Site-name-conflict recovery is narrower than Cloudflare's, and says why in a comment.** Netlify
+  site names are **globally unique across all of Netlify**, not scoped to one account (unlike a
+  Cloudflare Pages project name, which only has to be unique within the account). A creation
+  conflict is therefore ambiguous — it could mean *this* account already owns the name (a benign
+  create/create race, recoverable by re-listing) or a different account owns it outright (not
+  recoverable). `ensureNetlifySite` re-lists after a failed create and uses the result only if
+  found in the caller's *own* account's sites; otherwise it rethrows the original creation error
+  rather than assuming recovery the way `cloudflarePagesAlreadyExists`'s retry does.
+  Tested (`recovers from a site-creation conflict by re-listing...` / `throws the original creation
+  error when the site truly cannot be found...` in `netlify.test.ts`).
+- **SHA1 for the file manifest, Node's built-in `crypto`, not a new dependency.** Netlify's digest
+  protocol requires SHA1 specifically (unlike Cloudflare Pages' direct-upload protocol, which only
+  needs *a* stable, collision-resistant key and was already swapped from `blake3-wasm` to SHA256 for
+  that reason in the original Cloudflare port) — SHA1 here is a fixed wire-protocol requirement, not
+  a free implementation choice, so no analogous swap applies; still zero new package dependency
+  (`node:crypto`, already used by `cloudflare-pages.ts`).
+- **Duplicate-content files upload once.** Netlify's own manifest protocol already declares every
+  path→hash mapping in the create-deploy call; `required[]` lists hashes, not paths, and per
+  Netlify's own docs "if you have two files with the same SHA1, you don't have to upload both of
+  them." `createNetlifyDeploy` builds a `hash → first-matching-file` map and `publish()` uploads
+  each required hash exactly once, regardless of how many manifest paths share it (tested:
+  "...treats duplicate-content files as one upload").
+- **No protected-response detection in `checkReachability`,** unlike Vercel's
+  `isVercelProtectedResponse`. No documented Netlify equivalent to Vercel's Deployment
+  Protection/SSO auth-wall convention was found; inventing a heuristic detector without a
+  documented signal to key it off risks false-positives more than it helps, so `checkReachability`
+  is a bare `checkDeploymentUrl(url)` call — the same choice `cloudflare-pages.ts`'s own
+  `checkReachability` already made for the same reason.
+- **Poll attempt/backoff constants (30 attempts, 1s×5 then 2s) copied verbatim from
+  `pollVercelDeployment`,** for consistency across this package's targets rather than inventing a
+  third timing convention — not a Netlify-specific requirement.
+- **Cancellation is out of scope, matching the existing posture, not a new gap.** Same as
+  Vercel/Cloudflare (see "What's still NOT done" above): `publish`/`checkReachability` take no
+  `AbortSignal`; a `ToolExecutor` timeout still correctly marks the *call* timed-out but cannot stop
+  an in-flight Netlify `fetch`. Explicitly not addressed here — that is exactly the scope
+  `PROP-deploy-cancellation-contract-2026-07-21.md` already covers and is gated on architect
+  sign-off; this addition does not re-litigate it or unilaterally add a signal parameter to only one
+  target (which would fragment the `DeployTarget` contract further, not fix it).
+
+**Tests:** `src/__tests__/netlify.test.ts`, 17 tests: token-missing short-circuit with no network
+call; the full happy path (find existing site → create deploy → upload only the required hash →
+poll to `ready` → reachable URL, asserting the manifest/required-upload/URL-candidate shapes
+precisely); site auto-creation when none exists; the site-name-conflict recovery and
+cannot-recover cases above; terminal `'error'` state surfacing `error_message`, and terminal
+`'rejected'` state with no `error_message` falling back to a generic message; site-lookup-failure
+error-message passthrough and the generic-fallback-message case; non-JSON response handling;
+missing-site-id and missing-deploy-id guards; a failed required-file upload surfacing the
+provider's error; skipping a `required` hash that isn't in the sent manifest (defensive, should
+never happen but doesn't crash); the duplicate-content-one-upload case with nested/space-containing
+path URL-encoding; poll-budget exhaustion via fake timers (mirroring `vercel.test.ts`'s own
+exhaustion test, same 30-attempt/~55s-of-fake-time shape); and `checkReachability`. Package-wide
+`pnpm --dir packages/deploy exec vitest run --coverage`: 134/134 tests pass; `netlify.ts` itself is
+98.83% statements/98.83% lines/83.33% branches/100% functions (the 2 uncovered branch outcomes are
+the `!siteName` guard in `publish()`, defensively unreachable in practice — `deriveNetlifySiteName`
+always falls back to a non-empty `'site'` label before sanitizing, so it can never actually return
+empty — same accepted shape as this package's other targets' analogous defensive-unreachable
+guards, e.g. `cloudflare-pages.ts`'s own `!projectName` check, already named in this package's
+`vitest.config.ts` threshold-comment as a known, accepted class of gap). Package-wide aggregate
+99.57/80.85/100/99.57, comfortably above the package's configured 98/78/98/98 ratchet-baseline
+threshold gate (`packages/deploy/vitest.config.ts`) — a slight *improvement* over the pre-existing
+99.7/79.9/100/99.7 baseline noted in that file's own comment on branches (80.85 > 79.9), with a
+trivial (<0.2pt) statements/lines dip from `netlify.ts` itself not being at 100%, still well within
+the gate. `pnpm --dir packages/deploy exec tsc --noEmit` clean.
+
+**Barrel:** `src/index.ts` gained `export * from './netlify.js';` — no other file changed
+(`tokens.ts`'s `publishDeploy`/`DeployTargetToken` and `tool.ts`'s `ToolRegistration` already
+dispatch generically over whatever `DeployTarget[]` a host binds, so `NetlifyDeployTarget` slots in
+with zero changes to either).

@@ -479,13 +479,18 @@ describe('registerRunEventStream', () => {
     expect(streamSpy).not.toHaveBeenCalled();
   });
 
-  it('sends 404 NOT_FOUND when the lifecycle reports unknown-run', async () => {
+  it('sends 404 NOT_FOUND when the lifecycle reports unknown-run, without ever calling res.end() first', async () => {
+    // Regression: `channel.abandon()` (not `channel.end()`) must run here — calling `end()`
+    // would end the response before this JSON body is written, turning it into a
+    // write-after-end failure that this mock's independent `res.json`/`res.end` spies would not
+    // otherwise catch.
     const deps = makeDeps();
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'never-started' }), res);
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.json).toHaveBeenCalledWith({ error: { code: 'NOT_FOUND', message: 'run was not found' } });
+    expect(res.end).not.toHaveBeenCalled();
   });
 
   it('sends 400 BAD_REQUEST when the lifecycle reports invalid-cursor', async () => {
@@ -647,6 +652,9 @@ describe('registerRunEventStream', () => {
     expect(context.source).toBe('run-stream');
     expect(context.runId).toBe('run-1');
     expect((context.error as Error).message).toContain('/internal/secret/path');
+    // Regression: the catch block must abandon (not end) the channel when headers were never
+    // sent, so this JSON error write is the only thing that touches `res`.
+    expect(res.end).not.toHaveBeenCalled();
   });
 
   it('stringifies a non-Error throw from stream() when headers are not yet sent (still redacted per SEC-005)', async () => {

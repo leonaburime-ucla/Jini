@@ -13,6 +13,10 @@
   },
   "dependencies": {
     "@jini/core": "workspace:*",
+    "better-sqlite3": "^11.10.0",
     "undici": "^7.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11"
   }
 }
