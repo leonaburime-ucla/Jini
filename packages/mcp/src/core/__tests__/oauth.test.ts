@@ -105,6 +105,31 @@ describe('discoverProtectedResource', () => {
   it('returns null when nothing is published', async () => {
     expect(await discoverProtectedResource('https://mcp.example.com/mcp', makeFetch(notFound))).toBeNull();
   });
+  it('skips a falsy stream chunk before completing (readCappedText tolerates a non-conformant duck-typed reader)', async () => {
+    // A spec-conformant ReadableStreamDefaultReader never resolves
+    // `{ done: false, value: undefined }`, but readCappedText accepts any
+    // object duck-typing `getReader()` (see the `typeof body.getReader ===
+    // 'function'` check) rather than requiring a real stream instance —
+    // this proves the `if (!value) continue` guard actually protects
+    // against such a malformed/duck-typed reader instead of being dead code.
+    let step = 0;
+    const fakeBody = {
+      getReader: () => ({
+        read: async () => {
+          step += 1;
+          if (step === 1) return { done: false, value: undefined };
+          if (step === 2) return { done: false, value: new TextEncoder().encode(JSON.stringify({ resource: 'ok' })) };
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {},
+      }),
+    };
+    const fakeResponse = { ok: true, body: fakeBody } as unknown as Response;
+    expect(await discoverProtectedResource('https://mcp.example.com/mcp', makeFetch(() => fakeResponse))).toEqual({
+      resource: 'ok',
+    });
+    expect(step).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('discoverAuthServer', () => {
@@ -162,6 +187,17 @@ describe('discoverAuthServer', () => {
     );
     expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
   });
+  it('rejects a discovery document whose endpoint value is not a parseable URL (endpointsShareIssuerOrigin catch)', async () => {
+    const f = makeFetch((url) =>
+      url === 'https://auth.example.com/.well-known/oauth-authorization-server'
+        ? jsonResponse({
+            authorization_endpoint: 'not a url at all',
+            token_endpoint: 'https://auth.example.com/token',
+          })
+        : notFound(),
+    );
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
+  });
   it('skips docs missing endpoints and defaults the issuer to the queried url', async () => {
     const f = makeFetch((url) => {
       if (url === 'https://auth.example.com/.well-known/oauth-authorization-server') return jsonResponse({ nope: true });
@@ -204,6 +240,27 @@ describe('registerClient', () => {
   it('throws when the response is missing a client_id', async () => {
     const f = makeFetch(() => jsonResponse({ nope: true }));
     await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(/missing client_id/);
+  });
+  it('folds an oversized error-response body into an empty error text, tolerating a reader whose cancel() also throws', async () => {
+    // A body that never signals `done` (each pull enqueues a chunk already
+    // past the 1MB cap) keeps the stream in the "readable" state when
+    // readCappedText's byte-cap check throws, so the finally block's
+    // `reader.cancel()` actually invokes this underlying source's `cancel`
+    // — which itself throws, exercising readCappedText's inner swallow
+    // *and* safeErrorText's own outer catch (the byte-cap error surfaces
+    // through readCappedText uncaught).
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controllerStream) {
+        controllerStream.enqueue(new Uint8Array(2_000_000));
+      },
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    const f = makeFetch(() => new Response(stream, { status: 500, statusText: 'ISE' }));
+    await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(
+      /dynamic client registration failed: HTTP 500 ISE/,
+    );
   });
 });
 
@@ -513,6 +570,18 @@ describe('SSRF hardening: outbound-fetch safety (SEC-RB-001 / CR-005)', () => {
       ),
     ).rejects.toThrow();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('stringifies a non-Error rejection from fetchImpl instead of assuming an .message field exists', async () => {
+    // Real fetch implementations always reject with an Error, but the
+    // catch handler defensively falls back to String(err) for anything
+    // else — a caller-injected fetchImpl (this file's public functions all
+    // accept one) rejecting with a raw string is the direct way to prove
+    // that fallback path actually runs.
+    const f = (() => Promise.reject('raw string failure')) as unknown as typeof fetch;
+    await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(
+      /request to https:\/\/auth\.example\.com failed: raw string failure/,
+    );
   });
 
   it('refreshAccessToken rejects a literal private-IP token endpoint without ever calling fetch', async () => {
