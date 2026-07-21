@@ -7,6 +7,8 @@
   "files": ["dist"],
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
   "dependencies": {
-    "@jini/core": "workspace:*"
+    "@jini/core": "workspace:*",
+    "@jini/platform": "workspace:*",
+    "undici": "^7.25.0"
   }
 }

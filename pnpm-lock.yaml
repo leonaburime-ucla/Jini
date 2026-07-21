@@ -141,6 +141,12 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      '@jini/platform':
+        specifier: workspace:*
+        version: link:../platform
+      undici:
+        specifier: ^7.25.0
+        version: 7.28.0
 
   packages/desktop-host:
     dependencies:
