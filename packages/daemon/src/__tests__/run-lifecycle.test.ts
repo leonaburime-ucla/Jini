@@ -664,4 +664,39 @@ describe('RunLifecycle — inactivity watchdog', () => {
     const status = await lifecycle.get(run.id);
     expect(status?.state).toBe('running');
   });
+
+  it('a watchdog armed onto a run that finished during start()\'s own durable append is a no-op once it fires (start/finish race)', async () => {
+    // The record is inserted into the registry (`runs.set`) *before* `start()` awaits the
+    // durable append of its 'start' event, but the watchdog itself is only armed *after*
+    // that await resolves. If a caller races `finish()` in during that window — the record
+    // already exists so `finish()` can find it — the watchdog then gets armed onto an
+    // already-terminal run. `handleInactivityTimeout` must recognize that and never call
+    // `finish()` a second time when it eventually fires.
+    const inner = createInMemoryEventLog();
+    let releaseStartAppend: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseStartAppend = resolve;
+    });
+    const eventLog: EventLog = {
+      ...inner,
+      append: async (input) => {
+        if (input.event === 'start') await gate;
+        return inner.append(input);
+      },
+    };
+    const lifecycle = createRunLifecycle({ eventLog });
+
+    const startPromise = lifecycle.start({ contextRef: 'ctx-1', runId: 'race-run', inactivityTimeoutMs: 1_000 });
+    await lifecycle.finish({ runId: 'race-run', status: 'failed', code: null, signal: null, resumable: true });
+
+    releaseStartAppend?.();
+    await startPromise; // resumes and arms a watchdog onto the now-terminal record
+
+    const finishSpy = vi.spyOn(lifecycle, 'finish');
+    await vi.advanceTimersByTimeAsync(1_000); // fires the watchdog's onTimeout
+
+    expect(finishSpy).not.toHaveBeenCalled();
+    const status = await lifecycle.get('race-run');
+    expect(status?.state).toBe('failed');
+  });
 });

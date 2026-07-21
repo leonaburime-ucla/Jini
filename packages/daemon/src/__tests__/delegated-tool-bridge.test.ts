@@ -388,6 +388,36 @@ describe('DelegatedToolBridge', () => {
     });
   });
 
+  it('propagates a failure from the catch block\'s own tool_result emit when the run finishes mid-flight (double fault)', async () => {
+    // If something else finishes the run concurrently with a delegate's own tool-execution
+    // failure, the catch block's own `lifecycle.emit(...tool_result...)` call (line 113) can
+    // itself throw — RunLifecycle refuses to emit on an already-terminal run. `finally` must
+    // still run its cleanup (unsubscribe, listener removal), and it's this *second* emit
+    // failure — not the original tool error — that ultimately propagates to the caller.
+    const lifecycle = createRunLifecycle({ eventLog: createInMemoryEventLog() });
+    const { run } = await lifecycle.start({ contextRef: 'delegated-tools' });
+    const doubleFaultExecutor: ToolExecutor = {
+      execute: vi.fn(async () => {
+        await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+        throw new Error('tool exploded');
+      }),
+      resumeConfirmation: vi.fn(),
+      cancel: vi.fn(),
+      getAuditRecord: vi.fn(() => null),
+    };
+    const bridge = createDelegatedToolBridge({ lifecycle, toolExecutor: doubleFaultExecutor });
+
+    await expect(
+      bridge.execute({
+        runId: run.id,
+        toolUseId: 'call-1',
+        toolId: 'whatever',
+        principal: { id: 'user-1' },
+        input: {},
+      }),
+    ).rejects.toThrow(/cannot emit "agent" on terminal run/);
+  });
+
   it('falls back to the default failed-content message when a custom ToolExecutor omits result.error', async () => {
     // `ToolExecutionResult.error` is optional even when `status` is
     // `'failed'` — `createToolExecutor`'s reference implementation always
