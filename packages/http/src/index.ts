@@ -45,6 +45,9 @@ export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export { mountPackHttp } from './pack-http.js';
 
+export type { RunCancellationService } from './cancel-owned-runs.js';
+export { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+
 export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
 export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
 

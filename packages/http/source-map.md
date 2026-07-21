@@ -365,3 +365,57 @@ different task's blast radius.
 Tests: `src/__tests__/api-security-middleware.test.ts`, `src/__tests__/route-registration-guard.test.ts`
 — 100% coverage on all 4 metrics, no new dependencies (both files use only this package's existing
 exports plus `express`, already a dependency).
+
+## 2026-07-21 addition — `cancel-owned-runs.ts` (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#10 `project/cancel-owned-runs.ts` (GENERIC)**,
+the one route-adjacent file the table already called out as fully generic despite living in the
+otherwise-OD-PRODUCT `routes/project/` directory. Verified against
+`leonaburime-ucla/open-design`, branch `refactor/web-memory-slice` (the branch this table's
+routes-classification section was built against), via `git show
+refactor/web-memory-slice:apps/daemon/src/routes/project/cancel-owned-runs.ts` — unchanged from
+what the table describes: a single 33-line helper (`cancelRunsOwnedBy`), no route registrar, no
+OD import.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/cancel-owned-runs.ts` | `apps/daemon/src/routes/project/cancel-owned-runs.ts` (`refactor/web-memory-slice`) | `cancelRunsOwnedBy`, re-scoped rather than lifted verbatim — see below. |
+
+**Re-scoping, not a straight lift.** OD's version takes a `{conversationId?, projectId?}` scope
+object and calls `runs.list({...scope, status: 'active'})` — both the two-field scope shape and
+the `status: 'active'` list-filter argument are OD nouns/API shape, not kernel concepts. Per
+extraction-plan §2.1, `@jini/daemon`'s real `RunLifecycle` keys every run on one opaque
+`contextRef: string` (see `packages/daemon/src/run-lifecycle.ts`'s `StartRunInput`/`list`), and
+its `list(contextRef?: string): Promise<readonly RunStatus[]>` has no server-side status filter at
+all. So this port: (1) takes a single `contextRef: string` in place of the two-field scope object
+— the kernel has no separate "conversation" or "project" identity, only the caller's opaque
+reference; (2) calls `list(contextRef)` unfiltered and filters non-terminal runs client-side with
+`@jini/protocol`'s existing `isTerminalRunState`, since the real `RunLifecycle` has nowhere to push
+a `status` argument down to. The per-run-swallowed-cancellation-failure behavior (`.catch(() =>
+{})`) and the "safe to call unconditionally, races with a naturally-finishing run harmlessly"
+property are both preserved unchanged from the origin.
+
+**Kept structural, not typed against `@jini/daemon`'s `RunLifecycle` directly** (`RunCancellationService`
+in the new file) — mirrors the origin's own stated reason ("kept structural so it is satisfied by
+the real `design.runs` without depending on the daemon's loose `ServerContext.design: any` type").
+In Jini, `RunLifecycle` is already a real, precisely-typed interface rather than a loose `any`, so
+the structural cut here is instead about test-double simplicity: a caller can satisfy
+`RunCancellationService` with a two-method fake with no need to stub the rest of `RunLifecycle`'s
+surface (`rehydrate`/`start`/`get`/`onCancelRequested`/`finish`/`waitForTerminal`). The real
+`RunLifecycle.list`/`cancel` return types (`Promise<readonly RunStatus[]>`,
+`Promise<RunStatus>`) are both structurally assignable to this file's narrower
+`RunCancellationService` (return-type covariance), so passing a real `RunLifecycle` in works with
+no adapter.
+
+Not (yet) wired into a route: this port is the reusable helper only, matching the source-map's own
+classification of file #10 as "a single helper... not a route registrar." No delete-conversation
+or delete-project route exists anywhere in this repo yet for it to be called from (both `#8
+project/comments.ts` and `#9 project/conversations.ts` remain deferred per this table's own
+"What got ported this round vs. deferred" section — they need a not-yet-built generic
+workspace/session port first). `cancelRunsOwnedBy` is exported from the package barrel
+(`src/index.ts`) so whichever future workspace/session-delete route lands can call it directly.
+
+Tests: `src/__tests__/cancel-owned-runs.test.ts` — 100% coverage on all 4 metrics (cancels only
+non-terminal runs, no-op on an all-terminal or empty run list, swallows a per-run cancellation
+rejection without the aggregate promise rejecting). No new dependency — uses only this package's
+existing `@jini/protocol` dependency.
