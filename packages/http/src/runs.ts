@@ -10,6 +10,7 @@ import type { RunLifecycle, StartRunInput, Unsubscribe } from '@jini/daemon';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
 import { validationError } from './request.js';
 import { sendApiError } from './response.js';
+import { createSseChannel, requestedAfterCursor } from './sse.js';
 import { err, ok, type Result, type RouteInputContext } from './types.js';
 
 /**
@@ -194,27 +195,6 @@ export const runCancelRoute = defineJsonRoute<{ runId: string; reason?: string }
   },
 });
 
-function requestedAfterCursor(req: Request): string | null {
-  const header = req.get('last-event-id');
-  if (header && header.length > 0) return header;
-  const query = req.query.afterCursor;
-  return typeof query === 'string' && query.length > 0 ? query : null;
-}
-
-function formatSseEvent(event: RunProtocolEvent): string {
-  return `id: ${event.opaqueCursor}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`;
-}
-
-/**
- * Cap on events queued for one client — covers both the pre-header replay
- * buffer and any backlog built up while `res.write` reports backpressure
- * (`write() === false`, awaiting `'drain'`). A stalled or malicious client
- * would otherwise let a prompt-influenced, potentially high-volume agent
- * run grow this array without bound (SEC-006). Once exceeded, the
- * connection is dropped rather than accepting unbounded memory growth.
- */
-const MAX_QUEUED_SSE_EVENTS = 1000;
-
 function sendStreamFailure(res: Response, kind: Exclude<Awaited<ReturnType<RunLifecycle['stream']>>, { kind: 'ok' }>): void {
   if (kind.kind === 'unknown-run') {
     sendApiError(res, 404, createApiError('NOT_FOUND', 'run was not found'));
@@ -242,95 +222,48 @@ export function registerRunEventStream(app: Express, deps: RunHttpDeps): void {
       return;
     }
 
-    // Everything below is buffered in `queue` until `flowing` (headers sent), and again
-    // whenever `res.write` reports backpressure (`writable` false) until `'drain'` fires —
-    // one bounded queue covers both the pre-header replay flush and later live-event
-    // backpressure (SEC-006). `closed` makes shutdown idempotent: once true, `unsubscribe`
-    // has been (or will be, as soon as it exists) invoked exactly once, and no further
-    // writes are attempted on any path — a client write failure, a client disconnect, and
-    // a terminal 'end' event all converge on the same `endStream()`.
-    const queue: RunProtocolEvent[] = [];
-    let flowing = false;
-    let writable = true;
-    let closed = false;
-    let unsubscribeFn: Unsubscribe | null = null;
+    // `createSseChannel` (`sse.ts`) owns the bounded queue, backpressure, and client-disconnect
+    // handling that used to be inlined here — see that module's doc for the generalization.
+    const channel = createSseChannel<RunProtocolEvent>(res, { isEndEvent: (event) => event.kind === 'end' });
 
-    const cleanup = () => {
-      if (closed) return;
-      closed = true;
+    let unsubscribeFn: Unsubscribe | null = null;
+    channel.onClose(() => {
       const stop = unsubscribeFn;
       unsubscribeFn = null;
       stop?.();
-    };
-
-    const endStream = () => {
-      cleanup();
-      if (!res.writableEnded) res.end();
-    };
-
-    const pump = () => {
-      if (!flowing || closed) return;
-      while (writable && queue.length > 0) {
-        const event = queue.shift()!;
-        let wroteOk: boolean;
-        try {
-          wroteOk = res.write(formatSseEvent(event));
-        } catch {
-          // A dead/broken transport must never throw back through the lifecycle's
-          // subscriber fan-out (RunLifecycle.emit/finish) — stop this client only.
-          endStream();
-          return;
-        }
-        if (wroteOk === false) writable = false;
-        if (event.kind === 'end') {
-          endStream();
-          return;
-        }
-      }
-    };
-
-    const enqueue = (event: RunProtocolEvent) => {
-      if (closed) return;
-      if (queue.length >= MAX_QUEUED_SSE_EVENTS) {
-        // Slow/stalled consumer — disconnect rather than grow memory without bound.
-        endStream();
-        return;
-      }
-      queue.push(event);
-      pump();
-    };
-
-    res.on('drain', () => {
-      writable = true;
-      pump();
     });
-    res.on('close', cleanup);
 
     try {
-      const subscribed = await deps.lifecycle.stream(runId, enqueue, { afterCursor: requestedAfterCursor(req) });
+      const subscribed = await deps.lifecycle.stream(runId, channel.enqueue, { afterCursor: requestedAfterCursor(req) });
       if (subscribed.kind !== 'ok') {
-        cleanup();
+        // Nothing was ever subscribed, so `abandon()` has nothing to unsubscribe — it only marks
+        // the channel closed. `res` itself is untouched, leaving `sendStreamFailure` free to send
+        // a normal JSON error response instead of an SSE stream.
+        channel.abandon();
         sendStreamFailure(res, subscribed);
         return;
       }
-      if (closed) {
+      if (channel.isClosed()) {
         // The client already disconnected (or the bounded queue already gave up) while
         // `stream()` was resolving — unsubscribe immediately instead of leaking it.
         subscribed.unsubscribe();
         return;
       }
       unsubscribeFn = subscribed.unsubscribe;
-      res.status(200);
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders();
-      flowing = true;
-      pump();
+      channel.open();
     } catch (error) {
-      cleanup();
-      if (!res.headersSent) sendApiError(res, 500, reportInternalError(deps, 'run-stream', error, runId));
-      else if (!res.writableEnded) res.end();
+      if (!res.headersSent) {
+        // `channel.open()` never ran (or never got past `flushHeaders`) — abandon without
+        // touching `res`, so the JSON error response below is the only thing written.
+        // Using `channel.end()` here instead would end the response before this write, turning
+        // it into a write-after-end failure.
+        channel.abandon();
+        sendApiError(res, 500, reportInternalError(deps, 'run-stream', error, runId));
+        return;
+      }
+      // Headers were already sent (the stream had started, or `open()` partially ran before
+      // throwing) — end the stream itself rather than attempting a second, incompatible response.
+      channel.end();
     }
   });
 }

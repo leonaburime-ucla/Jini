@@ -114,6 +114,9 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+      '@jini/sidecar':
+        specifier: workspace:*
+        version: link:../sidecar
 
   packages/core:
     devDependencies:

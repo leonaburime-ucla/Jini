@@ -26,3 +26,11 @@ export type {
   MediaSpeechFormat,
   ProviderCredentials,
 } from './types.js';
+// The generic vendor-adapter dispatch engine (added 2026-07-21) — see
+// `vendor-adapter.ts`'s module doc and `source-map.md` for the design and
+// which vendors are registered onto it.
+export { dispatchVendorRequest, requireApiKey } from './vendor-adapter.js';
+export type { VendorAdapter, VendorCredentialGuard, VendorRequest, VendorRequestBuilder, VendorResponseParser } from './vendor-adapter.js';
+export { createVendorAdapterRegistry, mediaVendorRegistry, VendorAdapterRegistry } from './vendor-registry.js';
+export { createHexEnvelopeAudioParser, createRawBytesParser } from './response-parsers.js';
+export type { HexEnvelopeAudioMeta, HexEnvelopeAudioParserOptions, RawBytesParserOptions } from './response-parsers.js';

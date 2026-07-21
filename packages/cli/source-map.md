@@ -356,3 +356,57 @@ fix needs daemon-side work first: `@jini/node-host`'s `createLocalNodeDaemon` (o
 bootstrap) would need to boot a `@jini/sidecar` IPC server exposing at minimum a "status" message
 `{host, port}` (or write a discoverable port/pidfile) before this package's `discover` callback has
 anything real to probe. Tracked as a separate, node-host-scoped backlog item, not a `@jini/cli` one.
+
+## 2026-07-21 addition — real local daemon-URL discovery (`local-daemon-discovery.ts`)
+
+Closes deferred-item 1 above and the investigation immediately preceding this section: the
+daemon-side prerequisite ("write a discoverable port/pidfile") is now built —
+`@jini/node-host`'s `createLocalNodeDaemon` writes a `@jini/sidecar`-backed on-disk registry
+record once it starts listening (see that package's own 2026-07-21 source-map.md entry, and
+`@jini/sidecar`'s matching entry for the low-level `daemon-registry.ts` primitives). This addition
+is the missing CLI-side reader for that record — a port/pidfile, not the IPC-server shape the
+investigation above considered and declined ("no `@jini/sidecar` IPC server" was never actually
+required — a flat JSON pointer file, read once, is sufficient for "find a URL," and doesn't need a
+live daemon round-trip to work when the daemon might not even be running).
+
+**`createLocalDaemonDiscovery({ dataDir } | { registryPath })`** builds a
+`resolveDaemonUrl({ discover })`-compatible probe: it reads the registry record via
+`@jini/sidecar`'s `readLiveDaemonRegistryRecord` (which already verifies the recording process's
+pid is still alive — a stale record from a crashed daemon is never trusted, matching the task's
+own "verify liveness, don't just trust the file" requirement) and returns its `url`, or `null`
+when nothing live is found. Exactly like `resolveDaemonUrl` itself has no baked-in env var name or
+default URL, this function has no baked-in `dataDir` — the caller (whatever wires a
+`@jini/node-host` daemon and a `@jini/cli`-transport pack together for one product) supplies the
+same `dataDir` (or an explicit `registryPath`, matching a non-default `discoveryFile` override on
+the daemon side) to both sides. Throws synchronously at build time (not when the returned probe is
+later invoked) if neither is given, matching this package's existing "fail loud on a caller
+mis-config, don't silently no-op" stance (e.g. `resolveDaemonRegistryPath`'s own empty-`dataDir`
+guard in `@jini/sidecar`).
+
+The existing flag → env var → discover → default precedence in `resolveDaemonUrl` is untouched —
+`createLocalDaemonDiscovery`'s output is just a value a caller may now pass as `discover`, proven
+via a `resolveDaemonUrl` integration test showing an explicit flag still wins over local discovery,
+and `defaultUrl` still applies when no live local daemon is found.
+
+**Multiple daemons on one machine.** Not a new concern this addition had to design for: each
+`createLocalNodeDaemon` call already requires its own `dataDir` (for its own sqlite file), and
+`@jini/sidecar`'s registry path is derived from `dataDir` — so two daemons on one machine already
+get two non-colliding registry records with zero extra configuration on either side.
+
+**Tests**: `src/__tests__/local-daemon-discovery.test.ts` (7 tests) — discovery by `dataDir`,
+discovery by explicit `registryPath` (proven to take precedence over a simultaneously-present
+`dataDir`-derived record at a different port), `null` on a missing record, **`null` for a stale
+record from a real spawned-then-awaited-exit child process** (not a mock — the actual "crashed
+daemon" scenario), the build-time throw on missing config, and two `resolveDaemonUrl` integration
+cases (flag beats discovery; discovery falls through to `defaultUrl`). 100/100/100/100 on
+`local-daemon-discovery.ts`; package-wide `pnpm --dir packages/cli exec vitest run --coverage` is
+99.68/98.47/97.36/99.68 (253 tests, 13 files) — the one pre-existing gap (`prompt.ts`,
+97.7/88.4/85.71/97.7, lines 123-125) predates this change and was not introduced or widened by it.
+
+## Dependencies (updated)
+
+Adds `@jini/sidecar` (workspace) — `readLiveDaemonRegistryRecord`/`resolveDaemonRegistryPath`.
+This is the first `@jini/cli` dependency on `@jini/sidecar`; both are in
+`extraction-plan.md` §3's locked fourteen, so no `UNLOCKED.md` admission is needed
+(`scripts/check-engine-boundaries.ts`'s R7 rule only restricts a locked package importing an
+*unlocked* one).

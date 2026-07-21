@@ -270,3 +270,200 @@ the full `run()` orchestration (activity wrapping, message/close composition,
 duplicate-close dedup, a rejecting `transport.close()` on both the idle and
 stdin-close paths, the `process.stdin` default via a `vi.spyOn(process,
 'stdin', 'get')` stub) without a real subprocess.
+
+## 2026-07-21 (second pass) — the 13 excluded tools + the resource surface, re-audited; `jini://active` resource shipped
+
+The 2026-07-21 addition above (`server/`) ported the hosting mechanism plus 5
+tools and stated, without a per-tool breakdown, that OD's other 13 `TOOL_DEFS`
+plus its `ListResourcesRequestSchema`/`ReadResourceRequestSchema` resource
+surface were excluded because they are OD's project/file/artifact/skill/
+plugin model. This pass re-investigated that conclusion tool-by-tool instead
+of re-asserting it, per an explicit task brief to not trust a prior
+exclusion without checking it — same standard the run/chat-orchestration
+work's own gap-2 finding was held to.
+
+### Methodology
+
+Re-read `apps/daemon/src/mcp.ts` in full (1858 lines, matches the line count
+the prior pass recorded) on a local `leonaburime-ucla/open-design` checkout
+(`main`, which carries the identical file — confirmed byte-identical in
+substance to the `refactor/web-memory-slice` branch the prior pass cited for
+this same file). For each of the 13 excluded tools, checked whether a real,
+already-built, already-wired kernel or `@jini/http` primitive exists to
+proxy — not whether one *could* be built. Concretely checked and ruled out
+as false leads:
+
+- **Every current `@jini/http` route** (`active-context.ts`, `agents.ts`,
+  `daemon-status.ts`, `host-tools.ts`, `runs.ts` — every `defineJsonRoute`
+  export in the package, confirmed by grep): no file/project/skill/plugin
+  route of any kind exists to proxy.
+- **`@jini/core`'s `ToolRegistry`** (`tool-registry.ts`): a genuinely empty,
+  append-only registry with zero built-in tool defs. There is no
+  pre-registered "read a file" / "list a workspace" tool anywhere in the
+  kernel for an MCP tool to proxy — `ToolRegistry` is pure registration
+  machinery a *product* populates at composition time, and no product does
+  so in this repo today.
+- **`@jini/platform`'s `blob-storage.ts`** (`BlobStorage` /
+  `LocalBlobStorage` / `S3BlobStorage`): a genuinely product-neutral
+  `readFile`/`writeFile`/`listFiles`/`deleteFile`/`statFile` port keyed by an
+  opaque `namespace` (its own module doc: "a tenant id, a workspace id, a
+  project id, whatever the host application scopes storage by... this module
+  carries no domain meaning for what a namespace *is*"). This is the closest
+  thing in the repo to a generic file-tool primitive — but it has exactly one
+  consumer today, `packages/capability-providers/src/storage.ts`, which is
+  itself greenfield/speculative with "no current consumer" per its own
+  source-map. No `@jini/http` route, no `ToolRegistry` entry, and no
+  daemon-level "workspace root" concept wires `BlobStorage` to anything an
+  MCP client could call. Real primitive, zero live wiring — see the proposal
+  doc below.
+- **`@jini/registry`** (pluggable content-registry backends) and
+  **`@jini/memory`** (frontmatter note-store): checked as possible stand-ins
+  for `list_skills`/`list_plugins`. Neither is wired to any HTTP route or
+  `ToolRegistry` entry, and neither's data model actually matches "a curated
+  recipe/workflow a caller passes to `start_run`" — registry entries are
+  versioned publishable content, memory notes are extracted facts. Treating
+  either as a skills/plugins stand-in would be inventing product semantics
+  under the guise of a port, exactly what the task brief's hard boundary
+  prohibits.
+
+### Verdict, all 13 tools
+
+| OD tool | Verdict | Why |
+|---|---|---|
+| `list_projects` | **Excluded** (confirmed, unchanged) | `Project` noun; `GET /api/projects` has no Jini analog. |
+| `get_project` | **Excluded** (confirmed, unchanged) | `Project` noun plus OD-specific `previewUrl`/`studioUrl`/`resolvedDir` derivation. |
+| `delete_project` | **Excluded** (confirmed, unchanged) | `Project` noun; irreversible-delete is product policy layered on a noun the kernel doesn't have. |
+| `create_project` | **Excluded** (confirmed, unchanged) | `Project` + `DesignSystem` + `Skill` nouns (`designSystemId`/`skillId` body fields). |
+| `list_skills` | **Excluded** (confirmed, unchanged) | `Skill` noun (`GET /api/skills`); no real stand-in found (see `@jini/registry`/`@jini/memory` above). |
+| `list_plugins` | **Excluded** (confirmed, unchanged) | `Plugin` noun (`GET /api/plugins`, manifest/marketplace fields, `od.taskKind`). |
+| `create_artifact` | **Excluded** (confirmed, unchanged) | `Artifact`/`ArtifactManifest` noun — HTML/Markdown/SVG manifest inference is OD rendering-pipeline product policy, not plain file I/O. |
+| `get_file` | **Excluded — structurally significant open question, see proposal doc** | Needs a project-scoped (or, generalized, workspace-scoped) file store; `@jini/platform`'s `BlobStorage` is the closest kernel-adjacent primitive but is unwired to anything callable today. |
+| `list_files` | **Excluded — same open question, see proposal doc** | Same file-store gap as `get_file`. |
+| `search_files` | **Excluded — same open question, see proposal doc** | Same file-store gap, plus its own substring-search-across-files semantics have no kernel equivalent either way. |
+| `write_file` | **Excluded — same open question, see proposal doc** | The closest of the six to "plain file write" (no manifest, tolerates existing targets) — still resolves against a project's on-disk root, which doesn't exist as a kernel concept. |
+| `delete_file` | **Excluded — same open question, see proposal doc** | Same file-store gap as `write_file`. |
+| `get_artifact` | **Excluded — same open question, see proposal doc** | Its BFS reference-following algorithm was already ported as pure, dependency-free primitives on 2026-07-19 (`extractRelativeRefs`/`isTextualMime` in `client/client.ts`); what's missing is the per-file fetch loop underneath it, which needs the same file-store primitive as the rest of this cluster. |
+
+Twelve of the 13 are unambiguous — they name a product noun
+(`Project`/`DesignSystem`/`Skill`/`Plugin`/`Artifact`) the kernel
+deliberately does not have, matching extraction-plan.md §2.1 exactly. The
+remaining six (`get_file`/`list_files`/`search_files`/`write_file`/
+`delete_file`/`get_artifact`) are different in kind: none of them *name* a
+product noun on their face — "read a file at a path," "list files," "write a
+file" are generic operations a great many future Jini consumers will want —
+but every one of them needs to resolve "which files" against *something*,
+and the only "something" available today (a `Project`'s daemon-managed
+on-disk directory) is exactly the product noun the kernel excludes. Building
+a generic replacement (a host-injected "workspace root" file-store primitive)
+is plausible and even foreseeable, but it is a real design decision — path-
+traversal/sandboxing model, single-root vs. multi-tenant addressing, how a
+host injects the root, whether `@jini/platform`'s `BlobStorage` is the right
+foundation — not a mechanical port of something that already exists and
+works. Per the task brief's explicit instruction ("do NOT invent a `Project`
+or `DesignSystem` noun in the kernel to force a port" / "if it would require
+a new kernel noun... write a proposal doc"), this was left excluded and
+written up rather than improvised: see
+`ADS-memory/reports/proposals/PROP-mcp-tool-surface-file-tools-2026-07-21.md`.
+
+### Resource surface, re-audited
+
+- **`od://focus/active`** — **Ported** this pass, as `jini://active`. See
+  below.
+- **`od://skills/<id>/SKILL.md`** — **Excluded** (confirmed, unchanged):
+  `Skill` noun.
+- **`od://design-systems/<id>/DESIGN.md`** — **Excluded** (confirmed,
+  unchanged): `DesignSystem` noun.
+
+The active-context resource is a genuine finding, not a re-confirmation: OD's
+origin exposes the *identical* `/api/active` payload two different ways —
+as the `get_active_context` **tool** (already ported in the prior pass) and
+as the `od://focus/active` **resource** — because MCP tools and resources
+serve different client affordances (a tool is invoked by the model
+mid-conversation; a resource can be listed and attached to context by the
+user/client without any tool call). Since `/api/active`
+(`packages/http/src/active-context.ts`'s `getActiveRoute`) is already a real,
+ported, product-neutral kernel primitive, exposing its *second* OD-native
+affordance costs nothing product-shaped — it needed the tool-hosting
+mechanism to grow resource support (which OD's single `mcp.ts` file always
+had, just not yet ported), not a new kernel noun.
+
+### What shipped: generic MCP resource support + `jini://active`
+
+| Jini file | What it is | Origin equivalent |
+|---|---|---|
+| `src/server/resource-protocol.ts` | New. The resource-side mirror of `tool-protocol.ts`: `McpResourceDef` (`uri`/`name`/`description?`/`mimeType?`/`read`), `resourcesToList` (`resources/list` projection), `buildResourceIndex` (uri-uniqueness, throws at construction time like `buildToolIndex`), `handleResourceRead` (`resources/read` dispatch). | `ListResourcesRequestSchema`/`ReadResourceRequestSchema` handler bodies (mcp.ts:613-685), generalized from OD's hardcoded 3-branch `if`/regex dispatch to the same data-driven `Map`-based shape `tool-protocol.ts` already established for tools. |
+| `src/server/resources/active-resource.ts` | New. The one concrete resource this package ships: `activeContextResource` (`uri: 'jini://active'`) proxying `GET /api/active` via `../daemon-client.js`, plus the `KERNEL_RESOURCES` array `createMcpToolServer`'s `resources` option expects. | The `od://focus/active` branch of `ReadResourceRequestSchema` (mcp.ts:647-658) and its `ListResourcesRequestSchema` entry (mcp.ts:618-625) — both collapsed into one resource def, matching how `run-tools.ts` collapsed each `TOOL_DEFS` entry + its `handleMcpToolCall` case into one `McpToolDef`. |
+| `src/server/tool-server.ts` | Extended, not rewritten. `McpToolServerOptions` gained an optional `resources?: readonly McpResourceDef[]`. `capabilities` now advertises `resources: {}` (alongside the unconditional `tools: {}`) only when at least one resource is supplied, and `ListResourcesRequestSchema`/`ReadResourceRequestSchema` handlers are registered (wrapped in the same `withActivity` idle-tracking wrapper tools already use) only in that case — a caller passing no `resources` gets byte-identical behavior to before this pass (`capabilities: {tools: {}}`, no resource handlers registered at all, proven by a dedicated test). `McpServerLike`'s structural interface gained the two matching `setRequestHandler` overloads. | `runMcpStdio`'s `capabilities: {tools: {}, resources: {}}` (mcp.ts:514, unconditional in the origin since it always has both), generalized to be conditional since this port's tool-only callers shouldn't falsely advertise a resources capability they don't use. |
+
+Two behavioral differences from the OD origin, both deliberate:
+
+- **Naming.** OD's `od://` URI scheme is product-identity-tainted (this
+  repo's own `scripts/check-engine-boundaries.ts` R5 rule bans the literal
+  string `od://` anywhere in `packages/@jini/**`, including test fixtures —
+  confirmed by running `pnpm guard` against an early draft of this pass's
+  tests that used it verbatim and getting `R5-neutrality` violations). The
+  new resource uses `jini://active` instead — this package's own name, no
+  product tilt.
+- **No inactive-state hint.** `getActiveContextTool` (the tool) adds a
+  conversational `{active:false, hint:"..."}` shape when the daemon reports
+  no active resource, because a tool result is meant to guide a model's next
+  action. `activeContextResource` (the resource) does not — it returns the
+  raw `/api/active` payload unchanged either way, matching OD's own
+  `od://focus/active` handler, which likewise never special-cased
+  `active:false` (mcp.ts:645-658) — a resource is attachable context data,
+  not a conversational nudge.
+
+Authorization posture is unchanged from every existing tool in this package:
+no new gate was added. Whatever `@jini/http`'s same-origin guard /
+bearer-auth middleware already enforces on `GET /api/active` is the only
+check a resource read passes through — identical to `getActiveContextTool`'s
+own posture.
+
+### Tests & coverage
+
+New/extended test files: `src/server/__tests__/resource-protocol.test.ts`
+(14 tests — `resourcesToList`, `buildResourceIndex` including its duplicate-
+uri throw, `handleResourceRead`'s success/unknown-uri/error/sanitization/
+mimeType-precedence paths), `src/server/resources/__tests__/
+active-resource.test.ts` (6 tests — the resource's own success/inactive/
+daemon-unreachable-propagation paths plus one full `handleResourceRead`
+end-to-end wiring test), and additions to `src/server/__tests__/
+tool-server.test.ts` (6 new tests: duplicate-resource-uri throws at
+construction, capabilities/handler-registration is unchanged when
+`resources` is omitted *and* when it's an explicit empty array, capabilities
+gain `resources: {}` and both handlers wire through `resources/list` and
+`resources/read` when at least one resource is supplied, and an explicit
+adversarial-input case — `resources/read` on an unregistered uri rejects the
+handler's promise rather than resolving with any content, since unlike
+`tools/call` there is no `{isError:true}` content shape for a resource
+failure). `src/__tests__/index.test.ts`'s public-barrel completeness check
+was also extended to assert every `server/` export (both the tool-hosting
+surface added in the prior pass and this pass's resource surface) is
+actually reachable from `@jini/mcp`'s root barrel — the prior pass's version
+of this test checked only `core`/`client`/`agent-install` and would not have
+caught a broken `server/` re-export.
+
+`pnpm --dir packages/mcp exec vitest run --coverage`: **280 tests pass, 0
+failures.** Every file this pass touched or added
+(`resource-protocol.ts`, `resources/active-resource.ts`, and
+`tool-server.ts`'s extended surface) is genuine **100/100/100/100**
+(statements/branches/functions/lines), covered by the package's existing
+`'src/server/**'` glob-scoped 100% threshold in `vitest.config.ts` (no
+threshold change needed for that glob — the new files simply fall under a
+pattern that already applied). Package-wide aggregate is
+**100/99.74/100/100** — the only remaining gap is the pre-existing,
+untouched `core/oauth.ts` (98.77% branches as of the same-day `cf20726dc`
+coverage pass, itself already past this pass's start). Root-level thresholds
+in `vitest.config.ts` were tightened from the prior pass's
+99.5/98.8/100/99.5 to **100/99.4/100/100** to reflect the now-literal-100
+statements/functions/lines aggregate, with branches kept at a small safety
+margin (99.4) below the measured 99.74 — same "safety margin below measured,
+not lowering the bar" convention `packages/http/vitest.config.ts` and the
+prior pass both already used.
+
+`pnpm --dir packages/mcp exec tsc --noEmit`: clean. `pnpm guard`: clean (one
+intermediate failure during this pass — draft tests using the literal string
+`od://...` to assert an *unsupported* scheme tripped the R5-neutrality
+check; fixed by using a synthetic `legacy-scheme://...` placeholder instead,
+which exercises the identical "unregistered uri rejects" code path without
+any product-identity string).

@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 
 // The idle-exit controller itself is exhaustively unit-tested in
 // `../../client/__tests__/client.test.ts` (schedule/reschedule/dispose
@@ -30,6 +35,7 @@ vi.mock('../../client/client.js', () => ({
 
 import { createMcpToolServer, type McpServerLike, type McpToolServerOptions, type McpTransportLike } from '../tool-server.js';
 import type { McpToolDef } from '../tool-protocol.js';
+import type { McpResourceDef } from '../resource-protocol.js';
 
 function flushAsync(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -49,9 +55,11 @@ interface FakeServer extends McpServerLike {
   handlers: Map<unknown, (...args: any[]) => any>;
   listTools: () => Promise<unknown>;
   callTool: (request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>;
+  listResources: () => Promise<unknown>;
+  readResource: (uri: string) => Promise<unknown>;
 }
 
-/** A fake `McpServerLike` that mimics the real SDK's `connect()` (sets `onmessage`/`onclose` on the transport before `run()` wraps them) and captures both registered handlers for direct invocation in tests. */
+/** A fake `McpServerLike` that mimics the real SDK's `connect()` (sets `onmessage`/`onclose` on the transport before `run()` wraps them) and captures every registered handler for direct invocation in tests. */
 function makeFakeServer(sdkOnMessage: (message: unknown) => void = vi.fn(), sdkOnClose: () => void = vi.fn()): FakeServer {
   const handlers = new Map<unknown, (...args: any[]) => any>();
   const server: FakeServer = {
@@ -65,6 +73,8 @@ function makeFakeServer(sdkOnMessage: (message: unknown) => void = vi.fn(), sdkO
     },
     listTools: () => handlers.get(ListToolsRequestSchema)!(),
     callTool: (request) => handlers.get(CallToolRequestSchema)!(request),
+    listResources: () => handlers.get(ListResourcesRequestSchema)!(),
+    readResource: (uri) => handlers.get(ReadResourceRequestSchema)!({ params: { uri } }),
   };
   return server;
 }
@@ -75,6 +85,15 @@ function noopTool(overrides: Partial<McpToolDef> = {}): McpToolDef {
     description: 'no-op',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: () => 'ok',
+    ...overrides,
+  };
+}
+
+function noopResource(overrides: Partial<McpResourceDef> = {}): McpResourceDef {
+  return {
+    uri: 'jini://noop',
+    name: 'Noop',
+    read: () => ({ text: 'ok' }),
     ...overrides,
   };
 }
@@ -102,6 +121,12 @@ describe('createMcpToolServer', () => {
     expect(() =>
       createMcpToolServer(baseOptions({ tools: [noopTool(), noopTool()] })),
     ).toThrow('duplicate tool name "noop"');
+  });
+
+  it('throws synchronously on a duplicate resource uri, before run() is ever called', () => {
+    expect(() =>
+      createMcpToolServer(baseOptions({ resources: [noopResource(), noopResource()] })),
+    ).toThrow('duplicate resource uri "jini://noop"');
   });
 
   it('passes idleMs through to the idle-exit controller, defaulting to 30 minutes when omitted', async () => {
@@ -257,6 +282,99 @@ describe('run()', () => {
       isError: true,
       content: [{ type: 'text', text: 'unknown tool: missing' }],
     });
+    hoisted.onIdleRef.current?.();
+    await runPromise;
+  });
+
+  it('advertises no resources capability and registers no resource handlers when resources is omitted', async () => {
+    const server = makeFakeServer();
+    const transport = new FakeTransport();
+    const createServerSpy = vi.fn(() => server);
+    const handle = createMcpToolServer(baseOptions({ createServer: createServerSpy, createTransport: () => transport }));
+    const runPromise = handle.run();
+    await flushAsync();
+    expect(createServerSpy).toHaveBeenCalledWith({ name: 'test-server', version: '0.0.0' }, { capabilities: { tools: {} } });
+    expect(server.handlers.has(ListResourcesRequestSchema)).toBe(false);
+    expect(server.handlers.has(ReadResourceRequestSchema)).toBe(false);
+    hoisted.onIdleRef.current?.();
+    await runPromise;
+  });
+
+  it('advertises no resources capability and registers no resource handlers when resources is an empty array', async () => {
+    const server = makeFakeServer();
+    const transport = new FakeTransport();
+    const createServerSpy = vi.fn(() => server);
+    const handle = createMcpToolServer(baseOptions({ resources: [], createServer: createServerSpy, createTransport: () => transport }));
+    const runPromise = handle.run();
+    await flushAsync();
+    expect(createServerSpy).toHaveBeenCalledWith({ name: 'test-server', version: '0.0.0' }, { capabilities: { tools: {} } });
+    expect(server.handlers.has(ListResourcesRequestSchema)).toBe(false);
+    hoisted.onIdleRef.current?.();
+    await runPromise;
+  });
+
+  it('advertises the resources capability and lists resources via the ListResourcesRequestSchema handler when at least one is registered', async () => {
+    const server = makeFakeServer();
+    const transport = new FakeTransport();
+    const createServerSpy = vi.fn(() => server);
+    const resource = noopResource({ description: 'a resource', mimeType: 'text/plain' });
+    const handle = createMcpToolServer(baseOptions({
+      resources: [resource],
+      createServer: createServerSpy,
+      createTransport: () => transport,
+    }));
+    const runPromise = handle.run();
+    await flushAsync();
+    expect(createServerSpy).toHaveBeenCalledWith(
+      { name: 'test-server', version: '0.0.0' },
+      { capabilities: { tools: {}, resources: {} } },
+    );
+    const result = await server.listResources();
+    expect(result).toEqual({
+      resources: [{ uri: 'jini://noop', name: 'Noop', description: 'a resource', mimeType: 'text/plain' }],
+    });
+    hoisted.onIdleRef.current?.();
+    await runPromise;
+  });
+
+  it('dispatches resources/read through handleResourceRead, including the unknown-uri (adversarial) path', async () => {
+    const server = makeFakeServer();
+    const transport = new FakeTransport();
+    const handle = createMcpToolServer(baseOptions({
+      resources: [noopResource({ read: () => ({ text: 'body' }) })],
+      createServer: () => server,
+      createTransport: () => transport,
+    }));
+    const runPromise = handle.run();
+    await flushAsync();
+    await expect(server.readResource('jini://noop')).resolves.toEqual({
+      contents: [{ uri: 'jini://noop', text: 'body' }],
+    });
+    // Unlike tools/call, resources/read has no {isError:true} content shape — a bad/unregistered
+    // uri (what an adversarial or simply buggy MCP client would send) must reject the handler's
+    // promise, not resolve with something that looks like valid content.
+    await expect(server.readResource('jini://not-registered')).rejects.toThrow(
+      'unsupported resource URI: jini://not-registered',
+    );
+    hoisted.onIdleRef.current?.();
+    await runPromise;
+  });
+
+  it('counts resources/list and resources/read as activity, same as tools', async () => {
+    const server = makeFakeServer();
+    const transport = new FakeTransport();
+    const handle = createMcpToolServer(baseOptions({
+      resources: [noopResource()],
+      createServer: () => server,
+      createTransport: () => transport,
+    }));
+    const runPromise = handle.run();
+    await flushAsync();
+    await server.listResources();
+    await server.readResource('jini://noop');
+    // trackRequest is stubbed to run the handler directly (see the module mock above); this test
+    // only needs to prove both handlers went through withActivity's wrapper without throwing, i.e.
+    // that resources share the same activity-tracked dispatch path tools already use.
     hoisted.onIdleRef.current?.();
     await runPromise;
   });

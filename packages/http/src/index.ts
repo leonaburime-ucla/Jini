@@ -44,6 +44,9 @@ export {
 export type { AdapterContext } from './adapter.js';
 export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
+export type { CreateSseChannelOptions, SseChannel, SseEvent } from './sse.js';
+export { createSseChannel, DEFAULT_MAX_QUEUED_SSE_EVENTS, requestedAfterCursor } from './sse.js';
+
 export { mountPackHttp } from './pack-http.js';
 
 export type { RunCancellationService } from './cancel-owned-runs.js';

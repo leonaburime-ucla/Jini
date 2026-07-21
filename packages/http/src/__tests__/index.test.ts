@@ -90,4 +90,10 @@ describe('@jini/http barrel', () => {
     expect(HttpBarrel.getActiveRoute.path).toBe('/api/active');
     expect(HttpBarrel.ACTIVE_CONTEXT_TTL_MS).toBe(5 * 60 * 1000);
   });
+
+  it('re-exports the generic SSE primitive', () => {
+    expect(typeof HttpBarrel.createSseChannel).toBe('function');
+    expect(typeof HttpBarrel.requestedAfterCursor).toBe('function');
+    expect(HttpBarrel.DEFAULT_MAX_QUEUED_SSE_EVENTS).toBe(1000);
+  });
 });

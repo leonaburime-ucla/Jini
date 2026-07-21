@@ -12,7 +12,7 @@
  * *what* to stream, not *how* to stream it. `runs.ts` is refactored to call
  * this primitive rather than keeping its own copy — the same discipline this
  * package already applies to `origin-validation.ts`/`compat.ts` (shared
- * mechanism, one implementation).
+ * mechanism, one implementation, one set of tests for the mechanism itself).
  *
  * OD's own precedent for a shared SSE primitive is `ctx.http.createSseResponse`
  * (an Express-request-scoped helper both `apps/daemon/src/routes/runs.ts` and
@@ -51,31 +51,56 @@ export interface CreateSseChannelOptions<E extends SseEvent> {
   readonly isEndEvent?: (event: E) => boolean;
   /** Overrides the wire format. Defaults to {@link defaultFormatEvent}. */
   readonly formatEvent?: (event: E) => string;
-  /** Invoked once, synchronously, if `res.write` throws or reports backpressure-then-failure — lets a caller log the real error without it crossing back into whatever produced the event (mirrors `runs.ts`'s `RunHttpDeps.onInternalError` seam, but this primitive itself stays logging-free: silent by default, matching a transport channel's "never throw back through the producer" contract). */
+  /** Invoked once, synchronously, if `res.write` throws mid-flush — lets a caller log the real error without it crossing back into whatever produced the event (mirrors `runs.ts`'s `RunHttpDeps.onInternalError` seam, but this primitive itself stays logging-free: silent by default, matching a transport channel's "never throw back through the producer" contract). */
   readonly onWriteError?: (error: unknown) => void;
 }
 
 export interface SseChannel<E extends SseEvent> {
   /**
    * Queues `event` for delivery. A no-op once the channel is closed. Before
-   * headers are flushed (see {@link SseChannel.open}) events accumulate in the
-   * same bounded queue used for later backpressure, so a caller may safely
-   * call `enqueue` for replay history before opening the stream.
+   * {@link SseChannel.open} is called, events accumulate in the same bounded
+   * queue used for later backpressure, so a caller may safely `enqueue`
+   * replay history before opening the stream — the client's very first
+   * flush then already contains that backlog.
    */
   readonly enqueue: (event: E) => void;
   /**
    * Writes SSE headers (`200`, `text/event-stream`, `Cache-Control: no-cache,
    * no-transform`, `Connection: keep-alive`) and starts draining the queue.
-   * Idempotent — a second call is a no-op. Call after any pre-header replay
-   * events have been `enqueue`d, so a client's very first flush already
-   * contains its replay backlog.
+   * Idempotent — a no-op if already open or already closed.
    */
   readonly open: () => void;
   /** True once the channel has closed for any reason (explicit `end()`, client disconnect, queue overflow, or a fatal write). */
   readonly isClosed: () => boolean;
-  /** Idempotent: ends the HTTP response (if not already ended) and runs every registered close callback exactly once. */
+  /**
+   * Idempotent: marks the channel closed, unsubscribes nothing itself (a
+   * caller's {@link SseChannel.onClose} callback does that), and ends the
+   * underlying HTTP response if it has not already ended. Calling `res.end()`
+   * a second time (e.g. after the client already disconnected) is safe and
+   * documented as a no-op by Node's `http.ServerResponse` — this method does
+   * not need to distinguish "we are ending it" from "the client already
+   * ended it."
+   */
   readonly end: () => void;
-  /** Registers a callback invoked exactly once when the channel closes, from whichever cause fires first. Safe to call after the channel is already closed — the callback runs immediately in that case. */
+  /**
+   * Idempotent: marks the channel closed and runs every registered
+   * {@link SseChannel.onClose} callback — but, unlike {@link SseChannel.end},
+   * never touches `res` itself. For a caller that hits a failure *before*
+   * ever calling {@link SseChannel.open} and wants to send a different,
+   * non-SSE response instead (e.g. a JSON error body) rather than an empty
+   * ended stream. Calling {@link SseChannel.end} in that situation would
+   * end the response first and make the caller's own subsequent
+   * `res.status(...).json(...)` a write-after-end failure; `abandon` avoids
+   * that by leaving `res` completely untouched.
+   */
+  readonly abandon: () => void;
+  /**
+   * Registers a callback invoked exactly once when the channel closes, from
+   * whichever cause fires first (explicit `end()`, a client disconnect
+   * observed via the response's own `'close'` event, or an internal
+   * overflow/write failure). Safe to call after the channel is already
+   * closed — the callback then runs immediately, synchronously.
+   */
   readonly onClose: (callback: () => void) => void;
 }
 
@@ -86,8 +111,17 @@ export interface SseChannel<E extends SseEvent> {
  * fan-in, a PTY's `onData`, …) to {@link SseChannel.enqueue} and lets the
  * channel own delivery, ordering, and backpressure.
  *
+ * The response's own `'close'` event (the client disconnecting) is observed
+ * from construction time, before {@link SseChannel.open} is ever called —
+ * this lets a caller `await` some asynchronous subscribe step (as `runs.ts`
+ * does against `RunLifecycle.stream`) and still detect "the client already
+ * disappeared while we were waiting" via {@link SseChannel.isClosed} once
+ * that await resolves, without the disconnect handler itself trying to
+ * re-end an already-gone response (see {@link SseChannel.end}'s doc for why
+ * that distinction doesn't actually need special-casing).
+ *
  * @param res - The Express response to stream over. Never read from — only
- * `write`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')` are used.
+ * `write`/`status`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')` are used.
  * @param options - See {@link CreateSseChannelOptions}.
  * @complexity `enqueue`/`open`/`end` are O(1) amortized; a full queue drain is O(events written).
  * @overallScore 100/100
@@ -105,7 +139,9 @@ export function createSseChannel<E extends SseEvent>(
   let closed = false;
   const closeCallbacks: Array<() => void> = [];
 
-  const runCloseCallbacks = (): void => {
+  const markClosed = (): void => {
+    if (closed) return;
+    closed = true;
     // Copy first: a callback that itself calls `onClose` during this loop must not be invoked
     // twice or mutate the array being iterated.
     const callbacks = closeCallbacks.splice(0, closeCallbacks.length);
@@ -113,10 +149,8 @@ export function createSseChannel<E extends SseEvent>(
   };
 
   const end = (): void => {
-    if (closed) return;
-    closed = true;
+    markClosed();
     if (!res.writableEnded) res.end();
-    runCloseCallbacks();
   };
 
   const pump = (): void => {
@@ -167,7 +201,11 @@ export function createSseChannel<E extends SseEvent>(
     writable = true;
     pump();
   });
-  res.on('close', end);
+  // The client disconnecting only marks the channel closed — it must not itself call `res.end()`
+  // (see `end()`'s doc for why calling it a second time would be safe anyway, but a route that
+  // still wants to send a *non-SSE* response — e.g. a JSON error — after discovering a subscribe
+  // failed needs `isClosed()` to be observable without the response having been touched yet).
+  res.on('close', markClosed);
 
   const onClose = (callback: () => void): void => {
     if (closed) {
@@ -182,6 +220,7 @@ export function createSseChannel<E extends SseEvent>(
     open,
     isClosed: () => closed,
     end,
+    abandon: markClosed,
     onClose,
   };
 }

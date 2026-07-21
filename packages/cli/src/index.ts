@@ -18,4 +18,5 @@ export * from './usage.js';
 export * from './command-registry.js';
 export * from './run-command.js';
 export * from './daemon-command.js';
+export * from './local-daemon-discovery.js';
 export * from './tokens.js';

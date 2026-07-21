@@ -1,12 +1,22 @@
 /**
  * The media dispatch engine — validates a generation request against the
  * catalogue, clamps registry-bound numeric inputs, resolves per-provider
- * credentials, and routes to the matching `render*` provider function (or
- * a deterministic placeholder when `allowStubFallback` is set and no real
- * renderer is wired up for the pair). Generalized from Open Design's
+ * credentials, and routes to the matching renderer (or a deterministic
+ * placeholder when `allowStubFallback` is set and no real renderer is
+ * wired up for the pair). Generalized from Open Design's
  * `apps/daemon/src/media/index.ts` `generateMedia` orchestration — see
  * `types.ts`'s module doc for the boundary redesign (no filesystem I/O,
  * no OD project resolution) and `source-map.md` for the full port record.
+ *
+ * 2026-07-21: renderer resolution now checks `vendor-registry.ts`'s
+ * `mediaVendorRegistry` first (populated by every vendor migrated onto the
+ * generic vendor-adapter dispatch engine — see `vendor-adapter.ts`'s
+ * module doc), falling back to the static `ROUTES` table below for vendors
+ * not yet migrated. `openai`/`minimax`/`senseaudio`/`fishaudio` are
+ * imported for their registration side effect only (not by name) — their
+ * `ROUTES` entries were removed, so resolution for those four vendors goes
+ * through the registry exclusively, proving it's live-wired into the real
+ * request path rather than parallel unused scaffolding.
  */
 import { AUDIO_DURATIONS_SEC, VIDEO_LENGTHS_SEC, findMediaModel, findProvider, modelsForSurface } from '../providers.js';
 import type { AudioKind, MediaModel, MediaProvider, MediaSurface } from '../types.js';
@@ -14,14 +24,14 @@ import { buildRenderContext } from './context.js';
 import { renderAIHubMixImage, renderAIHubMixTTS } from './providers/aihubmix.js';
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
 import { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
-import { renderFishAudioTTS } from './providers/fishaudio.js';
+import './providers/fishaudio.js';
 import { renderGrokImage, renderXAITTS } from './providers/grok.js';
 import { renderImageRouterImage, renderImageRouterVideo } from './providers/imagerouter.js';
-import { renderMinimaxTTS } from './providers/minimax.js';
+import './providers/minimax.js';
 import { renderNanoBananaImage } from './providers/nanobanana.js';
-import { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
+import './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
-import { renderSenseAudioImage, renderSenseAudioTTS } from './providers/senseaudio.js';
+import './providers/senseaudio.js';
 import { renderVolcengineImage } from './providers/volcengine.js';
 import { renderStub } from './stub.js';
 import type {
@@ -33,6 +43,8 @@ import type {
   RenderContext,
   RenderResult,
 } from './types.js';
+import { dispatchVendorRequest } from './vendor-adapter.js';
+import { mediaVendorRegistry } from './vendor-registry.js';
 
 const SURFACES: ReadonlySet<MediaSurface> = new Set(['image', 'video', 'audio']);
 const AUDIO_KINDS: ReadonlySet<AudioKind> = new Set(['music', 'speech', 'sfx']);
@@ -79,15 +91,17 @@ type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promis
 
 /**
  * Routing table: `providerId` -> `surface` (or `surface:audioKind` for
- * audio) -> renderer. Mirrors the origin's if/else-if dispatch chain — see
- * `source-map.md` for exactly which (provider, surface) pairs from the
- * origin are ported here vs deferred to a later pass.
+ * audio) -> renderer, for vendors NOT yet migrated onto the generic
+ * vendor-adapter dispatch engine. Mirrors the origin's if/else-if dispatch
+ * chain — see `source-map.md` for exactly which (provider, surface) pairs
+ * from the origin are ported here vs deferred to a later pass.
+ *
+ * `openai`/`minimax`/`senseaudio`/`fishaudio` are deliberately absent —
+ * those four vendors are registered in `vendor-registry.ts`'s
+ * `mediaVendorRegistry` instead (see `resolveRenderer` below and each
+ * vendor's own module for its `mediaVendorRegistry.register(...)` call).
  */
 const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
-  openai: {
-    image: renderOpenAIImage,
-    'audio:speech': renderOpenAISpeech,
-  },
   imagerouter: {
     image: renderImageRouterImage,
     video: renderImageRouterVideo,
@@ -112,16 +126,6 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
     'audio:speech': renderElevenLabsTTS,
     'audio:sfx': renderElevenLabsSfx,
   },
-  minimax: {
-    'audio:speech': renderMinimaxTTS,
-  },
-  senseaudio: {
-    image: renderSenseAudioImage,
-    'audio:speech': renderSenseAudioTTS,
-  },
-  fishaudio: {
-    'audio:speech': renderFishAudioTTS,
-  },
   aihubmix: {
     image: renderAIHubMixImage,
     'audio:speech': renderAIHubMixTTS,
@@ -130,6 +134,19 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
 
 function routeKeyFor(surface: MediaSurface, audioKind: AudioKind | undefined): string {
   return surface === 'audio' && audioKind ? `audio:${audioKind}` : surface;
+}
+
+/**
+ * Resolves the renderer for `(providerId, routeKey)`: checks
+ * `mediaVendorRegistry` first (vendors migrated onto the generic engine),
+ * falling back to the static `ROUTES` table for everything else.
+ */
+function resolveRenderer(providerId: string, routeKey: string): Renderer | undefined {
+  const adapter = mediaVendorRegistry.get(providerId, routeKey);
+  if (adapter) {
+    return (ctx, credentials) => dispatchVendorRequest(adapter, ctx, credentials);
+  }
+  return ROUTES[providerId]?.[routeKey];
 }
 
 export function createMediaDispatchEngine(options: MediaDispatchEngineOptions = {}): MediaDispatchEngine {
@@ -199,7 +216,7 @@ export function createMediaDispatchEngine(options: MediaDispatchEngineOptions = 
         }
       }
       if (!renderer) {
-        renderer = ROUTES[def.provider]?.[routeKeyFor(surface, resolvedAudioKind)];
+        renderer = resolveRenderer(def.provider, routeKeyFor(surface, resolvedAudioKind));
       }
 
       if (!renderer) {

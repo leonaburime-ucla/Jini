@@ -53,3 +53,14 @@ export {
   describeFetchError,
   parseStrictJson,
 } from './llm-provider.js';
+
+export type {
+  ExtractedFact,
+  ExtractFactsInput,
+  ExtractFactsLogOptions,
+  ExtractFactsOptions,
+  ExtractFactsPromptConfig,
+  ExtractFactsResult,
+  NoteDraft,
+} from './extract-facts.js';
+export { DEFAULT_MAX_FACTS, DEFAULT_SYSTEM_PROMPT, extractFacts, factToNoteDraft } from './extract-facts.js';

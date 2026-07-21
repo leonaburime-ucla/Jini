@@ -21,6 +21,14 @@ describe('@jini/mcp public barrel', () => {
       'createMcpIdleExitController', 'extractRelativeRefs', 'isTextualMime',
       // agent-install
       'AGENT_SLUGS', 'isAgentSlug', 'planAgentInstall', 'applyJsonInstall', 'removeJsonInstall',
+      // server: tool-hosting mechanism + kernel-run tool defs
+      'createMcpToolServer', 'okResult', 'errorResult', 'requireString', 'toolsToList',
+      'buildToolIndex', 'handleToolCall', 'getDaemonJson', 'postDaemonJson',
+      'DaemonResponseTooLargeError', 'RUN_TOOLS', 'startRunTool', 'getRunTool', 'cancelRunTool',
+      'getActiveContextTool', 'listAgentsTool',
+      // server: resource surface + kernel resource defs
+      'resourcesToList', 'buildResourceIndex', 'handleResourceRead', 'KERNEL_RESOURCES',
+      'activeContextResource',
     ] as const;
     for (const n of names) {
       expect(mcp[n as keyof typeof mcp], `missing export: ${n}`).toBeDefined();

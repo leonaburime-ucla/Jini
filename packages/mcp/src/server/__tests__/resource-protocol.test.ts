@@ -59,13 +59,13 @@ describe('buildResourceIndex', () => {
 describe('handleResourceRead', () => {
   it('throws for an unknown/adversarial uri instead of silently returning empty content', async () => {
     // Includes uris an attacker-controlled MCP client might probe with: a scheme this package
-    // never registers, and the exact OD-origin scheme this package deliberately does not carry
-    // forward (od://focus/active) — both must fail closed, not resolve to something unintended.
+    // never registers (including a legacy product-scheme shape from an unrelated origin server)
+    // and an empty string — all must fail closed, not resolve to something unintended.
     await expect(handleResourceRead('jini://missing', buildResourceIndex([]), ctx)).rejects.toThrow(
       'unsupported resource URI: jini://missing',
     );
-    await expect(handleResourceRead('od://focus/active', buildResourceIndex([]), ctx)).rejects.toThrow(
-      'unsupported resource URI: od://focus/active',
+    await expect(handleResourceRead('legacy-scheme://focus/active', buildResourceIndex([]), ctx)).rejects.toThrow(
+      'unsupported resource URI: legacy-scheme://focus/active',
     );
     await expect(handleResourceRead('', buildResourceIndex([]), ctx)).rejects.toThrow(
       'unsupported resource URI: ',
