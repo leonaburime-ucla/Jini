@@ -40,6 +40,7 @@
  * blanket "not retryable" default is the only honest answer available.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { redactSecrets } from '@jini/core';
 import type { RunAgentPayload, RunErrorPayload } from '@jini/protocol';
 import {
   applyAgentLaunchEnv,
@@ -394,6 +395,52 @@ async function terminateChildTree(deps: TerminateChildTreeDeps, child: ChildProc
   await deps.stopProcesses(pids);
 }
 
+/** Which caller invoked {@link terminateChildTreeBestEffort} — carried through to `onCleanupFailure` (SEC-007) for diagnosis. */
+export type AgentCleanupFailurePhase = 'cancel' | 'acp-attach-failure';
+
+export interface AgentCleanupFailureContext {
+  readonly runId: string;
+  readonly phase: AgentCleanupFailurePhase;
+  readonly pid: number | null;
+  readonly error: unknown;
+}
+
+/** Default sink when a host does not supply `onCleanupFailure`: still observable, never silent. Redacted per SEC-007 (a spawn/permission error can embed paths/host detail). */
+function defaultCleanupFailureSink(context: AgentCleanupFailureContext): void {
+  // eslint-disable-next-line no-console
+  console.error(
+    `[@jini/daemon] agent-executor: process-tree cleanup failed for run "${context.runId}" (${context.phase}, pid=${context.pid ?? 'unknown'})`,
+    redactSecrets(errorMessage(context.error)),
+  );
+}
+
+/**
+ * Fire-and-forget-safe wrapper around {@link terminateChildTree} for the cancellation paths
+ * (a synchronous `onCancelRequested` listener, an ACP attach-failure catch) that observed this
+ * promise with a bare `void` — silently swallowing any `listProcessSnapshots`/`stopProcesses`
+ * rejection (e.g. EPERM — see `packages/platform/src/__tests__/process.test.ts`) and letting it
+ * become an unhandled rejection, with descendants possibly still running and no diagnostic at
+ * all (SEC-007). This never rejects: a tree-stop failure is reported through `onCleanupFailure`
+ * (redacted) and followed by a best-effort direct kill of `child` itself, since the immediate
+ * child is still worth trying even when tree enumeration/escalation failed.
+ */
+function terminateChildTreeBestEffort(
+  deps: TerminateChildTreeDeps,
+  child: ChildProcess,
+  runId: string,
+  phase: AgentCleanupFailurePhase,
+  onCleanupFailure: (context: AgentCleanupFailureContext) => void,
+): Promise<void> {
+  return terminateChildTree(deps, child).catch((error: unknown) => {
+    onCleanupFailure({ runId, phase, pid: child.pid ?? null, error });
+    try {
+      if (child.pid != null && !child.killed) child.kill('SIGKILL');
+    } catch {
+      // Best-effort only — nothing further can be done from here.
+    }
+  });
+}
+
 /** A small handle `writePromptToStdin` uses to close stdin exactly once, shared with the `turn_end`-triggered close inside {@link wireChildLifecycle}. */
 interface StdinCloseHandle {
   closeStdinOnce(): void;
@@ -405,6 +452,7 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly streamFormat: JsonStreamFormat;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
 }
 
 /**
@@ -492,7 +540,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
 
   const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
     cancelRequested = true;
-    void terminateChildTree(ctx, child);
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
   });
 
   child.on('close', (code, signal) => {
@@ -524,6 +572,7 @@ interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly envFormat: 'array' | 'map' | undefined;
   readonly onPermissionRequest: AcpPermissionHandler | undefined;
   readonly attachAcpSession: typeof attachAcpSession;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
 }
 
 /**
@@ -589,7 +638,7 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
   const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
     cancelRequested = true;
     controller?.abort();
-    void terminateChildTree(ctx, child);
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
   });
 
   child.on('close', (code, signal) => {
@@ -681,6 +730,8 @@ export interface CreateAgentExecutorOptions {
   readonly collectProcessTreePids?: typeof collectProcessTreePids;
   /** @default the real `@jini/platform` SIGTERM→SIGKILL escalator */
   readonly stopProcesses?: typeof stopProcesses;
+  /** Host-owned sink for a process-tree cleanup failure (SEC-007) — e.g. EPERM stopping descendants. @default logs a redacted diagnostic via `console.error` */
+  readonly onCleanupFailure?: (context: AgentCleanupFailureContext) => void;
 }
 
 /**
@@ -709,6 +760,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const listProcessSnapshotsFn = options.listProcessSnapshots ?? listProcessSnapshots;
   const collectProcessTreePidsFn = options.collectProcessTreePids ?? collectProcessTreePids;
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
+  const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -802,6 +854,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
             listProcessSnapshots: listProcessSnapshotsFn,
             collectProcessTreePids: collectProcessTreePidsFn,
             stopProcesses: stopProcessesFn,
+            onCleanupFailure: onCleanupFailureFn,
           });
 
     try {
@@ -828,15 +881,22 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           listProcessSnapshots: listProcessSnapshotsFn,
           collectProcessTreePids: collectProcessTreePidsFn,
           stopProcesses: stopProcessesFn,
+          onCleanupFailure: onCleanupFailureFn,
         });
       } catch (err) {
-        void terminateChildTree(
+        // Unlike the cancellation-listener call sites, we are already in an async function
+        // about to call finish() and throw — nothing else races this, so cleanup is awaited
+        // here rather than fired-and-forgotten (SEC-007: "await where lifecycle ordering allows it").
+        await terminateChildTreeBestEffort(
           {
             listProcessSnapshots: listProcessSnapshotsFn,
             collectProcessTreePids: collectProcessTreePidsFn,
             stopProcesses: stopProcessesFn,
           },
           child,
+          input.runId,
+          'acp-attach-failure',
+          onCleanupFailureFn,
         );
         await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
         throw new AgentExecutorError(

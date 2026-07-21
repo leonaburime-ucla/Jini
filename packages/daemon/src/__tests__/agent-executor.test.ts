@@ -49,6 +49,8 @@ interface FakeChild extends EventEmitter {
   stdout: EventEmitter;
   stderr: EventEmitter;
   stdin: FakeWritable | undefined;
+  killed: boolean;
+  kill: ReturnType<typeof vi.fn>;
 }
 
 // No default parameter here on purpose: `createFakeChild(undefined)` (the
@@ -62,6 +64,11 @@ function createFakeChild(pid: number | undefined, options: { omitStdin?: boolean
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = options.omitStdin ? undefined : createFakeStdin();
+  child.killed = false;
+  child.kill = vi.fn(() => {
+    child.killed = true;
+    return true;
+  });
   return child;
 }
 
@@ -97,6 +104,10 @@ interface HarnessOptions {
   spawnErrorEvent?: unknown;
   childPid?: number | undefined;
   omitStdin?: boolean;
+  /** SEC-007: makes `stopProcesses` reject (e.g. simulating EPERM) instead of succeeding. */
+  stopProcessesRejects?: unknown;
+  /** SEC-007: makes `listProcessSnapshots` reject instead of succeeding. */
+  listProcessSnapshotsRejects?: unknown;
 }
 
 interface Harness {
@@ -105,6 +116,7 @@ interface Harness {
   child: FakeChild;
   spawnCalls: SpawnCall[];
   stopProcessesCalls: Array<Array<number | null | undefined>>;
+  onCleanupFailure: ReturnType<typeof vi.fn>;
 }
 
 /** Builds a real in-memory `RunLifecycle` (matching run-lifecycle.test.ts's precedent) plus an `AgentExecutor` wired entirely to injected fakes — no real subprocess, filesystem, or PATH lookup. */
@@ -133,6 +145,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
     return child as unknown as ChildProcess;
   }) as unknown as typeof nodeSpawn;
 
+  const onCleanupFailure = vi.fn();
+
   const executor = createAgentExecutor({
     lifecycle,
     getAgentDef: (id: string) => (def && def.id === id ? def : null),
@@ -149,6 +163,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     applyAgentLaunchEnv: (env) => env,
     spawn: fakeSpawn,
     listProcessSnapshots: async () => {
+      if (options.listProcessSnapshotsRejects !== undefined) throw options.listProcessSnapshotsRejects;
       const pid = child.pid ?? 0;
       return [
         { pid, ppid: 1, command: 'fake-bin' },
@@ -157,12 +172,14 @@ function createHarness(options: HarnessOptions = {}): Harness {
     },
     stopProcesses: async (pids) => {
       stopProcessesCalls.push(pids);
+      if (options.stopProcessesRejects !== undefined) throw options.stopProcessesRejects;
       const numericPids = pids.filter((pid): pid is number => typeof pid === 'number');
       return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
     },
+    onCleanupFailure,
   });
 
-  return { lifecycle, executor, child, spawnCalls, stopProcessesCalls };
+  return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
 }
 
 async function collectEvents(lifecycle: RunLifecycle, runId: string): Promise<RunProtocolEvent[]> {
@@ -537,6 +554,76 @@ describe('AgentExecutor — cancellation', () => {
 
     expect(stopProcessesCalls).toHaveLength(1);
   });
+
+  it('SEC-007: a rejecting stopProcesses during cancellation does not become an unhandled rejection, is reported redacted, and falls back to a direct child kill', async () => {
+    const { lifecycle, executor, child, onCleanupFailure } = createHarness({
+      stopProcessesRejects: new Error('EPERM: operation not permitted at /proc/4243/status'),
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    await lifecycle.cancel({ runId: run.id, reason: 'user requested' });
+    await flushAsync();
+
+    expect(onCleanupFailure).toHaveBeenCalledTimes(1);
+    const [context] = onCleanupFailure.mock.calls[0]!;
+    expect(context).toMatchObject({ runId: run.id, phase: 'cancel', pid: 4242 });
+    expect(context.error).toBeInstanceOf(Error);
+
+    // The direct-child fallback kill was attempted since the tree-wide stop failed.
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+
+    // The run still reaches a deterministic terminal state once the child's real close fires —
+    // cleanup failing does not corrupt the lifecycle or leave the run hanging.
+    child.emit('close', null, 'SIGTERM');
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('cancelled');
+  });
+
+  it('SEC-007: defaults to a redacted console.error diagnostic when no onCleanupFailure sink is supplied', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const eventLog = createInMemoryEventLog();
+    const lifecycle = createRunLifecycle({ eventLog });
+    const child = createFakeChild(4242);
+    const fakeSpawn = (() => {
+      queueMicrotask(() => child.emit('spawn'));
+      return child as unknown as ChildProcess;
+    }) as unknown as typeof nodeSpawn;
+    const def = createFakeDef();
+    const executor = createAgentExecutor({
+      lifecycle,
+      getAgentDef: () => def,
+      resolveAgentLaunch: () =>
+        ({
+          selectedPath: '/fake/bin',
+          pathResolvedPath: '/fake/bin',
+          configuredOverridePath: null,
+          launchPath: '/fake/bin',
+          launchKind: 'selected',
+          childPathPrepend: [],
+          diagnostic: null,
+        }) as AgentLaunchResolution,
+      applyAgentLaunchEnv: (env) => env,
+      spawn: fakeSpawn,
+      listProcessSnapshots: async () => [{ pid: 4242, ppid: 1, command: 'fake-bin' }],
+      stopProcesses: async () => {
+        throw new Error('EPERM: secret/token/abc123 not permitted');
+      },
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    await lifecycle.cancel({ runId: run.id });
+    await flushAsync();
+
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
+  });
 });
 
 describe('AgentExecutor — defensive listeners never crash the host process', () => {
@@ -807,6 +894,8 @@ interface AcpHarnessOptions {
   completedSuccessfully?: boolean;
   acpPermissionHandler?: unknown;
   attachThrows?: unknown;
+  /** SEC-007: makes `stopProcesses` reject instead of succeeding. */
+  stopProcessesRejects?: unknown;
 }
 
 interface AcpHarness {
@@ -816,6 +905,7 @@ interface AcpHarness {
   attachCalls: FakeAcpAttachCall[];
   abort: ReturnType<typeof vi.fn>;
   stopProcessesCalls: Array<Array<number | null | undefined>>;
+  onCleanupFailure: ReturnType<typeof vi.fn>;
 }
 
 /** Builds an `AgentExecutor` wired to an `acp-json-rpc` def and a fully fake `attachAcpSession` — no real ACP handshake, matching `createHarness`'s JSON-stream-path precedent above. */
@@ -827,6 +917,7 @@ function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
   const attachCalls: FakeAcpAttachCall[] = [];
   const abort = vi.fn();
   const stopProcessesCalls: Array<Array<number | null | undefined>> = [];
+  const onCleanupFailure = vi.fn();
 
   const fakeSpawn = (() => {
     queueMicrotask(() => child.emit('spawn'));
@@ -885,12 +976,14 @@ function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
     },
     stopProcesses: async (pids) => {
       stopProcessesCalls.push(pids);
+      if (options.stopProcessesRejects !== undefined) throw options.stopProcessesRejects;
       const numericPids = pids.filter((pid): pid is number => typeof pid === 'number');
       return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
     },
+    onCleanupFailure,
   });
 
-  return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls };
+  return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
 }
 
 describe('AgentExecutor — ACP dispatch (fake attachAcpSession)', () => {
@@ -947,6 +1040,29 @@ describe('AgentExecutor — ACP dispatch (fake attachAcpSession)', () => {
 
     expect(abort).toHaveBeenCalledTimes(1);
     expect(stopProcessesCalls).toHaveLength(1);
+
+    child.emit('close', null, 'SIGTERM');
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('cancelled');
+  });
+
+  it('SEC-007: a rejecting stopProcesses during ACP cancellation does not become an unhandled rejection and still falls back to a direct kill', async () => {
+    const { lifecycle, executor, child, abort, onCleanupFailure } = createAcpHarness({
+      stopProcessesRejects: new Error('EPERM: not permitted'),
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    await lifecycle.cancel({ runId: run.id, reason: 'user requested' });
+    await flushAsync();
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(onCleanupFailure).toHaveBeenCalledTimes(1);
+    expect(onCleanupFailure.mock.calls[0]![0]).toMatchObject({ runId: run.id, phase: 'cancel' });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
 
     child.emit('close', null, 'SIGTERM');
     const finished = await lifecycle.waitForTerminal(run.id);
@@ -1038,6 +1154,28 @@ describe('AgentExecutor — ACP dispatch (fake attachAcpSession)', () => {
     await flushAsync();
     expect(stopProcessesCalls).toHaveLength(1);
     expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('SEC-007: still finishes the run failed (awaiting cleanup, not firing-and-forgetting it) when both attachAcpSession and the cleanup it triggers fail', async () => {
+    const { lifecycle, executor, child, onCleanupFailure } = createAcpHarness({
+      attachThrows: new Error('handshake rejected'),
+      stopProcessesRejects: new Error('EPERM: not permitted'),
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const resultPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await expect(resultPromise).rejects.toMatchObject({
+      code: 'AGENT_SPAWN_FAILED',
+      message: expect.stringContaining('handshake rejected'),
+    });
+
+    // finish() only runs after cleanup is awaited (not a bare `void` fire-and-forget) — by the
+    // time the run() promise has rejected, the run is already durably 'failed', the cleanup
+    // failure was reported, and the direct-kill fallback was attempted.
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+    expect(onCleanupFailure).toHaveBeenCalledTimes(1);
+    expect(onCleanupFailure.mock.calls[0]![0]).toMatchObject({ runId: run.id, phase: 'acp-attach-failure' });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
   describe('translateAcpError (exercised via send("error", payload), since the function itself is not exported)', () => {
