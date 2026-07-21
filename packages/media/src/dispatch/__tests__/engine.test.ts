@@ -167,6 +167,18 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.providerId).toBe('grok');
   });
 
+  it('routes grok + audio:speech to renderXAITTS', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('https://api.x.ai/v1/tts');
+      return new Response(Buffer.from('audio'), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { grok: { apiKey: 'xai-key' } } });
+    const result = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'grok-tts' });
+    expect(result.providerId).toBe('grok');
+    expect(result.bytes.toString('utf8')).toBe('audio');
+  });
+
   it('routes nanobanana + image to renderNanoBananaImage', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent');

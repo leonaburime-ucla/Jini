@@ -1,23 +1,29 @@
 /**
- * Provider: xAI Grok Imagine — image generation via an OpenAI-images-
- * compatible `/images/generations` endpoint. Ported near-verbatim from Open
- * Design's `apps/daemon/src/media/index.ts` `renderGrokImage` — see
- * `source-map.md`.
+ * Provider: xAI Grok — image generation via an OpenAI-images-compatible
+ * `/images/generations` endpoint (`renderGrokImage`), plus text-to-speech
+ * via a dedicated `/tts` endpoint (`renderXAITTS`). Ported near-verbatim
+ * from Open Design's `apps/daemon/src/media/index.ts` `renderGrokImage`/
+ * `renderXAITTS` — see `source-map.md`.
  *
- * The response shape (`{ data: [{ b64_json | url }] }`) is identical to
- * OpenAI's images API, so this routes through `openai-compatible.ts`'s
- * already-ported JSON-parsing/byte-extraction/URL-building helpers rather
- * than re-implementing them.
+ * Image response shape (`{ data: [{ b64_json | url }] }`) is identical to
+ * OpenAI's images API, so `renderGrokImage` routes through
+ * `openai-compatible.ts`'s already-ported JSON-parsing/byte-extraction/
+ * URL-building helpers rather than re-implementing them. `/tts` is xAI's
+ * own dedicated endpoint (not the OpenAI `/audio/speech` shape) — it
+ * returns raw audio bytes directly from a plain JSON POST, with no
+ * per-request format negotiation the caller can control, so `renderXAITTS`
+ * doesn't route through `openai-compatible.ts` at all (only the generic
+ * `truncate`/`withRequestInit` helpers are shared).
  *
- * Dropped from the origin's no-credential error message: the
- * OD-specific "sign in with your SuperGrok subscription (in OD or via
- * `hermes auth add xai-oauth`)" OAuth guidance — this package has no OAuth
- * chain or local-CLI-login concept; credentials are always host-injected
- * (see `types.ts`'s `ProviderCredentials`), matching every other ported
- * provider's error-message style (e.g. `openai.ts`'s
+ * Dropped from the origin's no-credential error messages (both
+ * functions): the OD-specific "sign in with your SuperGrok subscription
+ * (in OD or via `hermes auth add xai-oauth`)" OAuth guidance — this
+ * package has no OAuth chain or local-CLI-login concept; credentials are
+ * always host-injected (see `types.ts`'s `ProviderCredentials`), matching
+ * every other ported provider's error-message style (e.g. `openai.ts`'s
  * `OPENAI_IMAGE_NO_CREDENTIAL_MESSAGE`).
  */
-import { buildOpenAIImageUrl, bytesFromOpenAICompatibleData, parseOpenAICompatibleJson, sniffImageExt, withRequestInit } from '../openai-compatible.js';
+import { buildOpenAIImageUrl, bytesFromOpenAICompatibleData, parseOpenAICompatibleJson, sniffImageExt, truncate, withRequestInit } from '../openai-compatible.js';
 import type { ProviderCredentials, RenderContext, RenderResult } from '../types.js';
 
 /**
@@ -72,5 +78,52 @@ export async function renderGrokImage(ctx: RenderContext, credentials: ProviderC
     bytes,
     providerNote: `grok/${ctx.wireModel} · ${aspectRatio} · ${bytes.length} bytes`,
     suggestedExt: sniffImageExt(bytes),
+  };
+}
+
+const XAI_TTS_DEFAULT_VOICE_ID = 'eve';
+const XAI_TTS_DEFAULT_LANGUAGE = 'en';
+
+/**
+ * xAI's `/tts` endpoint takes only `{ text, voice_id, language }` — no
+ * per-request output-format field — and always returns mp3/24kHz/128kbps
+ * audio bytes directly (not wrapped in JSON), matching the origin exactly.
+ * `ctx.speechFormat` (used by `openai.ts`'s `renderOpenAISpeech`/AIHubMix's
+ * TTS) has no equivalent here since the wire protocol offers nothing to
+ * set it with.
+ */
+export async function renderXAITTS(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
+  if (!credentials.apiKey) {
+    throw new Error(NO_CREDENTIAL_MESSAGE);
+  }
+  const baseUrl = (credentials.baseUrl || 'https://api.x.ai/v1').replace(/\/$/, '');
+  const text = (ctx.prompt && ctx.prompt.trim()) || 'This is a test.';
+  const voiceId = (ctx.voice && ctx.voice.trim()) || XAI_TTS_DEFAULT_VOICE_ID;
+  const language = ctx.language.trim() || XAI_TTS_DEFAULT_LANGUAGE;
+  const body = { text, voice_id: voiceId, language };
+
+  const resp = await fetch(
+    `${baseUrl}/tts`,
+    withRequestInit(ctx, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${credentials.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }),
+  );
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`xai tts ${resp.status}: ${truncate(errText, 240)}`);
+  }
+  const bytes = Buffer.from(await resp.arrayBuffer());
+  if (bytes.length === 0) {
+    throw new Error('xai tts response had zero bytes');
+  }
+  return {
+    bytes,
+    providerNote: `xai/${ctx.wireModel} · voice=${voiceId} · ${language} · ${bytes.length} bytes`,
+    suggestedExt: '.mp3',
   };
 }
