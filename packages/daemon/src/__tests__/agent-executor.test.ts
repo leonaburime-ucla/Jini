@@ -1,10 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { promises as fs } from 'node:fs';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import type { RunAgentPayload, RunErrorPayload, RunProtocolEvent } from '@jini/protocol';
 import {
   attachAcpSession,
   attachPiRpcSession,
+  preparePromptFileForAgent,
   type AcpSessionController,
   type AgentLaunchResolution,
   type PiRpcSession,
@@ -115,6 +117,8 @@ interface HarnessOptions {
   stopProcessesRejects?: unknown;
   /** SEC-007: makes `listProcessSnapshots` reject instead of succeeding. */
   listProcessSnapshotsRejects?: unknown;
+  /** Overrides the real `@jini/agent-runtime` prompt-file stager (default: real — touches real disk under `os.tmpdir()`, a no-op for every def without `promptViaFile: true`). */
+  preparePromptFileForAgent?: typeof preparePromptFileForAgent;
 }
 
 interface Harness {
@@ -169,6 +173,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
       }) as AgentLaunchResolution,
     applyAgentLaunchEnv: (env) => env,
     spawn: fakeSpawn,
+    ...(options.preparePromptFileForAgent !== undefined
+      ? { preparePromptFileForAgent: options.preparePromptFileForAgent }
+      : {}),
     listProcessSnapshots: async () => {
       if (options.listProcessSnapshotsRejects !== undefined) throw options.listProcessSnapshotsRejects;
       const pid = child.pid ?? 0;
@@ -281,11 +288,26 @@ describe('AgentExecutor — pre-spawn failure paths never bare-throw', () => {
   });
 
   it('rejects with AGENT_RUNTIME_UNSUPPORTED for a def whose streamFormat has no implemented driver', async () => {
-    const { lifecycle, executor } = createHarness({ def: createFakeDef({ streamFormat: 'plain' }) });
+    const { lifecycle, executor } = createHarness({ def: createFakeDef({ streamFormat: 'made-up-format' }) });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
 
     await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' })).rejects.toMatchObject({
       code: 'AGENT_RUNTIME_UNSUPPORTED',
+    });
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('rejects with AGENT_RUNTIME_UNSUPPORTED for antigravity specifically, even though it otherwise satisfies every plain-format guard (streamFormat + promptViaStdin)', async () => {
+    const { lifecycle, executor } = createHarness({
+      def: createFakeDef({ id: 'antigravity', streamFormat: 'plain', promptViaStdin: true }),
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'antigravity', prompt: 'x', cwd: '/work' }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_RUNTIME_UNSUPPORTED',
+      message: expect.stringContaining('antigravity'),
     });
     expect((await lifecycle.get(run.id))?.state).toBe('failed');
   });
@@ -681,14 +703,15 @@ describe('AgentExecutor — defensive listeners never crash the host process', (
 });
 
 describe('isSupportedStreamFormat', () => {
-  it('accepts the JSON-stream, ACP, and pi-rpc formats with real drivers, and rejects plain', () => {
+  it('accepts every family with a real driver (JSON-stream, ACP, pi-rpc, plain), and rejects an unknown format', () => {
     expect(isSupportedStreamFormat('claude-stream-json')).toBe(true);
     expect(isSupportedStreamFormat('json-event-stream')).toBe(true);
     expect(isSupportedStreamFormat('copilot-stream-json')).toBe(true);
     expect(isSupportedStreamFormat('qoder-stream-json')).toBe(true);
     expect(isSupportedStreamFormat('acp-json-rpc')).toBe(true);
     expect(isSupportedStreamFormat('pi-rpc')).toBe(true);
-    expect(isSupportedStreamFormat('plain')).toBe(false);
+    expect(isSupportedStreamFormat('plain')).toBe(true);
+    expect(isSupportedStreamFormat('made-up-format')).toBe(false);
   });
 });
 
@@ -1623,5 +1646,330 @@ describe('AgentExecutor — pi-rpc dispatch (fake attachPiRpcSession)', () => {
     expect(onCleanupFailure).toHaveBeenCalledTimes(1);
     expect(onCleanupFailure.mock.calls[0]![0]).toMatchObject({ runId: run.id, phase: 'pi-rpc-attach-failure' });
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// plain-format dispatch — driving 4 of the 5 `streamFormat: 'plain'` defs
+// (grok-build, aider, deepseek, qwen; antigravity stays deliberately
+// unsupported — see the pre-spawn-failure-paths block above), per
+// ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md's
+// recommended "Option B": no structured stream parser, live per-chunk
+// text_delta forwarding, reusing wireChildLifecycle's existing raw-stdout
+// handler and FIFO emit queue. No real CLI is spawned; these fake defs are
+// shaped like the real registry defs (same promptViaStdin/promptViaFile/
+// maxPromptArgBytes/buildArgs contract) without depending on the registry.
+// ---------------------------------------------------------------------------
+
+describe('AgentExecutor — plain-format dispatch (Option B: live text_delta passthrough, no structured parser)', () => {
+  it('streams live text_delta agent events per stdout chunk, in order, verbatim — including raw ANSI escape codes and carriage returns (the documented v1 text-hygiene decision: no stripping)', async () => {
+    const def = createFakeDef({
+      id: 'fake-qwen',
+      name: 'Fake Qwen',
+      streamFormat: 'plain',
+      promptViaStdin: true,
+      buildArgs: () => ['--yolo'],
+    });
+    const { lifecycle, executor, child, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-qwen', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]?.args).toEqual(['--yolo']);
+    // qwen-shaped: stdin, no prompt-delivery complexity — the raw prompt is written and stdin closed immediately.
+    expect(child.stdin!.writes).toEqual(['do the thing']);
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+
+    const chunks = ['Hello\r\n', '\x1b[32mgreen text\x1b[0m', 'World'];
+    for (const chunk of chunks) {
+      child.stdout.emit('data', chunk);
+    }
+    child.emit('close', 0, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('succeeded');
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(agentPayloadTypes(events)).toEqual(['text_delta', 'text_delta', 'text_delta']);
+    const deltas = events
+      .filter((e) => e.kind === 'agent')
+      .map((e) => (e.payload as RunAgentPayload & { type: 'text_delta' }).delta);
+    // Exact, order-preserving, unmodified passthrough — proves both the FIFO
+    // ordering guarantee and the "no ANSI/control-sequence stripping in v1" decision.
+    expect(deltas).toEqual(chunks);
+
+    // The raw 'stdout' diagnostic echo channel every format already gets still fires too,
+    // independently of the new 'agent'/text_delta channel.
+    const stdoutChunks = events.filter((e) => e.kind === 'stdout').map((e) => (e.payload as { chunk: string }).chunk);
+    expect(stdoutChunks).toEqual(chunks);
+
+    const endEvent = events[events.length - 1];
+    expect(endEvent).toMatchObject({ kind: 'end', payload: { status: 'succeeded', code: 0, signal: null } });
+  });
+
+  it('preserves chunk order under the FIFO emit queue even when many stdout chunks arrive synchronously back-to-back (design decision 6)', async () => {
+    const def = createFakeDef({ streamFormat: 'plain', promptViaStdin: true });
+    const { lifecycle, executor, child } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    const chunkCount = 25;
+    for (let i = 0; i < chunkCount; i++) {
+      child.stdout.emit('data', `chunk-${i}`);
+    }
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const deltas = events
+      .filter((e) => e.kind === 'agent')
+      .map((e) => (e.payload as RunAgentPayload & { type: 'text_delta' }).delta);
+    expect(deltas).toEqual(Array.from({ length: chunkCount }, (_, i) => `chunk-${i}`));
+  });
+
+  it('cancellation escalates the full descendant process tree and finishes cancelled, exactly as it does for the other supported formats', async () => {
+    const def = createFakeDef({ streamFormat: 'plain', promptViaStdin: true });
+    const { lifecycle, executor, child, stopProcessesCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    await lifecycle.cancel({ runId: run.id, reason: 'user requested' });
+    await flushAsync();
+
+    expect(stopProcessesCalls).toHaveLength(1);
+    expect(stopProcessesCalls[0]).toEqual(expect.arrayContaining([4242, 4243]));
+
+    child.emit('close', null, 'SIGTERM');
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('cancelled');
+  });
+
+  it('finishes failed (not succeeded) when the child closes with a non-zero exit code', async () => {
+    const def = createFakeDef({ streamFormat: 'plain', promptViaStdin: true });
+    const { lifecycle, executor, child } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    child.stdout.emit('data', 'partial output before failure');
+    child.emit('close', 1, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('failed');
+  });
+});
+
+describe('AgentExecutor — plain-format prompt-file delivery (grok-build: promptViaFile)', () => {
+  function createGrokBuildDef(overrides: Partial<RuntimeAgentDef> = {}): RuntimeAgentDef {
+    return createFakeDef({
+      id: 'fake-grok-build',
+      name: 'Fake Grok Build',
+      streamFormat: 'plain',
+      promptViaFile: true,
+      promptViaStdin: false,
+      buildArgs: (_prompt, _imagePaths, _extraAllowedDirs, _options, runtimeContext) => {
+        if (!runtimeContext?.promptFilePath) {
+          throw new Error('fake-grok-build requires runtimeContext.promptFilePath');
+        }
+        return ['--prompt-file', runtimeContext.promptFilePath];
+      },
+      ...overrides,
+    });
+  }
+
+  it('stages the composed prompt to a real 0o600 temp file, threads its path into buildArgs, and removes it once the child exits', async () => {
+    const def = createGrokBuildDef();
+    // preparePromptFileForAgent is left at its real default here (not injected) — this is the one
+    // test in this suite proving the actual @jini/agent-runtime filesystem behavior end to end.
+    const { lifecycle, executor, child, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({
+      runId: run.id,
+      agentId: 'fake-grok-build',
+      prompt: 'staged prompt body',
+      cwd: '/work',
+    });
+    await flushAsync();
+    await runPromise;
+
+    expect(spawnCalls).toHaveLength(1);
+    const args = spawnCalls[0]!.args;
+    expect(args[0]).toBe('--prompt-file');
+    const promptFilePath = args[1]!;
+    expect(promptFilePath).toContain('agent-runtime-fake-grok-build-');
+
+    const contents = await fs.readFile(promptFilePath, 'utf8');
+    expect(contents).toBe('staged prompt body');
+    const stat = await fs.stat(promptFilePath);
+    expect(stat.mode & 0o777).toBe(0o600);
+
+    child.emit('close', 0, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('succeeded');
+
+    // Cleaned up after the child exits — no leaked temp file with prompt content on disk.
+    await expect(fs.access(promptFilePath)).rejects.toThrow();
+  });
+
+  it('cleans up the staged prompt file when spawn() throws synchronously, before ever reaching the child process', async () => {
+    const cleanup = vi.fn(async () => {});
+    const fakePreparePromptFileForAgent = (async () => ({
+      path: '/fake/tmp/prompt.md',
+      cleanup,
+    })) as unknown as typeof preparePromptFileForAgent;
+    const def = createGrokBuildDef();
+    const { lifecycle, executor } = createHarness({
+      def,
+      spawnThrows: new Error('EACCES'),
+      preparePromptFileForAgent: fakePreparePromptFileForAgent,
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-grok-build', prompt: 'x', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('cleans up the staged prompt file when the child emits "error" before "spawn"', async () => {
+    const cleanup = vi.fn(async () => {});
+    const fakePreparePromptFileForAgent = (async () => ({
+      path: '/fake/tmp/prompt.md',
+      cleanup,
+    })) as unknown as typeof preparePromptFileForAgent;
+    const def = createGrokBuildDef();
+    const { lifecycle, executor } = createHarness({
+      def,
+      spawnErrorEvent: new Error('ENOENT'),
+      preparePromptFileForAgent: fakePreparePromptFileForAgent,
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-grok-build', prompt: 'x', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('rejects cleanly with AGENT_SPAWN_FAILED (never a bare throw) when preparePromptFileForAgent itself fails (e.g. disk full)', async () => {
+    const fakePreparePromptFileForAgent = (async () => {
+      throw new Error('ENOSPC: no space left on device');
+    }) as unknown as typeof preparePromptFileForAgent;
+    const def = createGrokBuildDef();
+    const { lifecycle, executor } = createHarness({ def, preparePromptFileForAgent: fakePreparePromptFileForAgent });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-grok-build', prompt: 'x', cwd: '/work' }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_SPAWN_FAILED',
+      message: expect.stringContaining('could not stage a prompt file'),
+    });
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+});
+
+describe('AgentExecutor — plain-format argv prompt-budget guard (aider/deepseek: maxPromptArgBytes)', () => {
+  function createArgvBoundDef(overrides: Partial<RuntimeAgentDef> = {}): RuntimeAgentDef {
+    return createFakeDef({
+      id: 'fake-aider',
+      name: 'Fake Aider',
+      streamFormat: 'plain',
+      promptViaStdin: false,
+      maxPromptArgBytes: 30_000,
+      buildArgs: (prompt) => ['--message', prompt],
+      ...overrides,
+    });
+  }
+
+  it('spawns normally when the composed prompt is under maxPromptArgBytes', async () => {
+    const def = createArgvBoundDef();
+    const { lifecycle, executor, child, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-aider', prompt: 'short prompt', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]?.args).toEqual(['--message', 'short prompt']);
+
+    child.stdout.emit('data', 'streaming reply');
+    child.emit('close', 0, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('succeeded');
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(agentPayloadTypes(events)).toEqual(['text_delta']);
+  });
+
+  it('rejects an over-budget prompt BEFORE spawn via failBeforeSpawn/AGENT_PROMPT_TOO_LARGE, never a raw ENAMETOOLONG/E2BIG from spawn() itself', async () => {
+    const def = createArgvBoundDef();
+    const { lifecycle, executor, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    // Comfortably exceeds the 100_000-byte POSIX floor `checkPromptArgvBudget` applies
+    // regardless of the def's own (smaller) maxPromptArgBytes on non-win32 hosts.
+    const oversizedPrompt = 'x'.repeat(200_000);
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-aider', prompt: oversizedPrompt, cwd: '/work' }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_PROMPT_TOO_LARGE',
+      message: expect.stringContaining('exceeds the safe size'),
+    });
+
+    expect(spawnCalls).toHaveLength(0);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('rejects a prompt that fits the POSIX argv budget but would exceed the Windows CreateProcess limit through a resolved .cmd shim', async () => {
+    const def = createArgvBoundDef();
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, launchPath: 'C:\\fake\\aider.cmd' });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    // Under the 100_000-byte POSIX floor, but blows the ~32_767-char CreateProcess cap
+    // once cmd-shim-quoted (mirrors packages/agent-runtime/src/__tests__/prompt-budget.test.ts's
+    // own 40_000-char fixture for exactly this guard).
+    const prompt = 'x'.repeat(40_000);
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-aider', prompt, cwd: '/work' }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_PROMPT_TOO_LARGE',
+      message: expect.stringContaining('runs through a .cmd shim'),
+    });
+
+    expect(spawnCalls).toHaveLength(0);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  it('rejects a prompt that fits the POSIX argv budget but would exceed the Windows CreateProcess limit through a direct .exe resolution', async () => {
+    const def = createArgvBoundDef();
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, launchPath: 'C:\\fake\\aider.exe' });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const prompt = 'x'.repeat(40_000);
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-aider', prompt, cwd: '/work' }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_PROMPT_TOO_LARGE',
+      message: expect.stringContaining('builds a CreateProcess command line'),
+    });
+
+    expect(spawnCalls).toHaveLength(0);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
   });
 });

@@ -768,3 +768,134 @@ unsupported" behavior. 100% coverage on all 4 metrics for `agent-executor.ts` (u
 pre-existing, previously-undetected gap in `terminateChildTreeBestEffort`'s own cleanup-failure
 path, closed as part of this pass since it's shared infrastructure this task's new code also calls
 into). Full package: 285/285 tests. `pnpm guard`: clean.
+
+## 2026-07-21 addition — driving 4 of the 5 `streamFormat: 'plain'` defs (23 of 24 registered agent defs)
+
+Closes the other "deferred, not built" driver gap this file's own "v1 scope" section named, per
+`ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md` (written earlier the same
+day, approved for implementation, read in full before this task started). grok-build, aider, deepseek,
+and qwen now drive through `run()`; **antigravity stays deliberately unsupported** — see below. This
+closes the module doc's `plain` gap entirely except for that one named, scoped-out exception.
+
+### Output-side dispatch — Option B, exactly as the proposal recommended
+
+`wireChildLifecycle`'s existing raw `child.stdout.on('data', ...)` handler (already emitting a raw
+`'stdout'` event for every format, `plain` included) now also emits, per chunk, when
+`streamFormat === 'plain'`: `lifecycle.emit(runId, {event:'agent', data:{type:'text_delta', delta:
+text}})`. No new stream-parser state machine and no `wireXLifecycle` function of ACP/pi-rpc's
+complexity — `createStreamHandlerForDef` is simply never called for `'plain'` (`streamHandler` is
+`null` for that branch; `flush()` becomes `streamHandler?.flush()`, a no-op). Every emit still goes
+through the same per-run FIFO `enqueueEmit` queue every other format already uses (design decision 6),
+so multi-chunk ordering is preserved — proved by a dedicated 25-chunk synchronous-back-to-back test,
+not just single-chunk coverage. Emits on `'agent'`/`text_delta`, not OD's literal `'stdout'` channel —
+the proposal's one deliberate, flagged deviation from the researched OD ground truth (§3/§4 open
+question 1), for consistency with how the other 19 already-wired defs all use `'agent'`/`text_delta` as
+the one chat-content channel and treat `'stdout'` as a separate always-on raw/diagnostic echo.
+
+**Text hygiene (open question 3): raw passthrough, no stripping — an explicit v1 decision, not a
+silent gap.** There is no Jini equivalent of OD's `TerminalControlSequenceStripper` yet. Rather than
+build one speculatively (arguably a broader `AgentExecutor`-level concern affecting every format's raw
+`'stdout'` echo too, not just `plain`'s new `'agent'` emit — scope explicitly deferred, matching the
+discipline of naming a boundary rather than silently expanding one), v1 forwards every chunk verbatim.
+Proved intentional, not accidental, by a dedicated test asserting exact passthrough of a fixture
+containing `\r`, ANSI SGR color codes (`\x1b[32m...\x1b[0m`), unmodified.
+
+### Prompt-delivery generalization — the prerequisite the proposal called out (§1, §2d, §3 opening)
+
+`AgentExecutor` previously called none of `@jini/agent-runtime`'s already-built, already-tested
+prompt-delivery machinery (`preparePromptFileForAgent`, `checkPromptArgvBudget`,
+`checkWindowsCmdShimCommandLineBudget`, `checkWindowsDirectExeCommandLineBudget`) and its one guard
+(`streamFormat !== 'acp-json-rpc' && def.promptViaStdin !== true`) rejected grok-build/aider/deepseek on
+prompt-delivery shape alone. Now, in `run()`:
+
+- The guard is widened to `def.promptViaStdin !== true && def.promptViaFile !== true && typeof
+  def.maxPromptArgBytes !== 'number'` (still short-circuited past for `acp-json-rpc`) — a def clears it
+  by declaring any one of the three shapes, matching how OD's own call sites key **only** off the def's
+  declared fields, with zero per-agent-id branches (§2d).
+- `checkPromptArgvBudget(def, input.prompt)` runs pre-launch-resolution, pre-filesystem-touch, for
+  every run (a no-op for the 22 defs without `maxPromptArgBytes` — only aider/deepseek declare it) — an
+  over-budget prompt fails via the existing `failBeforeSpawn`/`AgentExecutorError` path with a new
+  `AGENT_PROMPT_TOO_LARGE` code, never a raw `spawn()` `ENAMETOOLONG`/`E2BIG`.
+- `preparePromptFileForAgentFn(def, input.prompt, input.runId)` runs unconditionally after launch
+  resolution succeeds (a no-op — returns `null` — for the 23 defs without `promptViaFile: true`; only
+  grok-build declares it), staging
+  grok-build's prompt to a real `0o600` temp file. Wrapped in try/catch: a staging failure (e.g.
+  `ENOSPC`) now rejects cleanly via `failBeforeSpawn('AGENT_SPAWN_FAILED', ...)` instead of bare-throwing
+  out of `run()` — a new guard this task added to keep the module's own "never a bare throw" Invariant
+  intact once `run()` gained its first `await`ed filesystem call.
+- The resulting `{promptFilePath}` becomes a `RuntimeContext` argument, now actually threaded into
+  `def.buildArgs(input.prompt, [], undefined, undefined, runtimeContext)` — previously always called as
+  `def.buildArgs(input.prompt, [])`, no third/fourth/fifth argument at all (proposal open question 4).
+  **Resolved minimally, not broadly**: `AgentExecutorRunInput` itself gained no new public field (no
+  `options`/`model`/`reasoning`) — only the internally-derived `promptFilePath` is threaded through.
+  Widening the input shape for `options.model`/`reasoningOptions` (antigravity, grok-build's own
+  `reasoningOptions` field) remains exactly the pre-existing, unscoped gap the proposal flagged it as.
+- Post-`buildArgs`, `checkWindowsCmdShimCommandLineBudget`/`checkWindowsDirectExeCommandLineBudget` run
+  against the resolved launch path + built args (both no-ops off-Windows or for non-argv-bound defs) —
+  included per the proposal's test-evidence bar (§4 point 4, "if in scope"); judged in-scope here since
+  the underlying math is already fully built and tested in `@jini/agent-runtime`, and skipping it would
+  leave a real gap (a prompt under the POSIX budget that still blows the Windows CreateProcess cap after
+  quote-expansion). Tested on this macOS host via fake `C:\...\aider.cmd`/`C:\...\aider.exe` resolved
+  paths, mirroring `prompt-budget.test.ts`'s own cross-platform-on-one-host technique.
+- **Cleanup discipline**: a `cleanupPromptFile: () => Promise<void>` closure (the real
+  `preparedPromptFile.cleanup`, or an `async () => {}` no-op when nothing was staged) is threaded through
+  every path from the point a file might exist onward — the Windows-budget-reject path, the
+  synchronous-`spawn()`-throw path, the `waitForSpawnOrError` reject path (child `'error'` before
+  `'spawn'`), and — via a new `cleanupPromptFile` field on `WireChildLifecycleContext` /
+  `WireAcpLifecycleContext` / `WirePiRpcLifecycleContext` — every format's `close` handler and ACP/pi-rpc
+  attach-failure catch. Threaded into all three lifecycle-wiring functions uniformly (not just the plain
+  branch) since no current ACP/pi-rpc def declares `promptViaFile` — always the no-op default there today,
+  kept for consistency/future-proofing rather than special-cased away, at zero extra branch-coverage cost
+  (an unconditional call, not a new conditional). A leaked temp file with full prompt content on a
+  failure path is a confidentiality gap, not just a disk leak — proved by real-filesystem assertions
+  (`fs.readFile`/`fs.stat`/`fs.access`) in the happy-path test, and by injected-fake `cleanup` spies on
+  every failure-path test.
+
+### Antigravity — deliberately still rejected, guarded independently of the generic plain logic
+
+A new `streamFormat === 'plain' && def.id === 'antigravity'` check in `run()`, evaluated immediately
+after `isSupportedStreamFormat` and *ahead of* the widened prompt-delivery guard — antigravity's own def
+declares `promptViaStdin: true` and would otherwise clear every guard below it. Matches OD's own choice
+to hardcode `def.id === 'antigravity'` in `server.ts` rather than generalize a field (proposal §2c/§3,
+open question 2/6): it needs auth-URL-leak buffering (agy can print an OAuth URL to stdout and still
+exit 0) and a cross-run model-selection lock serializing writes to its shared `settings.json`, both
+concerns unrelated to `streamFormat: 'plain'` itself and explicitly scoped to their own follow-up by the
+proposal. Still rejects with `AgentExecutorError('AGENT_RUNTIME_UNSUPPORTED', ...)`, pointing at the
+proposal doc. Regression-tested: a fake def shaped exactly like antigravity (`id: 'antigravity',
+streamFormat: 'plain', promptViaStdin: true`) — i.e. one that would pass every other guard — still
+rejects specifically because of its id.
+
+### `isSupportedStreamFormat` / `SUPPORTED_STREAM_FORMATS`
+
+`'plain'` added, exactly matching the pi-rpc addition's shape: appended to the tuple,
+`JsonStreamFormat`'s `Exclude` widened to also drop `'plain'` (so `createStreamHandlerForDef`'s 4-way
+switch stays exhaustive and is never asked to handle a format it can't parse), and a new
+`ChildDrivenStreamFormat = JsonStreamFormat | 'plain'` type documents which formats
+`wireChildLifecycle` — as opposed to `wireAcpLifecycle`/`wirePiRpcLifecycle` — actually drives.
+
+### Deviations from the proposal
+
+None material — the proposal made every hard call (Option B over A/C, `'agent'`/`text_delta` over
+`'stdout'`, defer antigravity, raw passthrough as the hygiene default) and this task implemented them
+as written. Two things the proposal left open and this task decided: (1) the Windows command-line-budget
+guards are in scope (see above); (2) `preparePromptFileForAgent` itself failing gets a defensive
+try/catch → `AGENT_SPAWN_FAILED` rather than bare-throwing, to preserve the module's pre-existing
+Invariant once `run()` gained its first pre-spawn `await`ed filesystem call (proposal open question 5
+asked *where* the cleanup hook lives, not whether staging failure needed its own guard — this task
+answered both).
+
+Tests: three new `describe` blocks in `src/__tests__/agent-executor.test.ts` — "plain-format dispatch
+(Option B...)" (4 tests: verbatim multi-chunk passthrough incl. ANSI/`\r` fixture + ordering assertion,
+a dedicated 25-chunk synchronous-ordering test, cancellation/process-tree escalation through the new
+branch, non-zero-exit → failed), "plain-format prompt-file delivery (grok-build)" (4 tests: real
+`0o600`-mode temp file end-to-end incl. post-close removal, cleanup-on-spawn-throw, cleanup-on-spawn-
+`'error'`-before-`'spawn'`, clean `AGENT_SPAWN_FAILED` rejection when staging itself throws), and
+"plain-format argv prompt-budget guard (aider/deepseek)" (4 tests: under-budget happy path, over-budget
+POSIX rejection pre-spawn, Windows `.cmd`-shim rejection, Windows direct-`.exe` rejection) — plus one
+new antigravity-regression test and one existing test's fixture format string swapped from `'plain'`
+(now supported) to `'made-up-format'` to keep testing a genuinely-unsupported format. 86/86 tests in
+this file, 100% coverage on all 4 metrics for `agent-executor.ts`. Full package: 298/298 tests, no
+regressions in `run-lifecycle.ts`/`delegated-tool-bridge.ts`'s own pre-existing, unrelated gaps.
+`pnpm --dir packages/node-host exec vitest run --coverage` (a real downstream consumer of
+`createAgentExecutor`'s default binding): 52/52, 100% on all 4 metrics, unaffected. `pnpm guard`: clean.
+`grep -rInE 'Open Design|OD_|open-design' packages/daemon/src`: empty.
