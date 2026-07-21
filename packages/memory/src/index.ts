@@ -24,7 +24,7 @@ export type {
   NoteStoreOptions,
   NoteTreeNode,
 } from './note-store.js';
-export { createNoteStore } from './note-store.js';
+export { createNoteStore, NoteStoreConfigError } from './note-store.js';
 
 export type { ExtractionLog, ExtractionPhase, ExtractionProvider, ExtractionRecord } from './extraction-log.js';
 export { createExtractionLog } from './extraction-log.js';
@@ -37,6 +37,7 @@ export type {
   VerifyResult,
   VerifyScorecard,
   VerifyScorecardRow,
+  VerifyScorecardRowStatus,
   VerifyStatus,
 } from './verify.js';
 export { createVerifyLog, enforceVerify } from './verify.js';
