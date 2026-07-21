@@ -11,6 +11,7 @@
 import {
   RegistryEntrySchema,
   RegistryListFilterSchema,
+  RegistryPublishRequestSchema,
   RegistrySearchQuerySchema,
   type RegistryBackend,
   type RegistryBackendKind,
@@ -18,6 +19,7 @@ import {
   type RegistryEntry,
   type RegistryListFilter,
   type RegistryManifest,
+  type RegistryPublishRequest,
   type RegistrySearchQuery,
   type RegistrySearchResult,
   type RegistryTrust,
@@ -150,7 +152,22 @@ export class StaticRegistryBackend implements RegistryBackend {
     // every field is guarded before it is dereferenced — a value that isn't
     // even a plausible object (null/array/primitive) is reported as
     // malformed instead of throwing out of `doctor()` itself.
-    const entries = this.getManifest().entries;
+    //
+    // The manifest *envelope* itself gets the same treatment: a backend can
+    // hand this class a manifest whose `entries` isn't even an array at all
+    // (e.g. `GithubRegistryBackend` reads a JSON file from a remote, less-
+    // trusted source through an injected client with no schema guarantee).
+    // Report that as one explicit issue instead of letting `for...of` throw
+    // a bare `TypeError` out of a caller-facing diagnostic method.
+    const rawEntries = manifestEntriesRaw(this.getManifest());
+    if (!Array.isArray(rawEntries)) {
+      issues.push({
+        severity: 'error',
+        code: 'malformed-manifest',
+        message: 'Registry manifest "entries" is missing or not an array; no entries could be checked.',
+      });
+    }
+    const entries = Array.isArray(rawEntries) ? rawEntries : [];
     for (const raw of entries) {
       const value = raw as unknown;
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -220,12 +237,60 @@ export class StaticRegistryBackend implements RegistryBackend {
   }
 }
 
-/** @internal Drop any manifest entry that fails the wire schema rather than let a malformed entry propagate. */
+/**
+ * @internal Extract a manifest's raw `entries` value without assuming it is
+ * an array. `RegistryManifestSchema` guarantees that shape for anything that
+ * went through it, but a backend may hand this class a manifest that never
+ * did (a raw JSON file read from a remote/less-trusted source, a host-
+ * constructed object typed but not runtime-checked). Returns whatever the
+ * value actually is so callers can decide how to report "not an array."
+ */
+function manifestEntriesRaw(manifest: RegistryManifest): unknown {
+  return (manifest as { entries?: unknown } | null | undefined)?.entries;
+}
+
+/** @internal Drop any manifest entry that fails the wire schema rather than let a malformed entry propagate. Also
+ * tolerates a manifest whose `entries` isn't an array at all — treated as no entries rather than a crash. */
 function validEntries(manifest: RegistryManifest): RegistryEntry[] {
-  return manifest.entries.flatMap((entry) => {
+  const rawEntries = manifestEntriesRaw(manifest);
+  const entries = Array.isArray(rawEntries) ? rawEntries : [];
+  return entries.flatMap((entry) => {
     const parsed = RegistryEntrySchema.safeParse(entry);
     return parsed.success ? [parsed.data] : [];
   });
+}
+
+/**
+ * Validate a public `publish()` caller's whole request against the
+ * `RegistryPublishRequest` wire schema before any backend uses
+ * `request.entry`'s fields to build a file path, PR body, or a row that is
+ * persisted and later trusted to already be schema-shaped. Without this,
+ * `database-backend.ts`'s `publish()` could write a row that permanently
+ * breaks every future `list`/`search`/`resolve`/`doctor` call for the
+ * backend — those all re-read the table and throw on a row that fails
+ * `RegistryEntrySchema` (see `parseStoredEntry`) rather than silently
+ * dropping it, on the theory that data *this backend itself wrote* should
+ * always be well-formed; `publish()` is the one boundary that must enforce
+ * that theory rather than assume it.
+ *
+ * Shared across backends (not just `DatabaseRegistryBackend`) so
+ * `GithubRegistryBackend` also refuses to open a PR publishing a
+ * genuinely malformed entry into a shared external manifest. Backend-
+ * specific path/branch-name safety checks (`assertSafeEntryName`/
+ * `assertSafeVersion` in `github-backend.ts`) still run independently —
+ * this schema constrains `name`'s shape but not `version`'s character set,
+ * so it is necessary but not sufficient for path safety on its own.
+ *
+ * @param request - The public `publish()` caller's request object.
+ * @returns The schema-parsed (and thus schema-shaped) request.
+ * @throws If `request` does not conform to `RegistryPublishRequestSchema`.
+ */
+export function assertValidPublishRequest(request: RegistryPublishRequest): RegistryPublishRequest {
+  const parsed = RegistryPublishRequestSchema.safeParse(request);
+  if (!parsed.success) {
+    throw new Error(`Invalid registry publish request: ${parsed.error.message}`);
+  }
+  return parsed.data;
 }
 
 /** @internal The lowercase, space-joined text `list`/`search` match query terms against. */

@@ -15,7 +15,7 @@ import type {
   RegistryTrust,
   RegistryYankOutcome,
 } from '@jini/protocol';
-import { StaticRegistryBackend } from './static-backend.js';
+import { assertValidPublishRequest, StaticRegistryBackend } from './static-backend.js';
 
 /** `vendor/name` — deliberately the same shape `RegistryEntrySchema.name` requires. */
 const SAFE_ENTRY_NAME = /^([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)$/;
@@ -137,16 +137,20 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
     // branch name below, so both must be validated before that happens.
     const [vendor, name] = assertSafeEntryName(request.entry.name);
     const version = assertSafeVersion(request.entry.version);
+    // Beyond the path-safety checks above, validate the *whole* request
+    // against the wire schema before any of its fields get written into the
+    // published manifest content below (see CR-009/`assertValidPublishRequest`).
+    const parsed = assertValidPublishRequest(request);
     const root = `entries/${vendor}/${name}`;
     const files = [
-      { path: `${root}/entry.json`, content: `${JSON.stringify(request.entry, null, 2)}\n` },
+      { path: `${root}/entry.json`, content: `${JSON.stringify(parsed.entry, null, 2)}\n` },
       {
         path: `${root}/versions/${version}.json`,
-        content: `${JSON.stringify({ ...request.entry, publishedAt: new Date().toISOString(), tag: request.tag ?? 'latest' }, null, 2)}\n`,
+        content: `${JSON.stringify({ ...parsed.entry, publishedAt: new Date().toISOString(), tag: parsed.tag ?? 'latest' }, null, 2)}\n`,
       },
     ];
 
-    if (request.dryRun || !this.client.createPublishPullRequest) {
+    if (parsed.dryRun || !this.client.createPublishPullRequest) {
       return {
         ok: true,
         dryRun: true,
@@ -160,8 +164,8 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
       repo: this.repo,
       baseRef: this.ref,
       branchName: `publish/${vendor}-${name}-${version}`,
-      title: `Add ${request.entry.name}@${version}`,
-      body: renderPublishBody(request),
+      title: `Add ${parsed.entry.name}@${version}`,
+      body: renderPublishBody(parsed),
       files,
     };
     const pr = await this.client.createPublishPullRequest(mutation);

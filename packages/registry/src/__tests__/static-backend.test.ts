@@ -1,7 +1,7 @@
 import type { RegistryManifest } from '@jini/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { StaticRegistryBackend } from '../static-backend.js';
+import { assertValidPublishRequest, StaticRegistryBackend } from '../static-backend.js';
 
 function manifestOf(entries: RegistryManifest['entries']): RegistryManifest {
   return { specVersion: '1.0.0', name: 'fixture', version: '1.0.0', entries };
@@ -271,6 +271,86 @@ describe('StaticRegistryBackend', () => {
       const report = await backend.doctor();
       expect(report.ok).toBe(false);
       expect(report.issues).toContainEqual(expect.objectContaining({ code: 'missing-yank-reason' }));
+    });
+
+    it('flags an entry object with no name property at all (not just an invalid one)', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: manifestOf([{ source: 's', version: '1.0.0' } as never]),
+      });
+      const report = await backend.doctor();
+      expect(report.ok).toBe(false);
+      expect(report.issues).toContainEqual(expect.objectContaining({ code: 'invalid-name', pluginName: undefined }));
+    });
+
+    it('flags a malformed manifest envelope (entries missing or not an array) instead of throwing', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        // Simulates a manifest that never went through `RegistryManifestSchema`
+        // — e.g. `GithubRegistryBackend` reading a malformed JSON file through
+        // an injected client with no schema guarantee.
+        manifest: { specVersion: '1.0.0', name: 'fixture', version: '1.0.0', entries: 'not-an-array' } as never,
+      });
+      const report = await backend.doctor();
+      expect(report).toMatchObject({ ok: false, entriesChecked: 0 });
+      expect(report.issues).toEqual([expect.objectContaining({ code: 'malformed-manifest', severity: 'error' })]);
+    });
+
+    it('flags a manifest with entries entirely missing (undefined), not just non-array', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: { specVersion: '1.0.0', name: 'fixture', version: '1.0.0' } as never,
+      });
+      const report = await backend.doctor();
+      expect(report).toMatchObject({ ok: false, entriesChecked: 0 });
+      expect(report.issues).toEqual([expect.objectContaining({ code: 'malformed-manifest' })]);
+    });
+  });
+
+  describe('malformed manifest envelope on the read paths (list/search/resolve)', () => {
+    // A manifest whose `entries` isn't even an array — `list`/`search`/`resolve`
+    // must degrade to "no entries" rather than crash with a bare TypeError from
+    // deep inside `flatMap`/`for...of`.
+    const malformedManifest = { specVersion: '1.0.0', name: 'fixture', version: '1.0.0', entries: null } as unknown as RegistryManifest;
+
+    it('list returns an empty array instead of throwing', async () => {
+      const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'trusted', manifest: malformedManifest });
+      await expect(backend.list()).resolves.toEqual([]);
+    });
+
+    it('search returns an empty array instead of throwing', async () => {
+      const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'trusted', manifest: malformedManifest });
+      await expect(backend.search({ query: '' })).resolves.toEqual([]);
+    });
+
+    it('resolve returns null instead of throwing', async () => {
+      const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'trusted', manifest: malformedManifest });
+      await expect(backend.resolve('vendor/example')).resolves.toBeNull();
+    });
+  });
+
+  describe('assertValidPublishRequest', () => {
+    it('returns the parsed request unchanged when it conforms to the schema', () => {
+      const request = { entry: exampleEntry, dryRun: true, tag: 'latest' };
+      const parsed = assertValidPublishRequest(request);
+      expect(parsed.entry.name).toBe('vendor/example');
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.tag).toBe('latest');
+    });
+
+    it('throws a clear error for a request whose entry fails the wire schema', () => {
+      expect(() => assertValidPublishRequest({ entry: { name: 'vendor/example', version: '1.0.0', tags: 'not-an-array' } as never } as never)).toThrow(
+        /invalid registry publish request/i,
+      );
+    });
+
+    it('throws a clear error when entry.name does not match the vendor/name shape', () => {
+      expect(() =>
+        assertValidPublishRequest({ entry: { name: 'no-slash', version: '1.0.0', source: 's' } } as never),
+      ).toThrow(/invalid registry publish request/i);
     });
   });
 });

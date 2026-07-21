@@ -217,5 +217,30 @@ describe('GithubRegistryBackend', () => {
         /control characters/i,
       );
     });
+
+    it('publish rejects an entry that passes name/version path-safety but fails the wire schema otherwise', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      // `name`/`version` are safe path segments, but `tags` is the wrong
+      // type — `assertSafeEntryName`/`assertSafeVersion` alone would let
+      // this through; the full-request schema check must not.
+      await expect(
+        backend.publish?.({ entry: { name: 'vendor/example', version: '1.0.0', source: 's', tags: 'not-an-array' } as never }),
+      ).rejects.toThrow(/invalid registry publish request/i);
+    });
+  });
+
+  describe('malformed remote manifest (SEC-RB-005)', () => {
+    it('serves an empty list and a doctor malformed-manifest issue instead of crashing when the client returns entries that are not an array', async () => {
+      const client: GithubRegistryClient = {
+        async readManifest() {
+          return { specVersion: '1.0.0', name: 'fixture', version: '1.0.0', entries: 'not-an-array' } as never;
+        },
+      };
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(backend.list()).resolves.toEqual([]);
+      const report = await backend.doctor();
+      expect(report).toMatchObject({ ok: false, entriesChecked: 0 });
+      expect(report.issues).toEqual([expect.objectContaining({ code: 'malformed-manifest' })]);
+    });
   });
 });
