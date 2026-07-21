@@ -218,6 +218,15 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.providerId).toBe('volcengine');
   });
 
+  it('routes elevenlabs + audio:speech and elevenlabs + audio:sfx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(Buffer.from('audio'), { status: 200 })));
+    const engine = createMediaDispatchEngine({ credentials: { elevenlabs: { apiKey: 'el-key' } } });
+    const ttsResult = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'elevenlabs-v3', prompt: 'hi' });
+    expect(ttsResult.providerId).toBe('elevenlabs');
+    const sfxResult = await engine.generate({ surface: 'audio', audioKind: 'sfx', model: 'elevenlabs-sfx', prompt: 'a door creak' });
+    expect(sfxResult.providerId).toBe('elevenlabs');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');
