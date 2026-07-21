@@ -194,6 +194,28 @@ one should have, based on what worked (and what's conspicuously absent) in OD's 
 - **Asset-serving route specifics** (`manifest.od.*` namespacing, showcase/preview endpoints) —
   product surface, already classified OD-PRODUCT in `packages/http/source-map.md`.
 
+## Naming caution — read before choosing a package name
+
+A parallel research pass (a second dispatch that read only the three HTTP route files above, not
+the deeper `apps/daemon/src/plugins/*` engine this document covers) independently flagged a vocabulary
+risk worth preserving regardless of which research pass a reader trusts more:
+
+1. **"Pack" is already a kernel noun with an incompatible meaning.** `extraction-plan.md §2.3`
+   ("Packs own their app-services") defines a `Pack` as a **build-time-composed, trusted, in-process**
+   feature module (`definePack({ deps, services, http, cli })`) — the opposite of a runtime-loaded,
+   third-party, sandboxed unit. Naming this proposal's subject "`@jini/pack-host`" (or similar) would
+   silently collide two unrelated nouns under the same word, the same failure mode
+   `extraction-plan.md §12 C5`'s vocabulary firewall already caught once for OD's "agent." §5's own
+   phrasing above ("packs a consumer of the kernel's authorization boundary") already uses "pack"
+   informally without addressing this — worth resolving before any package name is chosen.
+2. **"Capability" is already overloaded at least four ways in this codebase**: `ToolPolicy`'s
+   allow/deny authorization decision, `@jini/capability-providers`' auth/storage/payments/db/realtime
+   provider ports, OD's own `capabilitiesGranted`/capability-string vocabulary (§0 above), and
+   `RegistryEntry.capabilitiesSummary` (`packages/protocol/src/registry.ts`) — a flat *display* list,
+   not a structured request/grant schema. Whatever schema a follow-up introduces needs a name that
+   doesn't imply it *is* one of those four things when it composes with, but is distinct from, all of
+   them.
+
 ## Open questions for Coordinator / Software Architect sign-off
 
 1. Does a plugin/pack host belong in the locked §3 package set at all yet, or is it premature
