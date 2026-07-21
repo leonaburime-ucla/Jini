@@ -333,3 +333,26 @@ Tests: `src/__tests__/daemon-command.test.ts` (19 tests) — 100% coverage on al
 including both commands' `--help`/default-writer/default-fetch paths, the shutdown POST body
 shape, structured-error exits (both daemon-rejected and unknown-subcommand), and
 `exitCodes`-table pass-through on both the success and error paths. No new dependency.
+
+## 2026-07-21 investigation — real `@jini/sidecar`-backed daemon-URL discovery, still correctly not built
+
+Checked whether `resolveDaemonUrl`'s injected `discover` callback (deferred-item 1 in this file's
+own "Deferred" section, and its own barrel-branch-reconciliation section) is buildable yet. It is
+not, and this is a confirmed finding, not a guess: `@jini/sidecar`'s `createJsonIpcServer` (per
+`packages/sidecar/source-map.md`) is a fully generic, contract-driven NDJSON-over-socket/pipe
+server — but `grep -rln "requestJsonIpc\|createJsonIpcServer\|bootstrapSidecarRuntime"
+packages/node-host/src packages/daemon/src` finds zero call sites. `@jini/node-host`'s
+`createLocalNodeDaemon` (`packages/node-host/src/create-local-node-daemon.ts`) resolves and
+returns a real `LocalNodeDaemon.baseUrl` (see `resolveBoundPort`/`resolveReportHost`), but only
+in-process, to whatever code called `createLocalNodeDaemon` directly — nothing persists that URL
+anywhere a *separate* CLI process could find it (no IPC status server, no port file, no pidfile).
+
+Building a CLI-side `discover()` implementation now would mean inventing an IPC message
+contract/shape unilaterally inside a CLI backlog task and hoping a future daemon-side server
+matches it — precisely the "declared port whose implementation doesn't hold up" failure mode this
+file's own `daemon status`/`daemon stop` UNCLEAR-verdict history already declined twice (first
+when `@jini/http` had no route to call, described above). Not built for the same reason. A real
+fix needs daemon-side work first: `@jini/node-host`'s `createLocalNodeDaemon` (or a wrapping CLI
+bootstrap) would need to boot a `@jini/sidecar` IPC server exposing at minimum a "status" message
+`{host, port}` (or write a discoverable port/pidfile) before this package's `discover` callback has
+anything real to probe. Tracked as a separate, node-host-scoped backlog item, not a `@jini/cli` one.
