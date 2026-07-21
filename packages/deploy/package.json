@@ -16,5 +16,8 @@
     "@jini/platform": "workspace:*",
     "undici": "^7.25.0"
   },
-  "devDependencies": { "@vitest/coverage-v8": "^2.1.9" }
+  "devDependencies": {
+    "@jini/daemon": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.9"
+  }
 }

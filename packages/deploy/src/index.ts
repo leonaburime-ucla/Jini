@@ -4,3 +4,4 @@ export * from './reachability.js';
 export * from './vercel.js';
 export * from './cloudflare-pages.js';
 export * from './tokens.js';
+export * from './tool.js';
