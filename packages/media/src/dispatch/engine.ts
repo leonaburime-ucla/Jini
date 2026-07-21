@@ -17,6 +17,7 @@ import { renderImageRouterImage, renderImageRouterVideo } from './providers/imag
 import { renderNanoBananaImage } from './providers/nanobanana.js';
 import { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
+import { renderVolcengineImage } from './providers/volcengine.js';
 import { renderStub } from './stub.js';
 import type {
   MediaDispatchEngine,
@@ -97,6 +98,9 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   },
   openrouter: {
     image: renderOpenRouterImage,
+  },
+  volcengine: {
+    image: renderVolcengineImage,
   },
 };
 

@@ -193,6 +193,19 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.providerId).toBe('openrouter');
   });
 
+  it('routes volcengine + image to renderVolcengineImage', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://ark.cn-beijing.volces.com/api/v3/images/generations');
+      const body = JSON.parse(init.body as string);
+      expect(body.model).toBe('doubao-seedream-3-0-t2i-250415');
+      return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('x').toString('base64') }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { volcengine: { apiKey: 'ark-key' } } });
+    const result = await engine.generate({ surface: 'image', model: 'doubao-seedream-3-0-t2i-250415' });
+    expect(result.providerId).toBe('volcengine');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');

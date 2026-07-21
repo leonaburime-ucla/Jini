@@ -7,7 +7,10 @@ export { renderImageRouterImage, renderImageRouterVideo, imageRouterSizeFor } fr
 export { renderNanoBananaImage } from './providers/nanobanana.js';
 export { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 export { renderOpenRouterImage, openRouterAspectFor } from './providers/openrouter.js';
+export { renderVolcengineImage } from './providers/volcengine.js';
 export { renderStub, svgPlaceholder } from './stub.js';
+export { assertAndFetchExternalAsset, assertExternalAssetUrl, isBlockedExternalApiHostname, isLoopbackApiHost, validateBaseUrlResolved } from './ssrf-guard.js';
+export type { DnsLookupAddress, DnsLookupFn } from './ssrf-guard.js';
 export type {
   MediaDispatchEngine,
   MediaDispatchEngineOptions,
