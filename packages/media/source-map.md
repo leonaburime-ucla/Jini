@@ -97,23 +97,25 @@ Every other `render*` function in the origin, grouped by why it's deferred:
   complex than the synchronous ones ported this pass): Volcengine video
   (`renderVolcengineVideo`), Grok video (`renderGrokVideo`), OpenRouter video
   (`renderOpenRouterVideo`), AIHubMix video (`renderAIHubMixVideo`), Fal
-  image/video (`renderFalImage`/`renderFalVideo`, queue-based). Note:
-  `src/video-request.ts` (already ported, see above) implements the
-  seedance/wan/veo/generic family request-body-building logic as a separate,
-  reusable layer — but the origin's actual live `media/index.ts` dispatcher
-  does **not** call into it (no such import exists in `media/index.ts`);
-  whoever ports these should decide whether to reuse `buildVideoRequest` or
-  mirror the origin's separate implementation, not assume they're already
-  wired together.
+  image/video (`renderFalImage`/`renderFalVideo`, queue-based), and
+  **Leonardo image (`renderLeonardoImage`)** — see the 2026-07-21 addition
+  below for why Leonardo moved into this bucket despite being originally
+  (mis)categorized as "simple synchronous." Note: `src/video-request.ts`
+  (already ported, see above) implements the seedance/wan/veo/generic family
+  request-body-building logic as a separate, reusable layer — but the
+  origin's actual live `media/index.ts` dispatcher does **not** call into it
+  (no such import exists in `media/index.ts`); whoever ports these should
+  decide whether to reuse `buildVideoRequest` or mirror the origin's
+  separate implementation, not assume they're already wired together.
 - **Simple synchronous REST vendors, not yet ported**: Volcengine image
-  (`renderVolcengineImage`), Grok image (`renderGrokImage`), Grok/xAI TTS
-  (`renderXAITTS`), Nano Banana / Gemini (`renderNanoBananaImage`),
-  OpenRouter image (`renderOpenRouterImage`), Leonardo
-  (`renderLeonardoImage`), ElevenLabs TTS + SFX (`renderElevenLabsTTS`/`renderElevenLabsSfx`),
+  (`renderVolcengineImage`), Grok/xAI TTS (`renderXAITTS`),
+  ElevenLabs TTS + SFX (`renderElevenLabsTTS`/`renderElevenLabsSfx`),
   MiniMax TTS (`renderMinimaxTTS`), SenseAudio TTS + image
   (`renderSenseAudioTTS`/`renderSenseAudioImage`), AIHubMix image + TTS
   (`renderAIHubMixImage`/`renderAIHubMixGeminiImage`/`renderAIHubMixTTS`),
-  FishAudio TTS (`renderFishAudioTTS`).
+  FishAudio TTS (`renderFishAudioTTS`). (Grok image, Nano Banana / Gemini,
+  and OpenRouter image were ported this pass — see the 2026-07-21 addition
+  below.)
 - **Local-process vendors, need their own design decision, not just a
   translation**: HyperFrames (`renderHyperFramesViaCli`) shells out to a
   local `npx hyperframes render` + Puppeteer/Chrome and is tied to a
@@ -130,6 +132,73 @@ Every other `render*` function in the origin, grouped by why it's deferred:
   pass since the engine itself doesn't need it to function.
 - **The fal-`ai/*`-path and `aihubmix-`-prefix catalogue bypass** in
   `generateMedia`'s model-resolution step — see the `engine.ts` row above.
+
+## 2026-07-21 addition — three more vendor slices (Grok image, Nano Banana, OpenRouter image; backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the next batch of the dispatch engine's "simple synchronous REST
+vendors, not yet ported" bullet (previous section). Verified against
+`nexu-io/open-design` fork `leonaburime-ucla/open-design`, branch
+`refactor/web-memory-slice`, commit `d695f1e0f` (2026-07-14), the same
+origin `media/index.ts` the initial dispatch-engine pass cited — via `git
+show lucla/refactor-web-memory-slice:apps/daemon/src/media/index.ts` from a
+local `Open-Marketing` clone with that ref fetched. All three render
+functions plus their helper functions were read in full (not grepped) at
+their real line ranges in that 4,256-line file.
+
+| Jini file | Origin (`media/index.ts`) | Notes |
+|---|---|---|
+| `src/dispatch/providers/grok.ts` | `renderGrokImage` (L1756–1812) + `grokAspectFor` (L2567–2581) | Ported behaviorally. The response shape (`{ data: [{ b64_json \| url }] }`) is identical to OpenAI's images API, so — per the task brief's explicit instruction to check for this before writing new shared plumbing — this routes through `openai-compatible.ts`'s already-ported `buildOpenAIImageUrl`/`parseOpenAICompatibleJson`/`bytesFromOpenAICompatibleData`/`sniffImageExt` rather than re-implementing URL-building/JSON-parsing/byte-extraction inline the way the origin does (verified the substitution is behavior-preserving: for a base URL like `https://api.x.ai/v1`, `buildOpenAIImageUrl(baseUrl, false)` reduces to the same `https://api.x.ai/v1/images/generations` the origin's naive `` `${baseUrl}/images/generations` `` concat produces — it's a strict improvement, additionally handling trailing slashes/query strings the manual concat wouldn't). Dropped the origin's no-credential error message's OD-specific OAuth guidance ("sign in with your SuperGrok subscription (in OD or via `hermes auth add xai-oauth`)") — this package has no OAuth chain or local-CLI-login concept; credentials are always host-injected, matching every other ported provider's plain "configure an API key or set `<ENV_VAR>`" message style. `grokAspectFor` was rewritten from the origin's one `\|\|`-chained `if` condition into a sequence of independent `if` returns, matching this package's established aspect/size-mapping style (`imagerouter.ts`'s `imageRouterSizeFor`, `openai-compatible.ts`'s `openaiSizeFor`) — same input→output mapping for all 6 cases (5 recognized aspects + default), verified by testing each one individually; not a behavior change, and incidentally the more directly-100%-branch-coverage-friendly shape for a chain of `\|\|`-guarded string-equality checks. |
+| `src/dispatch/providers/nanobanana.ts` | `renderNanoBananaImage` (L1814–1859) + `nanoBananaHeaders`/`usesOfficialGoogleApiKeyHeader`/`nanoBananaAspectFor`/`inlineImageBytesFromGenerateContent` (L1861–1927) | Ported behaviorally, including the official-Google-endpoint-vs-custom-gateway header-selection logic (`x-goog-api-key` for `generativelanguage.googleapis.com`, `Authorization: Bearer` for anything else, including a malformed/unparseable `baseUrl` — the origin's own defensive `try/catch` around `new URL(baseUrl)` is preserved and directly tested, not assumed unreachable). **Not** routed through `openai-compatible.ts`'s OpenAI-images helpers — Gemini's `generateContent` request shape (`contents[].parts[].text` + `generationConfig`) and response shape (`candidates[].content.parts[].inlineData.data`) share nothing with `/images/generations`'s `{ data: [...] }` shape, so reusing those helpers would have been a shape mismatch, not a legitimate de-duplication (per the task brief's own "wherever a vendor's real implementation routes through the same OpenAI-wire-compatible shape" qualifier). Only the genuinely vendor-agnostic utilities (`truncate`, `sniffImageExt`, `withRequestInit`) are reused; the JSON-parse-with-tagged-error and nested-candidate-walk logic are new, matching the origin's own inline (non-shared) implementation. `nanoBananaAspectFor` got the same independent-`if`-returns rewrite as `grokAspectFor` above, for the same reason (no behavior change, matches this package's established style). |
+| `src/dispatch/providers/openrouter.ts` | `renderOpenRouterImage` (L1947–2055) + `openRouterAspectFor` (L2287–2301) | Ported behaviorally: model-slug resolution (`credentials.model` over `ctx.wireModel`, then strip the catalogue's `openrouter/` prefix), the `gemini`-slug-in-model-name heuristic for `modalities: ['image','text']` vs `['image']`, and all three response-decoding paths (`data:` URI, plain `http(s)` URL download, bare-base64 fallback). **Not** routed through `openai-compatible.ts`'s OpenAI-images helpers — this vendor's image surface goes through `/chat/completions` (messages + `modalities`), not `/images/generations`, and its response embeds images at `choices[0].message.images[].image_url.url`, not `data[].{b64_json,url}` — a genuinely different wire shape from the same vendor's own *video* surface (which the source-map's async-polling bucket defers). Only `truncate`/`sniffImageExt`/`withRequestInit` are reused. **Dropped** the origin's `HTTP-Referer: https://opendesign.dev` / `X-Title: Open Design` request headers — OpenRouter's optional app-attribution headers (used for their model leaderboard, not required for the request to succeed), and both literal values are Open-Design product identity, out of scope per AGENTS.md's product-identity-string boundary; this package has no host-identity concept to substitute a neutral value with, and `MediaGenerationRequestInit` (`Pick<RequestInit, 'dispatcher'>`) doesn't expose a way for a caller to inject extra headers either, so this is a real (harmless, non-required) capability drop, flagged rather than silently absorbed into "de-branding." `openRouterAspectFor` got the same independent-`if`-returns rewrite as `grokAspectFor` above. |
+
+**`engine.ts` / `ROUTES`**: added `grok: { image: renderGrokImage }`,
+`nanobanana: { image: renderNanoBananaImage }`, `openrouter: { image:
+renderOpenRouterImage }`. `engine.test.ts`'s two stub-fallback tests
+previously used `grok-imagine-image` as their "known-unwired pair" fixture
+— now that grok+image is wired, they were switched to `leonardo-phoenix`
+(leonardo+image), which stays genuinely unwired (see below). Three new
+engine-level dispatch-routing tests were added (mirroring the existing
+openai/imagerouter/custom-image routing tests) to prove the `ROUTES` table
+entries resolve correctly end-to-end, not just that each provider file's
+own render function works in isolation.
+
+**Leonardo re-categorized, not ported.** The task brief's candidate list
+(inherited from this source-map's own prior "simple synchronous REST
+vendors" categorization) named `renderLeonardoImage` alongside Grok/Nano
+Banana/OpenRouter. Reading its real body this pass (L2303–2429) found that
+categorization was wrong: Leonardo's image generation is
+submit-then-poll-then-fetch — `POST /generations` returns a
+`generationId`, then a `while (Date.now() - startedAt < 120_000)` loop polls
+`GET /generations/{id}` every 2 seconds until `status === 'COMPLETE'` (or
+throws on `'FAILED'`/timeout) before downloading the final image URL. That
+is structurally the same async-polling shape as the video vendors the task
+brief explicitly said not to attempt this pass (submit → poll → fetch,
+needing its own timer/retry/timeout design and fake-timer-driven tests, not
+a same-shape translation of the three ported above) — not a "simple
+synchronous" vendor at all. Rather than force a port that doesn't fit this
+pass's scope just because it was on the suggested list, Leonardo was moved
+into the "Async-polling vendors" bucket in the "Not yet ported" section
+above, and `engine.test.ts`'s stub-fallback fixture was repointed at it
+specifically because it's a real, still-unwired (provider, surface) pair.
+
+Tests: `src/dispatch/providers/__tests__/grok.test.ts` (7 tests),
+`src/dispatch/providers/__tests__/nanobanana.test.ts` (11 tests),
+`src/dispatch/providers/__tests__/openrouter.test.ts` (15 tests), plus 3 new
+`engine.test.ts` routing tests and 2 repointed stub-fallback tests. Mocks a
+real `fetch`/`Response` throughout (matching the existing dispatch-engine
+tests' convention), not the provider functions themselves — every
+URL-building/header-selection/body-shaping/response-decoding branch is
+exercised end-to-end, including: the Google-official-vs-custom-gateway
+header branch (and its malformed-`baseUrl` fallback), every aspect-mapping
+case for all three vendors, the `gemini`-slug modality heuristic, the
+`openrouter/`-prefix-strip both-ways branch, and all three of OpenRouter's
+image-decoding paths (data URI / http(s) download / bare base64) plus its
+download-failure path. No new dependency.
+
+**Coverage**: 100% statements / 100% branches / 100% functions / 100% lines,
+package-wide (`pnpm --dir packages/media exec vitest run --coverage`) —
+316 tests across 20 files, up from 280/17. `tsc --noEmit` and `pnpm guard`
+both clean.
 
 ## Not ported / explicitly out of scope (pre-existing, from the original pass)
 

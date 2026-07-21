@@ -12,8 +12,11 @@ import { AUDIO_DURATIONS_SEC, VIDEO_LENGTHS_SEC, findMediaModel, findProvider, m
 import type { AudioKind, MediaModel, MediaProvider, MediaSurface } from '../types.js';
 import { buildRenderContext } from './context.js';
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
+import { renderGrokImage } from './providers/grok.js';
 import { renderImageRouterImage, renderImageRouterVideo } from './providers/imagerouter.js';
+import { renderNanoBananaImage } from './providers/nanobanana.js';
 import { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
+import { renderOpenRouterImage } from './providers/openrouter.js';
 import { renderStub } from './stub.js';
 import type {
   MediaDispatchEngine,
@@ -85,6 +88,15 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   },
   'custom-image': {
     image: renderCustomOpenAIImage,
+  },
+  grok: {
+    image: renderGrokImage,
+  },
+  nanobanana: {
+    image: renderNanoBananaImage,
+  },
+  openrouter: {
+    image: renderOpenRouterImage,
   },
 };
 

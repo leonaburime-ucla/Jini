@@ -154,6 +154,45 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.providerId).toBe('custom-image');
   });
 
+  it('routes grok + image to renderGrokImage', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://api.x.ai/v1/images/generations');
+      const body = JSON.parse(init.body as string);
+      expect(body.model).toBe('grok-imagine-image');
+      return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('x').toString('base64') }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { grok: { apiKey: 'xai-key' } } });
+    const result = await engine.generate({ surface: 'image', model: 'grok-imagine-image' });
+    expect(result.providerId).toBe('grok');
+  });
+
+  it('routes nanobanana + image to renderNanoBananaImage', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent');
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { data: Buffer.from('x').toString('base64') } }] } }] }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { nanobanana: { apiKey: 'g-key' } } });
+    const result = await engine.generate({ surface: 'image', model: 'gemini-3.1-flash-image-preview' });
+    expect(result.providerId).toBe('nanobanana');
+  });
+
+  it('routes openrouter + image to renderOpenRouterImage', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+      const dataUrl = `data:image/png;base64,${Buffer.from('x').toString('base64')}`;
+      return new Response(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: dataUrl } }] } }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { openrouter: { apiKey: 'or-key' } } });
+    const result = await engine.generate({ surface: 'image', model: 'openrouter/black-forest-labs/flux-1.1-pro' });
+    expect(result.providerId).toBe('openrouter');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');
@@ -174,15 +213,17 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
 describe('createMediaDispatchEngine — stub fallback', () => {
   it('throws a clear error when no renderer is wired and allowStubFallback is not set (fail closed by default)', async () => {
     const engine = createMediaDispatchEngine();
-    // grok+image has no renderer in this pass.
-    await expect(engine.generate({ surface: 'image', model: 'grok-imagine-image' })).rejects.toThrow(/no renderer configured/);
+    // leonardo+image has no renderer in this pass — the real vendor call is
+    // submit-then-poll shaped (see source-map.md), deferred alongside the
+    // other async-polling vendors rather than ported this pass.
+    await expect(engine.generate({ surface: 'image', model: 'leonardo-phoenix' })).rejects.toThrow(/no renderer configured/);
   });
 
   it('returns placeholder bytes when allowStubFallback is true and no renderer is wired', async () => {
     const engine = createMediaDispatchEngine({ allowStubFallback: true });
-    const result = await engine.generate({ surface: 'image', model: 'grok-imagine-image' });
+    const result = await engine.generate({ surface: 'image', model: 'leonardo-phoenix' });
     expect(result.usedStubFallback).toBe(true);
-    expect(result.providerId).toBe('grok');
+    expect(result.providerId).toBe('leonardo');
     expect(result.bytes.length).toBeGreaterThan(0);
   });
 
