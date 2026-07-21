@@ -48,25 +48,98 @@ the same precedent `@jini/deploy`'s `source-map.md` set.
 | `src/tokens.ts` | *(new)* | `CapabilityRegistryToken`/`MediaTaskStoreToken`/`MediaPolicyToken` via `@jini/core`'s `token()` (`packages/core/src/token.ts`), following the exact naming convention `@jini/daemon`'s `src/tokens.ts` already established (bare-interface-name suffixed `Token`, e.g. `RunStoreToken`/`EventLogToken` — not extraction-plan.md §2.2's illustrative bare-name pseudocode, which would shadow the interface names in this codebase's actual precedent). Namespaced `jini.media.*`. |
 | `src/index.ts` | *(new — barrel)* | Re-exports all of the above. |
 
-## Not ported / explicitly out of scope
+## The dispatch engine (`src/dispatch/`) — added 2026-07-21
 
-- **`media/index.ts`'s `generateMedia` (the actual multi-provider REST
-  dispatch/execution engine, 155,475 bytes)** — grepped for its exported
-  surface (`generateMedia` is the sole top-level export; the rest is private
-  per-provider HTTP-call implementation) rather than read line-by-line, and
-  deliberately not ported. This is the task brief's own framing: the brief
-  asks for the type system, registry, task-store port, policy port, and
-  catalogue — not a from-scratch re-implementation of 25 vendors' live REST
-  integrations (auth headers, polling loops, response parsing per vendor).
-  Re-implementing that safely would be its own multi-week extraction task,
-  not something to rush through inside this dispatch's scope, and doing so
-  hastily risks silently getting a real vendor's wire contract wrong. Flagged
-  as a real, explicit gap for a future task, not silently dropped.
+`media/index.ts`'s `generateMedia` (the actual multi-provider REST
+dispatch/execution engine, 4,055 lines / 155,475 bytes, read in full this
+pass — not just grepped) is a genuinely large port: ~20 real vendor
+`render*` functions plus shared plumbing. This pass ported the engine core
+and an initial, fully-tested vendor slice; the remaining vendors are an
+explicit, itemized gap below, not silently dropped — re-implementing all 20
+safely in one sitting risks exactly the "getting a real vendor's wire
+contract wrong" failure mode the original port brief warned about.
+
+**Boundary redesign (not a verbatim lift):** the origin resolves an OD
+`projectId` into a filesystem path and writes bytes there directly
+(`ensureProject`/`sanitizeName`/`mkdir`/write) — Jini's kernel has no
+`Project` concept at all (locked architecture §2.1). `createMediaDispatchEngine().generate()`
+returns `{ bytes, providerNote, ... }` to the caller instead; a host pairs
+this with its own `AttachmentStaging`/`MediaTaskStore` wiring. Reference-image
+resolution follows the same pattern `video-request.ts`'s `VideoBuildInput.imageRef`
+already established: the caller resolves any reference image to a data URL
+before calling — this package performs no filesystem I/O anywhere, not just
+in the new code. Credential resolution is dependency-injected
+(`MediaDispatchEngineOptions.credentials`) rather than reading an
+OD-project-scoped config file (`resolveProviderConfig`, already excluded
+below); `resolveProviderCredentialsFromEnv` is an opt-in reference resolver
+using `providers.ts`'s already-ported `PROVIDER_CREDENTIAL_ENV_VARS`, not
+something the engine calls itself. OD's per-project model-alias layer
+(`resolveModelAlias`) is also not ported (see below); the request type
+carries an optional `wireModel` a host can set instead.
+
+| Jini file | Origin (`media/index.ts`) | Notes |
+|---|---|---|
+| `src/dispatch/types.ts` | `MediaContext`/`RenderResult`/`ProviderConfig` shapes | Redefined per the boundary redesign above — see its own module doc comment. |
+| `src/dispatch/engine.ts` | `generateMedia`'s orchestration (validation, `clampNumber`/`clampWithWarning`, dispatch if/else-if chain) | Ported behaviorally: surface/audioKind/model/catalogue validation, numeric clamping with warnings, the `customImageOverridesOpenAIModel` precedence rule. The `codexSubscriptionModel`/`useCodexSubscription` branch is dropped entirely (codex is already excluded from `providers.ts`). The fal-`ai/*`-path and `aihubmix-`-prefix catalogue-bypass branches (`isFalCustomPath`/`isCatalogBypass`) are **not yet ported** — they exist in the origin specifically to support the fal/AIHubMix renderers, which aren't wired up yet either; porting the bypass without the renderer would be dead code. Context construction was pulled out into `context.ts`'s `buildRenderContext` (see its own row below) specifically so `ctx.promptInfluence`/`ctx.imageRefs` — real origin fields not consumed by any renderer ported in this pass — could be kept in the type surface and directly, honestly tested, rather than dropped as "unobservable" or left untested. One genuinely dead branch was removed rather than tested around, matching this repo's coverage-driven-refactor convention: a `findProvider(def.provider)` null-check in the stub-fallback path (every catalogued model's `provider` id is proven present in `MEDIA_PROVIDERS` by a new `providers.test.ts` catalogue-integrity test, added this pass). |
+| `src/dispatch/context.ts` | `generateMedia`'s `ctx` object-literal construction | *(new file, extracted from `engine.ts`)* `buildRenderContext(request, resolvedAudioKind, length, duration)` — pure, exported, and directly unit-tested (`context.test.ts`) independent of any renderer. This is the mechanism that lets `promptInfluence`/`imageRefs` stay real, tested fields despite having no current consumer: rather than needing a live renderer to observe their computed value (impossible for a not-yet-ported vendor) or dropping them from the type surface (a real capability regression relative to the origin), their derivation is tested directly against this function's return value. `clampNumber`'s `allowed.length === 0` guard was removed as separately-proven-dead (see the `engine.ts` row) — that one **is** a true no-behavior-change simplification, not a scope question, since it's an internal defensive guard with no user-visible capability, unlike `promptInfluence`/`imageRefs` which are real request fields. |
+| `src/dispatch/openai-compatible.ts` | The shared OpenAI-wire-compatible helpers (`parseOpenAICompatibleJson`, `bytesFromOpenAICompatibleData`, `detectAzureEndpoint`, `normalizeOpenAICompatiblePath`, `buildOpenAICompatibleGenerationUrl`, `buildOpenAIImageUrl`, `buildOpenAIImageEditUrl`, `buildOpenAIVideoUrl`, `openaiSizeFor`, `buildOpenAISpeechUrl`, `sniffImageExt`, `truncate`) | Ported verbatim. Shared by OpenAI, ImageRouter, and custom-image today; AIHubMix's image/TTS renderers (not yet ported) also route through this same OpenAI-compatible shape in the origin, so porting them later should mostly be new provider-specific glue on top of this already-ported layer, not new shared plumbing. `openaiSpeechFormatFor(fileName)` was redesigned as `resolveSpeechFormat(requested)` — the origin derived the TTS response format from the caller's output filename extension; since this engine has no filename/output-path concept, the caller now passes an explicit `speechFormat` request field instead (defaults to `'mp3'`, matching the origin's default). |
+| `src/dispatch/stub.ts` | `renderStub`/`svgPlaceholder`/`aspectToBox`/`silentWav` | Ported behaviorally. The origin picked SVG-vs-PNG placeholder bytes from the caller's requested output filename extension; since there's no filename here, the image stub always returns the PNG placeholder (`svgPlaceholder` is still exported standalone for a caller that wants it directly). `OD_MEDIA_ALLOW_STUBS` (an env var the origin reads itself) becomes `MediaDispatchEngineOptions.allowStubFallback` (an explicit constructor option) — this package never reads `process.env` (see `providers.ts`'s standing invariant), so the origin's fail-closed-unless-opted-in design is preserved via an option, not an env var. |
+| `src/dispatch/credentials.ts` | *(new)* | `resolveProviderCredentialsFromEnv` — opt-in reference resolver, not called by the engine itself; see boundary redesign above. |
+| `src/dispatch/providers/openai.ts` | `renderOpenAIImage`, `renderOpenAISpeech` | Ported verbatim, including Azure OpenAI deployment detection/handling and the long-timeout `undici.Agent` default for image generation (added `undici` as a package dependency, mirroring `packages/deploy`). The Codex-CLI-subscription fallback path (`codexSubscriptionModel`/`renderCodexImage`) is dropped — see "Not ported" below. |
+| `src/dispatch/providers/imagerouter.ts` | `renderImageRouterImage`, `renderImageRouterVideo`, `imageRouterSizeFor` | Ported verbatim. Uses `providers.ts`'s already-catalogued `imagerouter` default base URL as its fallback rather than a second hardcoded constant (the origin had a local `IMAGEROUTER_DEFAULT_BASE_URL` duplicating the same value already in `models.ts`'s catalogue — de-duplicated here, not a behavior change). |
+| `src/dispatch/providers/custom-image.ts` | `renderCustomOpenAIImage`, `customImageOverridesOpenAIModel` | Ported verbatim. |
+
+### Not yet ported (real, itemized gap — not silently dropped)
+
+Every other `render*` function in the origin, grouped by why it's deferred:
+
+- **Async-polling vendors** (submit-then-poll-then-fetch, materially more
+  complex than the synchronous ones ported this pass): Volcengine video
+  (`renderVolcengineVideo`), Grok video (`renderGrokVideo`), OpenRouter video
+  (`renderOpenRouterVideo`), AIHubMix video (`renderAIHubMixVideo`), Fal
+  image/video (`renderFalImage`/`renderFalVideo`, queue-based). Note:
+  `src/video-request.ts` (already ported, see above) implements the
+  seedance/wan/veo/generic family request-body-building logic as a separate,
+  reusable layer — but the origin's actual live `media/index.ts` dispatcher
+  does **not** call into it (no such import exists in `media/index.ts`);
+  whoever ports these should decide whether to reuse `buildVideoRequest` or
+  mirror the origin's separate implementation, not assume they're already
+  wired together.
+- **Simple synchronous REST vendors, not yet ported**: Volcengine image
+  (`renderVolcengineImage`), Grok image (`renderGrokImage`), Grok/xAI TTS
+  (`renderXAITTS`), Nano Banana / Gemini (`renderNanoBananaImage`),
+  OpenRouter image (`renderOpenRouterImage`), Leonardo
+  (`renderLeonardoImage`), ElevenLabs TTS + SFX (`renderElevenLabsTTS`/`renderElevenLabsSfx`),
+  MiniMax TTS (`renderMinimaxTTS`), SenseAudio TTS + image
+  (`renderSenseAudioTTS`/`renderSenseAudioImage`), AIHubMix image + TTS
+  (`renderAIHubMixImage`/`renderAIHubMixGeminiImage`/`renderAIHubMixTTS`),
+  FishAudio TTS (`renderFishAudioTTS`).
+- **Local-process vendors, need their own design decision, not just a
+  translation**: HyperFrames (`renderHyperFramesViaCli`) shells out to a
+  local `npx hyperframes render` + Puppeteer/Chrome and is tied to a
+  project-directory concept the way the whole engine used to be — deferred
+  alongside the general project-directory redesign, not a REST port at all.
+- **`resolveProjectImage`** — the origin's own reference-image path
+  resolver (containment check under an OD project dir, 16 MB size cap, mime
+  allowlist, base64 data-URL encoding) is not ported as a callable utility
+  in this package; per the boundary redesign, callers resolve reference
+  images to data URLs themselves. A future pass could still port
+  `resolveProjectImage`'s security logic (containment/size-cap/mime-allowlist)
+  as a standalone, caller-owned-root utility so hosts don't have to
+  re-invent it — flagged as a worthwhile small follow-up, not done this
+  pass since the engine itself doesn't need it to function.
+- **The fal-`ai/*`-path and `aihubmix-`-prefix catalogue bypass** in
+  `generateMedia`'s model-resolution step — see the `engine.ts` row above.
+
+## Not ported / explicitly out of scope (pre-existing, from the original pass)
+
 - **`media/config.ts` in full** (23,414 bytes) — grepped for its exported
   function names and env-var table rather than read line-by-line. It resolves
   an OD-specific config file path (`OD_MEDIA_CONFIG_DIR`/`OD_DATA_DIR`-rooted
   `media-config.json`, `~/.open-design`-style paths) and per-project model
-  aliasing — this is host/project configuration-file-format logic, not
+  aliasing (`resolveModelAlias`, consumed by `generateMedia` — the dispatch
+  engine's `MediaGenerationRequest.wireModel` is the replacement, set by the
+  caller instead of resolved from a project config file) — this is host/project configuration-file-format logic, not
   provider reference data, so none of it ported as code. Only the *env var
   names* (with `OD_*` overrides stripped) survive, as `providers.ts`'s
   `PROVIDER_CREDENTIAL_ENV_VARS`.
@@ -80,25 +153,70 @@ the same precedent `@jini/deploy`'s `source-map.md` set.
 
 ## Dependencies
 
-`@jini/core` (workspace) for `token()` — see `src/tokens.ts`. `node:crypto`
-(`randomUUID`) and `node:fs`/`node:path` (staging) — Node built-ins, no new
-external dependency. No `better-sqlite3`, no `@open-design/contracts`.
+`@jini/core` (workspace) for `token()` — see `src/tokens.ts`. `undici` (as of
+the dispatch engine — `providers/openai.ts`'s long-timeout `Agent` for image
+generation, mirroring `packages/deploy`'s use of the same package).
+`node:crypto` (`randomUUID`) and `node:fs`/`node:path` (staging) — Node
+built-ins. No `better-sqlite3`, no `@open-design/contracts`.
 
 ## Coverage
 
 `pnpm --filter @jini/media exec vitest run --coverage` (json-summary + json
 reporters per `docs/jini-port/skills/fixing-open-design.md` Phase 6.5):
 **100% statements / 100% branches / 100% functions / 100% lines**, aggregate
-and per file (9 covered source files; `src/types.ts` is excluded from the
-coverage config as a genuinely zero-executable-statement file — verified via
-`grep -nE '^(export )?(const|function|class|let|var) '` finding no runtime
-declarations — same documented carve-out precedent `packages/ui/vitest.config.ts`
-already established, not a coverage dodge). No `/* v8 ignore */` or equivalent
-suppression comment anywhere in this package. One dead branch found during
-the coverage loop (`providers.ts`'s `modelsForSurface` — see its row above)
-was refactored away rather than tested around; every other uncovered line
-found during the loop (an fs `readdir`/`stat` best-effort catch, a
-stray-non-file directory entry in the staging dir, an unparseable
-`supportedSizes` entry) was genuinely reachable and got a real test, several
-using `vi.spyOn` to force the underlying `fs.promises` call to fail for real
-rather than being skipped.
+and per file, across the whole package including the dispatch engine added
+this pass (280 tests across 17 files; the dispatch-engine tests mock a real
+`fetch`/`Response` rather than the provider functions themselves, so the
+actual URL-building/body-shaping/response-parsing logic is exercised
+end-to-end, not bypassed). Enforced by a real `thresholds: { statements:
+100, branches: 100, functions: 100, lines: 100 }` gate in
+`vitest.config.ts`, not just measured. `src/dispatch/types.ts` is excluded
+from the coverage config for the same reason as the top-level `src/types.ts`
+(a genuinely zero-executable-statement file — verified via `grep`, not a
+coverage dodge).
+
+Reaching 100% (up from an initial ~89% branches on the dispatch engine)
+involved one genuine dead-code removal and one refactor, not contrived
+tests written just to hit a line — matching this repo's own
+coverage-driven-refactor convention, and specifically avoiding trading real
+capability for a coverage number:
+- **One dead branch removed**: a `findProvider(def.provider)` null-check in
+  the stub-fallback path (every catalogued model's `provider` id is proven
+  present in `MEDIA_PROVIDERS` by a new `providers.test.ts`
+  catalogue-integrity test added this pass). `clampNumber`'s
+  `allowed.length === 0` guard was removed the same way (unreachable — its
+  only two call sites always pass `providers.ts`'s non-empty
+  `VIDEO_LENGTHS_SEC`/`AUDIO_DURATIONS_SEC` constants, proven by an existing
+  `providers.test.ts` test) — both are internal defensive guards with no
+  user-visible capability attached, not a scope question.
+- **One extraction, not a removal**: `promptInfluence` and `imageRefs`
+  (plural) are real origin fields (`renderElevenLabsSfx`'s prompt-influence
+  dial; multi-image i2v/style-reference flows) not consumed by any renderer
+  ported in this pass. The first attempt at 100% dropped both from the
+  type surface as "unobservable" — correctly flagged by the user as a real
+  capability reduction disguised as a coverage fix, not acceptable just
+  because nothing currently reads them. The actual fix: pull `ctx`
+  construction out of `engine.ts` into its own pure, exported
+  `context.ts`/`buildRenderContext` function, so both fields' derivation
+  (including their edge cases — a non-finite `promptInfluence`, an explicit
+  `imageRefs` array vs one derived from a single `imageRef`) can be tested
+  directly against the function's return value instead of needing a live
+  renderer to observe them through. Both fields are back in
+  `MediaGenerationRequest`/`RenderContext`, genuinely tested
+  (`context.test.ts`), with zero capability lost relative to the origin.
+- Everything else was genuinely reachable and got a real test: Azure
+  error-tagging paths, dall-e-2 vs dall-e-3 quality branches, every
+  aspect-ratio size-mapping branch, unparseable-URL fallback paths in the
+  URL builders, and the stub renderer's `?? '?'`/`|| '-'` note-formatting
+  fallbacks.
+
+### Original substrate coverage note (pre-dispatch-engine)
+
+No `/* v8 ignore */` or equivalent suppression comment anywhere in this
+package. One dead branch found during the coverage loop (`providers.ts`'s
+`modelsForSurface` — see its row above) was refactored away rather than
+tested around; every other uncovered line found during the loop (an fs
+`readdir`/`stat` best-effort catch, a stray-non-file directory entry in the
+staging dir, an unparseable `supportedSizes` entry) was genuinely reachable
+and got a real test, several using `vi.spyOn` to force the underlying
+`fs.promises` call to fail for real rather than being skipped.

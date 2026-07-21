@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@jini/core": "workspace:*"
+    "@jini/core": "workspace:*",
+    "undici": "^7.25.0"
   }
 }
