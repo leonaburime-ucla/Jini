@@ -5,10 +5,12 @@
  * of the capabilities Zana/Tovu's independent provider layers converge on
  * (alongside auth/storage/db/realtime).
  *
- * `createInMemoryPaymentsProvider` is a minimal reference stub proving the
- * port is implementable — every charge deterministically succeeds, no real
- * money moves. A real adapter (Stripe, a payment processor) implements the
- * same interface.
+ * This file defines only the port's stable interface/type surface — safe to
+ * import from the normal `@jini/capability-providers` entry point. The
+ * in-memory reference implementation (`createInMemoryPaymentsProvider`) is a
+ * non-production stub and lives under `src/unsafe-reference/`, exported only
+ * from the separate `@jini/capability-providers/unsafe-reference` entry
+ * point — see that directory's `index.ts` header for the full warning.
  */
 
 export type ChargeStatus = 'pending' | 'succeeded' | 'failed' | 'refunded';
@@ -36,45 +38,4 @@ export interface PaymentsProvider {
   getCharge(id: string): Promise<Charge | null>;
   /** Refunds a `'succeeded'` charge. Rejects if the charge is unknown or not in a refundable state. */
   refund(id: string): Promise<Charge>;
-}
-
-/** Creates the in-memory reference `PaymentsProvider`. No persistence, no real money movement. */
-export function createInMemoryPaymentsProvider(): PaymentsProvider {
-  const charges = new Map<string, Charge>();
-  let nextChargeId = 1;
-
-  return {
-    async charge(input: ChargeInput): Promise<Charge> {
-      if (input.amountCents <= 0) {
-        throw new Error('amountCents must be positive');
-      }
-      const record: Charge = {
-        id: `charge-${nextChargeId++}`,
-        status: 'succeeded',
-        amountCents: input.amountCents,
-        currency: input.currency,
-        customerRef: input.customerRef,
-        createdAt: Date.now(),
-      };
-      charges.set(record.id, record);
-      return record;
-    },
-
-    async getCharge(id: string): Promise<Charge | null> {
-      return charges.get(id) ?? null;
-    },
-
-    async refund(id: string): Promise<Charge> {
-      const existing = charges.get(id);
-      if (!existing) {
-        throw new Error(`unknown charge: ${id}`);
-      }
-      if (existing.status !== 'succeeded') {
-        throw new Error(`charge ${id} is not refundable from status "${existing.status}"`);
-      }
-      const refunded: Charge = { ...existing, status: 'refunded' };
-      charges.set(id, refunded);
-      return refunded;
-    },
-  };
 }

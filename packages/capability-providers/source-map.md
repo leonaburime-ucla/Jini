@@ -24,15 +24,53 @@ implementable.
 
 ## Package map
 
+Two entry points (mirroring the `@jini/core` `"."` / `"./internal"` and
+`@jini/desktop-host` `"."` / `"./bridge-testing"` multi-export pattern) —
+see "Public export split" below for why.
+
+**`@jini/capability-providers` (normal entry point, `src/index.ts`) — port interfaces/types and DI tokens only:**
+
 | File | Contents |
 |---|---|
-| `src/auth.ts` | `AuthProvider` (signUp/signIn/signOut/verifySession) + `createInMemoryAuthProvider`. Plaintext password storage, non-cryptographic session tokens — a port-shape reference stub, explicitly not a security reference (documented in the file's header comment). |
-| `src/storage.ts` | `StorageProvider` (put/get/delete/list, key-prefix listing) + `createInMemoryStorageProvider`. Copies bytes in/out so callers can't mutate internal state through a returned/passed `Uint8Array`. |
-| `src/payments.ts` | `PaymentsProvider` (charge/getCharge/refund) + `createInMemoryPaymentsProvider`. Every charge deterministically succeeds — no real money moves, no async settlement delay modeled. |
-| `src/db.ts` | `DbProvider` (insert/get/update/delete/query, collection + record id, exact-match `where` filter only — deliberately not a query language) + `createInMemoryDbProvider`. |
-| `src/realtime.ts` | `RealtimeProvider` (publish/subscribe, in-process synchronous fan-out) + `createInMemoryRealtimeProvider`. |
+| `src/auth.ts` | `AuthProvider` (signUp/signIn/signOut/verifySession) interface/types only. |
+| `src/storage.ts` | `StorageProvider` (put/get/delete/list, key-prefix listing) interface/types only. |
+| `src/payments.ts` | `PaymentsProvider` (charge/getCharge/refund) interface/types only. |
+| `src/db.ts` | `DbProvider` (insert/get/update/delete/query, collection + record id, exact-match `where` filter only — deliberately not a query language) interface/types only. |
+| `src/realtime.ts` | `RealtimeProvider` (publish/subscribe, in-process synchronous fan-out) interface/types only. |
 | `src/tokens.ts` | `AuthProviderToken`/`StorageProviderToken`/`PaymentsProviderToken`/`DbProviderToken`/`RealtimeProviderToken` via `@jini/core`'s `token()`, namespaced `jini.capabilityProviders.*`, following the same bare-interface-name-suffixed-`Token` convention `@jini/daemon`/`@jini/media` already established. |
 | `src/index.ts` | Barrel re-exporting all of the above. |
+
+**`@jini/capability-providers/unsafe-reference` (separate entry point, `src/unsafe-reference/index.ts`) — UNSAFE, non-production in-memory reference implementations:**
+
+| File | Contents |
+|---|---|
+| `src/unsafe-reference/auth.ts` | `createInMemoryAuthProvider`. Plaintext password storage, predictable non-cryptographic `user-N`/`session-N` identifiers — explicitly not a security reference (documented in the file's header comment). |
+| `src/unsafe-reference/storage.ts` | `createInMemoryStorageProvider`. Copies bytes in/out so callers can't mutate internal state through a returned/passed `Uint8Array`; no principal/tenant/ACL/quota dimension. |
+| `src/unsafe-reference/payments.ts` | `createInMemoryPaymentsProvider`. Every charge deterministically succeeds — no real money moves, no idempotency, no async settlement delay modeled. |
+| `src/unsafe-reference/db.ts` | `createInMemoryDbProvider`. No principal/tenant/ACL dimension; unbounded in-memory collections. |
+| `src/unsafe-reference/realtime.ts` | `createInMemoryRealtimeProvider`. No channel-authorization dimension; unbounded in-memory subscriber sets. |
+| `src/unsafe-reference/index.ts` | Barrel re-exporting all five factories, with a prominent top-of-file warning that these are non-cryptographic, non-production stubs never to be wired into anything handling real credentials/payments/user data. |
+
+### Public export split (SEC-RB-006 remediation, 2026-07-21)
+
+`ADS-memory/reports/security/SEC-remaining-backend-audit-2026-07-21.md`
+finding SEC-RB-006 flagged that the five `createInMemory*Provider` factories
+were exported from the normal `@jini/capability-providers` barrel —
+indistinguishable, from an importer's perspective, from a real production
+adapter. Per explicit human direction, the fix is visibility/naming only
+(the stubs' logic is intentionally insecure and out of scope for
+hardening): the concrete implementations moved to `src/unsafe-reference/`
+and are now reachable only via the separate
+`@jini/capability-providers/unsafe-reference` subpath declared in
+`package.json`'s `exports` map. The normal `@jini/capability-providers`
+entry point now exports only the stable port interfaces/types and the DI
+tokens — importing it can never accidentally pull in a plaintext-password
+auth stub or an always-succeeds payments stub. Tests for the five factories
+moved alongside their implementations to
+`src/unsafe-reference/__tests__/`; `src/__tests__/index.test.ts` now asserts
+the normal barrel does *not* export the factories, and a new
+`src/unsafe-reference/__tests__/index.test.ts` asserts the unsafe-reference
+barrel does.
 
 ## Design decisions
 
