@@ -419,3 +419,53 @@ Tests: `src/__tests__/cancel-owned-runs.test.ts` — 100% coverage on all 4 metr
 non-terminal runs, no-op on an all-terminal or empty run list, swallows a per-run cancellation
 rejection without the aggregate promise rejecting). No new dependency — uses only this package's
 existing `@jini/protocol` dependency.
+
+## 2026-07-21 addition — `host-tools.ts`'s GENERIC slice (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#23 `host-tools.ts` (MIXED — "partially ported
+this round" caveat)** — specifically the piece that row's own reasoning already identified as
+"zero OD dependency and... well-hardened": the editor catalogue, `$PATH`/mac-bundle probing, and
+guarded detached-spawn machinery (`CATALOGUE`, `resolveEntry`, `launchHostTool`,
+`resolveHostToolLaunchPlan`, `applicableForPlatform`), plus `GET /api/editors`, the one route that
+uses only that machinery. Verified against `leonaburime-ucla/open-design`, branch
+`refactor/web-memory-slice`, via `git show refactor/web-memory-slice:apps/daemon/src/routes/host-tools.ts`
+— 380 lines, matching the table's line count and verdict exactly.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/host-tools.ts` | `apps/daemon/src/routes/host-tools.ts` (`refactor/web-memory-slice`) | `CATALOGUE`/`currentPlatform`/`applicableForPlatform`/`pathDirs`/`probeCommandOnPath`/`probeMacBundle`/`resolveEntry`/`resolveHostToolLaunchPlan`/`launchHostTool`/`listAvailableEditors` (the origin's inline `GET /api/editors` handler body, extracted into its own named, directly-testable function) ported. `HostEditorId`/`HostEditor`/`HostEditorsResponse`/`OpenProjectInEditorResponse` types switched from `@open-design/contracts` to local, non-branded equivalents (`HostEditorId` narrowed to a plain `string` — the catalogue's own id literals are the only real constraint, and pinning a closed union here would make a future catalogue addition a breaking type change for no benefit). `createCommandInvocation` switched from `@open-design/platform` to this repo's own already-ported `@jini/platform` (new dependency on this package, see below) — same signature, mechanical import-source change. **Not ported**: `POST /api/projects/:id/open-in` (needs `ctx.projectStore.getProject`/`ctx.projectFiles.resolveProjectDir` to resolve a working directory — exactly the not-yet-built generic workspace-root port this table's own row #23 note anticipated) and the`server-context.js` `RouteDeps`-based `registerHostToolsRoutes(app, ctx)` registrar shape (replaced with a dependency-free `registerHostToolsRoutes(app, adapter)` mounting only the one ported route). |
+
+**Redesigned for testability, not lifted verbatim — same discipline as `packages/media/src/dispatch/context.ts`.**
+The origin reads `process.env`/`process.platform` and calls real `fs.access`/`child_process.spawn`
+directly inside `pathDirs`/`probeCommandOnPath`/`probeMacBundle`/`launchHostTool`. Every probing
+function here instead takes an injectable `HostToolProbeEnv` (`{access, env, platform}`, defaulting
+to `defaultProbeEnv()` which wires the real ones), and `launchHostTool` takes an injectable
+`spawnImpl` (defaulting to the real `node:child_process` `spawn`). This is what makes every
+platform branch (darwin/win32/linux/unknown), every found/missing outcome (CLI shim on `$PATH`,
+mac app bundle, direct absolute-path access), and both directions of `launchHostTool`'s
+`'spawn'`/`'error'` settle-race exercisable from one Linux CI runner without a real filesystem or
+subprocess — the exact problem a straight lift would have hit immediately (this repo's CI has no
+macOS/Windows runner and no installed copies of any catalogue entry).
+
+**One proven dead-branch removal, not carried forward** (same category as `local-daemon-request.ts`'s):
+`resolveEntry`'s return type was a discriminated union (`{available: true, resolvedPath, launch} |
+{available: false}`) rather than the origin's one-shape-with-optionals, because `resolvedPath` and
+`launch` are only ever set together in both of the origin's own "found" branches, never
+independently — the origin's `resolveHostToolLaunchPlan` unavailable-branch spread
+(`...(probe.resolvedPath ? {resolvedPath} : {})`) was therefore dead code carried forward
+unexamined. Making the type a discriminated union (a) makes the impossible state
+unrepresentable instead of merely untested, and (b) was required anyway once `exactOptionalPropertyTypes`
+flagged assigning a possibly-`undefined` value to the `available: true` variant's non-optional
+`resolvedPath` field.
+
+Tests: `src/__tests__/host-tools.test.ts` — 100% coverage on all 4 metrics (every platform branch,
+every probe found/missing outcome including the win32 suffix loop and the mac-bundle
+array-of-candidate-names case, the real `CATALOGUE` `finder` entry's own `commandArgs` closure
+specifically — not just an equivalent inline fixture, `launchHostTool`'s settle-race in both
+directions plus a non-`Error` `'error'` payload, and the mounted `GET /api/editors` route).
+
+## Dependencies (updated)
+
+`@jini/platform` (workspace, new) — `createCommandInvocation`, used by `host-tools.ts`'s
+`launchHostTool`. Already a dependency-free, well-tested port (see `packages/platform/source-map.md`);
+this is its first consumer inside `@jini/http`.

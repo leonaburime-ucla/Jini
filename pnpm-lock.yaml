@@ -176,6 +176,9 @@ importers:
       '@jini/daemon':
         specifier: workspace:*
         version: link:../daemon
+      '@jini/platform':
+        specifier: workspace:*
+        version: link:../platform
       '@jini/protocol':
         specifier: workspace:*
         version: link:../protocol

@@ -48,6 +48,32 @@ export { mountPackHttp } from './pack-http.js';
 export type { RunCancellationService } from './cancel-owned-runs.js';
 export { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 
+export type {
+  CatalogueEntry,
+  HostEditor,
+  HostEditorsResponse,
+  HostToolLaunchPlan,
+  HostToolProbeEnv,
+  LaunchHostToolResult,
+  Platform,
+  RealPlatform,
+} from './host-tools.js';
+export {
+  applicableForPlatform,
+  CATALOGUE,
+  currentPlatform,
+  defaultProbeEnv,
+  hostEditorsRoute,
+  launchHostTool,
+  listAvailableEditors,
+  pathDirs,
+  probeCommandOnPath,
+  probeMacBundle,
+  registerHostToolsRoutes,
+  resolveEntry,
+  resolveHostToolLaunchPlan,
+} from './host-tools.js';
+
 export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
 export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
 
