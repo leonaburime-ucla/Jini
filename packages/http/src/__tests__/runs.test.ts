@@ -5,6 +5,7 @@ import {
   registerRunEventStream,
   registerRunRoutes,
   runCancelRoute,
+  runListRoute,
   runStartRoute,
   runStatusRoute,
   type RunHttpDeps,
@@ -173,6 +174,55 @@ describe('runStatusRoute.parse (parseRunId)', () => {
   it('rejects an empty-string runId path parameter', () => {
     const result = runStatusRoute.parse({ body: {}, query: {}, params: { runId: '' } });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('runListRoute.parse (parseRunList)', () => {
+  it('accepts a request with no contextRef query parameter', () => {
+    expect(runListRoute.parse({ body: {}, query: {}, params: {} })).toEqual({ ok: true, value: {} });
+  });
+
+  it('accepts a non-empty string contextRef query parameter', () => {
+    expect(runListRoute.parse({ body: {}, query: { contextRef: 'ctx-1' }, params: {} })).toEqual({
+      ok: true,
+      value: { contextRef: 'ctx-1' },
+    });
+  });
+
+  it('rejects an empty-string contextRef', () => {
+    const result = runListRoute.parse({ body: {}, query: { contextRef: '' }, params: {} });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a non-string contextRef (e.g. Express repeated-query-param array)', () => {
+    const result = runListRoute.parse({ body: {}, query: { contextRef: ['a', 'b'] }, params: {} });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('runListRoute.handle', () => {
+  it('lists every run when no contextRef is given', async () => {
+    const deps = makeDeps();
+    await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    await deps.lifecycle.start({ contextRef: 'ctx-2' });
+    const result = await runListRoute.handle({}, deps);
+    expect(result.ok).toBe(true);
+    expect((result as any).value.runs).toHaveLength(2);
+  });
+
+  it('scopes to the given contextRef', async () => {
+    const deps = makeDeps();
+    const { run: run1 } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    await deps.lifecycle.start({ contextRef: 'ctx-2' });
+    const result = await runListRoute.handle({ contextRef: 'ctx-1' }, deps);
+    expect(result.ok).toBe(true);
+    expect((result as any).value.runs.map((r: { id: string }) => r.id)).toEqual([run1.id]);
+  });
+
+  it('returns an empty list for a contextRef with no runs', async () => {
+    const deps = makeDeps();
+    const result = await runListRoute.handle({ contextRef: 'never-started' }, deps);
+    expect(result).toEqual({ ok: true, value: { runs: [] } });
   });
 });
 
@@ -773,17 +823,31 @@ describe('registerRunEventStream', () => {
 });
 
 describe('registerRunRoutes', () => {
-  it('mounts exactly the create/status/cancel JSON routes plus the SSE stream, nothing else', () => {
+  it('mounts exactly the create/list/status/cancel JSON routes plus the SSE stream, nothing else', () => {
     const app = makeApp();
     registerRunRoutes(app as any, makeDeps(), adapter);
     expect(Object.keys(app.handlers).sort()).toEqual(
       [
         'POST /api/runs',
+        'GET /api/runs',
         'GET /api/runs/:runId',
         'POST /api/runs/:runId/cancel',
         'GET /api/runs/:runId/events',
       ].sort(),
     );
+  });
+
+  it('does not require same-origin for GET /api/runs: allows a cross-origin list read', async () => {
+    vi.mocked(isLocalSameOrigin).mockReturnValue(false);
+    const app = makeApp();
+    const deps = makeDeps();
+    await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    registerRunRoutes(app as any, deps, adapter);
+    const res = makeJsonRes();
+    await app.handlers['GET /api/runs']!({ body: {}, query: {}, params: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    const [body] = res.json.mock.calls[0]!;
+    expect(body.runs).toHaveLength(1);
   });
 
   it('requires same-origin for POST /api/runs: blocks a cross-origin request with 403', async () => {

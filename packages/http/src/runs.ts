@@ -109,6 +109,19 @@ function parseRunCreate(input: RouteInputContext): Result<RunCreateRequest> {
   });
 }
 
+export interface RunListResponse {
+  readonly runs: readonly RunStatus[];
+}
+
+function parseRunList(input: RouteInputContext): Result<{ contextRef?: string }> {
+  const value = input.query.contextRef;
+  if (value === undefined) return ok({});
+  if (typeof value !== 'string' || value.length === 0) {
+    return err(validationError('contextRef must be a non-empty string when provided', [{ path: 'contextRef', message: 'non-empty string when provided' }]));
+  }
+  return ok({ contextRef: value });
+}
+
 function parseRunId(input: RouteInputContext): Result<string> {
   const runId = input.params.runId;
   return typeof runId === 'string' && runId.length > 0
@@ -149,6 +162,14 @@ export const runStartRoute = defineJsonRoute<RunCreateRequest, RunStartResponse,
     return ok({ run, started: started.started });
   },
   successStatus: 201,
+});
+
+/** `GET /api/runs` — lists runs, optionally scoped to a `contextRef` query parameter. */
+export const runListRoute = defineJsonRoute<{ contextRef?: string }, RunListResponse, RunHttpDeps>({
+  method: 'get',
+  path: '/api/runs',
+  parse: parseRunList,
+  handle: async (input, deps) => ok({ runs: await deps.lifecycle.list(input.contextRef) }),
 });
 
 export const runStatusRoute = defineJsonRoute<string, RunStatusResponse, RunHttpDeps>({
@@ -317,6 +338,7 @@ export function registerRunEventStream(app: Express, deps: RunHttpDeps): void {
 /** Mounts create/status/cancel JSON endpoints and the SSE event stream as one run transport. */
 export function registerRunRoutes(app: Express, deps: RunHttpDeps, adapter: AdapterContext): void {
   mountJsonRoute(app, runStartRoute, deps, adapter);
+  mountJsonRoute(app, runListRoute, deps, adapter);
   mountJsonRoute(app, runStatusRoute, deps, adapter);
   mountJsonRoute(app, runCancelRoute, deps, adapter);
   registerRunEventStream(app, deps);

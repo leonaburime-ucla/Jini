@@ -105,6 +105,7 @@ export type {
   RunCreateRequest,
   RunHttpDeps,
   RunInternalErrorContext,
+  RunListResponse,
   RunStartContext,
   RunStartHandler,
   RunStartResponse,
@@ -114,6 +115,7 @@ export {
   registerRunEventStream,
   registerRunRoutes,
   runCancelRoute,
+  runListRoute,
   runStartRoute,
   runStatusRoute,
 } from './runs.js';

@@ -469,3 +469,18 @@ directions plus a non-`Error` `'error'` payload, and the mounted `GET /api/edito
 `@jini/platform` (workspace, new) — `createCommandInvocation`, used by `host-tools.ts`'s
 `launchHostTool`. Already a dependency-free, well-tested port (see `packages/platform/source-map.md`);
 this is its first consumer inside `@jini/http`.
+
+## 2026-07-21 addition — `GET /api/runs` list route (CLI backlog pass, `feat/http-routes-and-cli-commands`)
+
+Not a port from OD (the original `src/runs.ts` "File map" row above already notes `runs.ts` is "a
+new generic transport seam, not a lift"). Added while building `@jini/cli`'s `run list` command
+(see `packages/cli/source-map.md`): `@jini/daemon`'s `RunLifecycle.list(contextRef?)` already
+existed and had no HTTP projection at all, which would have made `run list` either impossible to
+build or forced into guessing at a contract. `runListRoute` (`GET /api/runs`, optional
+`?contextRef=` query parameter, no same-origin requirement — matching `runStatusRoute`'s read-only
+posture) is a thin, direct projection of that existing kernel method: `parseRunList` validates the
+query parameter is a non-empty string when present, `handle` calls `lifecycle.list(contextRef)`
+and wraps the result as `{ runs }`. Added to `registerRunRoutes` alongside the other three JSON
+routes. Tests: `src/__tests__/runs.test.ts` (parse: absent/present/empty/non-string contextRef;
+handle: unscoped list, scoped list, empty-result list; mount: route inventory, cross-origin GET
+allowed, end-to-end through the real `createRunLifecycle`). No new dependency.
