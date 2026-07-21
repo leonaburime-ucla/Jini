@@ -9,6 +9,7 @@ export { renderMinimaxTTS } from './providers/minimax.js';
 export { renderNanoBananaImage } from './providers/nanobanana.js';
 export { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 export { renderOpenRouterImage, openRouterAspectFor } from './providers/openrouter.js';
+export { renderSenseAudioImage, renderSenseAudioTTS } from './providers/senseaudio.js';
 export { renderVolcengineImage } from './providers/volcengine.js';
 export { renderStub, svgPlaceholder } from './stub.js';
 export { assertAndFetchExternalAsset, assertExternalAssetUrl, isBlockedExternalApiHostname, isLoopbackApiHost, validateBaseUrlResolved } from './ssrf-guard.js';

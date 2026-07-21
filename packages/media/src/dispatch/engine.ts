@@ -19,6 +19,7 @@ import { renderMinimaxTTS } from './providers/minimax.js';
 import { renderNanoBananaImage } from './providers/nanobanana.js';
 import { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
+import { renderSenseAudioImage, renderSenseAudioTTS } from './providers/senseaudio.js';
 import { renderVolcengineImage } from './providers/volcengine.js';
 import { renderStub } from './stub.js';
 import type {
@@ -111,6 +112,10 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   },
   minimax: {
     'audio:speech': renderMinimaxTTS,
+  },
+  senseaudio: {
+    image: renderSenseAudioImage,
+    'audio:speech': renderSenseAudioTTS,
   },
 };
 

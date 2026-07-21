@@ -235,6 +235,27 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.bytes.toString('utf8')).toBe('audio');
   });
 
+  it('routes senseaudio + image and senseaudio + audio:speech', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://api.senseaudio.cn/v1/image/sync') {
+        return new Response(JSON.stringify({ url: 'http://203.0.113.5/out.png' }), { status: 200 });
+      }
+      if (url === 'http://203.0.113.5/out.png') {
+        return new Response(Buffer.from('img'), { status: 200 });
+      }
+      if (url === 'https://api.senseaudio.cn/v1/t2a_v2') {
+        return new Response(JSON.stringify({ data: { audio: Buffer.from('audio').toString('hex') } }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { senseaudio: { apiKey: 'sa-key' } } });
+    const imageResult = await engine.generate({ surface: 'image', model: 'senseaudio-image-2.0-260319' });
+    expect(imageResult.providerId).toBe('senseaudio');
+    const ttsResult = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'senseaudio-tts' });
+    expect(ttsResult.providerId).toBe('senseaudio');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');
