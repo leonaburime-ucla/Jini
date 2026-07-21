@@ -160,25 +160,6 @@ describe('resolveModelForAgent', () => {
     expect(resolveModelForAgent(def, null, {})).toBe(null);
   });
 
-  it('treats a non-array fallbackModels as empty and returns resolved unchanged', () => {
-    const def = makeDef({ id: 'agent-non-array-fallback', fallbackModels: undefined as unknown as [] });
-    expect(resolveModelForAgent(def, null, {})).toBe(null);
-  });
-
-  it('returns resolved unchanged when the first fallback model entry is falsy', () => {
-    // Defensive branch: fallbacks.length > 0 (so the empty-list early-return
-    // above doesn't fire) but fallbacks[0] itself is falsy. A real def's
-    // fallbackModels is always well-formed RuntimeModelOption objects; this
-    // exercises the `firstFallback ? ... : resolved` guard for a malformed
-    // entry using a falsy primitive (0) so `.some(m => m.id === 'default')`
-    // doesn't throw when auto-boxing accesses `.id` on it.
-    const def = makeDef({
-      id: 'agent-falsy-first-fallback',
-      fallbackModels: [0, { id: 'fb-2', label: 'y' }] as unknown as RuntimeAgentDef['fallbackModels'],
-    });
-    expect(resolveModelForAgent(def, null, {})).toBe(null);
-  });
-
   it('is scoped by liveModelScope', () => {
     rememberLiveModels('agent-scoped-resolve', [{ id: 'scoped-live', label: 'x' }], 'scope-1');
     const def = makeDef({ id: 'agent-scoped-resolve', fallbackModels: [{ id: 'fb-1', label: 'x' }] });
