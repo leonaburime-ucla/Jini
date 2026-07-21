@@ -716,3 +716,55 @@ independently-actionable follow-up.
 - `pnpm typecheck` (repo-wide): clean, every package "Done", exit 0.
 - `pnpm guard`: `[guard] ok`.
 - `grep -rInE 'Open Design|OD_|open-design' packages/daemon/src packages/node-host/src`: empty.
+
+## 2026-07-21 addition — driving the `pi-rpc` def (19 of 24 registered agent defs)
+
+Closes one of the two "deferred, not built" driver gaps this file's own "v1 scope" section named:
+the one `pi-rpc` def (`pi`) now has a real `wirePiRpcLifecycle` branch in `agent-executor.ts`,
+mirroring `wireAcpLifecycle`'s existing shape (spawn → attach → cancel → finish). The `plain` × 5
+defs remain deliberately unsupported — their design space is still undecided (see the module doc).
+
+**No new event-translation code was needed.** `@jini/agent-runtime`'s `mapPiRpcEvent` (the pure
+RPC-to-daemon event mapper behind `attachPiRpcSession`) already sends every event through the exact
+`{type, ...}` vocabulary `translateAgentRuntimeEvent` handles for ACP/JSON-stream — confirmed by
+reading every `send(...)` call site in `agent-protocol/pi-rpc/events.ts` (status/text_delta/
+thinking_start/thinking_delta/tool_use/tool_result/usage/error, all on the `'agent'` channel; pi-rpc
+never calls `send('error', ...)` the way ACP's `send(event, payload)` distinguishes — error-ness is
+signaled via the payload's own `type: 'error'` field instead). One gap: `thinking_end` has no
+`translateAgentRuntimeEvent` case and is silently `'ignored'` — a real, documented drop (same
+category as `usage`'s already-documented sub-field drops), not a bug.
+
+**`PiRpcSession`/`PiRpcSessionOptions` types added to `@jini/agent-runtime`'s barrel** (`agent-
+protocol/pi-rpc/index.ts` → `agent-protocol/index.ts` → root `index.ts`) — previously only the
+`attachPiRpcSession` function itself was exported, matching that barrel's own "three public
+symbols" doc comment; `AcpSessionController`/`AttachAcpSessionOptions` were already exported for
+ACP, so this closes an asymmetry rather than introducing a new pattern.
+
+**`wirePiRpcLifecycle` vs. `wireAcpLifecycle` — differences, not just a rename:**
+- Success/failure comes from `PiRpcSession.hasFatalError()` (boolean, true = failed), not ACP's
+  `completedSuccessfully()` (true = succeeded) — inverted polarity, so `status = cancelRequested ?
+  'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded'`, not a direct swap of the ACP
+  ternary's arms.
+- No `envFormat`/`onPermissionRequest` — pi-rpc has no MCP-env-format or native-tool-permission
+  concept; `attachPiRpcSession`'s options instead include `model`/`imagePaths`/`uploadRoot`/
+  `parentSession`, none of which `AgentExecutorRunInput` carries yet in v1 (same "explicitly out of
+  scope" discipline this file already applies to ACP's multi-turn tool continuation and session-
+  resume ids — see the module's Design decisions 2–3).
+- `AgentCleanupFailurePhase` gained a `'pi-rpc-attach-failure'` tag alongside the existing
+  `'cancel'`/`'acp-attach-failure'`, and `AgentCleanupFailureContext.pid` was tightened from
+  `number | null` to `number` (with a documented non-null assertion at its one construction site)
+  — `terminateChildTree`'s own `child.pid == null` early-return guard means the cleanup-failure
+  catch path is only ever reached once a pid was already assigned, so the `| null` was dead, not
+  defensive; proved rather than assumed before simplifying (same discipline `packages/http`'s
+  `host-tools.ts` port already established for `resolveEntry`'s discriminated union).
+
+Tests: `src/__tests__/agent-executor.test.ts`'s new "pi-rpc dispatch (fake attachPiRpcSession)"
+describe block (11 tests, mirroring the ACP dispatch block's coverage: happy path, failed-not-
+cancelled, cancel+process-tree escalation, SEC-007 stopProcesses-rejects fallback, SEC-007 direct
+child.kill()-also-throws fallback, error-channel routing, an ignored/unmapped event, an
+already-terminal emit race, and both attach-failure paths including the default (uninjected)
+`onCleanupFailure` sink) plus two fixed pre-existing tests that asserted the old "pi-rpc
+unsupported" behavior. 100% coverage on all 4 metrics for `agent-executor.ts` (up from a
+pre-existing, previously-undetected gap in `terminateChildTreeBestEffort`'s own cleanup-failure
+path, closed as part of this pass since it's shared infrastructure this task's new code also calls
+into). Full package: 285/285 tests. `pnpm guard`: clean.

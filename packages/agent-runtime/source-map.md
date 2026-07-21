@@ -816,3 +816,16 @@ list entries were concatenated as-is.
 **`pnpm-lock.yaml`**: not hand-merged; `origin/main`'s version was accepted
 to resolve the conflict marker, then `CI=true pnpm install` was run from the
 repo root to regenerate it from the merged `package.json` files.
+
+## 2026-07-21 addition — export `PiRpcSession`/`PiRpcSessionOptions` from the barrel
+
+`agent-protocol/pi-rpc/index.ts`'s own doc comment previously said it re-exports "the three public
+symbols" (`mapPiRpcEvent`/`attachPiRpcSession`/`parsePiModels`) — deliberately omitting types.
+`AcpSessionController`/`AttachAcpSessionOptions` were already exported for ACP's equivalent
+controller/options shapes, so a real external driver (`@jini/daemon`'s `AgentExecutor`, wiring the
+one `pi-rpc` def for the first time — see its own `source-map.md`) had no way to type its own
+`wirePiRpcLifecycle` wiring against `attachPiRpcSession`'s actual return/options shape without this.
+Propagated through both barrel layers (`agent-protocol/pi-rpc/index.ts` → `agent-protocol/index.ts`
+→ root `index.ts`), closing an asymmetry rather than introducing a new export pattern. No behavior
+change — pure type re-exports, `pnpm --filter @jini/agent-runtime exec vitest run`: 1648/1648 tests,
+unaffected.

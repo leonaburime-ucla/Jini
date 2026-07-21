@@ -9,21 +9,27 @@
  * a real `node:child_process` spawn, feeding both `RunLifecycle.emit()` and
  * this package's own `@jini/protocol` event envelope.
  *
- * ## v1 scope: 18 of 24 registered agent defs
+ * ## v1 scope: 19 of 24 registered agent defs
  *
  * `@jini/agent-runtime`'s registry ships 24 built-in defs across four
- * `streamFormat` families. Only the JSON-stream-parser family — the four
+ * `streamFormat` families. The JSON-stream-parser family — the four
  * `createXStreamHandler`-shaped parsers (`claude-stream-json`,
  * `json-event-stream`, `copilot-stream-json`, `qoder-stream-json`), covering
  * 9 defs (amp, codebuddy, claude, codex, cursor-agent, opencode, mimo,
- * copilot, qoder) — plus all 9 `acp-json-rpc` defs — are wired here. ACP
- * owns its JSON-RPC handshake and prompt delivery, so it takes its own
- * lifecycle branch rather than being treated as a stdout-tail parser. The
- * remaining `pi-rpc` × 1 and `plain` × 5 shapes are still deliberately
- * unsupported; `plain` has no existing parser or dispatch branch anywhere
- * in this codebase and pi-rpc has a separately-shaped controller.
- * `run()` rejects cleanly (never a bare throw) with an `AgentExecutorError`
- * for any def outside the supported 18 — see `isSupportedStreamFormat`.
+ * copilot, qoder) — plus all 9 `acp-json-rpc` defs, plus the one `pi-rpc`
+ * def (`pi`), are wired here. ACP and pi-rpc each own their own JSON-RPC
+ * prompt-delivery protocol, so each takes its own lifecycle branch rather
+ * than being treated as a stdout-tail parser; pi-rpc's events arrive through
+ * the exact same `{type, ...}` vocabulary `translateAgentRuntimeEvent`
+ * already handles for ACP/JSON-stream (confirmed by reading every
+ * `mapPiRpcEvent` `send()` call site — no new translation code was needed),
+ * so only the driver wiring (spawn → attach → cancel → finish) is new. The
+ * remaining `plain` × 5 shape is still deliberately unsupported: it has no
+ * existing parser or dispatch branch anywhere in this codebase and its
+ * design space (a single final chunk on `flush()`? raw passthrough only?)
+ * is not decided. `run()` rejects cleanly (never a bare throw) with an
+ * `AgentExecutorError` for any def outside the supported 19 — see
+ * `isSupportedStreamFormat`.
  *
  * ## Invariant
  *
@@ -51,9 +57,11 @@ import {
   getAgentDef,
   resolveAgentLaunch,
   attachAcpSession,
+  attachPiRpcSession,
   type AcpPermissionHandler,
   type AcpSessionController,
   type AgentLaunchResolution,
+  type PiRpcSession,
   type RuntimeAgentDef,
 } from '@jini/agent-runtime';
 import {
@@ -80,19 +88,20 @@ const SUPPORTED_STREAM_FORMATS = [
   'copilot-stream-json',
   'qoder-stream-json',
   'acp-json-rpc',
+  'pi-rpc',
 ] as const;
 
-/** The 4 of the registry's stream-format families this driver implements — see module doc. */
+/** The families of the registry's stream-format this driver implements — see module doc. */
 export type SupportedStreamFormat = (typeof SUPPORTED_STREAM_FORMATS)[number];
 
-type JsonStreamFormat = Exclude<SupportedStreamFormat, 'acp-json-rpc'>;
+type JsonStreamFormat = Exclude<SupportedStreamFormat, 'acp-json-rpc' | 'pi-rpc'>;
 
 /**
- * Narrows a `RuntimeAgentDef.streamFormat` string to the 4 supported
+ * Narrows a `RuntimeAgentDef.streamFormat` string to the supported
  * families.
  * @param value - The def's raw `streamFormat` string.
- * @returns `true` when `value` is one of the 4 JSON-stream-parser formats this driver wires.
- * @complexity O(1) — fixed 4-element membership check.
+ * @returns `true` when `value` is one of the JSON-stream-parser, ACP, or pi-rpc formats this driver wires.
+ * @complexity O(1) — fixed membership check.
  * @overallScore 100/100
  */
 export function isSupportedStreamFormat(value: string): value is SupportedStreamFormat {
@@ -396,12 +405,12 @@ async function terminateChildTree(deps: TerminateChildTreeDeps, child: ChildProc
 }
 
 /** Which caller invoked {@link terminateChildTreeBestEffort} — carried through to `onCleanupFailure` (SEC-007) for diagnosis. */
-export type AgentCleanupFailurePhase = 'cancel' | 'acp-attach-failure';
+export type AgentCleanupFailurePhase = 'cancel' | 'acp-attach-failure' | 'pi-rpc-attach-failure';
 
 export interface AgentCleanupFailureContext {
   readonly runId: string;
   readonly phase: AgentCleanupFailurePhase;
-  readonly pid: number | null;
+  readonly pid: number;
   readonly error: unknown;
 }
 
@@ -409,7 +418,7 @@ export interface AgentCleanupFailureContext {
 function defaultCleanupFailureSink(context: AgentCleanupFailureContext): void {
   // eslint-disable-next-line no-console
   console.error(
-    `[@jini/daemon] agent-executor: process-tree cleanup failed for run "${context.runId}" (${context.phase}, pid=${context.pid ?? 'unknown'})`,
+    `[@jini/daemon] agent-executor: process-tree cleanup failed for run "${context.runId}" (${context.phase}, pid=${context.pid})`,
     redactSecrets(errorMessage(context.error)),
   );
 }
@@ -432,7 +441,12 @@ function terminateChildTreeBestEffort(
   onCleanupFailure: (context: AgentCleanupFailureContext) => void,
 ): Promise<void> {
   return terminateChildTree(deps, child).catch((error: unknown) => {
-    onCleanupFailure({ runId, phase, pid: child.pid ?? null, error });
+    // `terminateChildTree` only reaches a rejecting call (rather than its own early return) once
+    // its own `child.pid == null` guard has already passed, and a real ChildProcess's `pid` is
+    // never unset after being assigned — so `child.pid` is provably a number here. The non-null
+    // assertion documents that invariant instead of a `?? null` fallback that could never
+    // actually be exercised (same pattern as `pi-rpc/session.ts`'s `resolveSessionPathChangedSince`).
+    onCleanupFailure({ runId, phase, pid: child.pid!, error });
     try {
       if (child.pid != null && !child.killed) child.kill('SIGKILL');
     } catch {
@@ -674,6 +688,92 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
   return controller;
 }
 
+interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
+  readonly runId: string;
+  readonly child: ChildProcess;
+  readonly lifecycle: RunLifecycle;
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly attachPiRpcSession: typeof attachPiRpcSession;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
+}
+
+/**
+ * Wires a pi-rpc child to a run. Like ACP, pi owns its own prompt-delivery
+ * protocol (`prompt`/`new_session`/`abort` RPC commands over stdin) and
+ * reports parsed events through `attachPiRpcSession`'s `send` callback —
+ * unlike ACP's callback, pi-rpc's `send` always uses the `'agent'` channel
+ * (confirmed by reading every `mapPiRpcEvent` call site: error-ness is
+ * signaled via the payload's own `type: 'error'` field, never a separate
+ * channel), so this wrapper runs every payload through the same
+ * `translateAgentRuntimeEvent` pipeline ACP/JSON-stream already use, with no
+ * channel branch needed. Raw stdout/stderr are still forwarded for
+ * diagnostics (same as ACP) even though `attachPiRpcSession` also consumes
+ * `child.stdout` itself for its own JSON-RPC parsing — Node multicasts
+ * `'data'` events to every listener, so both coexist safely.
+ *
+ * v1 omits `model`/`imagePaths`/`uploadRoot`/`parentSession` — none of
+ * `AgentExecutorRunInput`'s fields carry them yet (matching this module's
+ * established "explicitly out of scope" discipline for other follow-ups:
+ * multi-turn tool continuation, resumable session ids, etc.).
+ */
+function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
+  const { runId, child, lifecycle } = ctx;
+  let cancelRequested = false;
+  let emitQueue: Promise<void> = Promise.resolve();
+
+  function enqueueEmit(task: () => Promise<unknown>): void {
+    emitQueue = emitQueue.then(async () => {
+      try {
+        await task();
+      } catch {
+        // A late event racing a terminal lifecycle is intentionally dropped;
+        // it must not prevent subsequent queued cleanup from running.
+      }
+    });
+  }
+
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stdin?.on('error', () => {});
+  child.on('error', () => {});
+
+  let session: PiRpcSession | null = null;
+  const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
+    cancelRequested = true;
+    session?.abort();
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
+  });
+
+  child.on('close', (code, signal) => {
+    void (async () => {
+      await emitQueue;
+      unsubscribeCancel();
+      const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
+      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+    })();
+  });
+
+  session = ctx.attachPiRpcSession({
+    child: ctx.child,
+    prompt: ctx.prompt,
+    cwd: ctx.cwd,
+    send(_channel, payload) {
+      const translation = translateAgentRuntimeEvent(payload);
+      if (translation.kind === 'agent') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
+      } else if (translation.kind === 'error') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
+      }
+    },
+  });
+  return session;
+}
+
 /**
  * Writes the initial user turn to the child's stdin per `def.promptInputFormat`
  * (both branches only run for `promptViaStdin: true` defs — the only shape
@@ -724,6 +824,8 @@ export interface CreateAgentExecutorOptions {
    * to `createDelegatedToolBridge`, not this permission callback.
    */
   readonly acpPermissionHandler?: AcpPermissionHandler;
+  /** @default the real `@jini/agent-runtime` pi-rpc session transport */
+  readonly attachPiRpcSession?: typeof attachPiRpcSession;
   /** @default the real `@jini/platform` process-snapshot enumerator */
   readonly listProcessSnapshots?: typeof listProcessSnapshots;
   /** @default the real `@jini/platform` descendant-PID collector */
@@ -757,6 +859,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const createCommandInvocationFn = options.createCommandInvocation ?? createCommandInvocation;
   const spawnFn = options.spawn ?? nodeSpawn;
   const attachAcpSessionFn = options.attachAcpSession ?? attachAcpSession;
+  const attachPiRpcSessionFn = options.attachPiRpcSession ?? attachPiRpcSession;
   const listProcessSnapshotsFn = options.listProcessSnapshots ?? listProcessSnapshots;
   const collectProcessTreePidsFn = options.collectProcessTreePids ?? collectProcessTreePids;
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
@@ -843,7 +946,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     }
 
     const stdinHandle =
-      streamFormat === 'acp-json-rpc'
+      streamFormat === 'acp-json-rpc' || streamFormat === 'pi-rpc'
         ? null
         : wireChildLifecycle({
             runId: input.runId,
@@ -902,6 +1005,43 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         throw new AgentExecutorError(
           'AGENT_SPAWN_FAILED',
           `AgentExecutor: could not attach ACP session for agent \"${def.id}\": ${errorMessage(err)}`,
+        );
+      }
+      return;
+    }
+
+    if (streamFormat === 'pi-rpc') {
+      try {
+        wirePiRpcLifecycle({
+          runId: input.runId,
+          child,
+          lifecycle,
+          prompt: input.prompt,
+          cwd: input.cwd,
+          attachPiRpcSession: attachPiRpcSessionFn,
+          listProcessSnapshots: listProcessSnapshotsFn,
+          collectProcessTreePids: collectProcessTreePidsFn,
+          stopProcesses: stopProcessesFn,
+          onCleanupFailure: onCleanupFailureFn,
+        });
+      } catch (err) {
+        // Same discipline as the ACP attach-failure path directly above: await cleanup here
+        // rather than fire-and-forget (SEC-007).
+        await terminateChildTreeBestEffort(
+          {
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+          },
+          child,
+          input.runId,
+          'pi-rpc-attach-failure',
+          onCleanupFailureFn,
+        );
+        await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
+        throw new AgentExecutorError(
+          'AGENT_SPAWN_FAILED',
+          `AgentExecutor: could not attach pi-rpc session for agent \"${def.id}\": ${errorMessage(err)}`,
         );
       }
       return;

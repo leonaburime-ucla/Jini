@@ -119,4 +119,6 @@ export {
   mapPiRpcEvent,
   attachPiRpcSession,
   parsePiModels as parsePiRpcModels,
+  type PiRpcSession,
+  type PiRpcSessionOptions,
 } from './agent-protocol/index.js';

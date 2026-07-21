@@ -20,4 +20,10 @@ export {
   attachAcpSession,
   noopAccountFailureClassifier,
 } from './acp/index.js';
-export { mapPiRpcEvent, attachPiRpcSession, parsePiModels } from './pi-rpc/index.js';
+export {
+  mapPiRpcEvent,
+  attachPiRpcSession,
+  parsePiModels,
+  type PiRpcSession,
+  type PiRpcSessionOptions,
+} from './pi-rpc/index.js';
