@@ -5,6 +5,7 @@ export { renderCustomOpenAIImage, customImageOverridesOpenAIModel, CUSTOM_IMAGE_
 export { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
 export { renderGrokImage, renderXAITTS, grokAspectFor } from './providers/grok.js';
 export { renderImageRouterImage, renderImageRouterVideo, imageRouterSizeFor } from './providers/imagerouter.js';
+export { renderMinimaxTTS } from './providers/minimax.js';
 export { renderNanoBananaImage } from './providers/nanobanana.js';
 export { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 export { renderOpenRouterImage, openRouterAspectFor } from './providers/openrouter.js';

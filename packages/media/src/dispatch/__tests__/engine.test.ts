@@ -227,6 +227,14 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(sfxResult.providerId).toBe('elevenlabs');
   });
 
+  it('routes minimax + audio:speech to renderMinimaxTTS', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { audio: Buffer.from('audio').toString('hex') } }), { status: 200 })));
+    const engine = createMediaDispatchEngine({ credentials: { minimax: { apiKey: 'mm-key' } } });
+    const result = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'minimax-tts' });
+    expect(result.providerId).toBe('minimax');
+    expect(result.bytes.toString('utf8')).toBe('audio');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');

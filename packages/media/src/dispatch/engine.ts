@@ -15,6 +15,7 @@ import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './prov
 import { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
 import { renderGrokImage, renderXAITTS } from './providers/grok.js';
 import { renderImageRouterImage, renderImageRouterVideo } from './providers/imagerouter.js';
+import { renderMinimaxTTS } from './providers/minimax.js';
 import { renderNanoBananaImage } from './providers/nanobanana.js';
 import { renderOpenAIImage, renderOpenAISpeech } from './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
@@ -107,6 +108,9 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   elevenlabs: {
     'audio:speech': renderElevenLabsTTS,
     'audio:sfx': renderElevenLabsSfx,
+  },
+  minimax: {
+    'audio:speech': renderMinimaxTTS,
   },
 };
 
