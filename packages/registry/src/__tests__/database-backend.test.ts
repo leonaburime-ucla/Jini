@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { StaticRegistryBackend } from '../static-backend.js';
 import { DatabaseRegistryBackend, ensureRegistryTables, upsertRegistryEntry } from '../database-backend.js';
@@ -137,6 +141,28 @@ describe('DatabaseRegistryBackend', () => {
     expect(stored.versions.find((v: { version: string }) => v.version === '1.1.0').yanked).toBeUndefined();
   });
 
+  it('publish rejects a malformed entry instead of writing a row that would poison future reads (CR-009)', async () => {
+    const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+    // `name` doesn't match the `vendor/name` shape `RegistryEntrySchema`
+    // requires — without validating on write, this would be stored as-is
+    // and then `manifestFromDb()`/`parseStoredEntry()` would throw on every
+    // subsequent list/search/resolve/doctor call for this backend, since
+    // those trust that anything already in the table is schema-shaped.
+    await expect(backend.publish?.({ entry: { name: 'no-slash', version: '1.0.0', source: 's' } } as never)).rejects.toThrow(
+      /invalid registry publish request/i,
+    );
+    // Nothing was written, and the backend is still usable.
+    await expect(backend.list()).resolves.toEqual([]);
+  });
+
+  it('publish rejects an entry with a wrongly-typed field instead of writing it (CR-009)', async () => {
+    const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+    await expect(
+      backend.publish?.({ entry: { name: 'vendor/example', version: '1.0.0', source: 's', tags: 'not-an-array' } as never }),
+    ).rejects.toThrow(/invalid registry publish request/i);
+    await expect(backend.list()).resolves.toEqual([]);
+  });
+
   it('yank falls back to a synthetic single-version list when the stored entry has no versions array', async () => {
     const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
     const bare = { name: 'vendor/bare', version: '1.0.0', source: 's' };
@@ -183,6 +209,81 @@ describe('DatabaseRegistryBackend', () => {
       corruptRow('{not valid json');
 
       await expect(backend.yank?.('vendor/corrupt', '1.0.0', 'reason')).rejects.toThrow(/corrupt registry_entries row/i);
+    });
+  });
+
+  describe('yank concurrency (read-modify-write atomicity)', () => {
+    // `yank` reads a row, computes a new value from it, then writes the
+    // result back. Run against a *file-backed* database (not `:memory:`,
+    // which each connection would see independently) with a second,
+    // independent connection to the same file standing in for a concurrent
+    // writer (e.g. another daemon process sharing this database). This
+    // proves `yank` now holds the row lock for its whole read-modify-write
+    // instead of leaving a window between two separate auto-committing
+    // statements where a concurrent writer could interleave and be silently
+    // clobbered (a lost update).
+    let dir: string;
+    let file: string;
+    let dbA: Database.Database;
+    let dbB: Database.Database;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'registry-yank-lock-'));
+      file = join(dir, 'registry.db');
+      // better-sqlite3 defaults `timeout` (its busy-wait budget before
+      // throwing SQLITE_BUSY) to 5000ms — set it low here so a genuine lock
+      // conflict fails fast and deterministically instead of making this
+      // test wait out that default on every run.
+      dbA = new Database(file, { timeout: 50 });
+      dbB = new Database(file, { timeout: 50 });
+    });
+
+    afterEach(() => {
+      dbA.close();
+      dbB.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('holds the write lock across its own read and write, blocking a concurrent writer for the whole operation', async () => {
+      const backend = new DatabaseRegistryBackend({ id: 'fixture', db: dbA });
+      await backend.publish?.({ entry });
+
+      // Intercept the exact moment `yank`'s SELECT executes and, from
+      // *inside* that call, attempt a concurrent write via the second
+      // connection — simulating another process writing to the same row in
+      // what would, without a lock held across the whole operation, be the
+      // gap between `yank`'s read and its later write.
+      let concurrentWriteError: unknown = null;
+      const originalPrepare = dbA.prepare.bind(dbA);
+      const prepareSpy = vi.spyOn(dbA, 'prepare').mockImplementation((sql: string) => {
+        const stmt = originalPrepare(sql);
+        if (sql.includes('SELECT entry_json FROM registry_entries')) {
+          const originalGet = stmt.get.bind(stmt);
+          (stmt as unknown as { get: typeof stmt.get }).get = (...args: Parameters<typeof stmt.get>) => {
+            try {
+              dbB.prepare(`UPDATE registry_entries SET updated_at = updated_at WHERE backend_id = ? AND name = ?`).run(
+                'fixture',
+                'vendor/example',
+              );
+            } catch (error) {
+              concurrentWriteError = error;
+            }
+            return originalGet(...args);
+          };
+        }
+        return stmt;
+      });
+
+      const outcome = await backend.yank?.('vendor/example', '1.1.0', 'security issue');
+      prepareSpy.mockRestore();
+
+      // The yank itself succeeds normally — it holds the lock, so it is
+      // never contended against.
+      expect(outcome).toMatchObject({ ok: true });
+      // But the concurrent writer, attempting to write mid-yank, was
+      // rejected: proof the whole read-modify-write ran under one lock.
+      expect(concurrentWriteError).not.toBeNull();
+      expect(String(concurrentWriteError)).toMatch(/SQLITE_BUSY|database is locked/i);
     });
   });
 });

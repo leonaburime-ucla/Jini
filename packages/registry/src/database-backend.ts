@@ -18,7 +18,7 @@ import {
   type RegistryTrust,
   type RegistryYankOutcome,
 } from '@jini/protocol';
-import { StaticRegistryBackend } from './static-backend.js';
+import { assertValidPublishRequest, StaticRegistryBackend } from './static-backend.js';
 
 type SqliteDb = Database.Database;
 
@@ -43,45 +43,65 @@ export class DatabaseRegistryBackend extends StaticRegistryBackend {
   }
 
   async publish(request: RegistryPublishRequest): Promise<RegistryPublishOutcome> {
-    const [vendor, name] = request.entry.name.split('/');
+    // Validate the whole request against the wire schema before writing
+    // anything: `manifestFromDb()`/`parseStoredEntry()` throw on read for
+    // any row that fails `RegistryEntrySchema`, so an unvalidated publish
+    // could write a row that permanently breaks every future
+    // `list`/`search`/`resolve`/`doctor` call for this backend (see CR-009 /
+    // `assertValidPublishRequest`'s docs in `static-backend.ts`).
+    const parsed = assertValidPublishRequest(request);
+    const [vendor, name] = parsed.entry.name.split('/');
     const changedFiles = [
       `db://${this.id}/entries/${vendor}/${name}`,
-      `db://${this.id}/entries/${vendor}/${name}/versions/${request.entry.version}`,
+      `db://${this.id}/entries/${vendor}/${name}/versions/${parsed.entry.version}`,
     ];
     // A dry-run publish must not mutate the database — only report what
     // *would* change — and must say so honestly in the outcome.
-    if (request.dryRun) {
+    if (parsed.dryRun) {
       return { ok: true, dryRun: true, changedFiles, warnings: [] };
     }
-    upsertRegistryEntry(this.db, this.id, request.entry);
+    upsertRegistryEntry(this.db, this.id, parsed.entry);
     return { ok: true, dryRun: false, changedFiles, warnings: [] };
   }
 
   async yank(name: string, version: string, reason: string): Promise<RegistryYankOutcome> {
-    const row = this.db
-      .prepare(`SELECT entry_json FROM registry_entries WHERE backend_id = ? AND name = ?`)
-      .get(this.id, name) as { entry_json: string } | undefined;
-    if (!row) {
-      return { ok: false, name, version, reason, warnings: [`${name} not found`] };
-    }
-    const entry = parseStoredEntry(row.entry_json, `${this.id}/${name}`);
-    const versions = entry.versions ?? [{ version: entry.version, source: entry.source }];
-    // Reject a yank of a version that never existed instead of reporting a
-    // false success — mutating nothing while still returning `ok: true`
-    // would let a caller believe a nonexistent version was suppressed.
-    const exists = versions.some((item) => item.version === version);
-    if (!exists) {
-      return { ok: false, name, version, reason, warnings: [`${name}@${version} not found`] };
-    }
-    const nextVersions = versions.map((item) =>
-      item.version === version ? { ...item, yanked: true, yankedAt: new Date().toISOString(), yankReason: reason } : item,
-    );
-    upsertRegistryEntry(this.db, this.id, {
-      ...entry,
-      versions: nextVersions,
-      ...(entry.version === version ? { yanked: true, yankedAt: new Date().toISOString(), yankReason: reason } : {}),
+    // Read-then-write: run as a single `IMMEDIATE` transaction rather than
+    // two separate auto-committing statements. Two bare statements leave a
+    // window — between the SELECT and the later UPSERT — where a concurrent
+    // writer (a second connection/process sharing this database file, e.g.
+    // another daemon instance) can commit a change to the same row; this
+    // yank would then compute `nextVersions` from stale data and silently
+    // clobber that concurrent change when it writes (a lost update).
+    // `.immediate` acquires the write lock at the *start* of the
+    // transaction, before the SELECT even runs, so a concurrent writer is
+    // rejected for the whole operation instead of being able to interleave.
+    const runYank = this.db.transaction((): RegistryYankOutcome => {
+      const row = this.db
+        .prepare(`SELECT entry_json FROM registry_entries WHERE backend_id = ? AND name = ?`)
+        .get(this.id, name) as { entry_json: string } | undefined;
+      if (!row) {
+        return { ok: false, name, version, reason, warnings: [`${name} not found`] };
+      }
+      const entry = parseStoredEntry(row.entry_json, `${this.id}/${name}`);
+      const versions = entry.versions ?? [{ version: entry.version, source: entry.source }];
+      // Reject a yank of a version that never existed instead of reporting a
+      // false success — mutating nothing while still returning `ok: true`
+      // would let a caller believe a nonexistent version was suppressed.
+      const exists = versions.some((item) => item.version === version);
+      if (!exists) {
+        return { ok: false, name, version, reason, warnings: [`${name}@${version} not found`] };
+      }
+      const nextVersions = versions.map((item) =>
+        item.version === version ? { ...item, yanked: true, yankedAt: new Date().toISOString(), yankReason: reason } : item,
+      );
+      upsertRegistryEntry(this.db, this.id, {
+        ...entry,
+        versions: nextVersions,
+        ...(entry.version === version ? { yanked: true, yankedAt: new Date().toISOString(), yankReason: reason } : {}),
+      });
+      return { ok: true, name, version, reason, warnings: [] };
     });
-    return { ok: true, name, version, reason, warnings: [] };
+    return runYank.immediate();
   }
 
   protected override getManifest(): RegistryManifest {
