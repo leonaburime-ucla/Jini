@@ -13,6 +13,7 @@ import type { AudioKind, MediaModel, MediaProvider, MediaSurface } from '../type
 import { buildRenderContext } from './context.js';
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
 import { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
+import { renderFishAudioTTS } from './providers/fishaudio.js';
 import { renderGrokImage, renderXAITTS } from './providers/grok.js';
 import { renderImageRouterImage, renderImageRouterVideo } from './providers/imagerouter.js';
 import { renderMinimaxTTS } from './providers/minimax.js';
@@ -116,6 +117,9 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   senseaudio: {
     image: renderSenseAudioImage,
     'audio:speech': renderSenseAudioTTS,
+  },
+  fishaudio: {
+    'audio:speech': renderFishAudioTTS,
   },
 };
 

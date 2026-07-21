@@ -256,6 +256,14 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(ttsResult.providerId).toBe('senseaudio');
   });
 
+  it('routes fishaudio + audio:speech to renderFishAudioTTS', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(Buffer.from('audio'), { status: 200 })));
+    const engine = createMediaDispatchEngine({ credentials: { fishaudio: { apiKey: 'fa-key' } } });
+    const result = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'fish-speech-2' });
+    expect(result.providerId).toBe('fishaudio');
+    expect(result.bytes.toString('utf8')).toBe('audio');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');

@@ -3,6 +3,7 @@ export { resolveProviderCredentialsFromEnv } from './credentials.js';
 export { createMediaDispatchEngine } from './engine.js';
 export { renderCustomOpenAIImage, customImageOverridesOpenAIModel, CUSTOM_IMAGE_MODEL_ID } from './providers/custom-image.js';
 export { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
+export { renderFishAudioTTS } from './providers/fishaudio.js';
 export { renderGrokImage, renderXAITTS, grokAspectFor } from './providers/grok.js';
 export { renderImageRouterImage, renderImageRouterVideo, imageRouterSizeFor } from './providers/imagerouter.js';
 export { renderMinimaxTTS } from './providers/minimax.js';
