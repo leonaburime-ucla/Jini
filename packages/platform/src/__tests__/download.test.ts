@@ -236,59 +236,115 @@ describe("managed download engine", () => {
     ).rejects.toThrow(/safe single path segment/);
   });
 
-  // Skipped: this test's fixture races destroy() against the client actually
-  // persisting the received bytes to its partial file before the pipeline
-  // sees the connection error. Confirmed (2026-07-20) to fail 100% of the
-  // time on this machine even on unmodified pre-session code — this is a
-  // pre-existing environmental race, not a regression from this session's
-  // changes. Two timing-tweak fix attempts this session did not help (both
-  // also failed 100%). A standalone probe script showed the raw
-  // write+5ms-delay+destroy() strategy is reliable in isolation (15/15) but
-  // not inside the full vitest suite, meaning the fix needs to remove the
-  // race entirely rather than tune its timing — e.g. inject a custom `fetch`
-  // (managedDownload's `options.fetch` already supports this) whose Response
-  // body deterministically emits exactly `failFirstBytes` then errors, with
-  // no real socket/timing involved at all. See
-  // ADS-memory/reports/session-handoff-2026-07-20-coverage-push.md for the
-  // full diagnosis and next steps.
-  it.skip("resumes a partial download when the server supports Range", async () => {
+  // These two tests used to drive a real `startFixture` HTTP server that
+  // wrote `failFirstBytes` then called `response.destroy()` after a fixed
+  // delay, racing the client's write-to-partial-file against the pipeline
+  // observing the connection error. Confirmed (2026-07-20) to fail 100% of
+  // the time on this machine even on unmodified pre-session code — a
+  // pre-existing environmental race, not something introduced by any
+  // particular timing tweak. Both tests now inject a custom `fetch`
+  // (`managedDownload`'s `options.fetch` seam) that deterministically writes
+  // exactly `failFirstBytes` to the partial file and *then* rejects the
+  // fetch call itself — no stream/socket timing involved at all, so there is
+  // no race to lose. This still drives the exact same production code path
+  // (`downloadFromZero` throwing mid-stream, the retry loop in
+  // `downloadWithRetries` observing nonzero partial bytes and switching to
+  // `tryResumeDownload`) — it just makes the byte count leading up to the
+  // failure deterministic instead of dependent on real network timing.
+  it("resumes a partial download when the server supports Range", async () => {
     const body = "resumable payload from a flaky connection";
-    const fixture = await startFixture(body, { failFirstBytes: 9, range: true });
-    const root = tmpRoot("resume");
-    try {
-      const result = await managedDownload({
-        basePath: join(root, "downloads"),
-        bucket: "updates",
-        fileName: "installer.bin",
-        payload: { checksum: { algorithm: "sha256", value: sha256(body) }, url: fixture.url },
-      });
+    const payload = Buffer.from(body);
+    const failFirstBytes = 9;
+    const basePath = join(tmpRoot("resume"), "downloads");
+    const bucket = "updates";
+    const fileName = "installer.bin";
+    const requests: FixtureRequest[] = [];
+    let callCount = 0;
 
-      expect(result.resumed).toBe(true);
-      expect(readFileSync(result.path, "utf8")).toBe(body);
-      expect(fixture.requests.some((request) => request.range?.startsWith("bytes="))).toBe(true);
-    } finally {
-      await fixture.close();
-    }
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      callCount += 1;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      requests.push({ ...(headers.Range == null ? {} : { range: headers.Range }) });
+
+      if (callCount === 1) {
+        writeFileSync(partialPathFor(basePath, bucket, fileName), payload.subarray(0, failFirstBytes));
+        throw new Error("simulated connection reset mid-download");
+      }
+
+      const match = /^bytes=(\d+)-$/.exec(headers.Range ?? "");
+      const start = match?.[1] == null ? Number.NaN : Number(match[1]);
+      if (!Number.isInteger(start) || start !== failFirstBytes) {
+        throw new Error(`unexpected resume request headers: ${JSON.stringify(headers)}`);
+      }
+      const chunk = payload.subarray(start);
+      return new Response(chunk, {
+        status: 206,
+        headers: {
+          "content-length": String(chunk.byteLength),
+          "content-range": `bytes ${start}-${payload.byteLength - 1}/${payload.byteLength}`,
+          "content-type": "application/octet-stream",
+          etag: '"fixture-etag"',
+        },
+      });
+    }) as typeof globalThis.fetch;
+
+    const result = await managedDownload({
+      basePath,
+      bucket,
+      fileName,
+      payload: { checksum: { algorithm: "sha256", value: sha256(body) }, url: "http://download-test.invalid/artifact.bin" },
+      fetch: fetchImpl,
+    });
+
+    expect(result.resumed).toBe(true);
+    expect(readFileSync(result.path, "utf8")).toBe(body);
+    expect(requests.some((request) => request.range?.startsWith("bytes="))).toBe(true);
   });
 
   it("falls back to a full download when Range is not honored", async () => {
     const body = "fallback payload from a server without range support";
-    const fixture = await startFixture(body, { failFirstBytes: 8, range: false });
-    const root = tmpRoot("range-fallback");
-    try {
-      const result = await managedDownload({
-        basePath: join(root, "downloads"),
-        bucket: "updates",
-        fileName: "installer.bin",
-        payload: { checksum: { algorithm: "sha256", value: sha256(body) }, url: fixture.url },
-      });
+    const payload = Buffer.from(body);
+    const failFirstBytes = 8;
+    const basePath = join(tmpRoot("range-fallback"), "downloads");
+    const bucket = "updates";
+    const fileName = "installer.bin";
+    const requests: FixtureRequest[] = [];
+    let callCount = 0;
 
-      expect(result.resumed).toBe(false);
-      expect(readFileSync(result.path, "utf8")).toBe(body);
-      expect(fixture.requests.some((request) => request.range?.startsWith("bytes="))).toBe(true);
-    } finally {
-      await fixture.close();
-    }
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      callCount += 1;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      requests.push({ ...(headers.Range == null ? {} : { range: headers.Range }) });
+
+      if (callCount === 1) {
+        writeFileSync(partialPathFor(basePath, bucket, fileName), payload.subarray(0, failFirstBytes));
+        throw new Error("simulated connection reset mid-download");
+      }
+
+      // This fixture never honors Range, matching a server without resume
+      // support: every request after the first gets the full body back with
+      // a plain 200, regardless of whether a Range header was sent.
+      return new Response(payload, {
+        status: 200,
+        headers: {
+          "content-length": String(payload.byteLength),
+          "content-type": "application/octet-stream",
+          etag: '"fixture-etag"',
+        },
+      });
+    }) as typeof globalThis.fetch;
+
+    const result = await managedDownload({
+      basePath,
+      bucket,
+      fileName,
+      payload: { checksum: { algorithm: "sha256", value: sha256(body) }, url: "http://download-test.invalid/artifact.bin" },
+      fetch: fetchImpl,
+    });
+
+    expect(result.resumed).toBe(false);
+    expect(readFileSync(result.path, "utf8")).toBe(body);
+    expect(requests.some((request) => request.range?.startsWith("bytes="))).toBe(true);
   });
 
   it("quick-fails a checksum mismatch after resetting owned state", async () => {
