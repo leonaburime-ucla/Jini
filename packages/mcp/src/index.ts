@@ -110,6 +110,16 @@ export type {
   McpTransportLike,
 } from './server/index.js';
 
+// ── server: the generic MCP resource surface + kernel resource defs ────────
+export {
+  activeContextResource,
+  buildResourceIndex,
+  handleResourceRead,
+  KERNEL_RESOURCES,
+  resourcesToList,
+} from './server/index.js';
+export type { McpResourceDef, McpResourceReadResult } from './server/index.js';
+
 // ── agent-install: register an MCP server into external agents ──────────────
 export {
   AGENT_SLUGS,

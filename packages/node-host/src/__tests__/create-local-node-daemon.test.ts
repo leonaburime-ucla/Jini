@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
 import { AgentExecutorToken } from '@jini/daemon';
 import type { DaemonStatusResponse, RunStartContext } from '@jini/http';
+import { readLiveDaemonRegistryRecord, resolveDaemonRegistryPath } from '@jini/sidecar';
+import * as SidecarModule from '@jini/sidecar';
 import * as SqliteModule from '@jini/sqlite';
 import {
   createLocalNodeDaemon,
@@ -709,5 +711,111 @@ describe('createLocalNodeDaemon', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  describe('local daemon-registry discovery record', () => {
+    it('writes <dataDir>/daemon.json by default once listening, matching the real bound url/host/port/pid', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      daemonsToStop.push(daemon);
+
+      const registryPath = resolveDaemonRegistryPath(dataDir);
+      const record = await readLiveDaemonRegistryRecord(registryPath);
+      expect(record).toEqual({
+        url: daemon.url,
+        host: '127.0.0.1',
+        port: Number(new URL(daemon.url).port),
+        pid: process.pid,
+        startedAt: expect.any(String),
+      });
+    });
+
+    it('the record is written (and readable) before createLocalNodeDaemon resolves — no race for an immediate CLI discovery read', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      daemonsToStop.push(daemon);
+
+      // No `await` / retry / `vi.waitFor` here on purpose: the whole point of writing the record
+      // before resolving `createLocalNodeDaemon`'s own promise is that it's already there by now.
+      const record = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDir));
+      expect(record?.url).toBe(daemon.url);
+    });
+
+    it("stop() removes the discovery record — a caller that finished shouldn't be discoverable anymore", async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      const registryPath = resolveDaemonRegistryPath(dataDir);
+      expect(existsSync(registryPath)).toBe(true);
+
+      await daemon.stop();
+
+      expect(existsSync(registryPath)).toBe(false);
+    });
+
+    it('honors a custom discoveryFile path instead of the dataDir-derived default', async () => {
+      const dataDir = makeTempDataDir();
+      const customDir = makeTempDataDir();
+      const customPath = join(customDir, 'custom-daemon-record.json');
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile: customPath });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(resolveDaemonRegistryPath(dataDir))).toBe(false);
+      const record = await readLiveDaemonRegistryRecord(customPath);
+      expect(record?.url).toBe(daemon.url);
+    });
+
+    it('discoveryFile: false disables writing a discovery record entirely', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile: false });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(resolveDaemonRegistryPath(dataDir))).toBe(false);
+    });
+
+    it('two daemons on one machine (two different dataDirs) each get their own, non-colliding discovery record — the multi-daemon-per-machine case', async () => {
+      const dataDirA = makeTempDataDir();
+      const dataDirB = makeTempDataDir();
+      const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()] });
+      daemonsToStop.push(daemonA);
+      const daemonB = await createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()] });
+      daemonsToStop.push(daemonB);
+
+      const recordA = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDirA));
+      const recordB = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDirB));
+      expect(recordA?.url).toBe(daemonA.url);
+      expect(recordB?.url).toBe(daemonB.url);
+      expect(recordA?.url).not.toBe(recordB?.url);
+    });
+
+    it('a discovery-record write failure (e.g. an unwritable dataDir) does not fail daemon boot — best-effort by design', async () => {
+      const dataDir = makeTempDataDir();
+      // `writeJsonFile`'s `mkdir(dirname(filePath), { recursive: true })` throws ENOTDIR when an
+      // ancestor path segment is a regular file rather than a directory — a deterministic,
+      // privilege-independent way to force the write to fail (unlike a chmod-based permission
+      // test, which does not actually deny access when tests run as root).
+      const blockerFile = join(dataDir, 'blocker');
+      writeFileSync(blockerFile, 'not a directory');
+      const discoveryFile = join(blockerFile, 'daemon.json');
+
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(discoveryFile)).toBe(false);
+      const res = await fetch(`${daemon.url}/api/ping`);
+      expect(res.status).toBe(200);
+    });
+
+    it('a discovery-record removal failure during stop() does not fail shutdown — best-effort by design', async () => {
+      const removeSpy = vi.spyOn(SidecarModule, 'removeDaemonRegistryRecordIfCurrent').mockRejectedValue(new Error('boom'));
+      try {
+        const dataDir = makeTempDataDir();
+        const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+
+        await expect(daemon.stop()).resolves.toBeUndefined();
+        expect(removeSpy).toHaveBeenCalledWith(resolveDaemonRegistryPath(dataDir), process.pid);
+      } finally {
+        removeSpy.mockRestore();
+      }
+    });
   });
 });
