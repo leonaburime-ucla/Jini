@@ -243,6 +243,64 @@ describe('applyJsonInstall', () => {
   });
 });
 
+describe('applyJsonInstall / removeJsonInstall — prototype-pollution guard (CR-007)', () => {
+  const safeEntry = { command: 'node' };
+
+  it('rejects a keyPath segment of "__proto__" instead of walking onto Object.prototype', () => {
+    const plan: JsonInstallPlan = {
+      kind: 'json', slug: 'openclaw', configPath: '/x.json',
+      keyPath: ['__proto__'], serverKey: 'polluted', entry: true,
+    };
+    expect(() => applyJsonInstall(null, plan)).toThrow(/dangerous|__proto__/i);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('rejects a serverKey of "__proto__"', () => {
+    const plan: JsonInstallPlan = {
+      kind: 'json', slug: 'openclaw', configPath: '/x.json',
+      keyPath: ['mcp'], serverKey: '__proto__', entry: { polluted: true },
+    };
+    expect(() => applyJsonInstall(null, plan)).toThrow(/dangerous|__proto__/i);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('rejects "constructor" and "prototype" segments anywhere in keyPath', () => {
+    const base = { kind: 'json' as const, slug: 'openclaw' as const, configPath: '/x.json', serverKey: 'jini', entry: safeEntry };
+    expect(() => applyJsonInstall(null, { ...base, keyPath: ['constructor'] })).toThrow();
+    expect(() => applyJsonInstall(null, { ...base, keyPath: ['a', 'prototype'] })).toThrow();
+    expect(() => applyJsonInstall(null, { ...base, keyPath: ['a', 'constructor', 'b'] })).toThrow();
+  });
+
+  it('rejects a "constructor" serverKey', () => {
+    const plan: JsonInstallPlan = {
+      kind: 'json', slug: 'openclaw', configPath: '/x.json',
+      keyPath: ['mcp'], serverKey: 'constructor', entry: { polluted: true },
+    };
+    expect(() => applyJsonInstall(null, plan)).toThrow();
+  });
+
+  it('removeJsonInstall also rejects dangerous keyPath/serverKey segments, even against an empty file', () => {
+    expect(() =>
+      removeJsonInstall(null, {
+        kind: 'json', slug: 'openclaw', configPath: '/x.json', keyPath: ['__proto__'], serverKey: 'jini', entry: {},
+      }),
+    ).toThrow();
+    expect(() =>
+      removeJsonInstall('{}', {
+        kind: 'json', slug: 'openclaw', configPath: '/x.json', keyPath: ['mcp'], serverKey: 'prototype', entry: {},
+      }),
+    ).toThrow();
+  });
+
+  it('still accepts an ordinary safe plan — the guard is not overly broad', () => {
+    const plan: JsonInstallPlan = {
+      kind: 'json', slug: 'openclaw', configPath: '/x.json',
+      keyPath: ['mcp', 'servers'], serverKey: 'jini', entry: safeEntry,
+    };
+    expect(JSON.parse(applyJsonInstall(null, plan))).toEqual({ mcp: { servers: { jini: safeEntry } } });
+  });
+});
+
 describe('removeJsonInstall', () => {
   const plan: JsonInstallPlan = {
     kind: 'json',

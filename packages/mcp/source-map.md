@@ -12,9 +12,18 @@ install-payload builder, and the per-agent registration planner — plus the
 handful of genuinely product-neutral runtime primitives that were embedded in
 the otherwise OD-coupled `client/` server. All Open-Design identity strings
 (`Open Design`, `OD_*`, `open-design`, `.od/…`, `opendesign.app`, `od mcp`,
-`od://…`) were stripped. The package has **zero runtime dependencies** — node
-stdlib only (`node:fs`, `node:fs/promises`, `node:crypto`, `node:path`, global
-`fetch`/`URL`/`Buffer`).
+`od://…`) were stripped. The package originally shipped with **zero runtime
+dependencies** — node stdlib only (`node:fs`, `node:fs/promises`,
+`node:crypto`, `node:path`, global `fetch`/`URL`/`Buffer`). A 2026-07-21
+security-hardening pass (CR-006/CR-007, SEC-RB-001/002/011 —
+`ADS-memory/reports/code-review/CR-remaining-backend-audit-2026-07-21.md`,
+`ADS-memory/reports/security/SEC-remaining-backend-audit-2026-07-21.md`)
+added `@jini/platform` (`assertSafePublicUrl` / `createValidatingLookup`,
+mirroring `packages/deploy/src/reachability.ts`'s SSRF-safe fetch pattern)
+and its `undici` peer as the package's first real dependencies, plus a new
+internal `core/secure-write.ts` module (not part of the public barrel) that
+every secret-bearing on-disk store (`config.ts`, `oauth.ts`, `tokens.ts`)
+now writes through.
 
 ## File map
 
@@ -52,9 +61,14 @@ stdlib only (`node:fs`, `node:fs/promises`, `node:crypto`, `node:path`, global
 
 ## External dependencies
 
-**None.** `@modelcontextprotocol/sdk` and `@open-design/contracts` were needed
-only by the dropped OD server proxy. Everything ported runs on node stdlib +
-web globals.
+`@modelcontextprotocol/sdk` and `@open-design/contracts` were needed only by
+the dropped OD server proxy and were never ported. As of the 2026-07-21
+security-hardening pass, the package depends on `@jini/platform` (workspace)
+and `undici` — added specifically to close SEC-RB-001/CR-005 (MCP OAuth
+discovery/DCR/token-exchange SSRF) by reusing `@jini/platform`'s
+`assertSafePublicUrl` + connection-time `createValidatingLookup` guard,
+the same pattern `packages/deploy/src/reachability.ts` established first.
+Everything else still runs on node stdlib + web globals.
 
 ## Tests & coverage
 

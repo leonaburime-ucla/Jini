@@ -17,18 +17,39 @@ interface McpIdleExitControllerOptions {
   onIdle: () => void;
 }
 
+// SEC-RB-011: an unvalidated `idleMs` (negative, `NaN`, `Infinity`, or a
+// non-integer) would either schedule an immediately/never-firing timer or
+// hand `setTimeout` a value it silently coerces in surprising ways. Bound it
+// to a sane, documented range instead: reject anything that isn't a finite
+// positive integer (a caller bug, not something to silently paper over), and
+// clamp anything absurdly large down to a one-day ceiling rather than
+// scheduling an effectively-infinite timer.
+const MIN_IDLE_MS = 1;
+const MAX_IDLE_MS = 24 * 60 * 60 * 1000; // 24h
+
+function normalizeIdleMs(idleMs: number): number {
+  if (typeof idleMs !== 'number' || !Number.isFinite(idleMs) || !Number.isInteger(idleMs) || idleMs < MIN_IDLE_MS) {
+    throw new RangeError(
+      `createMcpIdleExitController: idleMs must be a finite positive integer (>= ${MIN_IDLE_MS}ms), got ${String(idleMs)}`,
+    );
+  }
+  return Math.min(idleMs, MAX_IDLE_MS);
+}
+
 /**
  * Create an idle-exit controller that calls `onIdle` after `idleMs` of
  * inactivity. Activity is tracked via `noteActivity()` and `trackRequest()`;
  * in-flight requests defer the idle timer. Used to auto-close a long-running
  * stdio MCP server process after a period of no tool calls.
- * @param options Idle duration in ms and the callback to invoke on idle.
+ * @param options Idle duration in ms (finite positive integer, clamped to a
+ *   24h ceiling — throws `RangeError` otherwise) and the callback to invoke on idle.
  * @returns An object with `noteActivity`, `trackRequest`, and `dispose` methods.
  */
 export function createMcpIdleExitController({
   idleMs,
   onIdle,
 }: McpIdleExitControllerOptions) {
+  const effectiveIdleMs = normalizeIdleMs(idleMs);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight = 0;
   let disposed = false;
@@ -53,7 +74,7 @@ export function createMcpIdleExitController({
       }
       disposed = true;
       onIdle();
-    }, idleMs);
+    }, effectiveIdleMs);
   };
 
   schedule();
@@ -67,7 +88,13 @@ export function createMcpIdleExitController({
         return fn();
       }
       inFlight += 1;
-      schedule();
+      // Deliberately does NOT call `schedule()` here (SEC-RB-011): a request
+      // starting while the timer is already running doesn't need to reset
+      // the deadline — the timer, if it fires mid-flight, already re-checks
+      // `inFlight` and reschedules itself (above), and completion below
+      // reschedules once the last in-flight request finishes. Rescheduling
+      // on every concurrent request start instead caused needless
+      // clearTimeout/setTimeout churn under load with no behavioral benefit.
       try {
         return await fn();
       } finally {
