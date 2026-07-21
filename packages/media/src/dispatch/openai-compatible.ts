@@ -10,6 +10,9 @@ import type { MediaGenerationRequestInit, MediaSpeechFormat, RenderContext } fro
 
 const VALID_SPEECH_FORMATS: ReadonlySet<MediaSpeechFormat> = new Set(['mp3', 'wav', 'flac', 'aac', 'opus']);
 
+/** OpenAI's recognized `/audio/speech` voice ids — shared by every vendor whose TTS wire shape matches OpenAI's (OpenAI itself, AIHubMix). A requested voice outside this set is treated by callers as free-form speaking-style instructions rather than a voice id (see `openai.ts`'s `renderOpenAISpeech`). */
+export const OPENAI_TTS_VOICES: ReadonlySet<string> = new Set(['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'onyx', 'nova', 'sage', 'shimmer', 'verse']);
+
 /** Validates a caller-requested speech format, defaulting to `'mp3'` for anything unrecognized. */
 export function resolveSpeechFormat(requested: MediaSpeechFormat | undefined): MediaSpeechFormat {
   return requested && VALID_SPEECH_FORMATS.has(requested) ? requested : 'mp3';

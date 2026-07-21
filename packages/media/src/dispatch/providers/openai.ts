@@ -26,6 +26,7 @@ import {
   buildOpenAISpeechUrl,
   detectAzureEndpoint,
   openaiSizeFor,
+  OPENAI_TTS_VOICES,
   truncate,
   withRequestInit,
 } from '../openai-compatible.js';
@@ -42,20 +43,6 @@ const openAIImageDispatcher = new UndiciAgent({
   headersTimeout: OPENAI_IMAGE_HEADERS_TIMEOUT_MS,
   bodyTimeout: OPENAI_IMAGE_BODY_TIMEOUT_MS,
 });
-
-const OPENAI_TTS_VOICES = new Set([
-  'alloy',
-  'ash',
-  'ballad',
-  'coral',
-  'echo',
-  'fable',
-  'onyx',
-  'nova',
-  'sage',
-  'shimmer',
-  'verse',
-]);
 
 const OPENAI_IMAGE_NO_CREDENTIAL_MESSAGE =
   'no OpenAI credential — configure an API key or set OPENAI_API_KEY.';
