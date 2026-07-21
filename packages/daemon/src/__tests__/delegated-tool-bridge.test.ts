@@ -310,6 +310,44 @@ describe('DelegatedToolBridge', () => {
     expect(() => transportController.abort()).not.toThrow();
   });
 
+  it('CR-R6: removes its abort listener in finally on normal completion, even though the signal never aborted', async () => {
+    // The test above calls `abort()` a second time to check cleanup, but `AbortController.abort()`
+    // only ever dispatches once and the listener was registered with `{ once: true }` — that
+    // assertion would still pass even if the explicit `removeEventListener` call in
+    // delegated-tool-bridge.ts's `finally` block were deleted, since `{once:true}` already
+    // auto-removes a listener that actually fired. This test instruments addEventListener/
+    // removeEventListener directly and exercises the path where `{once:true}` never fires at
+    // all — normal completion — which is the only path where the explicit cleanup matters.
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'ok-tool' },
+      handler: async () => 'done',
+      policy: { authorize: () => 'allow' },
+    });
+    const toolExecutor = createToolExecutor({ registry });
+    const lifecycle = createRunLifecycle({ eventLog: createInMemoryEventLog() });
+    const bridge = createDelegatedToolBridge({ lifecycle, toolExecutor });
+    const { run } = await lifecycle.start({ contextRef: 'delegated-tools' });
+
+    const transportController = new AbortController();
+    const addEventListenerSpy = vi.spyOn(transportController.signal, 'addEventListener');
+    const removeEventListenerSpy = vi.spyOn(transportController.signal, 'removeEventListener');
+
+    const result = await bridge.execute({
+      runId: run.id,
+      toolUseId: 'call-1',
+      toolId: 'ok-tool',
+      principal: { id: 'user-1' },
+      input: {},
+      signal: transportController.signal,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(addEventListenerSpy).toHaveBeenCalledTimes(1);
+    const [, registeredListener] = addEventListenerSpy.mock.calls[0]!;
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('abort', registeredListener);
+  });
+
   it('falls back to String(error) when a custom ToolExecutor throws a non-Error value', async () => {
     // `errorMessage`'s `error instanceof Error` ternary has a false branch
     // that `createToolExecutor`'s reference implementation never actually

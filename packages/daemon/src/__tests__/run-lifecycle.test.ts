@@ -121,22 +121,35 @@ describe('RunLifecycle — rehydrate edge cases', () => {
     expect(await lifecycle.resume('run-malformed')).toMatchObject({ resumed: false });
   });
 
-  it('a second rehydrate() call reuses the same in-flight/completed hydration rather than re-processing the log', async () => {
+  it('CR-R6: rehydrate() is single-flight — overlapping calls and a later post-completion call each trigger exactly one real hydration pass', async () => {
+    // Asserting only the final reconstructed state (as this test previously did) would still
+    // pass even if the `if (hydration) return hydration;` single-flight guard were deleted —
+    // re-processing an idempotent terminal log twice yields the same end state, just wastefully.
+    // Gating the EventLog's own `listRunIds`/`replay` call counts is what actually distinguishes
+    // "one hydration pass, reused" from "hydrated twice, coincidentally same result".
     const eventLog = createInMemoryEventLog();
     const first = createRunLifecycle({ eventLog });
     await first.start({ contextRef: 'ctx-a', runId: 'run-a' });
     await first.finish({ runId: 'run-a', status: 'succeeded', code: 0, signal: null, resumable: false });
 
     const recovered = createRunLifecycle({ eventLog });
+    const listRunIdsSpy = vi.spyOn(eventLog, 'listRunIds');
+    const replaySpy = vi.spyOn(eventLog, 'replay');
+
     const firstCall = recovered.rehydrate();
-    const secondCall = recovered.rehydrate();
+    const secondCall = recovered.rehydrate(); // overlapping, issued before firstCall resolves
     await Promise.all([firstCall, secondCall]);
     expect(await recovered.get('run-a')).toMatchObject({ state: 'succeeded' });
+    expect(listRunIdsSpy).toHaveBeenCalledTimes(1);
+    expect(replaySpy).toHaveBeenCalledTimes(1);
 
     // A rehydrate() called again after hydration already completed also
-    // short-circuits via the same `if (hydration) return hydration;` guard.
+    // short-circuits via the same `if (hydration) return hydration;` guard —
+    // no additional EventLog reads at all.
     await recovered.rehydrate();
     expect(await recovered.get('run-a')).toMatchObject({ state: 'succeeded' });
+    expect(listRunIdsSpy).toHaveBeenCalledTimes(1);
+    expect(replaySpy).toHaveBeenCalledTimes(1);
   });
 
   it('skips a runId that is already present in the in-memory registry (e.g. started directly on this same instance)', async () => {

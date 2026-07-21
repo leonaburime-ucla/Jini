@@ -97,6 +97,43 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+// CR-R6: the real-child SIGTERM/SIGKILL tests below spawn an actual OS process. Track every
+// pid the moment it's known — before any assertion that could throw — so a failed assertion or
+// an early rejection can never orphan a child; force-killing an already-dead pid is a no-op
+// (ESRCH, swallowed below), so this is safe to run unconditionally.
+const spawnedPidsToKill: number[] = [];
+
+afterEach(() => {
+  while (spawnedPidsToKill.length > 0) {
+    const pid = spawnedPidsToKill.pop();
+    if (pid == null) continue;
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already exited (including via the test's own stopProcesses call) — nothing to clean up.
+    }
+  }
+});
+
+/** Bounded readiness wait for a just-spawned real child (CR-R6): the previous unbounded
+ *  `new Promise` here would hang the whole suite forever if 'spawn' never fired. */
+function waitForRealChildSpawn(child: ReturnType<typeof spawn>, timeoutMs = 5_000): Promise<void> {
+  return new Promise<void>((resolveSpawned, rejectSpawned) => {
+    const timer = setTimeout(
+      () => rejectSpawned(new Error(`timed out after ${timeoutMs}ms waiting for the child process to spawn`)),
+      timeoutMs,
+    );
+    child.once('spawn', () => {
+      clearTimeout(timer);
+      resolveSpawned();
+    });
+    child.once('error', (err) => {
+      clearTimeout(timer);
+      rejectSpawned(err);
+    });
+  });
+}
+
 type FakeStamp = { app: 'api' | 'ui'; namespace: string };
 
 const fakeStampContract: ProcessStampContract<FakeStamp> = {
@@ -498,10 +535,8 @@ describe('@jini/platform — process — stopProcesses', () => {
 
   it('stops a real child process with SIGTERM alone', async () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', () => resolve());
-      child.once('error', reject);
-    });
+    if (child.pid != null) spawnedPidsToKill.push(child.pid);
+    await waitForRealChildSpawn(child);
     const pid = child.pid;
     expect(typeof pid).toBe('number');
     const result = await stopProcesses([pid]);
@@ -522,15 +557,20 @@ describe('@jini/platform — process — stopProcesses', () => {
         ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
         { stdio: ['ignore', 'pipe', 'ignore'] },
       );
-      const readyPromise = new Promise<void>((resolve) => {
+      if (child.pid != null) spawnedPidsToKill.push(child.pid);
+      const readyPromise = new Promise<void>((resolveReady, rejectReady) => {
+        const timer = setTimeout(
+          () => rejectReady(new Error("timed out waiting for the child's 'ready' stdout line")),
+          5_000,
+        );
         child.stdout?.on('data', (chunk) => {
-          if (String(chunk).includes('ready')) resolve();
+          if (String(chunk).includes('ready')) {
+            clearTimeout(timer);
+            resolveReady();
+          }
         });
       });
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', () => resolve());
-        child.once('error', reject);
-      });
+      await waitForRealChildSpawn(child);
       await readyPromise;
       const pid = child.pid;
       expect(typeof pid).toBe('number');
