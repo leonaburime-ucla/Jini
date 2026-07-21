@@ -296,3 +296,40 @@ No new dependency. `run-command.ts` uses only this package's own existing export
 (`flags.ts`/`errors.ts`/`http.ts`/`redact.ts`/`usage.ts`/`command-registry.ts`) plus Node/Web
 platform primitives (`fetch`, `ReadableStream`, `TextDecoder`) already implicitly available in
 this package's runtime target.
+
+## 2026-07-21 addition — `daemon status` / `daemon stop` commands (backlog pass)
+
+Closes the two `UNCLEAR` rows this file's classification table names for `daemon status`/`daemon
+stop`: the blocking condition ("`@jini/http` is a stub... no `/status`/`/shutdown` route to call")
+no longer holds — `daemonStatusRoute`/`daemonShutdownRoute` (`packages/http/src/daemon-status.ts`)
+have existed since the 2026-07-18 backend-routes port, and this file's own barrel-branch
+reconciliation section already re-verified that months ago without building against it "to avoid
+guessing at a contract nobody has committed to yet." That caveat no longer applies either: this
+same package's `run-command.ts` (the section directly above) is now a real, tested, established
+"first concrete command" precedent — `daemon-command.ts` follows the exact same shape rather than
+pioneering a new one.
+
+**Commands added**: `daemon status` (`GET /api/daemon/status`) and `daemon stop`
+(`POST /api/daemon/shutdown`, an empty JSON body). Same `resolveBaseUrl`-callback,
+`postJsonToDaemon`/`getJsonFromDaemon`-transport, print-the-JSON-response shape as
+`run-command.ts`; `registerDaemonCommands(registry, deps)` registers a single `daemon` top-level
+command dispatching `status`/`stop` on the next token.
+
+**The shutdown route's `requireSameOrigin: true` gate needs no special handling from a CLI
+caller.** A bare `fetch()` sends no `Origin` header; `guardSameOrigin`/`isLocalSameOrigin` falls
+through to its Host-header check in that case, which passes as long as the resolved daemon URL's
+host:port is one the daemon itself considers local (`packages/http/src/origin-validation.ts`'s
+`isAllowedBrowserHost`) — the same call shape `run-command.ts` already uses, no extra headers
+added here.
+
+**Not built**: `version` (the third original `UNCLEAR` row, `GET /api/version`) — `@jini/http` has
+no version route yet (`daemonStatusRoute`'s own `version` field is caller-injected, not a
+standalone endpoint), so there is still nothing to call. Also not built: `daemon db`/`db verify`/
+`db vacuum` (depend on a `storage/db-inspect.ts` port `packages/http/source-map.md` already notes
+as not built), and real `@jini/sidecar`-backed daemon-URL discovery (`resolveDaemonUrl`'s injected
+`discover` callback remains unwired — a separate backlog item, tracked independently).
+
+Tests: `src/__tests__/daemon-command.test.ts` (19 tests) — 100% coverage on all 4 metrics,
+including both commands' `--help`/default-writer/default-fetch paths, the shutdown POST body
+shape, structured-error exits (both daemon-rejected and unknown-subcommand), and
+`exitCodes`-table pass-through on both the success and error paths. No new dependency.
