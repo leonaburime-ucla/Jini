@@ -107,15 +107,15 @@ Every other `render*` function in the origin, grouped by why it's deferred:
   (no such import exists in `media/index.ts`); whoever ports these should
   decide whether to reuse `buildVideoRequest` or mirror the origin's
   separate implementation, not assume they're already wired together.
-- **Simple synchronous REST vendors, not yet ported**: Volcengine image
-  (`renderVolcengineImage`), Grok/xAI TTS (`renderXAITTS`),
-  ElevenLabs TTS + SFX (`renderElevenLabsTTS`/`renderElevenLabsSfx`),
-  MiniMax TTS (`renderMinimaxTTS`), SenseAudio TTS + image
-  (`renderSenseAudioTTS`/`renderSenseAudioImage`), AIHubMix image + TTS
-  (`renderAIHubMixImage`/`renderAIHubMixGeminiImage`/`renderAIHubMixTTS`),
-  FishAudio TTS (`renderFishAudioTTS`). (Grok image, Nano Banana / Gemini,
-  and OpenRouter image were ported this pass — see the 2026-07-21 addition
-  below.)
+- **Simple synchronous REST vendors**: none left in this bucket — the
+  remaining candidates (Volcengine image, Grok/xAI TTS, ElevenLabs TTS +
+  SFX, MiniMax TTS, SenseAudio TTS + image, AIHubMix image + Gemini image +
+  TTS, FishAudio TTS) were all ported in the 2026-07-21 (round 2) pass —
+  see that section below. MiniMax image (`renderMinimaxImage`) and AIHubMix
+  video (`renderAIHubMixVideo`) are the only `render*` functions left on
+  those two vendors' provider slots — the former reads `process.env`
+  directly for its base URL (out of scope, see the round-2 section), the
+  latter is async-polling (see the bucket above).
 - **Local-process vendors, need their own design decision, not just a
   translation**: HyperFrames (`renderHyperFramesViaCli`) shells out to a
   local `npx hyperframes render` + Puppeteer/Chrome and is tied to a
@@ -200,6 +200,75 @@ package-wide (`pnpm --dir packages/media exec vitest run --coverage`) —
 316 tests across 20 files, up from 280/17. `tsc --noEmit` and `pnpm guard`
 both clean.
 
+## 2026-07-21 addition (round 2) — the rest of the "simple synchronous REST vendors" bucket (`feat/http-routes-and-cli-commands`)
+
+Ported every vendor left in the previous section's "Simple synchronous
+REST vendors, not yet ported" bullet: Volcengine image, xAI/Grok TTS,
+ElevenLabs TTS + SFX, MiniMax TTS, SenseAudio TTS + image, AIHubMix image +
+Gemini-native image + TTS, and FishAudio TTS. Verified against the same
+origin ref as round 1 — `nexu-io/open-design` fork
+`leonaburime-ucla/open-design`, branch `refactor/web-memory-slice`, commit
+`d695f1e0f` — via `git show
+lucla/refactor-web-memory-slice:apps/daemon/src/media/index.ts` from a
+local `Open-Marketing` clone with that ref already fetched. Every render
+function plus its helpers was read in full (not grepped) at its real line
+range in that file; two cross-file dependencies (SenseAudio's/AIHubMix's
+`url`-fetch SSRF guard, AIHubMix's shared vendor-identity plumbing) were
+each traced to their own origin file and read in full too — see their own
+rows below.
+
+**New shared substrate ported ahead of the vendors that need it:**
+
+| Jini file | Origin | Notes |
+|---|---|---|
+| `src/dispatch/ssrf-guard.ts` | `apps/daemon/src/connectionTest.ts` `assertAndFetchExternalAsset` (L238–245) / `assertExternalAssetUrl` (L208–224) / `validateBaseUrlResolved` (L130–167), plus the sync hostname classifiers `isLoopbackApiHost`/`isBlockedExternalApiHostname`/`validateBaseUrl` from `packages/contracts/src/api/connectionTest.ts` (L93–175) | SenseAudio's and AIHubMix's image renderers both fetch a gateway-returned `url` that is attacker-controllable inside an otherwise-successful response — the origin routes both through this guard (DNS-resolve the host, reject loopback/RFC1918/link-local/CGNAT/multicast/metadata-service addresses, pin `redirect: 'error'` so a validated public URL can't 302 into private space). Ported behaviorally intact, including every IPv4/IPv6 blocklist boundary (CGNAT `100.64.0.0/10`, RFC1918, IPv6 `fc00::/7`/`fe80::/10`, IPv4-mapped-IPv6 literals in both dotted-quad and hex-group form). **Scope cut, proven not assumed**: the origin's `allowedInternalHosts` operator-allowlist option (`ValidateBaseUrlOptions`/`isAllowlistedInternalHost`, consulted only by a *different* exported function, `validateUserProviderBaseUrl`, for user-*configured* provider endpoints) is not ported — `assertExternalAssetUrl` calls `validateBaseUrlResolved(rawUrl)` with no options, so `allowedInternalHosts` is always `undefined` on this call path, and `isAllowlistedInternalHost` returns `false` unconditionally whenever that argument is empty (its own first line), making the allowlist branch provably dead code on the only path this module ports — not assumed unreachable, traced. `validateBaseUrlResolved`/`assertExternalAssetUrl`/`assertAndFetchExternalAsset` each gained an optional trailing `lookup: DnsLookupFn` parameter (absent from the origin's signatures) purely for deterministic testing (mirroring `vi.spyOn(fs.promises, ...)`'s role in this package's existing `staging.test.ts`) — default behavior via `node:dns`'s real resolver is unchanged and also directly tested. |
+| `src/dispatch/providers/aihubmix-shared.ts` | `apps/daemon/src/integrations/aihubmix.ts`: `AIHUBMIX_APP_CODE`/`AIHUBMIX_DEFAULT_BASE_URL` (L22–27), `aihubmixHeaders`/`aihubmixAppCodeHeader` (L34–52), `classifyAIHubMixModel` (L62–75), `aihubmixOriginFromBase` (L84–90), `aihubmixGeminiImageUrl` (L93–98), `aihubmixGeminiImageBytes` (L122–158), `aihubmixWireModel` (L165–173) | The AIHubMix vendor-identity plumbing `providers/aihubmix.ts` needs. **One proven dead-code simplification**: `aihubmixAppCodeHeader()` dropped the origin's `AIHUBMIX_APP_CODE ? {...} : {}` ternary — `AIHUBMIX_APP_CODE` is a fixed non-empty literal (`'DMCY9912'`) with no configuration surface in either the origin or this port, so the `: {}` branch is unreachable through any real call; simplified to an unconditional header rather than left as an untested branch or covered with a contrived test that fakes an empty app code. Everything else (model-name protocol classification including the `-nothink`/`-search`/embedding exclusions, the Gemini-native `generateContent` request/response shape, the `aihubmix-` catalog-id-to-wire-name mapping) ported behaviorally intact. **Not ported** (not needed by the image/TTS render path): `aihubmixVideoSeconds` (video is deferred, see the async-polling bucket above), `aihubmixCatalogUrl`/`parseAIHubMixCatalog`/`AIHubMixCatalogModel` (a model-catalogue-discovery HTTP call, not part of generation), `AIHUBMIX_IMAGE_ASPECT_TO_SIZE` (used by OD's in-chat `generate_image` tool; the media renderer uses `openai-compatible.ts`'s already-ported `openaiSizeFor` instead). |
+
+**Vendor slices:**
+
+| Jini file | Origin (`media/index.ts`) | Notes |
+|---|---|---|
+| `src/dispatch/providers/volcengine.ts` | `renderVolcengineImage` (L1686–1736) | Routes through `openai-compatible.ts`'s shared OpenAI-images helpers — same wire shape as `openai`/`grok`/`imagerouter`. Two origin quirks preserved rather than silently "fixed": `suggestedExt` is hardcoded to `.png` (never sniffed, unlike `grok.ts`) since Seedream/Seededit are documented to always return PNG; and `openaiSizeFor(ctx.model, ctx.aspect)` always returns `1024x1024` for every Volcengine catalog id (it only special-cases `gpt-image-*`/`dall-e-3`) — a known origin review note (`lefarcen + codex P2 on PR #1309` in the origin's own inline comment), not a bug this port introduced. Also flagged: unlike `senseaudio.ts`/`aihubmix.ts` (ported this same pass), the origin's `entry.url` fallback here is a plain `fetch`, not SSRF-guarded — matching the real origin exactly (`assertAndFetchExternalAsset` is only called from the SenseAudio-image/AIHubMix-image/AIHubMix-video renderers in the actual source), the same asymmetry `openai.ts`'s/`grok.ts`'s own `entry.url` fallbacks already have. |
+| `src/dispatch/providers/grok.ts` (added to, not new) | `renderXAITTS` (L2597–2646) | xAI's `/tts` endpoint takes a plain `{text, voice_id, language}` body and always returns raw mp3 bytes directly — no per-request format field — so this doesn't route through `openai-compatible.ts`'s speech-format helpers (unlike `openai.ts`'s TTS), only the generic `truncate`/`withRequestInit`. Same file as the already-ported `renderGrokImage` (same vendor/provider id), matching `openai.ts`'s precedent of one file per vendor covering multiple surfaces. `engine.ts`'s `grok` route table gained `'audio:speech': renderXAITTS`. |
+| `src/dispatch/providers/elevenlabs.ts` | `renderElevenLabsTTS` (L2699–2750), `renderElevenLabsSfx` (L2752–2801) | Neither endpoint is OpenAI-wire-compatible (ElevenLabs-specific JSON-body-in, raw-bytes-out), so only the generic `truncate`/`withRequestInit` are reused. SFX's duration/`prompt_influence` clamping and 450-char prompt-length cap ported behaviorally intact. Two prompt-validation error messages reworded (not weakened): the origin's "Pass --prompt before retrying"/"Shorten --prompt before retrying" assume an OD `hermes`-CLI `--prompt` flag this package's plain `MediaGenerationRequest.prompt` field has no equivalent of for every possible host — reworded to describe the constraint without the CLI-flag assumption; the underlying validation (non-empty; ≤450 chars) is unchanged. |
+| `src/dispatch/providers/minimax.ts` | `renderMinimaxTTS` (L2842–2931) | Not OpenAI-wire-compatible (MiniMax's own `voice_setting`/`audio_setting` body + a `base_resp` envelope where an HTTP 200 can still be a logical failure), so only `truncate`/`withRequestInit` are reused. Ported the wire-model precedence chain intact (an explicit caller alias via `ctx.wireModel !== ctx.model` wins over the legacy rename map, which wins over the catalog id passthrough) and the `extra_info.audio_length` centisecond-to-seconds `providerNote` formatting. `renderMinimaxImage` (L2950–3039, a *different* surface on the same provider slot) is **not ported** — out of scope for this task (only MiniMax TTS was asked for) and it reads `process.env.OD_MINIMAX_IMAGE_BASE_URL` directly, which this package's standing no-`process.env`-access invariant would require redesigning around before porting. |
+| `src/dispatch/providers/senseaudio.ts` | `renderSenseAudioTTS` (L3088–3163), `senseAudioImageSize` (L3190–3196), `renderSenseAudioImage` (L3198–3283) | TTS mirrors MiniMax's own body/`base_resp` shape (same reasoning, only generic helpers reused). Image returns `{ url }` (not `{ data: [...] }`) and that `url` is downloaded through `ssrf-guard.ts`'s `assertAndFetchExternalAsset`, matching the origin exactly. Ported the image API's dual failure-signaling paths intact — a `base_resp` envelope AND a separate top-level `error_message` field, checked independently, exactly as the origin does — plus the 2000-char prompt truncation and the aspect-to-size table. |
+| `src/dispatch/providers/aihubmix.ts` | `renderAIHubMixImage` (L3295–3358), `renderAIHubMixGeminiImage` (L3364–3389), `renderAIHubMixTTS` (L3391–3421) | The default (non-Gemini) image path and TTS route through `openai-compatible.ts`'s shared helpers (AIHubMix's default wire shape is genuinely OpenAI-compatible — the whole point of the aggregator); `renderAIHubMixTTS` reuses `openai.ts`'s already-shared `OPENAI_TTS_VOICES`/`resolveSpeechFormat`. Gemini/imagen-family catalog ids are internally redirected to the Gemini-native path (a real per-model wire-shape branch in the origin, not a simplification this port added) via `aihubmix-shared.ts`'s `aihubmixGeminiImageBytes`. The image path's `entry.url` fallback is SSRF-guarded, matching the origin and `senseaudio.ts`'s identical reasoning. **One proven dead-code elimination**: the origin's `renderAIHubMixGeminiImage` is a top-level function taking the full `credentials: ProviderConfig` and re-checking `credentials.apiKey` — but it has exactly one call site (`renderAIHubMixImage`, immediately after that same check already threw on a missing key), so the second check can never fire; grepped the whole origin file to confirm no other call site exists. This port keeps the Gemini path as a private (non-exported) helper — the origin never called it from anywhere else either — and passes the already-validated `apiKey: string` directly instead of the whole optional-`apiKey` credentials object, eliminating the dead branch via the type system rather than leaving an untested `if` or a test that fakes a call path the real dispatcher never takes. |
+| `src/dispatch/providers/fishaudio.ts` | `renderFishAudioTTS` (L3607–3661) | Raw audio bytes directly (not JSON-wrapped), so only the generic helpers are reused. Same wire-model precedence chain as `minimax.ts` — the origin's own inline comment on this function says so explicitly ("Same precedence as the MINIMAX TTS path"). |
+
+**`engine.ts` / `ROUTES`**: added `volcengine: { image: renderVolcengineImage }`,
+`elevenlabs: { 'audio:speech': renderElevenLabsTTS, 'audio:sfx':
+renderElevenLabsSfx }`, `minimax: { 'audio:speech': renderMinimaxTTS }`,
+`senseaudio: { image: renderSenseAudioImage, 'audio:speech':
+renderSenseAudioTTS }`, `fishaudio: { 'audio:speech': renderFishAudioTTS }`,
+`aihubmix: { image: renderAIHubMixImage, 'audio:speech': renderAIHubMixTTS
+}`, and added `'audio:speech': renderXAITTS` to the existing `grok` entry.
+One new engine-level dispatch-routing test per newly-wired (provider,
+surface) pair, mirroring the existing routing tests — proving the
+`ROUTES` table entries resolve end-to-end, not just that each provider
+file's own render function works in isolation.
+
+Tests: `ssrf-guard.test.ts` (38 tests, including every IPv4/IPv6 blocklist
+boundary value), `aihubmix-shared.test.ts` (22 tests), `volcengine.test.ts`
+(5), `grok.test.ts` grew by 6 (renderXAITTS), `elevenlabs.test.ts` (19),
+`minimax.test.ts` (15), `senseaudio.test.ts` (33), `aihubmix.test.ts` (26),
+`fishaudio.test.ts` (8), plus 6 new `engine.test.ts` routing tests. Mocks a
+real `fetch`/`Response` throughout, matching the existing dispatch-engine
+tests' convention — including the SSRF-guarded download paths, which use
+real (non-mocked) public/private IP *literals* (e.g. `203.0.113.5` /
+`10.0.0.5`) as the returned asset URL so `ssrf-guard.ts`'s literal-IP
+short-circuit is exercised without needing to fake DNS resolution; the
+DNS-resolve branch itself is separately covered in `ssrf-guard.test.ts`
+directly (via an injected `lookup` function and, for the real
+`node:dns`-backed default, `vi.spyOn(dnsPromises, 'lookup')` — the same
+`vi.spyOn`-on-a-Node-built-in pattern this package's `staging.test.ts`
+already established).
+
+**Coverage**: 100% statements / 100% branches / 100% functions / 100% lines,
+package-wide (`pnpm --dir packages/media exec vitest run --coverage`) —
+496 tests across 28 files, up from 316/20. `tsc --noEmit` and `pnpm guard`
+both clean.
+
 ## Not ported / explicitly out of scope (pre-existing, from the original pass)
 
 - **`media/config.ts` in full** (23,414 bytes) — grepped for its exported
@@ -225,8 +294,9 @@ both clean.
 `@jini/core` (workspace) for `token()` — see `src/tokens.ts`. `undici` (as of
 the dispatch engine — `providers/openai.ts`'s long-timeout `Agent` for image
 generation, mirroring `packages/deploy`'s use of the same package).
-`node:crypto` (`randomUUID`) and `node:fs`/`node:path` (staging) — Node
-built-ins. No `better-sqlite3`, no `@open-design/contracts`.
+`node:crypto` (`randomUUID`), `node:fs`/`node:path` (staging), and
+`node:dns` (`ssrf-guard.ts`'s hostname-resolve check, added 2026-07-21
+round 2) — Node built-ins. No `better-sqlite3`, no `@open-design/contracts`.
 
 ## Coverage
 
