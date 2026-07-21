@@ -81,6 +81,35 @@ export {
   isTextualMime,
 } from './client/index.js';
 
+// ── server: the generic MCP tool-hosting mechanism + kernel-run tool defs ───
+export {
+  cancelRunTool,
+  createMcpToolServer,
+  errorResult,
+  getActiveContextTool,
+  getDaemonJson,
+  getRunTool,
+  listAgentsTool,
+  okResult,
+  postDaemonJson,
+  requireString,
+  RUN_TOOLS,
+  startRunTool,
+  toolsToList,
+  buildToolIndex,
+  handleToolCall,
+  DaemonResponseTooLargeError,
+} from './server/index.js';
+export type {
+  DaemonRequestOptions,
+  McpServerLike,
+  McpToolContext,
+  McpToolDef,
+  McpToolServerHandle,
+  McpToolServerOptions,
+  McpTransportLike,
+} from './server/index.js';
+
 // ── agent-install: register an MCP server into external agents ──────────────
 export {
   AGENT_SLUGS,
