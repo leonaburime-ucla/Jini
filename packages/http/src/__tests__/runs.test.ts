@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInMemoryEventLog, createRunLifecycle, type RunLifecycle } from '@jini/daemon';
+import { RUN_PROTOCOL_VERSION, type RunProtocolEvent } from '@jini/protocol';
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
   registerRunEventStream,
@@ -681,6 +682,27 @@ describe('registerRunEventStream', () => {
     expect(res.end).toHaveBeenCalledTimes(1);
   });
 
+  it('ends the response when a post-subscribe failure occurs after headers were sent but before the response was already ending', async () => {
+    // Distinct from the "already fully ended" test below: there, `writableEnded` was
+    // already true so `res.end()` must NOT be called a second time. Here headers were
+    // sent but the response was never ended, so the `else if (!res.writableEnded)`
+    // branch must actually run `res.end()` — e.g. a malformed event whose JSON.stringify
+    // throws inside `pump()`, escaping the outer try after `flushHeaders()` already ran.
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    res.flushHeaders = vi.fn(() => {
+      res.headersSent = true;
+      throw new Error('boom after headers sent, before the response ended');
+    });
+
+    await handler(makeSseReq({ runId: run.id }), res);
+
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.end).toHaveBeenCalledTimes(1);
+  });
+
   it('CR-R1: unsubscribes immediately, without ever setting SSE headers, when the client disconnects while stream() is still resolving', async () => {
     const deps = makeDeps();
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
@@ -798,6 +820,40 @@ describe('registerRunEventStream', () => {
     const writeCallsAtDisconnect = res.write.mock.calls.length;
     await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'after disconnect' } });
     expect(res.write.mock.calls.length).toBe(writeCallsAtDisconnect);
+  });
+
+  it('ignores an event delivered through a still-live enqueue callback after the connection already closed', async () => {
+    // `cleanup()` unsubscribes from the lifecycle for real, so a *subsequent*
+    // `lifecycle.emit()` never reaches `enqueue` again — the existing
+    // "disconnects a slow consumer" test above only proves that path. This
+    // proves the callback's own `if (closed) return;` guard: capture the raw
+    // `enqueue` closure `registerRunEventStream` handed to `stream()` and
+    // invoke it directly after close, simulating an event that was already
+    // in flight through the subscriber fan-out when the client disconnected
+    // (the exact race the doc comment above `closed` calls out).
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const streamSpy = vi.spyOn(deps.lifecycle, 'stream');
+    const handler = mount(deps);
+    const res = makeSseRes();
+    await handler(makeSseReq({ runId: run.id }), res);
+    const enqueue = streamSpy.mock.calls[0]![1] as (event: RunProtocolEvent) => void;
+
+    res.emitClose();
+    res.write.mockClear();
+
+    enqueue({
+      runId: run.id,
+      eventId: `${run.id}:late`,
+      opaqueCursor: 'late',
+      protocolVersion: RUN_PROTOCOL_VERSION,
+      ts: Date.now(),
+      kind: 'agent',
+      payload: { type: 'status', label: 'late' },
+      durability: 'durable',
+    });
+
+    expect(res.write).not.toHaveBeenCalled();
   });
 
   it('SEC-006: a terminal end event queued under backpressure is still written last and still ends the response', async () => {
