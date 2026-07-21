@@ -98,23 +98,25 @@ export function createDelegatedToolBridge(options: CreateDelegatedToolBridgeOpti
 
     const run: RunRef = { id: runId };
     try {
-      const result = await toolExecutor.execute(principal, run, toolId, input, controller.signal);
-      await lifecycle.emit(runId, {
-        event: 'agent',
-        data: {
-          type: 'tool_result',
-          toolUseId,
-          content: resultContent(result),
-          ...(result.status === 'completed' ? {} : { isError: true }),
-        },
-      });
-      return result;
-    } catch (error) {
-      await lifecycle.emit(runId, {
-        event: 'agent',
-        data: { type: 'tool_result', toolUseId, content: errorMessage(error), isError: true },
-      });
-      throw error;
+      try {
+        const result = await toolExecutor.execute(principal, run, toolId, input, controller.signal);
+        await lifecycle.emit(runId, {
+          event: 'agent',
+          data: {
+            type: 'tool_result',
+            toolUseId,
+            content: resultContent(result),
+            ...(result.status === 'completed' ? {} : { isError: true }),
+          },
+        });
+        return result;
+      } catch (error) {
+        await lifecycle.emit(runId, {
+          event: 'agent',
+          data: { type: 'tool_result', toolUseId, content: errorMessage(error), isError: true },
+        });
+        throw error;
+      }
     } finally {
       unsubscribeCancel();
       invocation.signal?.removeEventListener('abort', abortFromTransport);
