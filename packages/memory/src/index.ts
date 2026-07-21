@@ -4,9 +4,10 @@
  * Generic daemon-side memory/notes capability: a frontmatter-backed note
  * store (`note-store.ts`), a bounded extraction-attempt log
  * (`extraction-log.ts`), a pure self-verify scorecard enforcer
- * (`verify.ts`), and a labeled-line rule-body parser (`rule-body.ts`). See
- * `source-map.md` for provenance and the scope decisions (what was
- * generalized vs. explicitly left OD-side).
+ * (`verify.ts`), a labeled-line rule-body parser (`rule-body.ts`), and a
+ * generic multi-vendor "call an LLM HTTP API, get strict JSON back"
+ * primitive (`llm-provider.ts`). See `source-map.md` for provenance and the
+ * scope decisions (what was generalized vs. explicitly left OD-side).
  */
 export type { EntryFrontmatter } from './entry-frontmatter.js';
 export { parseEntryFrontmatter, renderEntryFrontmatter } from './entry-frontmatter.js';
@@ -41,3 +42,14 @@ export type {
   VerifyStatus,
 } from './verify.js';
 export { createVerifyLog, enforceVerify } from './verify.js';
+
+export type { LlmProviderConfig, LlmProviderId } from './llm-provider.js';
+export {
+  AZURE_DEFAULT_API_VERSION,
+  DEFAULT_TIMEOUT_MS,
+  appendVersionedApiPath,
+  callLlmProvider,
+  callLlmProviderForJson,
+  describeFetchError,
+  parseStrictJson,
+} from './llm-provider.js';
