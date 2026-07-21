@@ -12,6 +12,13 @@
  * from day one... a real persistent adapter is a drop-in swap"), and every
  * multi-statement operation (`append`'s dedupe-check + insert + eviction) runs
  * inside a `better-sqlite3` transaction for atomicity.
+ *
+ * Two deliberate divergences from the in-memory reference adapter, both scoped to this durable
+ * adapter only: (1) `maxEntriesPerRun` defaults to {@link DEFAULT_MAX_ENTRIES_PER_RUN} (2000)
+ * instead of unbounded — see `SqliteEventLogOptions.maxEntriesPerRun`'s doc; (2) `replay`'s
+ * `afterCursor` is validated up front and throws for anything other than `null` or a
+ * non-negative-safe-integer string, instead of returning a `'invalid-cursor'` result — see
+ * `assertValidReplayCursor`.
  */
 import Database from 'better-sqlite3';
 import type {
@@ -21,16 +28,48 @@ import type {
   EventLogReplayResult,
 } from '@jini/daemon';
 
+/**
+ * Default per-run retention cap applied when `SqliteEventLogOptions.maxEntriesPerRun` is
+ * omitted — see that option's doc for why a durable adapter defaults to a bound instead of
+ * mirroring the in-memory reference adapter's unbounded-by-default behavior.
+ */
+export const DEFAULT_MAX_ENTRIES_PER_RUN = 2000;
+
 export interface SqliteEventLogOptions {
   /**
-   * Maximum entries retained per run before the oldest are evicted. Eviction is opt-in: if
-   * omitted, retention is unbounded and nothing is ever silently dropped. Pass an explicit
-   * value only when bounded disk usage is a deliberate choice — the caller then owns the
-   * tradeoff, rather than inheriting a hidden 2000-entry cap OD's own in-memory ring happened
-   * to use. `createLocalNodeDaemon` does not currently pass this option, so the shipped
-   * default preset retains full history.
+   * Maximum entries retained per run before the oldest are evicted. Defaults to
+   * {@link DEFAULT_MAX_ENTRIES_PER_RUN} (2000) when omitted — unlike the in-memory reference
+   * adapter (`@jini/daemon`'s `createInMemoryEventLog`), where an omitted cap means unbounded,
+   * a durable on-disk store defaults to a bounded retention window because unbounded persistent
+   * growth is a real, unattended operational risk (disk exhaustion across long-lived runs) in a
+   * way an in-process, GC'd, process-lifetime-bounded structure is not. Pass an explicit value
+   * (larger, smaller, or `0`) to override the default in either direction — the caller then
+   * owns that tradeoff explicitly. Must be a non-negative safe integer; anything else (negative,
+   * fractional, `NaN`, `Infinity`) throws at construction time.
    */
   readonly maxEntriesPerRun?: number;
+}
+
+/** @internal Validates and resolves `options.maxEntriesPerRun`, applying the documented default. */
+function resolveMaxEntriesPerRun(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_ENTRIES_PER_RUN;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `createSqliteEventLog: options.maxEntriesPerRun must be a non-negative safe integer, got ${value}`,
+    );
+  }
+  return value;
+}
+
+/** @internal Validates a `replay(runId, afterCursor)` cursor. `null` ("from the beginning") is always valid. */
+function assertValidReplayCursor(afterCursor: string | null): void {
+  if (afterCursor === null) return;
+  const n = Number(afterCursor);
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new Error(
+      `createSqliteEventLog: invalid replay cursor ${JSON.stringify(afterCursor)} — must be a non-negative safe integer string`,
+    );
+  }
 }
 
 /** A `@jini/daemon` `EventLog` backed by a `better-sqlite3` database, plus a `close()` to release the file handle. */
@@ -71,7 +110,7 @@ export function createSqliteEventLog(
   dbPath: string,
   options: SqliteEventLogOptions = {},
 ): SqliteEventLog {
-  const maxEntriesPerRun = options.maxEntriesPerRun;
+  const maxEntriesPerRun = resolveMaxEntriesPerRun(options.maxEntriesPerRun);
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
@@ -166,11 +205,9 @@ export function createSqliteEventLog(
       );
       updateNextCursorStmt.run(cursor + 1, input.runId);
 
-      if (maxEntriesPerRun !== undefined) {
-        const { count } = countEntriesStmt.get(input.runId)!;
-        if (count > maxEntriesPerRun) {
-          evictOldestStmt.run(input.runId, input.runId, count - maxEntriesPerRun);
-        }
+      const { count } = countEntriesStmt.get(input.runId)!;
+      if (count > maxEntriesPerRun) {
+        evictOldestStmt.run(input.runId, input.runId, count - maxEntriesPerRun);
       }
 
       return {
@@ -183,6 +220,10 @@ export function createSqliteEventLog(
   );
 
   function replaySync(runId: string, afterCursor: string | null): EventLogReplayResult {
+    // Validated up front, independent of whether `runId` is known: a malformed cursor is a
+    // caller/transport bug regardless of run state, so it throws rather than being folded into
+    // (or masked by) an `'unknown-run'`/`'replay-gap'` result.
+    assertValidReplayCursor(afterCursor);
     const runRow = getRunStmt.get(runId);
     if (!runRow) {
       return { kind: 'unknown-run' };
@@ -196,10 +237,8 @@ export function createSqliteEventLog(
         ...(truncated ? { truncated: true as const } : {}),
       };
     }
+    // Safe: assertValidReplayCursor already proved this parses to a non-negative safe integer.
     const afterCursorNum = Number(afterCursor);
-    if (!Number.isFinite(afterCursorNum)) {
-      return { kind: 'invalid-cursor', requestedCursor: afterCursor };
-    }
     const oldestRow = selectOldestStmt.get(runId);
     const oldestRetainedId = oldestRow ? oldestRow.cursor : runRow.next_cursor;
     if (afterCursorNum < oldestRetainedId - 1) {
