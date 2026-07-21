@@ -3,8 +3,9 @@
  *
  * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
  * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
- * legacy-shaped compat error helpers, a route-pack registrar, and generic daemon status/shutdown
- * routes. See `source-map.md` for full provenance and scope-decision notes.
+ * legacy-shaped compat error helpers, a route-pack registrar, generic daemon status/shutdown
+ * routes, and a generic active-resource-focus channel. See `source-map.md` for full provenance
+ * and scope-decision notes.
  */
 export type {
   Handler,
@@ -47,6 +48,14 @@ export { mountPackHttp } from './pack-http.js';
 
 export type { RunCancellationService } from './cancel-owned-runs.js';
 export { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+
+export type { ActiveContextDeps, ActiveContextResource } from './active-context.js';
+export {
+  ACTIVE_CONTEXT_TTL_MS,
+  getActiveRoute,
+  registerActiveContextRoutes,
+  setActiveRoute,
+} from './active-context.js';
 
 export type {
   CatalogueEntry,

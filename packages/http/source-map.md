@@ -484,3 +484,70 @@ and wraps the result as `{ runs }`. Added to `registerRunRoutes` alongside the o
 routes. Tests: `src/__tests__/runs.test.ts` (parse: absent/present/empty/non-string contextRef;
 handle: unscoped list, scoped list, empty-result list; mount: route inventory, cross-origin GET
 allowed, end-to-end through the real `createRunLifecycle`). No new dependency.
+
+## 2026-07-21 addition — `active-context.ts` (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#1 `active-context.ts` (MIXED)** — the one row the
+table already called "the one real candidate that needs neither SSE nor a workspace/session port."
+Verified against the real source first, per this branch's own discipline, rather than trusting the
+table's characterization blind: fetched `leonaburime-ucla/open-design`'s
+`refactor/web-memory-slice` branch (`git show
+refactor/web-memory-slice:apps/daemon/src/routes/active-context.ts`, via a local clone at
+`/Users/la/Desktop/Programming/Open-Marketing`, remote-fetched under ref `lucla/refactor-web-memory-slice`).
+The read **confirmed the table's characterization** in every respect: an in-memory
+`ActiveContextStore` gated by a `ACTIVE_CONTEXT_TTL_MS` (5-minute) staleness check, two fully
+synchronous handlers (`handlePostActive`/`handleGetActive` — no `await` anywhere in the origin
+file), and exactly one real OD coupling — `handleGetActive` calling `deps.getProject(deps.db,
+current.projectId)` purely to resolve a `project?.name` display string. One immaterial
+discrepancy found and not worth correcting in the table: the origin file is 128 lines by `wc -l`,
+not the table's 129 — a trivial off-by-one in whatever line-counting the original recon used, not
+a substantive error.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/active-context.ts` | `apps/daemon/src/routes/active-context.ts` (`refactor/web-memory-slice`) | `ActiveContext`/`ActiveContextStore`/`parsePostActive`→`parseSetActive`/`handlePostActive`→`handleSetActive`/`handleGetActive`/`postActiveRoute`→`setActiveRoute`/`getActiveRoute`/`registerActiveContextRoutes`, logic verbatim modulo the field-renaming and DI changes below. `createApiError` switched from `@open-design/contracts` to `@jini/protocol` (mechanical, same as every other file in this package). |
+
+**Field renaming, per the table's own suggestion.** The origin's `projectId: string` becomes
+`resourceRef: string` (an opaque identifier with no project-specific meaning) and `fileName:
+string | null` becomes `detail: string | null` (a generic sub-locator within that resource — a
+file path was one instance of this, not the concept itself). `GetActiveOutput`'s `projectName:
+string | null` becomes `resourceName: string | null`, still resolved the same way (nullish-coalesced
+from the resolved resource's own optional `name` field).
+
+**`deps.getProject` becomes an injected `resolveResource`, matching this branch's established DI
+convention** (`daemon-status.ts`/`host-tools.ts`: real collaborators supplied by the caller via a
+deps object, not read from a global store). The origin's two-argument `getProject(db, projectId)`
+signature existed only because OD's project store itself takes a `db` handle; since this package
+has no database dependency at all, the port collapses that to a single-argument
+`resolveResource(resourceRef): ActiveContextResource | null | undefined` — the caller closes over
+whatever store/db it actually has. The origin's `db: unknown` field is dropped from deps entirely
+(nothing in the ported file needs it once `getProject` is closed over by the caller instead of
+being handed `db` at call time).
+
+**`now` stays an internal testability seam, not a caller-mandatory dependency** — the origin wires
+`now: () => Date.now()` inside `registerActiveContextRoutes` itself (not sourced from `ctx`), so
+this port makes `ActiveContextDeps.now` optional, defaulting to `Date.now` when the caller omits
+it (`deps.now ?? (() => Date.now())`), while still being fully injectable for tests. This is a
+narrower dependency surface than `getProject`/`resolveResource`, which is why it lives in the same
+`ActiveContextDeps` type but as an optional field rather than being promoted to its own concept.
+
+**Both routes share one in-memory store per `registerActiveContextRoutes` call**, unchanged from
+the origin: the store is constructed fresh inside the registrar and closed over by both the
+`POST`/`GET` route deps, so a `POST /api/active` is visible to a subsequent `GET /api/active` on
+the same mounted instance — this state-sharing is the one behavior a route-level (not just
+handler-level) test had to prove, since it is invisible if each route's `handle` is only tested in
+isolation.
+
+Not wired into a route pack (no `Pack.http` composition calls `registerActiveContextRoutes` yet)
+— matching this file's own precedent (`cancel-owned-runs.ts`'s 2026-07-21 addition: ported and
+exported from the barrel, not yet consumed by a concrete pack). `registerActiveContextRoutes` is
+exported from `src/index.ts` for whichever future pack needs an active-resource-focus channel.
+
+Tests: `src/__tests__/active-context.test.ts` — 100% coverage on all 4 metrics (27 tests: `parse`
+branches for clear/set/missing-resourceRef/non-string-resourceRef/empty-resourceRef/non-string-
+detail/empty-detail/null-body; `handle` branches for clear, set, no-current, TTL-expired,
+exact-TTL-boundary-still-active, and all four `resolveResource` return shapes — named object,
+`{}`, `null`, `undefined`; `registerActiveContextRoutes` mount inventory, cross-route store sharing
+for both a set and a clear, `now` default-vs-injected, and same-origin enforcement on both
+routes). No new dependency — uses only this package's existing `@jini/protocol`/`adapter.ts`/
+`types.ts` exports.

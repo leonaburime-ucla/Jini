@@ -74,4 +74,20 @@ describe('@jini/http barrel', () => {
     expect(typeof HttpBarrel.getRouteRegistrationInventory).toBe('function');
     expect(typeof HttpBarrel.guardedRouteKey).toBe('function');
   });
+
+  it('re-exports cancelRunsOwnedBy', () => {
+    expect(typeof HttpBarrel.cancelRunsOwnedBy).toBe('function');
+  });
+
+  it('re-exports the host-tools editors route and registrar', () => {
+    expect(typeof HttpBarrel.registerHostToolsRoutes).toBe('function');
+    expect(HttpBarrel.hostEditorsRoute.path).toBe('/api/editors');
+  });
+
+  it('re-exports the active-context routes and registrar', () => {
+    expect(typeof HttpBarrel.registerActiveContextRoutes).toBe('function');
+    expect(HttpBarrel.setActiveRoute.path).toBe('/api/active');
+    expect(HttpBarrel.getActiveRoute.path).toBe('/api/active');
+    expect(HttpBarrel.ACTIVE_CONTEXT_TTL_MS).toBe(5 * 60 * 1000);
+  });
 });
