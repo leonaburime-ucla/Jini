@@ -135,32 +135,86 @@ describe('structuredHttpFailure', () => {
     });
   });
 
-  it('falls back to "HTTP <status>: <raw>" when the body has no error envelope', async () => {
+  it('falls back to a stable "HTTP <status>" message plus a redacted raw excerpt in data when the body has no error envelope', async () => {
     const { written, write, exit } = captureExit();
     const resp = fakeResponse(500, 'internal server error');
     await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
-    expect(JSON.parse(written[0]!.trim()).error.message).toBe('HTTP 500: internal server error');
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.message).toBe('HTTP 500');
+    expect(envelope.error.data).toEqual({ rawExcerpt: 'internal server error' });
   });
 
-  it('falls back to a bare "HTTP <status>" when the body is empty', async () => {
+  it('falls back to a bare "HTTP <status>" with no data when the body is empty', async () => {
     const { written, write, exit } = captureExit();
     const resp = fakeResponse(503, '');
     await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
-    expect(JSON.parse(written[0]!.trim()).error.message).toBe('HTTP 503');
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.message).toBe('HTTP 503');
+    expect(envelope.error.data).toEqual({});
   });
 
-  it('treats unparsable JSON the same as an empty body', async () => {
+  it('treats unparsable JSON the same as an empty body, still surfacing a bounded raw excerpt', async () => {
     const { written, write, exit } = captureExit();
     const resp = fakeResponse(502, '{not json');
     await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
-    expect(JSON.parse(written[0]!.trim()).error.message).toBe('HTTP 502: {not json');
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.message).toBe('HTTP 502');
+    expect(envelope.error.data).toEqual({ rawExcerpt: '{not json' });
   });
 
-  it('falls back to the generic message when the error field is neither a string nor an object', async () => {
+  it('falls back to the generic message plus a raw excerpt when the error field is neither a string nor an object', async () => {
     const { written, write, exit } = captureExit();
     const resp = fakeResponse(500, JSON.stringify({ error: 42 }));
     await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
-    expect(JSON.parse(written[0]!.trim()).error.message).toBe('HTTP 500: {"error":42}');
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.message).toBe('HTTP 500');
+    expect(envelope.error.data).toEqual({ rawExcerpt: '{"error":42}' });
+  });
+
+  it('strips terminal control/ANSI escape sequences from the raw body excerpt', async () => {
+    const { written, write, exit } = captureExit();
+    // Built via fromCharCode rather than an escape literal so the ESC byte's presence in this
+    // source file is unambiguous rather than relying on how a string-escape sequence is
+    // transcribed.
+    const esc = String.fromCharCode(0x1b);
+    const resp = fakeResponse(500, `${esc}[31mDANGER${esc}[0m raw daemon body`);
+    await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.data.rawExcerpt as string).not.toContain(esc);
+    expect(envelope.error.data.rawExcerpt).toBe('DANGER raw daemon body');
+  });
+
+  it('redacts a long token-looking substring from the raw body excerpt', async () => {
+    const { written, write, exit } = captureExit();
+    const secret = 'A'.repeat(40);
+    const resp = fakeResponse(500, `unexpected failure, token=${secret} end`);
+    await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.data.rawExcerpt).not.toContain(secret);
+  });
+
+  it('truncates an overlong raw body excerpt instead of embedding it verbatim', async () => {
+    const { written, write, exit } = captureExit();
+    // Space-separated so no run is long enough to also trip the opaque-token redaction pass —
+    // this test is specifically about the length cap, not the secret redaction above it.
+    const resp = fakeResponse(500, 'word '.repeat(2000));
+    await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
+    const envelope = JSON.parse(written[0]!.trim());
+    expect((envelope.error.data.rawExcerpt as string).length).toBeLessThan(1000);
+    expect(envelope.error.data.rawExcerpt).toContain('truncated');
+  });
+
+  it('sanitizes a structured error message the same way (control sequences stripped)', async () => {
+    const { written, write, exit } = captureExit();
+    const esc = String.fromCharCode(0x1b);
+    const resp = fakeResponse(
+      400,
+      JSON.stringify({ error: { code: 'bad-input', message: `${esc}[2Jclobbered message` } }),
+    );
+    await expect(structuredHttpFailure(resp, 'daemon-not-running', { write, exit })).rejects.toThrow();
+    const envelope = JSON.parse(written[0]!.trim());
+    expect(envelope.error.message as string).not.toContain(esc);
+    expect(envelope.error.message).toBe('clobbered message');
   });
 
   it('defaults fallbackCode to "daemon-not-running"', async () => {

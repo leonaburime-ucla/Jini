@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveDaemonUrl } from '../daemon-url.js';
+import { daemonUrlPolicyWarning, resolveDaemonUrl, sanitizeDaemonUrlForDisplay } from '../daemon-url.js';
 
 describe('resolveDaemonUrl', () => {
   it('prefers an explicit flag URL over everything else', async () => {
@@ -80,5 +80,78 @@ describe('resolveDaemonUrl', () => {
       if (previous === undefined) delete process.env.JINI_TEST_DAEMON_URL;
       else process.env.JINI_TEST_DAEMON_URL = previous;
     }
+  });
+
+  it('reports a policy warning via the injected warn sink for a non-loopback, non-HTTPS URL', async () => {
+    const warn = vi.fn();
+    await resolveDaemonUrl({ flagUrl: 'http://remote.example:4111', warn });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('remote.example');
+  });
+
+  it('does not warn for a loopback URL', async () => {
+    const warn = vi.fn();
+    await resolveDaemonUrl({ flagUrl: 'http://127.0.0.1:4111', warn });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn for an HTTPS URL', async () => {
+    const warn = vi.fn();
+    await resolveDaemonUrl({ flagUrl: 'https://remote.example', warn });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('defaults warn to a no-op when not injected', async () => {
+    await expect(resolveDaemonUrl({ flagUrl: 'http://remote.example' })).resolves.toBe('http://remote.example');
+  });
+});
+
+describe('sanitizeDaemonUrlForDisplay', () => {
+  it('returns a URL with no userinfo unchanged', () => {
+    expect(sanitizeDaemonUrlForDisplay('http://127.0.0.1:4111')).toBe('http://127.0.0.1:4111');
+  });
+
+  it('strips embedded userinfo from a parseable URL', () => {
+    const sanitized = sanitizeDaemonUrlForDisplay('http://user:hunter2@d.example/path');
+    expect(sanitized).not.toContain('hunter2');
+    expect(sanitized).not.toContain('user:');
+    expect(sanitized).toContain('d.example');
+  });
+
+  it('strips a userinfo-shaped prefix from a URL that fails to parse', () => {
+    // Deliberately malformed (space in host) so `new URL()` throws, exercising the regex
+    // fallback rather than the `URL` constructor path.
+    const sanitized = sanitizeDaemonUrlForDisplay('http://user:hunter2@bad host/path');
+    expect(sanitized).not.toContain('hunter2');
+  });
+
+  it('returns an unparseable, userinfo-free string unchanged', () => {
+    expect(sanitizeDaemonUrlForDisplay('not a url at all')).toBe('not a url at all');
+  });
+});
+
+describe('daemonUrlPolicyWarning', () => {
+  it('returns null for a loopback URL', () => {
+    expect(daemonUrlPolicyWarning('http://127.0.0.1:4111')).toBeNull();
+    expect(daemonUrlPolicyWarning('http://localhost:4111')).toBeNull();
+  });
+
+  it('returns null for an HTTPS URL even on a remote host', () => {
+    expect(daemonUrlPolicyWarning('https://remote.example')).toBeNull();
+  });
+
+  it('returns a warning for a remote, non-HTTPS URL', () => {
+    const warning = daemonUrlPolicyWarning('http://remote.example:4111');
+    expect(warning).not.toBeNull();
+    expect(warning).toContain('remote.example');
+  });
+
+  it('never includes userinfo in the warning text', () => {
+    const warning = daemonUrlPolicyWarning('http://user:hunter2@remote.example');
+    expect(warning).not.toContain('hunter2');
+  });
+
+  it('returns null for an unparseable URL', () => {
+    expect(daemonUrlPolicyWarning('not a url at all')).toBeNull();
   });
 });

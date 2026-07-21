@@ -21,6 +21,21 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+function streamResponse(status: number, chunks: readonly Uint8Array[]): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    body: stream,
+    json: async () => { throw new Error('should not be called: streamResponse has a body reader'); },
+  } as unknown as Response;
+}
+
 describe('surfaceFetchError', () => {
   it('formats a plain Error with no cause', () => {
     const { written, write } = captureWrite();
@@ -96,14 +111,19 @@ describe('surfaceFetchError', () => {
 
 describe('postJsonToDaemon', () => {
   it('returns the parsed JSON body on a 2xx response', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true }));
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => jsonResponse(200, { ok: true }));
     const data = await postJsonToDaemon('http://d.example', '/api/x', { a: 1 }, { fetchImpl });
     expect(data).toEqual({ ok: true });
-    expect(fetchImpl).toHaveBeenCalledWith('http://d.example/api/x', {
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('http://d.example/api/x');
+    expect(init).toMatchObject({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ a: 1 }),
     });
+    // Every request now carries an internal-timeout-backed AbortSignal (CR-004/SEC-RB-009).
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('merges caller-supplied headers', async () => {
@@ -237,5 +257,93 @@ describe('postJsonToDaemon', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('aborts and surfaces a daemon-not-running error once timeoutMs elapses', async () => {
+    // A realistic fetchImpl honors its AbortSignal, the way undici's real fetch does — this
+    // fake mirrors that so the internal timeout wiring is actually exercised end to end.
+    const fetchImpl = vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('This operation was aborted', 'AbortError'));
+          });
+        }),
+    );
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      postJsonToDaemon('http://d.example', '/api/x', {}, { fetchImpl, exit, write, timeoutMs: 10 }),
+    ).rejects.toThrow(ExitSentinel);
+    expect(exit).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['daemon-not-running']);
+  });
+
+  it('aborts when a caller-supplied signal fires, even before timeoutMs elapses', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('This operation was aborted', 'AbortError'));
+          });
+        }),
+    );
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    const pending = postJsonToDaemon('http://d.example', '/api/x', {}, {
+      fetchImpl,
+      exit,
+      write,
+      signal: controller.signal,
+      timeoutMs: 60_000,
+    });
+    controller.abort();
+    await expect(pending).rejects.toThrow(ExitSentinel);
+    expect(exit).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['daemon-not-running']);
+  });
+
+  it('rejects cleanly instead of buffering a response that exceeds maxResponseBytes', async () => {
+    const chunk = new TextEncoder().encode('x'.repeat(1000));
+    const fetchImpl = vi.fn(async () => streamResponse(200, [chunk, chunk]));
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      postJsonToDaemon('http://d.example', '/api/x', {}, { fetchImpl, exit, write, maxResponseBytes: 1500 }),
+    ).rejects.toThrow(ExitSentinel);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('exceeded'));
+  });
+
+  it('reads a streamed JSON response body up to (but under) the byte cap', async () => {
+    const chunk = new TextEncoder().encode(JSON.stringify({ ok: true, note: 'hello' }));
+    const fetchImpl = vi.fn(async () => streamResponse(200, [chunk]));
+    const data = await postJsonToDaemon('http://d.example', '/api/x', {}, { fetchImpl, maxResponseBytes: 1_000_000 });
+    expect(data).toEqual({ ok: true, note: 'hello' });
+  });
+
+  it('bounds and redacts an unrecognized-error-code daemon payload instead of dumping it verbatim', async () => {
+    const secret = 'A'.repeat(40);
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(500, { error: { code: 'totally-unmapped', authorization: `Bearer ${secret}` } }),
+    );
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      postJsonToDaemon('http://d.example', '/api/x', {}, { fetchImpl, exit, write }),
+    ).rejects.toThrow(ExitSentinel);
+    const combined = write.mock.calls.map((call) => String(call[0])).join('');
+    expect(combined).toContain('POST /api/x failed: 500');
+    expect(combined).not.toContain(secret);
+  });
+
+  it('strips userinfo from the daemon URL before reporting a network failure', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('network down'); });
+    const exit = vi.fn((code: number): never => { throw new ExitSentinel(code); });
+    const write = vi.fn();
+    await expect(
+      postJsonToDaemon('http://user:hunter2@d.example', '/api/x', {}, { fetchImpl, exit, write }),
+    ).rejects.toThrow(ExitSentinel);
+    const combined = write.mock.calls.map((call) => String(call[0])).join('');
+    expect(combined).not.toContain('hunter2');
   });
 });

@@ -11,6 +11,16 @@
  * codes rather than this package hosting one global mutable map.
  */
 
+import { sanitizeUnknownDeep, sanitizeUntrustedText, stripControlSequences } from './redact.js';
+
+// Per CR-004/SEC-RB-009
+// (ADS-memory/reports/code-review/CR-remaining-backend-audit-2026-07-21.md,
+// ADS-memory/reports/security/SEC-remaining-backend-audit-2026-07-21.md):
+// structuredErrorData/structuredHttpFailure below sanitize untrusted
+// daemon-supplied text (redact.ts) before it reaches a printed envelope — a
+// raw non-JSON body or an arbitrary data/details field can otherwise leak
+// internal paths, provider errors, tokens, or injected terminal escapes.
+
 export type ExitCodeTable = Readonly<Record<string, number>>;
 
 /** A minimal, product-neutral starting table. Packs extend this with their own codes. */
@@ -80,14 +90,19 @@ export interface HttpFailureLike {
  * Extract `{ data }` worth surfacing to the structured envelope from a
  * daemon error body: any `data` fields, plus `details`/`retryable` when
  * present. Returns `undefined` when there's nothing to attach.
+ *
+ * `data`/`details` are daemon-supplied and untrusted, so both are run
+ * through {@link sanitizeUnknownDeep} — every string leaf gets bounded,
+ * control-sequence-stripped, and secret-redacted before it can reach a
+ * printed envelope (CR-004/SEC-RB-009).
  */
 export function structuredErrorData(error: DaemonErrorBody | undefined): Record<string, unknown> | undefined {
   if (error === undefined) return undefined;
   const data: Record<string, unknown> = {};
   if (error.data !== undefined && typeof error.data === 'object' && error.data !== null) {
-    Object.assign(data, error.data);
+    Object.assign(data, sanitizeUnknownDeep(error.data) as Record<string, unknown>);
   }
-  if (error.details !== undefined) data.details = error.details;
+  if (error.details !== undefined) data.details = sanitizeUnknownDeep(error.details);
   if (typeof error.retryable === 'boolean') data.retryable = error.retryable;
   return Object.keys(data).length > 0 ? data : undefined;
 }
@@ -106,6 +121,15 @@ function extractErrorObject(parsed: unknown): DaemonErrorBody | undefined {
  * message, ... } }` (structured routes) and `{ error: '<message>' }` (flat
  * legacy routes) — both normalize so the message always reaches the
  * envelope instead of collapsing to a bare `HTTP <status>`.
+ *
+ * Per CR-004/SEC-RB-009, when there is no structured `message` this no
+ * longer embeds the complete raw response body verbatim into `message`
+ * (a malicious/broken daemon's body could be enormous, contain terminal
+ * control sequences, or echo back a secret). The envelope's `message` stays
+ * a stable `HTTP <status>` in that case; a bounded, redacted excerpt of the
+ * raw body is attached separately as `data.rawExcerpt` instead. A
+ * structured `message` (when present) is still sanitized — it originates
+ * from the same untrusted response.
  */
 export async function structuredHttpFailure(
   resp: HttpFailureLike,
@@ -122,10 +146,10 @@ export async function structuredHttpFailure(
   }
   const errorObj = extractErrorObject(parsed);
   const data = structuredErrorData(errorObj);
-  const code = typeof errorObj?.code === 'string' ? errorObj.code : fallbackCode;
-  const message =
-    typeof errorObj?.message === 'string'
-      ? errorObj.message
-      : `HTTP ${resp.status}${raw.length > 0 ? `: ${raw}` : ''}`;
-  return exitWithStructuredError({ code, message, ...(data !== undefined ? { data } : {}) }, options);
+  const code = typeof errorObj?.code === 'string' ? stripControlSequences(errorObj.code) : fallbackCode;
+  const structuredMessage = typeof errorObj?.message === 'string' ? sanitizeUntrustedText(errorObj.message) : undefined;
+  const message = structuredMessage ?? `HTTP ${resp.status}`;
+  const rawExcerpt = structuredMessage === undefined && raw.length > 0 ? sanitizeUntrustedText(raw) : undefined;
+  const mergedData = rawExcerpt !== undefined ? { ...(data ?? {}), rawExcerpt } : data;
+  return exitWithStructuredError({ code, message, ...(mergedData !== undefined ? { data: mergedData } : {}) }, options);
 }
