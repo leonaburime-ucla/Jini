@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   allocatePort,
@@ -531,26 +531,37 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
-  it("propagates a handler's thrown Error message back to the client as an error response", async () => {
+  it("SEC-004: redacts a handler's thrown Error to a generic message on the wire, logging the real detail server-side only", async () => {
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-err-"));
     const socketPath = testIpcPath(root);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const server = await createJsonIpcServer({
       handler: () => {
-        throw new Error("handler exploded");
+        throw new Error("handler exploded at /secret/internal/path");
       },
       socketPath,
     });
     try {
-      await expect(requestJsonIpc(socketPath, { type: "X" })).rejects.toThrow("handler exploded");
+      await requestJsonIpc(socketPath, { type: "X" });
+      expect.unreachable("expected requestJsonIpc to reject");
+    } catch (err) {
+      expect((err as Error).message).toBe("internal error");
+      expect((err as Error).message).not.toContain("/secret/internal/path");
+      expect((err as Error & { code?: string }).code).toBe("HANDLER_ERROR");
+      expect((err as Error & { requestId?: string }).requestId).toEqual(expect.any(String));
     } finally {
       await server.close();
       await rm(root, { force: true, recursive: true });
     }
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    expect(String(consoleErrorSpy.mock.calls[0]![1])).toContain("/secret/internal/path");
+    consoleErrorSpy.mockRestore();
   });
 
-  it("stringifies a non-Error thrown value from the handler", async () => {
+  it("SEC-004: redacts a non-Error thrown value from the handler the same way", async () => {
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-err2-"));
     const socketPath = testIpcPath(root);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const server = await createJsonIpcServer({
       handler: () => {
         // eslint-disable-next-line @typescript-eslint/no-throw-literal
@@ -559,11 +570,14 @@ describe("@jini/sidecar — JSON IPC", () => {
       socketPath,
     });
     try {
-      await expect(requestJsonIpc(socketPath, { type: "X" })).rejects.toThrow("raw string failure");
+      await expect(requestJsonIpc(socketPath, { type: "X" })).rejects.toThrow("internal error");
     } finally {
       await server.close();
       await rm(root, { force: true, recursive: true });
     }
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    expect(String(consoleErrorSpy.mock.calls[0]![1])).toContain("raw string failure");
+    consoleErrorSpy.mockRestore();
   });
 
   it("traces a non-object input payload distinctly from an object one (message summarization)", async () => {
@@ -583,12 +597,13 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
-  it("carries a Node-style error code through to the client when the handler throws one", async () => {
+  it("SEC-004: a Node-style error code from the handler is redacted the same as any other detail (only the stable HANDLER_ERROR code reaches the client)", async () => {
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-code-"));
     const socketPath = testIpcPath(root);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const server = await createJsonIpcServer({
       handler: () => {
-        const err = new Error("not found") as NodeJS.ErrnoException;
+        const err = new Error("not found: /etc/shadow") as NodeJS.ErrnoException;
         err.code = "ENOENT";
         throw err;
       },
@@ -598,11 +613,14 @@ describe("@jini/sidecar — JSON IPC", () => {
       await requestJsonIpc(socketPath, { type: "X" });
       expect.unreachable("expected requestJsonIpc to reject");
     } catch (err) {
-      expect((err as Error).message).toBe("not found");
+      expect((err as Error).message).toBe("internal error");
+      expect((err as Error & { code?: string }).code).toBe("HANDLER_ERROR");
     } finally {
       await server.close();
       await rm(root, { force: true, recursive: true });
     }
+    expect(String(consoleErrorSpy.mock.calls[0]![1])).toContain("not found: /etc/shadow");
+    consoleErrorSpy.mockRestore();
   });
 
   it("rejects with a connection error (not a timeout) when the target socket does not exist", async () => {
@@ -764,5 +782,98 @@ describe("@jini/sidecar — JSON IPC", () => {
     const socketPath = `\\\\.\\pipe\\jini-sidecar-test-pipe-${process.pid}`;
     const server = await createJsonIpcServer({ handler: async () => "ok", socketPath });
     await server.close();
+  });
+
+  it("SEC-004: rejects a frame that exceeds maxFrameBytes before any newline arrives", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-toolarge-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: async () => "ok",
+      socketPath,
+      maxFrameBytes: 32,
+    });
+    try {
+      const bigPayload = { input: "a".repeat(1000), type: "X" };
+      await expect(requestJsonIpc(socketPath, bigPayload)).rejects.toThrow(/exceeds the maximum size/);
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("SEC-004: destroys a connection that never completes a frame within idleTimeoutMs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-idle-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: async () => "ok",
+      socketPath,
+      idleTimeoutMs: 30,
+    });
+    try {
+      const socket = createConnection(socketPath);
+      await new Promise<void>((resolveClosed, rejectNotClosed) => {
+        const giveUp = setTimeout(
+          () => rejectNotClosed(new Error("connection was not closed within the expected window")),
+          2000,
+        );
+        socket.once("connect", () => {
+          socket.write("no newline here, ever — the server should give up waiting");
+        });
+        socket.once("close", () => {
+          clearTimeout(giveUp);
+          resolveClosed();
+        });
+        socket.once("error", (err) => {
+          clearTimeout(giveUp);
+          rejectNotClosed(err);
+        });
+      });
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("SEC-004: ignores a second frame that arrives on the same connection while the first handler call is still in-flight", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-concurrent-"));
+    const socketPath = testIpcPath(root);
+    let handlerCalls = 0;
+    const server = await createJsonIpcServer({
+      handler: async (message: { seq?: number }) => {
+        handlerCalls += 1;
+        // Widens the in-flight window so the second frame (written below, shortly after
+        // the first) reliably arrives while this handler call is still pending.
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+        return { seq: message.seq };
+      },
+      socketPath,
+    });
+    try {
+      const socket = createConnection(socketPath);
+      const responseChunks: string[] = [];
+      await new Promise<void>((resolveClosed, rejectFailed) => {
+        const giveUp = setTimeout(() => rejectFailed(new Error("connection did not close as expected")), 2000);
+        socket.once("connect", () => {
+          socket.write(`${JSON.stringify({ seq: 1, type: "X" })}\n`);
+          setTimeout(() => socket.write(`${JSON.stringify({ seq: 2, type: "X" })}\n`), 5);
+        });
+        socket.on("data", (chunk) => responseChunks.push(chunk.toString("utf8")));
+        socket.once("close", () => {
+          clearTimeout(giveUp);
+          resolveClosed();
+        });
+        socket.once("error", (err) => {
+          clearTimeout(giveUp);
+          rejectFailed(err);
+        });
+      });
+      expect(handlerCalls).toBe(1);
+      const response = responseChunks.join("");
+      expect(response).toContain('"seq":1');
+      expect(response).not.toContain('"seq":2');
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
   });
 });

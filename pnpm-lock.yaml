@@ -292,7 +292,11 @@ importers:
         specifier: ^25.0.1
         version: 25.0.1
 
-  packages/sidecar: {}
+  packages/sidecar:
+    dependencies:
+      '@jini/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/sqlite:
     dependencies:
