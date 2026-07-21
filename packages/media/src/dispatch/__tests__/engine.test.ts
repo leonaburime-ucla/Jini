@@ -264,6 +264,24 @@ describe('createMediaDispatchEngine — dispatch routing', () => {
     expect(result.bytes.toString('utf8')).toBe('audio');
   });
 
+  it('routes aihubmix + image and aihubmix + audio:speech', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://aihubmix.com/v1/images/generations') {
+        return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('img').toString('base64') }] }), { status: 200 });
+      }
+      if (url === 'https://aihubmix.com/v1/audio/speech') {
+        return new Response(Buffer.from('audio'), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const engine = createMediaDispatchEngine({ credentials: { aihubmix: { apiKey: 'ahm-key' } } });
+    const imageResult = await engine.generate({ surface: 'image', model: 'aihubmix-gpt-image-1' });
+    expect(imageResult.providerId).toBe('aihubmix');
+    const ttsResult = await engine.generate({ surface: 'audio', audioKind: 'speech', model: 'aihubmix-tts-1' });
+    expect(ttsResult.providerId).toBe('aihubmix');
+  });
+
   it('does not override when custom-image credentials name a different model', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('https://api.openai.com/v1/images/generations');

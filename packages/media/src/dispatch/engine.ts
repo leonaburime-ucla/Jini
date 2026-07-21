@@ -11,6 +11,7 @@
 import { AUDIO_DURATIONS_SEC, VIDEO_LENGTHS_SEC, findMediaModel, findProvider, modelsForSurface } from '../providers.js';
 import type { AudioKind, MediaModel, MediaProvider, MediaSurface } from '../types.js';
 import { buildRenderContext } from './context.js';
+import { renderAIHubMixImage, renderAIHubMixTTS } from './providers/aihubmix.js';
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
 import { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
 import { renderFishAudioTTS } from './providers/fishaudio.js';
@@ -120,6 +121,10 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   },
   fishaudio: {
     'audio:speech': renderFishAudioTTS,
+  },
+  aihubmix: {
+    image: renderAIHubMixImage,
+    'audio:speech': renderAIHubMixTTS,
   },
 };
 

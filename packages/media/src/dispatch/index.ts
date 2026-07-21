@@ -1,6 +1,7 @@
 export { buildRenderContext } from './context.js';
 export { resolveProviderCredentialsFromEnv } from './credentials.js';
 export { createMediaDispatchEngine } from './engine.js';
+export { renderAIHubMixImage, renderAIHubMixTTS } from './providers/aihubmix.js';
 export { renderCustomOpenAIImage, customImageOverridesOpenAIModel, CUSTOM_IMAGE_MODEL_ID } from './providers/custom-image.js';
 export { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
 export { renderFishAudioTTS } from './providers/fishaudio.js';
