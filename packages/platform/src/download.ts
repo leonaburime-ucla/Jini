@@ -262,7 +262,11 @@ function normalizeSegment(value: string, label: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, `${label} must be a non-empty string`);
   }
-  if (value === "." || value === ".." || value.includes("\0") || /[\\/]/.test(value) || isAbsolute(value)) {
+  // `:` blocks a Windows drive-relative segment (e.g. "C:foo") — win32's
+  // `isAbsolute`/`[\\/]` checks above don't reject it, but `path.win32.resolve`
+  // treats it as a real drive reference, which can escape `basePath` onto a
+  // different drive entirely.
+  if (value === "." || value === ".." || value.includes("\0") || value.includes(":") || /[\\/]/.test(value) || isAbsolute(value)) {
     throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, `${label} must be a safe single path segment`);
   }
   return value;
@@ -284,11 +288,10 @@ function normalizeBasePath(basePath: string): string {
   if (typeof basePath !== "string" || basePath.length === 0 || basePath.includes("\0")) {
     throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, "basePath must be a non-empty path");
   }
-  const resolved = resolve(basePath);
-  if (!isAbsolute(resolved)) {
-    throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, `basePath must resolve to an absolute path: ${basePath}`);
-  }
-  return resolved;
+  // `path.resolve()` always returns an absolute path by contract (resolving
+  // against `process.cwd()` when given a relative input), so this can never
+  // be false for any string input.
+  return resolve(basePath);
 }
 
 function targetFromOptions(options: Pick<ManagedDownloadOptions, "basePath" | "bucket" | "fileName" | "payload">): NormalizedTarget {
@@ -680,7 +683,11 @@ async function downloadWithRetries(
 
 async function acquireLock(target: NormalizedTarget): Promise<AcquiredLock> {
   await mkdir(dirname(target.lockPath), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  // The `continue` below is only reachable on `attempt === 0`, so by the time
+  // `attempt` would reach 2 (the old loop bound), the branch above it has
+  // already thrown — there's no way to fall through to a third iteration, so
+  // no trailing fallback throw is needed.
+  for (let attempt = 0; ; attempt += 1) {
     try {
       await writeFile(
         target.lockPath,
@@ -701,7 +708,6 @@ async function acquireLock(target: NormalizedTarget): Promise<AcquiredLock> {
       throw error;
     }
   }
-  throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.TARGET_LOCKED, `download target is locked: ${target.bucket}/${target.fileName}`);
 }
 
 async function clearStaleLock(target: NormalizedTarget): Promise<boolean> {

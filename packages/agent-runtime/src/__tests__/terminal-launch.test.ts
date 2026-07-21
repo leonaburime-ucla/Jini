@@ -149,6 +149,12 @@ describe('launchAgentInSystemTerminal — win32', () => {
     const result = await launchAgentInSystemTerminal('agy', 'win32');
     expect(result).toEqual({ ok: false, platform: 'win32', reason: 'cmd /c start failed: access denied' });
   });
+
+  it('stringifies a non-Error rejection', async () => {
+    mockState.execFileImpl = (_file, _args, _options, cb) => cb('plain failure' as unknown as Error);
+    const result = await launchAgentInSystemTerminal('agy', 'win32');
+    expect(result).toEqual({ ok: false, platform: 'win32', reason: 'cmd /c start failed: plain failure' });
+  });
 });
 
 describe('launchAgentInSystemTerminal — unsupported platform', () => {

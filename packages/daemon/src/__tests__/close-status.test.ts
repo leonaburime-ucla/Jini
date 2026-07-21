@@ -48,6 +48,33 @@ describe('resolveTimeoutMs', () => {
   it('clamps the resolved value to maxMs regardless of source', () => {
     expect(resolveTimeoutMs({ envVar: 'X', defaultMs: 1_000, maxMs: 2_000, env: { X: '999999' } })).toBe(2_000);
   });
+
+  it('falls back to process.env when no env source is injected', () => {
+    // Every other case in this suite passes `env` explicitly; omitting it
+    // exercises the `input.env ?? (...)` fallback itself, which reads the
+    // real `process.env` (there's no `X_TIMEOUT_MS_NEVER_SET` var in this
+    // process, so resolution still falls through to the agent default).
+    const ms = resolveTimeoutMs({ envVar: 'X_TIMEOUT_MS_NEVER_SET', agentDefaultMs: 5_000, defaultMs: 1_000, maxMs: 100_000 });
+    expect(ms).toBe(5_000);
+  });
+
+  it('falls back to {} when the global `process` itself is unavailable (a non-Node runtime) and no env override is set', () => {
+    // Narrows the `input.env ?? (typeof process !== 'undefined' ? process.env
+    // : {})` fallback's own inner ternary — the `{}` arm only exists for a
+    // non-Node embedding of this pure function, so it's simulated here via
+    // vi.stubGlobal rather than split into a separate jsdom-environment file
+    // (see this session's own vitest coverage-v8 environment-split note: a
+    // split file undercounts branches, whereas stubbing the global in place
+    // measures correctly). Restored synchronously in `finally` since
+    // `resolveTimeoutMs` itself makes no async gap.
+    vi.stubGlobal('process', undefined);
+    try {
+      const ms = resolveTimeoutMs({ agentDefaultMs: 5_000, defaultMs: 1_000, maxMs: 100_000 });
+      expect(ms).toBe(5_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('createInactivityWatchdog', () => {

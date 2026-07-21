@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunProtocolEvent } from '@jini/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
+import type { EventLog } from '../event-log.js';
 import { createRunLifecycle } from '../run-lifecycle.js';
 
 function makeLifecycle(maxEntriesPerRun?: number) {
@@ -49,6 +50,12 @@ describe('RunLifecycle — start', () => {
     expect(a.run.id).not.toBe(b.run.id);
   });
 
+  it('throws when starting with an explicit runId that already exists and no idempotencyKey makes it a legitimate replay', async () => {
+    const { lifecycle } = makeLifecycle();
+    await lifecycle.start({ contextRef: 'ctx-1', runId: 'dup-run-id' });
+    await expect(lifecycle.start({ contextRef: 'ctx-1', runId: 'dup-run-id' })).rejects.toThrow(/already exists/);
+  });
+
   it('rehydrates durable terminal state, context grouping, idempotency, and replay after a lifecycle restart', async () => {
     const eventLog = createInMemoryEventLog();
     const first = createRunLifecycle({ eventLog });
@@ -83,6 +90,111 @@ describe('RunLifecycle — start', () => {
     const replay = await eventLog.replay(run.id, null);
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') expect(replay.entries.filter((entry) => entry.event === 'end')).toHaveLength(1);
+  });
+});
+
+describe('RunLifecycle — rehydrate edge cases', () => {
+  it('rehydrates a succeeded run and a cancelled run with their real terminal states, not the failed default', async () => {
+    const eventLog = createInMemoryEventLog();
+    const first = createRunLifecycle({ eventLog });
+    const succeeded = await first.start({ contextRef: 'ctx-a', runId: 'run-succeeded' });
+    await first.finish({ runId: succeeded.run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+    const cancelled = await first.start({ contextRef: 'ctx-a', runId: 'run-cancelled' });
+    await first.finish({ runId: cancelled.run.id, status: 'cancelled', code: null, signal: 'SIGTERM', resumable: false });
+
+    const recovered = createRunLifecycle({ eventLog });
+    await recovered.rehydrate();
+
+    expect(await recovered.get('run-succeeded')).toMatchObject({ state: 'succeeded' });
+    expect(await recovered.get('run-cancelled')).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('defensively treats a malformed (non-record) persisted end-entry payload as a failed, non-resumable terminal state', async () => {
+    const eventLog = createInMemoryEventLog();
+    await eventLog.append({ runId: 'run-malformed', event: 'start', data: { runId: 'run-malformed', contextRef: 'ctx-a' } });
+    await eventLog.append({ runId: 'run-malformed', event: 'end', data: 'not-a-record-payload' });
+
+    const lifecycle = createRunLifecycle({ eventLog });
+    await lifecycle.rehydrate();
+
+    expect(await lifecycle.get('run-malformed')).toMatchObject({ state: 'failed' });
+    expect(await lifecycle.resume('run-malformed')).toMatchObject({ resumed: false });
+  });
+
+  it('a second rehydrate() call reuses the same in-flight/completed hydration rather than re-processing the log', async () => {
+    const eventLog = createInMemoryEventLog();
+    const first = createRunLifecycle({ eventLog });
+    await first.start({ contextRef: 'ctx-a', runId: 'run-a' });
+    await first.finish({ runId: 'run-a', status: 'succeeded', code: 0, signal: null, resumable: false });
+
+    const recovered = createRunLifecycle({ eventLog });
+    const firstCall = recovered.rehydrate();
+    const secondCall = recovered.rehydrate();
+    await Promise.all([firstCall, secondCall]);
+    expect(await recovered.get('run-a')).toMatchObject({ state: 'succeeded' });
+
+    // A rehydrate() called again after hydration already completed also
+    // short-circuits via the same `if (hydration) return hydration;` guard.
+    await recovered.rehydrate();
+    expect(await recovered.get('run-a')).toMatchObject({ state: 'succeeded' });
+  });
+
+  it('skips a runId that is already present in the in-memory registry (e.g. started directly on this same instance)', async () => {
+    const eventLog = createInMemoryEventLog();
+    const lifecycle = createRunLifecycle({ eventLog });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-a', runId: 'run-live' });
+
+    await lifecycle.rehydrate();
+
+    expect(await lifecycle.get(run.id)).toMatchObject({ state: 'running' });
+    expect((await lifecycle.list('ctx-a')).map((r) => r.id)).toEqual([run.id]);
+  });
+
+  it('skips a runId whose retained entries are empty (e.g. every entry evicted before a restart)', async () => {
+    const eventLog = createInMemoryEventLog({ maxEntriesPerRun: 0 });
+    const first = createRunLifecycle({ eventLog });
+    await first.start({ contextRef: 'ctx-a', runId: 'run-empty' });
+
+    const recovered = createRunLifecycle({ eventLog });
+    await recovered.rehydrate();
+
+    // Nothing to reconstruct from zero retained entries — the run is simply
+    // absent from the rehydrated instance rather than half-populated.
+    expect(await recovered.get('run-empty')).toBeUndefined();
+  });
+
+  it("falls back to the first retained entry's timestamp and an undefined contextRef once the original start entry has been evicted", async () => {
+    const eventLog = createInMemoryEventLog({ maxEntriesPerRun: 1 });
+    const first = createRunLifecycle({ eventLog });
+    const { run } = await first.start({ contextRef: 'ctx-a', runId: 'run-evicted-start' });
+    // Cap of 1 evicts the 'start' entry on the very next append — only the
+    // most recent entry ever survives.
+    await first.emit(run.id, { event: 'agent', data: { type: 'status', label: 'still going' } });
+    await first.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+
+    const recovered = createRunLifecycle({ eventLog });
+    await recovered.rehydrate();
+
+    expect(await recovered.get(run.id)).toMatchObject({ id: run.id, state: 'succeeded' });
+    expect((await recovered.list()).map((r) => r.id)).toContain(run.id);
+    // No contextRef is recoverable once the start entry (its only carrier)
+    // has been evicted — list(contextRef) can no longer find this run.
+    expect((await recovered.list('ctx-a')).map((r) => r.id)).not.toContain(run.id);
+  });
+});
+
+describe('RunLifecycle — get/list direct queries', () => {
+  it('get() returns undefined for an unknown runId', async () => {
+    const { lifecycle } = makeLifecycle();
+    expect(await lifecycle.get('never-started')).toBeUndefined();
+  });
+
+  it('list() with no contextRef argument returns every known run, not just one context', async () => {
+    const { lifecycle } = makeLifecycle();
+    const a = await lifecycle.start({ contextRef: 'ctx-a' });
+    const b = await lifecycle.start({ contextRef: 'ctx-b' });
+    const all = await lifecycle.list();
+    expect(all.map((r) => r.id).sort()).toEqual([a.run.id, b.run.id].sort());
   });
 });
 
@@ -151,6 +263,22 @@ describe('RunLifecycle — finish', () => {
     if (replay.kind === 'ok') {
       expect(replay.entries.filter((e) => e.event === 'end')).toHaveLength(1);
     }
+  });
+
+  it('delivers the end event live to a subscriber that is already streaming when finish() is called', async () => {
+    const { lifecycle } = makeLifecycle();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const delivered: RunProtocolEvent[] = [];
+    const result = await lifecycle.stream(run.id, (event) => delivered.push(event));
+    expect(result.kind).toBe('ok');
+    expect(delivered.map((e) => e.kind)).toEqual(['start']);
+
+    await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+
+    // Delivered via finish()'s own live-subscriber broadcast loop, not a
+    // subsequent replay — no reconnect happened here.
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'end']);
   });
 
   it('resolves waitForTerminal()', async () => {
@@ -350,6 +478,102 @@ describe('RunLifecycle — stream (reconnect)', () => {
     expect(result.kind).toBe('ok');
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ kind: 'end' });
+  });
+
+  it('buffers a live event that arrives while the replay query is still in flight, then delivers it deduped against the (by-then-caught-up) replay', async () => {
+    // stream()'s own doc: "Subscribe before awaiting the durable replay. Any
+    // event appended while the replay query is in flight is buffered, then
+    // delivered after the replay entries..." — a real durable EventLog
+    // adapter has genuine I/O latency on replay(); this in-memory reference
+    // implementation resolves instantly, so the narrow subscribe→replay
+    // window is reproduced deterministically here via an injected EventLog
+    // wrapper that gates its first replay() call open only once this test
+    // has appended a live event during that window.
+    const inner = createInMemoryEventLog();
+    let releaseReplay: (() => void) | undefined;
+    const gatedEventLog: EventLog = {
+      append: inner.append,
+      listRunIds: inner.listRunIds,
+      drop: inner.drop,
+      async replay(runId, afterCursor) {
+        if (releaseReplay === undefined) {
+          await new Promise<void>((resolve) => {
+            releaseReplay = resolve;
+          });
+        }
+        return inner.replay(runId, afterCursor);
+      },
+    };
+    const lifecycle = createRunLifecycle({ eventLog: gatedEventLog });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const delivered: RunProtocolEvent[] = [];
+    const streamPromise = lifecycle.stream(run.id, (event) => delivered.push(event));
+
+    // stream() has already subscribed and is now suspended awaiting the
+    // gated replay() — this event lands on the live subscriber (buffered,
+    // since `replaying` is still true) before the replay query resolves.
+    await lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'arrived-during-replay' } });
+
+    expect(releaseReplay).toBeDefined();
+    releaseReplay!();
+    const result = await streamPromise;
+    expect(result.kind).toBe('ok');
+
+    // By the time the gated replay actually ran, the underlying store
+    // already had both entries, so replay's own delivery already included
+    // the 'agent' entry — the buffered copy must be deduped, not delivered
+    // a second time.
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent']);
+  });
+
+  it('delivers a buffered live event through the buffer fallback when it genuinely postdates a stale replay snapshot', async () => {
+    // Complements the dedup case above: here the injected EventLog's
+    // replay() computes its result BEFORE the live emit() happens (a real
+    // stale durable read), so the buffered 'agent' event is the only way it
+    // ever reaches the caller — not a duplicate of anything replay saw.
+    const inner = createInMemoryEventLog();
+    let releaseReplay: (() => void) | undefined;
+    const gatedEventLog: EventLog = {
+      append: inner.append,
+      listRunIds: inner.listRunIds,
+      drop: inner.drop,
+      async replay(runId, afterCursor) {
+        const snapshot = await inner.replay(runId, afterCursor);
+        if (releaseReplay === undefined) {
+          await new Promise<void>((resolve) => {
+            releaseReplay = resolve;
+          });
+        }
+        return snapshot;
+      },
+    };
+    const lifecycle = createRunLifecycle({ eventLog: gatedEventLog });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const delivered: RunProtocolEvent[] = [];
+    const streamPromise = lifecycle.stream(run.id, (event) => delivered.push(event));
+
+    await lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'postdates-the-snapshot' } });
+
+    expect(releaseReplay).toBeDefined();
+    releaseReplay!();
+    const result = await streamPromise;
+    expect(result.kind).toBe('ok');
+
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent']);
+  });
+
+  it('the unsubscribe handle returned for an already-terminal run is callable and a genuine no-op', async () => {
+    const { lifecycle } = makeLifecycle();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+
+    const result = await lifecycle.stream(run.id, () => {});
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(() => result.unsubscribe()).not.toThrow();
+    }
   });
 });
 

@@ -65,6 +65,20 @@ describe('checkDeploymentUrl', () => {
     expect(result).toEqual({ reachable: false, status: 'protected', statusCode: 401, statusMessage: 'gated' });
   });
 
+  it('classifies the GET fallback as protected too, after HEAD triggered the fallback with a non-401 client error', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(403)) // HEAD: triggers the GET fallback (statusCode >= 400)
+      .mockResolvedValueOnce(jsonResponse(401, {}, 'Authentication Required')); // GET: reports protected
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await checkDeploymentUrl('https://site.example', {
+      detectProtected: (_resp, body) => body.includes('Authentication Required'),
+      protectedMessage: 'gated',
+    });
+    expect(result).toEqual({ reachable: false, status: 'protected', statusCode: 401, statusMessage: 'gated' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('folds a network error (e.g. connection refused) into reachable:false with a message', async () => {
     vi.stubGlobal(
       'fetch',

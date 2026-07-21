@@ -12,7 +12,7 @@
  * `source-map.md`.
  */
 import { execAgentFile } from './invocation.js';
-import { DEFAULT_MODEL_OPTION, getRememberedLiveModels, rememberLiveModels } from './models.js';
+import { getRememberedLiveModels, rememberLiveModels } from './models.js';
 import { agentCapabilities } from './capabilities.js';
 import { installMetaForAgent } from './metadata.js';
 import { AGENT_DEFS } from './registry.js';
@@ -123,7 +123,10 @@ async function probeVersionAtPath(def: RuntimeAgentDef, resolved: string, env: N
       env,
       timeout: def.versionProbeTimeoutMs ?? 3000,
     });
-    const version = String(stdout).trim().split('\n')[0] ?? null;
+    // `String.split()` on a non-empty string always returns at least one
+    // element, so `[0]` is never `undefined` here — the assertion just
+    // satisfies `noUncheckedIndexedAccess`.
+    const version = String(stdout).trim().split('\n')[0]!;
     return { kind: 'spawned', version };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
@@ -140,7 +143,9 @@ async function probeVersionAtPath(def: RuntimeAgentDef, resolved: string, env: N
 function unavailableAgent(def: RuntimeAgentDef, diagnostics: AgentDiagnostic[] = []): DetectedAgent {
   return {
     ...stripFns(def),
-    models: def.fallbackModels ?? [DEFAULT_MODEL_OPTION],
+    // `fallbackModels` is a required field on `RuntimeAgentDef`, never
+    // `undefined` for a well-typed def.
+    models: def.fallbackModels,
     modelsSource: 'fallback',
     available: false,
     ...(diagnostics.length > 0 ? { diagnostics } : {}),
@@ -291,8 +296,10 @@ export async function detectAgents(
   // so a chat endpoint can accept any model the user could have just
   // picked, including ones that only showed up after a CLI re-auth.
   for (const [index, agent] of results.entries()) {
-    const def = AGENT_DEFS[index];
-    if (!def) continue;
+    // `results` is `AGENT_DEFS.map(...)`, so every index in `results.entries()`
+    // is in-bounds for `AGENT_DEFS` too — the assertion just satisfies
+    // `noUncheckedIndexedAccess`.
+    const def = AGENT_DEFS[index]!;
     rememberDetectedLiveModels(def, configuredEnvByAgent?.[def.id] ?? {}, agent, amrProfileResolver);
   }
   return results;

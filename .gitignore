@@ -19,3 +19,4 @@ automation/project-runner/.sandbox/
 **/graphify-out/
 **/.codegraph/
 **/.code-review-graph/
+.codebase-memory/

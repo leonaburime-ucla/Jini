@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,6 +175,74 @@ describe("@jini/platform — fs", () => {
 
     expect(await readLogTail(logPath, 2)).toEqual(["line2", "line3"]);
     expect(await readLogTail(join(dir, "missing.log"))).toEqual([]);
+  });
+
+  it("treats a same-path copy of a file as a no-op that reports the existing size", async () => {
+    const dir = await makeTempDir("jini-platform-fs-");
+    const file = join(dir, "same.txt");
+    await writeFile(file, "unchanged", "utf8");
+
+    const result = await atomicCopyFile(file, file);
+    expect(result).toEqual({ bytesCopied: "unchanged".length, replaced: true });
+    expect(await readFile(file, "utf8")).toBe("unchanged");
+  });
+
+  it("refuses a same-path copy when the shared path is a directory, not a file", async () => {
+    const dir = await makeTempDir("jini-platform-fs-");
+    const sameDir = join(dir, "samedir");
+    await mkdir(sameDir);
+
+    await expect(atomicCopyFile(sameDir, sameDir)).rejects.toThrow(/destination is not a file/);
+  });
+
+  it("propagates a non-ENOENT error from the destination existence check", async () => {
+    const dir = await makeTempDir("jini-platform-fs-");
+    const source = join(dir, "source.txt");
+    await writeFile(source, "data", "utf8");
+    const restrictedDir = join(dir, "restricted");
+    await mkdir(restrictedDir);
+    const destination = join(restrictedDir, "dest.txt");
+
+    // No read/execute on the destination's parent: stat(destination) fails
+    // with EACCES rather than the ENOENT the "does not exist yet" path
+    // expects, so the error must be rethrown rather than treated as "new".
+    await chmod(restrictedDir, 0o000);
+    try {
+      await expect(atomicCopyFile(source, destination)).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(restrictedDir, 0o755);
+    }
+  });
+
+  it("cleans up the temp file and rethrows when the copy itself fails", async () => {
+    const dir = await makeTempDir("jini-platform-fs-");
+    const sourceDir = join(dir, "a-directory-not-a-file");
+    await mkdir(sourceDir);
+    const destination = join(dir, "dest.txt");
+
+    // A directory source makes the underlying copyFile() call itself fail,
+    // exercising the outer try/catch's temp-file cleanup + rethrow.
+    await expect(atomicCopyFile(sourceDir, destination)).rejects.toThrow();
+    await expect(stat(destination)).rejects.toThrow();
+  });
+
+  it("reports the failure message when a best-effort removal itself fails", async () => {
+    const dir = await makeTempDir("jini-platform-fs-");
+    const blocked = join(dir, "blocked");
+    await mkdir(blocked);
+    await writeFile(join(blocked, "nested.txt"), "x", "utf8");
+
+    // No read/execute on the target itself: recursive removal can't list its
+    // contents, so `rm` throws EACCES instead of quietly succeeding — force
+    // only suppresses "already gone", not "can't get in".
+    await chmod(blocked, 0o000);
+    try {
+      const result = await removePathBestEffort(blocked, { recursive: true });
+      expect(result.removed).toBe(false);
+      expect(result.error).toBeTruthy();
+    } finally {
+      await chmod(blocked, 0o755);
+    }
   });
 });
 

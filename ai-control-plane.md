@@ -133,6 +133,27 @@ The control plane needs two distinct concepts:
 
 Conflating them would create false security claims.
 
+### 3.6 External prior art: a sibling repo already shipped this pattern
+
+`/Users/la/Desktop/Programming/OSS-Repos/open-design-agentic` (a separate repository, not a Jini package — its code must not be imported into `@jini/*`) already designed and partly shipped the same problem for Open Design directly, via an umbrella RFC (`docs/rfc-drafts/agent-ready.md`) and a companion cross-project RFC (`docs/rfc-drafts/agent-ready-cross-project.md`). This is shipped code, not just prior prose:
+
+- `packages/contracts/src/agent-tools/{descriptor,manifest,registry,actions,task}.ts` — pure-type contracts for a tool descriptor discriminated on `surface: 'browser' | 'api'`, a manifest (the `tools/list` analog), and a paged search query/result (the `tools/search` analog).
+- `packages/agent-tools/src/sqlite-registry.ts` — a working SQLite-backed `AgentToolRegistry`, structurally forbidden from importing `apps/*`.
+- `apps/daemon/src/browser-actions/tools.ts` — five shipped browser tools (`navigation.goto`, `ui.click`, `ui.fill`, `ui.waitFor`, `ui.observe`).
+
+Decisions this prior art already validated in running code, which this proposal should adopt rather than re-derive:
+
+1. **Two distinct call paths, not one universal envelope.** An `api` tool is a normal route call (the daemon invokes its declared `/api/*` route directly); a `browser` tool is a dispatch-and-await round trip (`BrowserActionRequest` → live session → `BrowserActionResult`), because only the browser surface runs in a remote context the daemon must wait on. This concretizes §15's UI-session-action category with an actual wire shape.
+2. **A dual-track litmus test, enforced structurally.** A tool may skip an `od` CLI form and ship as `surface: 'browser'` (`viewStateOnly: true`) *only if* "could it be meaningfully invoked with no browser attached?" fails — navigate/scroll/focus/panel-visibility pass (exempt); "export the deck" does not (must be `surface: 'api'` with both a route and a CLI subcommand). Recommend adopting this litmus test verbatim as the read/write vs. UI-session-only boundary test for §15.
+3. **Explicit allowlist attributes, never raw selectors.** `ui.click` / `ui.fill` only ever resolve `data-agent-target=` / `data-agent-field=` values — an author-controlled, explicit opt-in — never `document.querySelector(<model-supplied selector>)`. This is a concrete, already-working answer to §24's "no generic `evalJavaScript`" anti-pattern for the Stage 6 frontend bridge.
+4. **PUSH vs. PULL as the actual reason for two discovery paths, not an incidental split.** `browser`-surface availability is PUSH-advertised per session (the daemon cannot know what's mounted without the tab telling it); the persistent `api` catalog is PULL-discovered via search. This independently validates this proposal's activation-vs-search split (§10, §13).
+5. **A daemon-minted `invocationId` as the sole action identity** — never a provider `tool_call_id` or MCP request id, which are absent on the MCP-bridge path and scoped per-provider-turn. Directly reusable for the audit/execution identity in §19.6.
+6. **SQLite under the resolved data root, FTS5 named as the next step for search** — the same conclusion this proposal reaches independently in §9, already shipped (today as `LIKE`, matching this proposal's Option A default).
+7. **A dedicated, GenUI-patterned return endpoint** (`POST /api/runs/:runId/actions/:invocationId/result`, a pending→responded lifecycle) rather than overloading an existing HITL table — a concrete precedent for the "structured result" transport §15.2 leaves undefined.
+8. **Contracts-first, runtime-guarded slicing.** Slice 1 shipped types only; slice 2's runtime package is structurally forbidden from importing product-specific code, enforced by a `check-cross-app-imports.ts`-style guard wired into `pnpm guard` — the same discipline `scripts/check-engine-boundaries.ts` already enforces in this repo. Validates the staged rollout in §22.
+
+Open naming mismatch to resolve in debate: the OD RFC calls the top-level noun a "tool" (`AgentToolDescriptor`, `AgentToolRegistry`); this proposal calls it a "capability" (`CapabilityDescriptor`, `CapabilityCatalog`) and reserves "tool" for the invocable subset. Both cannot be canonical — see debate question 29.
+
 ## 4. Goals
 
 The proposed control plane should:
@@ -622,6 +643,8 @@ When an MCP client supports refreshed tool discovery:
 5. The agent invokes the strongly typed tool normally.
 
 Dynamic tool-list interoperability must be tested across actual supported agents. The architecture must not assume every Codex, Claude, Cursor, ACP, or other client behaves identically.
+
+This search-then-activate shape is not unproven. Claude Code's own harness already runs the identical pattern for its own large, host-side tool surface: tools outside the default set are "deferred" (name-only, no schema loaded), a `ToolSearch`-equivalent call resolves a query to matching tool names, and only the matched tool's full schema is loaded and made callable from that point forward. That a production coding-agent harness already ships this exact discovery-then-activation flow at scale is evidence for the approach, not just a design analogy.
 
 ### 12.3 Resources
 
@@ -1529,6 +1552,12 @@ The debate should resolve or explicitly defer the following.
 27. How is OD upstream patchability preserved when route logic moves into shared app-services?
 28. Which OD capabilities remain permanently product-owned instead of being abstracted into Jini providers?
 
+### Prior art alignment
+
+29. Should Jini's vocabulary be `capability` (this proposal) or `tool` (the `open-design-agentic` RFC), given both are otherwise well-designed and the latter is already shipped?
+30. Should the OD RFC's `viewStateOnly` / "could it be meaningfully invoked with no browser attached?" litmus test become the literal Jini-kernel rule for what qualifies as a browser/UI-session-only tool, or stay a product-layer convention?
+31. Should Jini's frontend-bridge action identity reuse the OD RFC's `invocationId` shape and its pending→responded return-endpoint pattern directly, or should Jini design its own?
+
 ## 26. Recommended starting position for debate
 
 The following is a coherent initial position, not a locked conclusion:
@@ -1558,6 +1587,7 @@ Relevant code and documentation at the time this proposal was written:
 - `packages/node-host/src/create-local-node-daemon.ts` — local composition preset and host-owned run-start hook.
 - `packages/mcp/source-map.md` — generic MCP primitives retained and the OD-coupled stdio server intentionally dropped.
 - `docs/jini-port/extraction-plan.md` — locked Jini architecture and package boundaries that this proposal must extend rather than bypass.
+- `/Users/la/Desktop/Programming/OSS-Repos/open-design-agentic/docs/rfc-drafts/agent-ready.md` and `agent-ready-cross-project.md` — a sibling repo's shipped RFC + contracts for the same problem at the OD-product level (see §3.6); informs this proposal but must not be imported into `@jini/*`.
 
 ## 28. Decision record placeholder
 

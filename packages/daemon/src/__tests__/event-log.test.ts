@@ -145,6 +145,17 @@ describe('createInMemoryEventLog — eviction + replay-gap adversarial cases', (
     expect(caughtUp).toEqual({ kind: 'ok', entries: [] });
   });
 
+  it('reports a gap with a null oldestAvailableCursor when maxEntriesPerRun is 0 (every entry evicted immediately)', async () => {
+    const log = createInMemoryEventLog({ maxEntriesPerRun: 0 });
+    await log.append({ runId: 'r1', event: 'agent', data: 'evicted-on-arrival' });
+    // runLog exists (append created it) but retains zero entries, so
+    // `oldestRetained` is undefined — exercises the "empty retained log"
+    // fallback branches (oldestRetainedId falls back to runLog.nextId, and
+    // oldestAvailableCursor reports null instead of a real id).
+    const replay = await log.replay('r1', '0');
+    expect(replay).toEqual({ kind: 'replay-gap', requestedCursor: '0', oldestAvailableCursor: null });
+  });
+
   it('a first-time replay(null) after eviction is not treated as a gap (nothing was ever promised to a caller that never asked), but IS flagged truncated', async () => {
     const log = createInMemoryEventLog({ maxEntriesPerRun: 2 });
     for (let i = 0; i < 10; i += 1) {

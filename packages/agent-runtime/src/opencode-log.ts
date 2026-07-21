@@ -100,7 +100,7 @@ function pickServiceErrorMessage(line: string): string | null {
     if (SERVICE_ERROR_MESSAGE_RE.test(value)) return value;
     if (!fallback) fallback = value;
   }
-  return fallback && SERVICE_ERROR_MESSAGE_RE.test(fallback) ? fallback : null;
+  return fallback;
 }
 
 function codeFromStatus(statusCode: number): AgentServiceFailureCode | null {

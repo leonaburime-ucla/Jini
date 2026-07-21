@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createApiError,
+  createApiErrorResponse,
   isTerminalRunState,
   RUN_PROTOCOL_VERSION,
   type ApiError,
@@ -45,6 +46,11 @@ describe('@jini/protocol', () => {
 
     expect(error.code).toBe('VALIDATION_FAILED');
     expect(error.details).toEqual({ field: 'name' });
+  });
+
+  it('wraps an ApiError in the standard { error } response envelope', () => {
+    const error = createApiError('NOT_FOUND', 'run "run_1" was not found');
+    expect(createApiErrorResponse(error)).toEqual({ error });
   });
 
   it('tracks a run through queued -> running -> succeeded', () => {

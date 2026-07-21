@@ -1,4 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync, lstatSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer, createConnection } from "node:net";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -18,15 +21,23 @@ import {
   resolveAppIpcPath,
   resolveAppRuntimePath,
   resolveLogFilePath,
+  resolveManifestPath,
   resolveNamespace,
   resolveNamespaceRoot,
+  resolvePointerPath,
+  resolveProjectRoot,
   resolveRuntimeNamespaceRoot,
+  resolveRuntimeRoot,
   resolveSidecarBase,
   resolveSourceRuntimeRoot,
   writeJsonFile,
   type SidecarContractDescriptor,
   type SidecarStampShape,
 } from "../index.js";
+// net.ts is an internal module shared by port.ts/json-ipc.ts, not re-exported from the barrel
+// (see index.ts's own module doc) — imported directly here, matching the rest of this file's
+// convention of importing everything else through the barrel.
+import { closeServer, listenOnPort } from "../net.js";
 
 /**
  * A fake host contract, standing in for a real consumer's product-specific
@@ -95,6 +106,30 @@ describe("@jini/sidecar — ipc-path", () => {
     expect(() => normalizeIpcPath("relative/socket.sock")).toThrow(/must be absolute/);
     expect(() => normalizeIpcPath("")).toThrow(/must not be empty/);
     expect(() => normalizeIpcPath(" /tmp/socket.sock ")).toThrow(/leading or trailing whitespace/);
+    expect(() => normalizeIpcPath(42)).toThrow(/must be a string/);
+    expect(() => normalizeIpcPath("/tmp/soc\0ket.sock")).toThrow(/must not contain null bytes/);
+  });
+});
+
+describe("@jini/sidecar — net", () => {
+  it("closeServer is a no-op on a server that was never listening", async () => {
+    const server = createNetServer();
+    await expect(closeServer(server)).resolves.toBeUndefined();
+  });
+
+  it("closeServer closes a listening server", async () => {
+    const server = await listenOnPort(0, "127.0.0.1");
+    expect(server.listening).toBe(true);
+    await closeServer(server);
+    expect(server.listening).toBe(false);
+  });
+
+  it("listenOnPort rejects when the port is already bound by another server", async () => {
+    const first = await listenOnPort(0, "127.0.0.1");
+    const address = first.address();
+    if (address == null || typeof address === "string") throw new Error("expected a TCP address");
+    await expect(listenOnPort(address.port, "127.0.0.1")).rejects.toThrow();
+    await closeServer(first);
   });
 });
 
@@ -157,6 +192,58 @@ describe("@jini/sidecar — path boundary uses descriptor defaults, not hardcode
       join(resolve("/data/ns/alpha"), "logs", "api", "latest.log"),
     );
   });
+
+  it("resolveNamespace falls back to the contract default when neither an explicit value nor the env var is set", () => {
+    expect(resolveNamespace({ contract: fakeContract, env: {} })).toBe("default");
+  });
+
+  it("resolveProjectRoot rejects a non-string or empty/whitespace-only value", () => {
+    expect(() => resolveProjectRoot("")).toThrow(/non-empty string/);
+    expect(() => resolveProjectRoot("   ")).toThrow(/non-empty string/);
+    expect(() => resolveProjectRoot(42 as unknown as string)).toThrow(/non-empty string/);
+  });
+
+  it("resolveSidecarBase falls all the way through to the computed source runtime root when neither base nor env is set", () => {
+    expect(resolveSidecarBase({ contract: fakeContract, env: {}, projectRoot: "/repo/product", source: "tool" })).toBe(
+      resolve("/repo/product", ".fake-tmp", "tool"),
+    );
+  });
+
+  it("resolveRuntimeRoot, resolvePointerPath, and resolveManifestPath derive the documented per-run/pointer/manifest paths", () => {
+    const base = "/runtime/base";
+    expect(resolveRuntimeRoot({ base, contract: fakeContract, namespace: "alpha", runId: "run_1" })).toBe(
+      join(resolve(base), "alpha", "runs", "run_1"),
+    );
+    expect(resolvePointerPath({ base, contract: fakeContract, namespace: "alpha" })).toBe(join(resolve(base), "alpha", "current.json"));
+    expect(resolveManifestPath({ runtimeRoot: "/runtime/base/alpha/runs/run_1" })).toBe(
+      join("/runtime/base/alpha/runs/run_1", "manifest.json"),
+    );
+  });
+
+  it("resolveAppRuntimePath rejects an empty fileName, one with a null byte, and one with a path separator", () => {
+    const namespaceRoot = "/runtime/base/alpha";
+    expect(() => resolveAppRuntimePath({ app: "ui", contract: fakeContract, fileName: "", namespaceRoot })).toThrow(
+      /simple path segment/,
+    );
+    expect(() =>
+      resolveAppRuntimePath({ app: "ui", contract: fakeContract, fileName: "a\0b", namespaceRoot }),
+    ).toThrow(/simple path segment/);
+    expect(() =>
+      resolveAppRuntimePath({ app: "ui", contract: fakeContract, fileName: "../escape", namespaceRoot }),
+    ).toThrow(/simple path segment/);
+  });
+
+  it("resolveAppIpcPath returns a Windows named pipe path on win32 instead of a unix socket path", () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    try {
+      expect(resolveAppIpcPath({ app: "ui", contract: fakeContract, namespace: "alpha" })).toBe(
+        "\\\\.\\pipe\\fake-product-alpha-ui",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+    }
+  });
 });
 
 describe("@jini/sidecar — bootstrap", () => {
@@ -199,6 +286,50 @@ describe("@jini/sidecar — bootstrap", () => {
       /sidecar stamp app mismatch/,
     );
   });
+
+  it("rejects a stamp whose ipc path does not match the one derived from app/namespace/env", () => {
+    const stamp: FakeStamp = {
+      app: "api",
+      ipc: "/tmp/totally-wrong-path.sock",
+      mode: "dev",
+      namespace: "alpha",
+      source: "tool",
+    };
+    expect(() => bootstrapSidecarRuntime(stamp, {}, { app: "api", contract: fakeContract })).toThrow(
+      /sidecar ipc path mismatch/,
+    );
+  });
+
+  it("rejects when the incoming env already carries a conflicting canonical value (namespace/source/ipc)", () => {
+    const stamp: FakeStamp = {
+      app: "api",
+      ipc: resolveAppIpcPath({ app: "api", contract: fakeContract, namespace: "alpha" }),
+      mode: "dev",
+      namespace: "alpha",
+      source: "tool",
+    };
+    const conflictingEnv = { FAKE_NAMESPACE: "some-other-namespace" };
+    expect(() => bootstrapSidecarRuntime(stamp, conflictingEnv, { app: "api", contract: fakeContract })).toThrow(
+      /sidecar env mismatch for FAKE_NAMESPACE/,
+    );
+  });
+
+  it("accepts a matching pre-existing env value and honors an explicit projectRoot option", () => {
+    const stamp: FakeStamp = {
+      app: "api",
+      ipc: resolveAppIpcPath({ app: "api", contract: fakeContract, namespace: "alpha" }),
+      mode: "dev",
+      namespace: "alpha",
+      source: "tool",
+    };
+    const matchingEnv = { FAKE_NAMESPACE: "alpha" };
+    const runtime = bootstrapSidecarRuntime(stamp, matchingEnv, {
+      app: "api",
+      contract: fakeContract,
+      projectRoot: "/repo/product",
+    });
+    expect(runtime.base).toBe(resolve("/repo/product", ".fake-tmp", "tool"));
+  });
 });
 
 describe("@jini/sidecar — port allocation", () => {
@@ -216,6 +347,56 @@ describe("@jini/sidecar — port allocation", () => {
     const reserved = new Set<number>();
     const first = await allocatePort({ reserved });
     await expect(allocatePort({ port: first.port, reserved })).rejects.toThrow(/conflicts with another managed port/);
+  });
+
+  it("rejects an out-of-range or non-integer forced port before attempting to bind it", async () => {
+    await expect(allocatePort({ port: 0 })).rejects.toThrow(/integer between 1 and 65535/);
+    await expect(allocatePort({ port: 70_000 })).rejects.toThrow(/integer between 1 and 65535/);
+    await expect(allocatePort({ port: 1.5 })).rejects.toThrow(/integer between 1 and 65535/);
+    await expect(allocatePort({ port: "not-a-number" })).rejects.toThrow(/integer between 1 and 65535/);
+  });
+
+  it("treats a null/empty forced port the same as an unspecified one (falls back to dynamic)", async () => {
+    expect((await allocatePort({ port: null })).source).toBe("dynamic");
+    expect((await allocatePort({ port: "" })).source).toBe("dynamic");
+  });
+
+  it("successfully allocates and reserves a genuinely free forced port", async () => {
+    // Find a free port dynamically first, release it, then force-allocate that exact number.
+    const probe = await allocatePort({});
+    const reserved = new Set<number>();
+    const result = await allocatePort({ port: probe.port, reserved });
+    expect(result).toEqual({ port: probe.port, source: "forced" });
+    expect(reserved.has(probe.port)).toBe(true);
+  });
+
+  it("rejects a forced port that is genuinely unavailable at the OS level (not just reserved)", async () => {
+    const occupied = await listenOnPort(0, "127.0.0.1");
+    const address = occupied.address();
+    if (address == null || typeof address === "string") throw new Error("expected a TCP address");
+    try {
+      await expect(allocatePort({ port: address.port })).rejects.toThrow(/is not available/);
+    } finally {
+      await closeServer(occupied);
+    }
+  });
+
+  it("exhausts its 20-attempt dynamic-port budget when every ephemeral port the OS hands back is already reserved", async () => {
+    // The OS (observed empirically on this platform) hands out ephemeral ports
+    // sequentially/incrementing for rapid successive bind(0) calls within one
+    // process. Probe one to learn the current starting point, then pre-reserve
+    // a wide contiguous range ahead of it — wide enough to absorb any small
+    // jump from unrelated concurrent activity on the box — so every one of
+    // the 20 real allocation attempts collides against `reserved`.
+    const probe = await listenOnPort(0, "127.0.0.1");
+    const probeAddress = probe.address();
+    await closeServer(probe);
+    if (probeAddress == null || typeof probeAddress === "string") throw new Error("expected a TCP address");
+
+    const reserved = new Set<number>();
+    for (let p = probeAddress.port; p < probeAddress.port + 1000 && p <= 65535; p += 1) reserved.add(p);
+
+    await expect(allocatePort({ reserved })).rejects.toThrow(/failed to allocate dynamic .* port without conflict/);
   });
 });
 
@@ -325,5 +506,240 @@ describe("@jini/sidecar — JSON IPC", () => {
       await server.close();
       await rm(root, { force: true, recursive: true });
     }
+  });
+
+  it("propagates a handler's thrown Error message back to the client as an error response", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-err-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: () => {
+        throw new Error("handler exploded");
+      },
+      socketPath,
+    });
+    try {
+      await expect(requestJsonIpc(socketPath, { type: "X" })).rejects.toThrow("handler exploded");
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("stringifies a non-Error thrown value from the handler", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-err2-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: () => {
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        throw "raw string failure";
+      },
+      socketPath,
+    });
+    try {
+      await expect(requestJsonIpc(socketPath, { type: "X" })).rejects.toThrow("raw string failure");
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("traces a non-object input payload distinctly from an object one (message summarization)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-summary-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: async (message: { input?: unknown }) => ({ inputType: typeof message.input }),
+      socketPath,
+    });
+    try {
+      await expect(requestJsonIpc(socketPath, { input: "a plain string, not an object", type: "X" })).resolves.toEqual({
+        inputType: "string",
+      });
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("carries a Node-style error code through to the client when the handler throws one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-code-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: () => {
+        const err = new Error("not found") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      },
+      socketPath,
+    });
+    try {
+      await requestJsonIpc(socketPath, { type: "X" });
+      expect.unreachable("expected requestJsonIpc to reject");
+    } catch (err) {
+      expect((err as Error).message).toBe("not found");
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects with a connection error (not a timeout) when the target socket does not exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-noserver-"));
+    try {
+      const missingSocketPath = join(root, "nobody-listening.sock");
+      await expect(requestJsonIpc(missingSocketPath, { type: "X" }, { timeoutMs: 2000 })).rejects.toThrow();
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("replies with a parse-failure error when a client sends a non-JSON frame", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-badjson-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({ handler: async () => "unused", socketPath });
+    try {
+      const reply = await new Promise<string>((resolvePromise, rejectPromise) => {
+        const socket = createConnection(socketPath);
+        socket.on("connect", () => socket.write("not valid json\n"));
+        let data = "";
+        socket.on("data", (chunk) => {
+          data += chunk.toString();
+        });
+        socket.on("close", () => resolvePromise(data));
+        socket.on("error", rejectPromise);
+      });
+      const parsed = JSON.parse(reply) as { ok: boolean; error?: { message?: string } };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error?.message).toBeTruthy();
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("cleans up a stale (dead) unix socket file left behind by a server that closed without unlinking it", async () => {
+    if (process.platform === "win32") return; // named pipes have no on-disk stale-file concept
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-stale-"));
+    const socketPath = join(root, "stale.sock");
+    try {
+      // A *clean* close (even a raw server.close(), bypassing createJsonIpcServer's own
+      // unlink) auto-removes the socket's directory entry on this platform — verified
+      // empirically, not assumed — so it can never produce a "stale but present" socket
+      // file. A genuinely stale socket only exists after an *unclean* exit: spawn a real
+      // child process that binds the socket, then SIGKILL it so nothing gets a chance to
+      // unlink — the inode's directory entry survives, but nothing is listening behind it.
+      const childScript = `
+        const net = require("node:net");
+        const server = net.createServer();
+        server.listen(process.argv[1], () => {
+          if (process.send) process.send("ready");
+        });
+      `;
+      const child = spawn(process.execPath, ["-e", childScript, socketPath], {
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      try {
+        await new Promise<void>((resolveReady, rejectReady) => {
+          child.once("message", () => resolveReady());
+          child.once("exit", (code) => rejectReady(new Error(`stale-socket helper exited early: ${code}`)));
+          child.once("error", rejectReady);
+        });
+        expect(existsSync(socketPath)).toBe(true);
+      } finally {
+        child.kill("SIGKILL");
+        await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+      }
+      // The socket file must still be on disk (an unclean kill leaves it — no unlink ran),
+      // and it must be recognized as a socket, not just any leftover file.
+      expect(existsSync(socketPath)).toBe(true);
+      expect(lstatSync(socketPath).isSocket()).toBe(true);
+
+      // A fresh server at the same path must detect the dead socket (connect fails
+      // ECONNREFUSED/ENOENT, not a live peer), remove it, and bind cleanly in its place.
+      const server = await createJsonIpcServer({ handler: async (message) => ({ echoed: message }), socketPath });
+      try {
+        await expect(requestJsonIpc(socketPath, { type: "PING" })).resolves.toEqual({ echoed: { type: "PING" } });
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("treats an on-disk path that exists but is not a socket (a plain file) as not stale", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-notsocket-"));
+    const socketPath = join(root, "not-a-socket.sock");
+    try {
+      // A plain regular file at the target path: prepareIpcPath's stale-check must see
+      // it exists but isn't a socket, and leave it alone rather than trying to connect
+      // to it or unlink it — the subsequent real bind attempt then fails on top of it
+      // (EADDRINUSE-shaped: the path is occupied by something that isn't a stale socket).
+      writeFileSync(socketPath, "not a socket, just a file");
+      await expect(
+        createJsonIpcServer({ handler: async () => "ok", socketPath }),
+      ).rejects.toThrow();
+      // The unrelated file was left untouched — only a *stale socket* gets unlinked.
+      expect(existsSync(socketPath)).toBe(true);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("propagates a non-ENOENT error from the stale-socket lstat check (e.g. an unsearchable parent directory)", async () => {
+    if (process.platform === "win32") return; // chmod-based permission denial doesn't apply
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-lstat-eacces-"));
+    const restrictedDir = join(root, "restricted");
+    const socketPath = join(restrictedDir, "x.sock");
+    await mkdir(restrictedDir);
+    // No read/execute on the socket's own parent dir: lstat(socketPath) fails with
+    // EACCES, not ENOENT — that must be rethrown, not swallowed as "doesn't exist yet".
+    await chmod(restrictedDir, 0o000);
+    try {
+      await expect(createJsonIpcServer({ handler: async () => "ok", socketPath })).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(restrictedDir, 0o755);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects when probing a stale socket fails with something other than ENOENT/ECONNREFUSED (e.g. permission denied)", async () => {
+    if (process.platform === "win32") return; // chmod-based permission denial doesn't apply
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-connect-eacces-"));
+    const socketPath = join(root, "locked.sock");
+    const childScript = `
+      const net = require("node:net");
+      const server = net.createServer();
+      server.listen(process.argv[1], () => {
+        if (process.send) process.send("ready");
+      });
+    `;
+    const child = spawn(process.execPath, ["-e", childScript, socketPath], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    try {
+      await new Promise<void>((resolveReady, rejectReady) => {
+        child.once("message", () => resolveReady());
+        child.once("exit", (code) => rejectReady(new Error(`stale-socket helper exited early: ${code}`)));
+        child.once("error", rejectReady);
+      });
+      child.kill("SIGKILL");
+      await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+      expect(existsSync(socketPath)).toBe(true);
+
+      // Strip all permissions on the now-dead socket file itself: connecting to it
+      // fails with EACCES rather than the ENOENT/ECONNREFUSED "safe to unlink" cases.
+      await chmod(socketPath, 0o000);
+      await expect(createJsonIpcServer({ handler: async () => "ok", socketPath })).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(socketPath, 0o644).catch(() => undefined);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("prepareIpcPath is a no-op for a Windows named-pipe path (no filesystem staging needed)", async () => {
+    if (process.platform !== "win32") return; // this path is inert (and untestable end-to-end) off Windows
+    const socketPath = `\\\\.\\pipe\\jini-sidecar-test-pipe-${process.pid}`;
+    const server = await createJsonIpcServer({ handler: async () => "ok", socketPath });
+    await server.close();
   });
 });

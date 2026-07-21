@@ -500,10 +500,16 @@ function stripDuplicateArtifactText(text: string, state: ParserState): string {
       state.artifactOpenCandidate = current.slice(-candidateLength);
       return current.slice(0, -candidateLength);
     }
-    if (state.suppressNextArtifactText) {
-      state.suppressNextArtifactText = false;
-      return current;
-    }
+    // Reaching here with `suppressNextArtifactText` false is structurally
+    // unreachable. To get past the top guard without it, `artifactOpenCandidate`
+    // must have been non-empty at entry — but the only place that sets a
+    // non-empty candidate is the branch right above (which requires this same
+    // flag to be true when it does), and the only place that clears the
+    // candidate other than the unconditional reset at the top of this function
+    // (`flushPendingArtifactText`) clears the flag in the same breath. So a
+    // leftover non-empty candidate always implies the flag is still true too.
+    // No `if` needed — it's always true by the time we get here.
+    state.suppressNextArtifactText = false;
     return current;
   }
   state.suppressDuplicateArtifactText = true;

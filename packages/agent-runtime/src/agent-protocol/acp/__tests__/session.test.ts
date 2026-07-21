@@ -970,6 +970,48 @@ describe('attachAcpSession', () => {
       });
     });
 
+    it('defaults options to an empty list and replies with a cancelled outcome when the handler declines', async () => {
+      const child = new FakeAcpChild();
+      const onPermissionRequest = vi.fn((request) => {
+        expect(request.options).toEqual([]);
+        return { outcome: 'cancelled' as const };
+      });
+      attachAcpSession(baseOptions(child, { onPermissionRequest }));
+      handshakeToSessionNew(child);
+      emitLine(child, {
+        jsonrpc: '2.0',
+        id: 18,
+        method: 'session/request_permission',
+        params: { sessionId: 'sess-1', toolCall: { toolCallId: 'call-x' } },
+      });
+      expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      expect(lastWrite(child)).toEqual({
+        jsonrpc: '2.0',
+        id: 18,
+        result: { outcome: { outcome: 'cancelled' } },
+      });
+    });
+
+    it('ignores a permission decision that resolves after the session has already aborted', async () => {
+      const child = new FakeAcpChild();
+      let resolveDecision: (decision: { outcome: 'selected'; optionId: string }) => void = () => {};
+      const onPermissionRequest = () =>
+        new Promise<{ outcome: 'selected'; optionId: string }>((resolve) => {
+          resolveDecision = resolve;
+        });
+      const controller = attachAcpSession(baseOptions(child, { onPermissionRequest }));
+      handshakeToSessionNew(child);
+      emitPermissionRequest(child, 19, [{ optionId: 'allow', kind: 'allow_once' }]);
+      controller.abort();
+      const writesBeforeDecision = child.stdin!.writes.length;
+      resolveDecision({ outcome: 'selected', optionId: 'allow' });
+      await Promise.resolve();
+      // respond() must see the session as already aborted/finished and bail
+      // out without writing a second (now-meaningless) reply.
+      expect(child.stdin!.writes.length).toBe(writesBeforeDecision);
+    });
+
     it('awaits an asynchronous permission decision before replying', async () => {
       const child = new FakeAcpChild();
       attachAcpSession(
@@ -1038,6 +1080,26 @@ describe('attachAcpSession', () => {
       expect(controller.hasFatalError()).toBe(true);
       expect(send).toHaveBeenCalledWith('error', expect.objectContaining({ message: expect.stringContaining('stdin write failed') }));
     });
+
+    it('fails when the injected handler throws synchronously instead of returning or rejecting a promise', () => {
+      const child = new FakeAcpChild();
+      const send = vi.fn();
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          send,
+          onPermissionRequest: () => {
+            throw new Error('sync handler boom');
+          },
+        }),
+      );
+      handshakeToSessionNew(child);
+      emitPermissionRequest(child, 16, [{ optionId: 'allow', kind: 'allow_once' }]);
+      expect(controller.hasFatalError()).toBe(true);
+      expect(send).toHaveBeenCalledWith(
+        'error',
+        expect.objectContaining({ message: expect.stringContaining('ACP permission handler failed') }),
+      );
+    });
   });
 
   describe('abort', () => {
@@ -1056,6 +1118,20 @@ describe('attachAcpSession', () => {
         id: 15,
         result: { outcome: { outcome: 'cancelled' } },
       });
+      expect(child.stdin!.ended).toBe(true);
+    });
+
+    it('swallows a failure cancelling a pending permission request during abort and still closes stdin', () => {
+      const child = new FakeAcpChild();
+      const controller = attachAcpSession(
+        baseOptions(child, {
+          onPermissionRequest: () => new Promise(() => {}),
+        }),
+      );
+      handshakeToSessionNew(child);
+      emitPermissionRequest(child, 17, [{ optionId: 'allow', kind: 'allow_once' }]);
+      child.stdin!.failWith = new Error('EPIPE on cancel reply');
+      expect(() => controller.abort()).not.toThrow();
       expect(child.stdin!.ended).toBe(true);
     });
 

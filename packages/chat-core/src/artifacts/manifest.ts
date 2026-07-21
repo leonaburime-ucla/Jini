@@ -37,7 +37,14 @@ function normalizeExt(name: string): string {
   return i >= 0 ? name.slice(i).toLowerCase() : '';
 }
 
-function inferKindFromEntry(entry: string): ArtifactKind | null {
+// The exact finite subset of `ArtifactKind` this function can actually
+// return — narrower than `ArtifactKind` itself (which also has `deck`,
+// `diagram`, `mini-app`, `design-system`, none reachable from a bare file
+// extension) so callers get a statically provable exhaustiveness check
+// instead of having to defend against kinds this function never produces.
+type LegacyInferredKind = 'html' | 'svg' | 'markdown-document' | 'react-component' | 'code-snippet';
+
+function inferKindFromEntry(entry: string): LegacyInferredKind | null {
   const ext = normalizeExt(entry);
   if (['.html', '.htm'].includes(ext)) return 'html';
   if (ext === '.svg') return 'svg';
@@ -158,9 +165,7 @@ export function inferLegacyManifest(input: { entry: string; title?: string; meta
           ? 'react-component'
           : kind === 'code-snippet'
             ? 'code'
-            : kind === 'deck'
-              ? 'deck-html'
-              : kind;
+            : kind; // only 'svg' remains — a valid ArtifactRendererId as-is
   const resolvedKind = isDeck ? 'deck' : kind;
   return {
     version: MANIFEST_VERSION,

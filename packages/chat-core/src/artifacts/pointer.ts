@@ -35,7 +35,10 @@ export function resolveHtmlPointerArtifactTarget(input: HtmlPointerArtifactTarge
   const match = POINTER_TARGET_RE.exec(pointerText);
   if (!match) return null;
 
-  const target = normalizeTarget(match[1] ?? '');
+  // The target group is a mandatory (non-optional) part of the pattern, not
+  // inside an alternation, so it's always defined when `match` is non-null;
+  // the assertion just satisfies `noUncheckedIndexedAccess`.
+  const target = normalizeTarget(match[1]!);
   if (!target || target === input.candidateFileName || !isSafeHtmlTarget(target)) {
     return null;
   }

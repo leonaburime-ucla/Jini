@@ -585,6 +585,37 @@ describe('createLocalNodeDaemon', () => {
     ).rejects.toThrow();
   });
 
+  it('closes the durable EventLog and propagates the error when rehydrate() fails on a corrupt/unreadable durable history', async () => {
+    // Rehydration happens before the HTTP server exists at all, so it has
+    // its own dedicated cleanup path (create-local-node-daemon.ts's own
+    // comment) distinct from the later bind-failure `failToBind` path
+    // exercised by the tests below. `listRunIds()` is rehydrate()'s very
+    // first call into the EventLog, so failing it deterministically forces
+    // that path without needing an actually-corrupt sqlite file on disk.
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return {
+          ...real,
+          listRunIds: vi.fn(async () => {
+            throw new Error('corrupt durable history');
+          }),
+          close: vi.fn(real.close),
+        };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow('corrupt durable history');
+
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('propagates a synchronous throw from app.listen() (e.g. an out-of-range port) as a rejection', async () => {
     const dataDir = makeTempDataDir();
     // http.Server#listen validates the port range synchronously and throws before ever emitting

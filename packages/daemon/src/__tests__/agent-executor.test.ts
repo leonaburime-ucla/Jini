@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import type { RunAgentPayload, RunProtocolEvent } from '@jini/protocol';
-import type { AgentLaunchResolution, RuntimeAgentDef } from '@jini/agent-runtime';
+import type { RunAgentPayload, RunErrorPayload, RunProtocolEvent } from '@jini/protocol';
+import { attachAcpSession, type AcpSessionController, type AgentLaunchResolution, type RuntimeAgentDef } from '@jini/agent-runtime';
 import { createInMemoryEventLog } from '../event-log.js';
 import { createRunLifecycle, type RunLifecycle } from '../run-lifecycle.js';
 import {
@@ -781,5 +781,337 @@ describe('translateAgentRuntimeEvent', () => {
 
   it('routes turn_end to the turn-end kind with no payload', () => {
     expect(translateAgentRuntimeEvent({ type: 'turn_end', stopReason: 'end_turn' })).toEqual({ kind: 'turn-end' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ACP dispatch — a fake `attachAcpSession` (this driver's own injectable seam
+// for `@jini/agent-runtime`'s real ACP transport, matching the `spawn`/
+// `getAgentDef`/`resolveAgentLaunch` fakes above) drives `wireAcpLifecycle`'s
+// internal branches without a real ACP subprocess. The real handshake is
+// covered separately by agent-executor-acp.integration.test.ts's actual
+// subprocess fixture; these tests isolate this driver's own event
+// translation, cancellation, and error-mapping logic instead.
+// ---------------------------------------------------------------------------
+
+interface FakeAcpAttachCall {
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly envFormat: 'array' | 'map' | undefined;
+  readonly onPermissionRequest: unknown;
+  readonly send: (event: string, payload: unknown) => void;
+}
+
+interface AcpHarnessOptions {
+  def?: Partial<RuntimeAgentDef>;
+  completedSuccessfully?: boolean;
+  acpPermissionHandler?: unknown;
+  attachThrows?: unknown;
+}
+
+interface AcpHarness {
+  lifecycle: RunLifecycle;
+  executor: AgentExecutor;
+  child: FakeChild;
+  attachCalls: FakeAcpAttachCall[];
+  abort: ReturnType<typeof vi.fn>;
+  stopProcessesCalls: Array<Array<number | null | undefined>>;
+}
+
+/** Builds an `AgentExecutor` wired to an `acp-json-rpc` def and a fully fake `attachAcpSession` — no real ACP handshake, matching `createHarness`'s JSON-stream-path precedent above. */
+function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
+  const eventLog = createInMemoryEventLog();
+  const lifecycle = createRunLifecycle({ eventLog });
+  const child = createFakeChild(5100);
+  const def = createFakeDef({ streamFormat: 'acp-json-rpc', ...options.def });
+  const attachCalls: FakeAcpAttachCall[] = [];
+  const abort = vi.fn();
+  const stopProcessesCalls: Array<Array<number | null | undefined>> = [];
+
+  const fakeSpawn = (() => {
+    queueMicrotask(() => child.emit('spawn'));
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof nodeSpawn;
+
+  const fakeAttachAcpSession = ((attachOptions: {
+    prompt: string;
+    cwd: string;
+    envFormat?: 'array' | 'map';
+    onPermissionRequest?: unknown;
+    send: (event: string, payload: unknown) => void;
+  }) => {
+    attachCalls.push({
+      prompt: attachOptions.prompt,
+      cwd: attachOptions.cwd,
+      envFormat: attachOptions.envFormat,
+      onPermissionRequest: attachOptions.onPermissionRequest,
+      send: attachOptions.send,
+    });
+    if (options.attachThrows) {
+      throw options.attachThrows;
+    }
+    const controller: AcpSessionController = {
+      hasFatalError: () => false,
+      getDurableSessionId: () => null,
+      completedSuccessfully: () => options.completedSuccessfully ?? true,
+      abort,
+    };
+    return controller;
+  }) as unknown as typeof attachAcpSession;
+
+  const executor = createAgentExecutor({
+    lifecycle,
+    getAgentDef: (id: string) => (def.id === id ? def : null),
+    resolveAgentLaunch: () =>
+      ({
+        selectedPath: '/fake/acp-bin',
+        pathResolvedPath: '/fake/acp-bin',
+        configuredOverridePath: null,
+        launchPath: '/fake/acp-bin',
+        launchKind: 'selected',
+        childPathPrepend: [],
+        diagnostic: null,
+      }) as AgentLaunchResolution,
+    applyAgentLaunchEnv: (env) => env,
+    spawn: fakeSpawn,
+    attachAcpSession: fakeAttachAcpSession,
+    ...(options.acpPermissionHandler !== undefined ? { acpPermissionHandler: options.acpPermissionHandler as never } : {}),
+    listProcessSnapshots: async () => {
+      const pid = child.pid ?? 0;
+      return [
+        { pid, ppid: 1, command: 'fake-acp-bin' },
+        { pid: pid + 1, ppid: pid, command: 'fake-acp-bin --mcp-helper' },
+      ];
+    },
+    stopProcesses: async (pids) => {
+      stopProcessesCalls.push(pids);
+      const numericPids = pids.filter((pid): pid is number => typeof pid === 'number');
+      return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
+    },
+  });
+
+  return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls };
+}
+
+describe('AgentExecutor — ACP dispatch (fake attachAcpSession)', () => {
+  it('spawns, attaches an ACP session, forwards raw stdout/stderr, translates a text_delta agent event, and finishes succeeded', async () => {
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    expect(attachCalls).toHaveLength(1);
+    expect(attachCalls[0]).toMatchObject({ prompt: 'do the thing', cwd: '/work', envFormat: undefined, onPermissionRequest: undefined });
+
+    child.stdout.emit('data', 'raw acp stdout\n');
+    child.stderr.emit('data', 'raw acp stderr\n');
+    attachCalls[0]!.send('agent', { type: 'text_delta', delta: 'hello' });
+
+    child.emit('close', 0, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('succeeded');
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(agentPayloadTypes(events)).toEqual(['text_delta']);
+    const stdoutEvent = events.find((e) => e.kind === 'stdout');
+    expect((stdoutEvent?.payload as { chunk: string }).chunk).toBe('raw acp stdout\n');
+    const stderrEvent = events.find((e) => e.kind === 'stderr');
+    expect((stderrEvent?.payload as { chunk: string }).chunk).toBe('raw acp stderr\n');
+  });
+
+  it('finishes failed (not cancelled) when the child closes and completedSuccessfully() reports false', async () => {
+    const { lifecycle, executor, child } = createAcpHarness({ completedSuccessfully: false });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    child.emit('close', 1, null);
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('failed');
+  });
+
+  it('aborts the ACP controller and escalates the process tree on cancellation, finishing cancelled', async () => {
+    const { lifecycle, executor, child, abort, stopProcessesCalls } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    await lifecycle.cancel({ runId: run.id, reason: 'user requested' });
+    await flushAsync();
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(stopProcessesCalls).toHaveLength(1);
+
+    child.emit('close', null, 'SIGTERM');
+    const finished = await lifecycle.waitForTerminal(run.id);
+    expect(finished.state).toBe('cancelled');
+  });
+
+  it('includes envFormat in the attachAcpSession call only when def.acpMcpEnvFormat is set', async () => {
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness({ def: { acpMcpEnvFormat: 'map' } });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    expect(attachCalls[0]?.envFormat).toBe('map');
+
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('passes acpPermissionHandler through to attachAcpSession as onPermissionRequest when configured', async () => {
+    const handler = vi.fn();
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness({ acpPermissionHandler: handler });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    expect(attachCalls[0]?.onPermissionRequest).toBe(handler);
+
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('routes a send("agent", {type:"error"}) translated event to the run error channel, not agent', async () => {
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    attachCalls[0]!.send('agent', { type: 'error', message: 'agent-shaped failure' });
+    child.emit('close', 1, null);
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const errorEvent = events.find((e) => e.kind === 'error');
+    expect(errorEvent?.payload).toEqual({ message: 'agent-shaped failure' });
+    expect(events.some((e) => e.kind === 'agent')).toBe(false);
+  });
+
+  it('swallows an emit() race against an already-terminal run on the ACP path without an unhandled rejection', async () => {
+    const { lifecycle, executor, child } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    // Same race shape as "AgentExecutor — a single failed queued emit does
+    // not block the run from reaching a terminal state" above, replayed
+    // against wireAcpLifecycle's own enqueueEmit instead of
+    // wireChildLifecycle's — the two closures are independent copies of the
+    // same pattern (see agent-executor.ts module doc).
+    await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+
+    expect(() => child.stdout.emit('data', 'straggling output\n')).not.toThrow();
+    await flushAsync();
+
+    expect(() => child.emit('close', 0, null)).not.toThrow();
+    await flushAsync();
+
+    const status = await lifecycle.get(run.id);
+    expect(status?.state).toBe('succeeded');
+  });
+
+  it('rejects AGENT_SPAWN_FAILED and terminates the child tree when attachAcpSession throws synchronously', async () => {
+    const { lifecycle, executor, stopProcessesCalls } = createAcpHarness({ attachThrows: new Error('handshake rejected') });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const resultPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+    await expect(resultPromise).rejects.toMatchObject({
+      code: 'AGENT_SPAWN_FAILED',
+      message: expect.stringContaining('handshake rejected'),
+    });
+
+    await flushAsync();
+    expect(stopProcessesCalls).toHaveLength(1);
+    expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+
+  describe('translateAcpError (exercised via send("error", payload), since the function itself is not exported)', () => {
+    it('a non-record, non-string payload falls back to a default message', async () => {
+      const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+      await flushAsync();
+      await runPromise;
+
+      attachCalls[0]!.send('error', undefined);
+      child.emit('close', 1, null);
+      await lifecycle.waitForTerminal(run.id);
+
+      const events = await collectEvents(lifecycle, run.id);
+      const errorEvent = events.find((e) => e.kind === 'error');
+      expect(errorEvent?.payload).toEqual({ message: 'ACP agent failed' });
+    });
+
+    it('a record payload with no error field omits the structured error member', async () => {
+      const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+      await flushAsync();
+      await runPromise;
+
+      attachCalls[0]!.send('error', { message: 'plain failure, no structured error' });
+      child.emit('close', 1, null);
+      await lifecycle.waitForTerminal(run.id);
+
+      const events = await collectEvents(lifecycle, run.id);
+      const errorEvent = events.find((e) => e.kind === 'error');
+      expect(errorEvent?.payload).toEqual({ message: 'plain failure, no structured error' });
+    });
+
+    it('a fully-populated error object (code, message, retryable) is carried through as the structured error', async () => {
+      const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+      await flushAsync();
+      await runPromise;
+
+      attachCalls[0]!.send('error', {
+        message: 'transport dropped',
+        error: { code: 'ACP_TRANSPORT', message: 'socket closed', retryable: true },
+      });
+      child.emit('close', 1, null);
+      await lifecycle.waitForTerminal(run.id);
+
+      const events = await collectEvents(lifecycle, run.id);
+      const errorEvent = events.find((e) => e.kind === 'error');
+      expect(errorEvent?.payload).toEqual({
+        message: 'transport dropped',
+        error: { code: 'ACP_TRANSPORT', message: 'socket closed', retryable: true },
+      });
+    });
+
+    it('an error object present without a retryable flag omits retryable from the structured error', async () => {
+      const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'x', cwd: '/work' });
+      await flushAsync();
+      await runPromise;
+
+      attachCalls[0]!.send('error', { message: 'auth required', error: { code: 'AUTH_REQUIRED' } });
+      child.emit('close', 1, null);
+      await lifecycle.waitForTerminal(run.id);
+
+      const events = await collectEvents(lifecycle, run.id);
+      const errorEvent = events.find((e) => e.kind === 'error');
+      expect(errorEvent?.payload).toEqual({
+        message: 'auth required',
+        error: { code: 'AUTH_REQUIRED', message: 'auth required' },
+      });
+    });
   });
 });

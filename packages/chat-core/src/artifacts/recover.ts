@@ -62,11 +62,16 @@ export function recoverHtmlArtifactFromPrecedingDocument({ artifactHtml, identif
   if (!/<\/html\s*>\s*$/i.test(beforeArtifact)) return null;
 
   const htmlOpenStart = lastIndexOfRegex(HTML_OPEN_RE, beforeArtifact);
-  const htmlClose = lastIndexOfRegex(HTML_CLOSE_RE, beforeArtifact);
-  if (htmlOpenStart === -1 || htmlClose === -1 || htmlClose < htmlOpenStart) return null;
+  if (htmlOpenStart === -1) return null;
 
-  const closeMatch = beforeArtifact.slice(htmlClose).match(/^<\/html\s*>/i);
-  if (!closeMatch) return null;
+  // The guard above (`beforeArtifact` ends with `</html\s*>` plus only
+  // trailing whitespace) already pins HTML_CLOSE_RE's last match to that exact
+  // trailing tag: `htmlClose` can't be -1, can't fall before `htmlOpenStart`
+  // (no room for another `<html` open after it), and the slice from `htmlClose`
+  // always re-matches `/^<\/html\s*>/i` — the assertion just satisfies
+  // `String.prototype.match`'s generically-nullable return type.
+  const htmlClose = lastIndexOfRegex(HTML_CLOSE_RE, beforeArtifact);
+  const closeMatch = beforeArtifact.slice(htmlClose).match(/^<\/html\s*>/i)!;
 
   const beforeHtmlOpen = beforeArtifact.slice(0, htmlOpenStart);
   const adjacentDoctype = beforeHtmlOpen.match(ADJACENT_DOCTYPE_RE);
