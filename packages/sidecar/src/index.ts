@@ -4,8 +4,10 @@
  * Public barrel for the generic sidecar runtime package. Re-exports the exact
  * prior public surface — the data types, IPC-path validators, namespace/runtime
  * path resolvers, launch-env + bootstrap, port allocation, JSON file helpers, and
- * the JSON-IPC server/client. This file contains no logic; every implementation
- * lives in a concern module beside it.
+ * the JSON-IPC server/client — plus (2026-07-21) the local daemon-registry
+ * primitives (`daemon-registry.ts`): a `dataDir`-scoped pointer-file record of a
+ * running daemon's URL/host/port/pid, and a liveness-checked reader. This file
+ * contains no logic; every implementation lives in a concern module beside it.
  */
 
 export type {
@@ -48,3 +50,11 @@ export { bootstrapSidecarRuntime, createSidecarLaunchEnv } from "./bootstrap.js"
 export { allocatePort } from "./port.js";
 export { readJsonFile, removeFile, removePointerIfCurrent, writeJsonFile } from "./json-file.js";
 export { createJsonIpcServer, requestJsonIpc } from "./json-ipc.js";
+export type { LocalDaemonRegistryRecord } from "./daemon-registry.js";
+export {
+  isProcessAlive,
+  readLiveDaemonRegistryRecord,
+  removeDaemonRegistryRecordIfCurrent,
+  resolveDaemonRegistryPath,
+  writeDaemonRegistryRecord,
+} from "./daemon-registry.js";

@@ -15,6 +15,7 @@
     "@jini/core": "workspace:*",
     "@jini/daemon": "workspace:*",
     "@jini/http": "workspace:*",
+    "@jini/sidecar": "workspace:*",
     "@jini/sqlite": "workspace:*",
     "express": "^4.21.0"
   },
