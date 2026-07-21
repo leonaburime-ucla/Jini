@@ -87,7 +87,6 @@ const SERVICE_ERROR_MESSAGE_RE =
 
 function pickServiceErrorMessage(line: string): string | null {
   const re = /"message":"((?:[^"\\]|\\.)*)"/g;
-  let fallback: string | null = null;
   let match: RegExpExecArray | null;
   while ((match = re.exec(line)) !== null) {
     let value: string;
@@ -97,10 +96,16 @@ function pickServiceErrorMessage(line: string): string | null {
       value = match[1]!;
     }
     value = value.trim();
+    // Conservative by design (SEC-002 / CR-R2): a non-matching "message" value is never
+    // returned, even as a fallback. This line can embed the entire request body (system
+    // prompt + tool schemas — see the module doc), so a "first message seen" fallback would
+    // let unrelated payload content masquerade as the service-failure reason, defeating the
+    // anti-masquerade keyword gate this function exists to enforce. Independently recommended
+    // as the safe default by three separate reviews (code review, security, and a prior model
+    // session) — see ADS-memory/reports/{code-review,security}/*-backend-coverage-push-2026-07-20.md.
     if (SERVICE_ERROR_MESSAGE_RE.test(value)) return value;
-    if (!fallback) fallback = value;
   }
-  return fallback;
+  return null;
 }
 
 function codeFromStatus(statusCode: number): AgentServiceFailureCode | null {

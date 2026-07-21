@@ -180,9 +180,29 @@ describe('extractOpenCodeServiceFailure', () => {
     expect(result?.message).toBe('invalid api key provided');
   });
 
-  it('falls back to a non-matching first message when no candidate matches the keyword gate', () => {
+  it('returns null when no candidate matches the keyword gate and there is no recognized statusCode', () => {
     const line = 'service=llm ERROR error={"message":"totally unrelated content"}';
     expect(extractOpenCodeServiceFailure(line)).toBeNull();
+  });
+
+  it('SEC-002/CR-R2: a recognized statusCode (429) never surfaces an unrelated/attacker-controlled message — the code default is used instead', () => {
+    // The regression this guards: a provider log line can embed the entire request body
+    // (system prompt + tool schemas) under the same "message" key this parser scans. With a
+    // recognized statusCode present, the code used to fall back to the FIRST non-matching
+    // message value instead of the safe per-code default — masquerading unrelated payload
+    // content as the service-failure reason.
+    const line = 'service=llm ERROR error={"statusCode":429,"message":"totally unrelated attacker-controlled content"}';
+    const result = extractOpenCodeServiceFailure(line);
+    expect(result?.code).toBe('RATE_LIMITED');
+    expect(result?.message).toBe('OpenCode hit a provider usage or rate limit.');
+    expect(result?.message).not.toContain('attacker-controlled');
+  });
+
+  it('SEC-002/CR-R2: a recognized statusCode (500) never leaks secret-shaped content embedded in an unrelated message value', () => {
+    const line = 'service=llm ERROR error={"statusCode":500,"message":"leaked prompt: sk-secret-abc123"}';
+    const result = extractOpenCodeServiceFailure(line);
+    expect(result?.code).toBe('UPSTREAM_UNAVAILABLE');
+    expect(result?.message).not.toContain('sk-secret-abc123');
   });
 
   it('unescapes a JSON-escaped message value', () => {
