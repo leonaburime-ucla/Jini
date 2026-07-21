@@ -3,6 +3,7 @@
  * agent, tool, or product vocabulary: a host optionally supplies `onStarted`
  * to attach its chosen driver after the lifecycle has durably recorded start.
  */
+import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { createApiError, type RunProtocolEvent, type RunStatus } from '@jini/protocol';
 import type { RunLifecycle, StartRunInput, Unsubscribe } from '@jini/daemon';
@@ -10,6 +11,26 @@ import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.
 import { validationError } from './request.js';
 import { sendApiError } from './response.js';
 import { err, ok, type Result, type RouteInputContext } from './types.js';
+
+/**
+ * Diagnostic detail for an internal-error response the public API deliberately does not
+ * disclose (SEC-005): spawn/storage/adapter failures can embed executable paths, working
+ * directories, hostnames, or third-party provider text. The correlation id is the only thing
+ * that crosses the boundary; the real `error` goes only to this host-owned sink so an operator
+ * can still find and act on it.
+ */
+export interface RunInternalErrorContext {
+  readonly source: 'run-start' | 'run-stream';
+  readonly runId?: string;
+  readonly correlationId: string;
+  readonly error: unknown;
+}
+
+/** Default sink when a host does not supply `onInternalError`: still observable, never silent. */
+function defaultInternalErrorSink(context: RunInternalErrorContext): void {
+  // eslint-disable-next-line no-console
+  console.error(`[@jini/http] internal error (${context.source}, correlationId=${context.correlationId})`, context.error);
+}
 
 export interface RunCreateRequest {
   readonly contextRef: string;
@@ -30,6 +51,21 @@ export type RunStartHandler = (context: RunStartContext) => Promise<void> | void
 export interface RunHttpDeps {
   readonly lifecycle: RunLifecycle;
   readonly onStarted?: RunStartHandler;
+  /** Host-owned sink for the real exception behind a generic `INTERNAL_ERROR` response (SEC-005). Defaults to `console.error`. */
+  readonly onInternalError?: (context: RunInternalErrorContext) => void;
+}
+
+/** Logs the real failure server-side and returns the generic, correlation-id-bearing public error (SEC-005: never the raw exception). */
+function reportInternalError(
+  deps: RunHttpDeps,
+  source: RunInternalErrorContext['source'],
+  error: unknown,
+  runId?: string,
+): ReturnType<typeof createApiError> {
+  const correlationId = randomUUID();
+  const sink = deps.onInternalError ?? defaultInternalErrorSink;
+  sink({ source, ...(runId === undefined ? {} : { runId }), correlationId, error });
+  return createApiError('INTERNAL_ERROR', 'an internal error occurred', { requestId: correlationId });
 }
 
 export interface RunStartResponse {
@@ -102,9 +138,8 @@ export const runStartRoute = defineJsonRoute<RunCreateRequest, RunStartResponse,
       try {
         await deps.onStarted({ request: input, run: started.run, lifecycle: deps.lifecycle });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
         await deps.lifecycle.finish({ runId: started.run.id, status: 'failed', code: null, signal: null, resumable: false });
-        return err(createApiError('INTERNAL_ERROR', `run driver failed to start: ${message}`));
+        return err(reportInternalError(deps, 'run-start', error, started.run.id));
       }
     }
     // A host-owned driver may finish immediately (for example, a single-step
@@ -273,8 +308,7 @@ export function registerRunEventStream(app: Express, deps: RunHttpDeps): void {
       pump();
     } catch (error) {
       cleanup();
-      const message = error instanceof Error ? error.message : String(error);
-      if (!res.headersSent) sendApiError(res, 500, createApiError('INTERNAL_ERROR', message));
+      if (!res.headersSent) sendApiError(res, 500, reportInternalError(deps, 'run-stream', error, runId));
       else if (!res.writableEnded) res.end();
     }
   });

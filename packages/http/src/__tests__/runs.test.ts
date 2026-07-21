@@ -290,42 +290,75 @@ describe('runStartRoute.handle', () => {
     }
   });
 
-  it('fails the run and returns INTERNAL_ERROR when onStarted throws synchronously', async () => {
+  it('SEC-005: fails the run and returns a generic INTERNAL_ERROR (never the raw message) when onStarted throws synchronously, logging the real error server-side instead', async () => {
+    const onInternalError = vi.fn();
+    const deps = makeDeps({
+      onStarted: () => {
+        throw new Error('driver spawn failed at /secret/executable/path');
+      },
+      onInternalError,
+    });
+    const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('INTERNAL_ERROR');
+      expect(result.error.message).toBe('an internal error occurred');
+      expect(result.error.message).not.toContain('/secret/executable/path');
+      expect(JSON.stringify(result.error)).not.toContain('/secret/executable/path');
+      expect(result.error.requestId).toEqual(expect.any(String));
+      expect(result.error.requestId!.length).toBeGreaterThan(0);
+    }
+    const runs = await deps.lifecycle.list('ctx-1');
+    expect(runs[0]?.state).toBe('failed');
+
+    // The real exception is still observable server-side, just not in the public response.
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+    const [context] = onInternalError.mock.calls[0]!;
+    expect(context.source).toBe('run-start');
+    expect(context.error).toBeInstanceOf(Error);
+    expect((context.error as Error).message).toContain('/secret/executable/path');
+    if (!result.ok) expect(context.correlationId).toBe(result.error.requestId);
+  });
+
+  it('SEC-005: fails the run and returns a generic INTERNAL_ERROR when onStarted returns a rejected promise', async () => {
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ onStarted: () => Promise.reject(new Error('async spawn failure: DB_URL=postgres://secret')), onInternalError });
+    const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
+    }
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+  });
+
+  it('SEC-005: a non-Error throw from onStarted still produces a generic response and reaches the logger', async () => {
+    const onInternalError = vi.fn();
+    const deps = makeDeps({
+      onStarted: () => {
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        throw 'raw string failure with a secret token abc123';
+      },
+      onInternalError,
+    });
+    const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
+    }
+    expect(onInternalError.mock.calls[0]![0].error).toBe('raw string failure with a secret token abc123');
+  });
+
+  it('SEC-005: falls back to console.error when no onInternalError sink is supplied', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const deps = makeDeps({
       onStarted: () => {
         throw new Error('driver spawn failed');
       },
     });
     const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
-    expect(result).toEqual({
-      ok: false,
-      error: { code: 'INTERNAL_ERROR', message: 'run driver failed to start: driver spawn failed' },
-    });
-    const runs = await deps.lifecycle.list('ctx-1');
-    expect(runs[0]?.state).toBe('failed');
-  });
-
-  it('fails the run and returns INTERNAL_ERROR when onStarted returns a rejected promise', async () => {
-    const deps = makeDeps({ onStarted: () => Promise.reject(new Error('async spawn failure')) });
-    const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
-    expect(result).toEqual({
-      ok: false,
-      error: { code: 'INTERNAL_ERROR', message: 'run driver failed to start: async spawn failure' },
-    });
-  });
-
-  it('stringifies a non-Error throw from onStarted', async () => {
-    const deps = makeDeps({
-      onStarted: () => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
-        throw 'raw string failure';
-      },
-    });
-    const result = await runStartRoute.handle({ contextRef: 'ctx-1' }, deps);
-    expect(result).toEqual({
-      ok: false,
-      error: { code: 'INTERNAL_ERROR', message: 'run driver failed to start: raw string failure' },
-    });
+    expect(result.ok).toBe(false);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
   });
 });
 
@@ -542,20 +575,32 @@ describe('registerRunEventStream', () => {
     expect(res.write).not.toHaveBeenCalled();
   });
 
-  it('sends 500 INTERNAL_ERROR when subscribing throws before headers are sent', async () => {
-    const deps = makeDeps();
+  it('SEC-005: sends a generic 500 INTERNAL_ERROR (never the raw message) when subscribing throws before headers are sent, and logs the real error', async () => {
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ onInternalError });
     deps.lifecycle.stream = vi.fn(async () => {
-      throw new Error('subscribe blew up');
+      throw new Error('subscribe blew up at /internal/secret/path');
     });
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'run-1' }), res);
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: { code: 'INTERNAL_ERROR', message: 'subscribe blew up' } });
+    const [body] = res.json.mock.calls[0]!;
+    expect(body.error.code).toBe('INTERNAL_ERROR');
+    expect(body.error.message).toBe('an internal error occurred');
+    expect(JSON.stringify(body)).not.toContain('/internal/secret/path');
+    expect(body.error.requestId).toEqual(expect.any(String));
+
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+    const [context] = onInternalError.mock.calls[0]!;
+    expect(context.source).toBe('run-stream');
+    expect(context.runId).toBe('run-1');
+    expect((context.error as Error).message).toContain('/internal/secret/path');
   });
 
-  it('stringifies a non-Error throw from stream() when headers are not yet sent', async () => {
-    const deps = makeDeps();
+  it('stringifies a non-Error throw from stream() when headers are not yet sent (still redacted per SEC-005)', async () => {
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ onInternalError });
     deps.lifecycle.stream = vi.fn(async () => {
       // eslint-disable-next-line @typescript-eslint/no-throw-literal
       throw 'raw stream failure';
@@ -563,7 +608,9 @@ describe('registerRunEventStream', () => {
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'run-1' }), res);
-    expect(res.json).toHaveBeenCalledWith({ error: { code: 'INTERNAL_ERROR', message: 'raw stream failure' } });
+    const [body] = res.json.mock.calls[0]!;
+    expect(body.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
+    expect(onInternalError.mock.calls[0]![0].error).toBe('raw stream failure');
   });
 
   it('ends the response instead of sending a JSON error when a post-subscribe failure occurs after headers were already sent', async () => {

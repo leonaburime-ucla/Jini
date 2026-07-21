@@ -75,6 +75,7 @@ export type {
   RunCancelResponse,
   RunCreateRequest,
   RunHttpDeps,
+  RunInternalErrorContext,
   RunStartContext,
   RunStartHandler,
   RunStartResponse,
