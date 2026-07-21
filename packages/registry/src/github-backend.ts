@@ -12,9 +12,53 @@ import type {
   RegistryManifest,
   RegistryPublishOutcome,
   RegistryPublishRequest,
+  RegistryTrust,
   RegistryYankOutcome,
 } from '@jini/protocol';
 import { StaticRegistryBackend } from './static-backend.js';
+
+/** `vendor/name` — deliberately the same shape `RegistryEntrySchema.name` requires. */
+const SAFE_ENTRY_NAME = /^([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)$/;
+/** A single safe path/branch segment: alnum-bounded, no separators, no traversal. */
+const SAFE_VERSION = /^[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/;
+// eslint-disable-next-line no-control-regex -- deliberately matching C0/DEL control bytes.
+const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
+
+/**
+ * Split and validate a registry entry name into safe `vendor`/`name` path
+ * segments. `publish`/`yank` are public methods that take plain strings from
+ * an untyped JS caller — TypeScript's compile-time `RegistryEntry`/`string`
+ * types give no runtime guarantee, so this boundary must reject path
+ * traversal (`..`, `/`) and anything else that isn't the expected shape
+ * before the value is used to build a file path or PR branch name.
+ */
+function assertSafeEntryName(name: string): [vendor: string, entryName: string] {
+  const match = SAFE_ENTRY_NAME.exec(name);
+  if (!match) {
+    throw new Error(
+      `Invalid registry entry name ${JSON.stringify(name)}: expected "vendor/name" (lowercase letters, digits, ".", "_", "-").`,
+    );
+  }
+  return [match[1]!, match[2]!];
+}
+
+/** Validate a version string used to build a file path/branch name segment. */
+function assertSafeVersion(version: string): string {
+  if (!SAFE_VERSION.test(version)) {
+    throw new Error(
+      `Invalid version ${JSON.stringify(version)}: expected a safe identifier (letters, digits, ".", "_", "+", "-").`,
+    );
+  }
+  return version;
+}
+
+/** Reject control characters (including NUL) in free-text fields embedded in a PR title/body. */
+function assertNoControlChars(value: string, label: string): string {
+  if (CONTROL_CHARS.test(value)) {
+    throw new Error(`Invalid ${label}: control characters are not allowed.`);
+  }
+  return value;
+}
 
 /** Read/write access to a GitHub-hosted registry manifest, injected by the host. */
 export interface GithubRegistryClient {
@@ -38,6 +82,14 @@ export interface GithubRegistryBackendOptions {
   repo: string;
   ref?: string;
   manifestPath?: string;
+  /**
+   * Trust level to publish this backend under. There is no signature/allowlist
+   * proof tying a GitHub `owner/repo/ref` to any trust class, so this MUST be
+   * an explicit decision by the host wiring the backend up — it is never
+   * inferred from the fact that the source happens to be GitHub. Defaults to
+   * the least-privileged `'restricted'` when omitted.
+   */
+  trust?: RegistryTrust;
   client: GithubRegistryClient;
 }
 
@@ -58,7 +110,7 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
     manifestPath: string;
     manifest: RegistryManifest;
   }) {
-    super({ id: options.id, kind: 'github', trust: 'official', manifest: options.manifest });
+    super({ id: options.id, kind: 'github', trust: options.trust ?? 'restricted', manifest: options.manifest });
     this.owner = options.owner;
     this.repo = options.repo;
     this.ref = options.ref;
@@ -80,8 +132,11 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
   }
 
   async publish(request: RegistryPublishRequest): Promise<RegistryPublishOutcome> {
-    const [vendor, name] = request.entry.name.split('/');
-    const version = request.entry.version;
+    // `publish` is a public method on a plain-string/JS-object boundary — an
+    // untyped caller's `name`/`version` are used to build a file path and PR
+    // branch name below, so both must be validated before that happens.
+    const [vendor, name] = assertSafeEntryName(request.entry.name);
+    const version = assertSafeVersion(request.entry.version);
     const root = `entries/${vendor}/${name}`;
     const files = [
       { path: `${root}/entry.json`, content: `${JSON.stringify(request.entry, null, 2)}\n` },
@@ -114,16 +169,27 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
   }
 
   async yank(name: string, version: string, reason: string): Promise<RegistryYankOutcome> {
-    const [vendor, entryName] = name.split('/');
-    const path = `entries/${vendor}/${entryName}/versions/${version}.json`;
+    const [vendor, entryName] = assertSafeEntryName(name);
+    const safeVersion = assertSafeVersion(version);
+    assertNoControlChars(reason, 'yank reason');
+    const path = `entries/${vendor}/${entryName}/versions/${safeVersion}.json`;
     if (!this.client.createPublishPullRequest) {
-      return { ok: true, name, version, reason, warnings: ['github mutation client unavailable; emitted dry-run yank only'] };
+      // Same honest-outcome treatment as `publish`: no mutation capability
+      // means this is implicitly a dry run, not a real yank — say so.
+      return {
+        ok: true,
+        dryRun: true,
+        name,
+        version,
+        reason,
+        warnings: ['github mutation client unavailable; emitted dry-run yank only'],
+      };
     }
     const mutation: GithubPublishMutation = {
       owner: this.owner,
       repo: this.repo,
       baseRef: this.ref,
-      branchName: `yank/${vendor}-${entryName}-${version}`,
+      branchName: `yank/${vendor}-${entryName}-${safeVersion}`,
       title: `Yank ${name}@${version}`,
       body: `Yank ${name}@${version}\n\nReason: ${reason}\n`,
       files: [
@@ -134,7 +200,7 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
       ],
     };
     const pr = await this.client.createPublishPullRequest(mutation);
-    return { ok: true, name, version, reason, pullRequestUrl: pr.url, warnings: [] };
+    return { ok: true, dryRun: false, name, version, reason, pullRequestUrl: pr.url, warnings: [] };
   }
 }
 

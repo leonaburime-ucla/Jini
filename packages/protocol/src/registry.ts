@@ -194,6 +194,7 @@ export type RegistryDoctorReport = z.infer<typeof RegistryDoctorReportSchema>;
 
 export const RegistryYankOutcomeSchema = z.object({
   ok: z.boolean(),
+  dryRun: z.boolean().optional(),
   name: z.string().min(1),
   version: z.string().min(1),
   reason: z.string().min(1),

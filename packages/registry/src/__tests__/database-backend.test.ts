@@ -72,10 +72,44 @@ describe('DatabaseRegistryBackend', () => {
     expect(list[0]?.version).toBe('1.2.0');
   });
 
+  it('publish with dryRun: true does not write to the database and reports dryRun: true (CR-009)', async () => {
+    const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+    const outcome = await backend.publish?.({ entry, dryRun: true });
+    expect(outcome).toMatchObject({
+      ok: true,
+      dryRun: true,
+      changedFiles: ['db://fixture/entries/vendor/example', 'db://fixture/entries/vendor/example/versions/1.1.0'],
+    });
+    // No row was actually written.
+    await expect(backend.list()).resolves.toEqual([]);
+  });
+
+  it('publish with dryRun: true on top of an already-published entry leaves the stored row untouched', async () => {
+    const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+    await backend.publish?.({ entry });
+    await backend.publish?.({ entry: { ...entry, version: '9.9.9', source: 'should-not-be-stored' }, dryRun: true });
+    const list = await backend.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.version).toBe('1.1.0');
+  });
+
   it('yank returns ok:false with a warning when the entry does not exist', async () => {
     const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
     const outcome = await backend.yank?.('vendor/missing', '1.0.0', 'security issue');
     expect(outcome).toMatchObject({ ok: false, warnings: ['vendor/missing not found'] });
+  });
+
+  it('yank returns ok:false with a warning when the entry exists but the requested version does not (CR-009)', async () => {
+    const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+    await backend.publish?.({ entry });
+    const outcome = await backend.yank?.('vendor/example', '9.9.9', 'security issue');
+    expect(outcome).toMatchObject({ ok: false, warnings: ['vendor/example@9.9.9 not found'] });
+
+    // And it must not have mutated the stored entry.
+    const row = db.prepare('SELECT entry_json FROM registry_entries WHERE backend_id = ? AND name = ?').get('fixture', 'vendor/example') as { entry_json: string };
+    const stored = JSON.parse(row.entry_json);
+    expect(stored.yanked).toBeUndefined();
+    expect(stored.versions.every((v: { yanked?: boolean }) => !v.yanked)).toBe(true);
   });
 
   it('yank marks the specific version record yanked and, when it is the top version, the entry itself', async () => {
@@ -113,5 +147,42 @@ describe('DatabaseRegistryBackend', () => {
     const row = db.prepare('SELECT entry_json FROM registry_entries WHERE backend_id = ? AND name = ?').get('fixture', 'vendor/bare') as { entry_json: string };
     const stored = JSON.parse(row.entry_json);
     expect(stored.yanked).toBe(true);
+  });
+
+  describe('corrupt stored rows (CR-009)', () => {
+    // Construct the backend against an empty (valid) table first, then
+    // corrupt a row directly via raw SQL — simulating a row that some other
+    // process/migration/bit-rot corrupted after the backend was created —
+    // so the read paths under test are the ones that actually encounter it,
+    // not `DatabaseRegistryBackend`'s own constructor-time manifest read.
+    function corruptRow(entryJson: string) {
+      db.prepare(
+        `INSERT INTO registry_entries (backend_id, name, version, entry_json, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      ).run('fixture', 'vendor/corrupt', '1.0.0', entryJson, Date.now());
+    }
+
+    it('list/search/resolve/doctor throw a clear error instead of an unhandled crash on invalid JSON', async () => {
+      const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+      corruptRow('{not valid json');
+
+      await expect(backend.list()).rejects.toThrow(/corrupt registry_entries row/i);
+      await expect(backend.search({ query: '' })).rejects.toThrow(/corrupt registry_entries row/i);
+      await expect(backend.resolve('vendor/corrupt')).rejects.toThrow(/corrupt registry_entries row/i);
+      await expect(backend.doctor()).rejects.toThrow(/corrupt registry_entries row/i);
+    });
+
+    it('throws a clear error when a stored row is valid JSON but fails RegistryEntrySchema', async () => {
+      const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+      corruptRow(JSON.stringify({ not: 'a valid registry entry' }));
+
+      await expect(backend.list()).rejects.toThrow(/corrupt registry_entries row/i);
+    });
+
+    it('yank throws a clear error rather than crashing when the stored row is corrupt', async () => {
+      const backend = new DatabaseRegistryBackend({ id: 'fixture', db });
+      corruptRow('{not valid json');
+
+      await expect(backend.yank?.('vendor/corrupt', '1.0.0', 'reason')).rejects.toThrow(/corrupt registry_entries row/i);
+    });
   });
 });

@@ -10,11 +10,13 @@
  */
 import {
   RegistryEntrySchema,
+  RegistryListFilterSchema,
   RegistrySearchQuerySchema,
   type RegistryBackend,
   type RegistryBackendKind,
   type RegistryDoctorReport,
   type RegistryEntry,
+  type RegistryListFilter,
   type RegistryManifest,
   type RegistrySearchQuery,
   type RegistrySearchResult,
@@ -44,32 +46,53 @@ export class StaticRegistryBackend implements RegistryBackend {
     this.manifestData = options.manifest;
   }
 
-  async list(): Promise<RegistryEntry[]> {
-    return validEntries(this.getManifest()).filter((entry) => !entry.yanked);
+  async list(filter?: RegistryListFilter): Promise<RegistryEntry[]> {
+    const parsedFilter = RegistryListFilterSchema.parse(filter);
+    let entries = validEntries(this.getManifest());
+
+    if (!parsedFilter?.includeYanked) {
+      entries = entries.filter((entry) => !entry.yanked);
+    }
+
+    if (parsedFilter?.publisher) {
+      const publisher = parsedFilter.publisher.toLowerCase();
+      entries = entries.filter(
+        (entry) => entry.publisher?.id?.toLowerCase() === publisher || entry.publisher?.github?.toLowerCase() === publisher,
+      );
+    }
+
+    if (parsedFilter?.tags && parsedFilter.tags.length > 0) {
+      const tags = parsedFilter.tags.map((tag) => tag.toLowerCase());
+      entries = entries.filter((entry) => {
+        const entryTags = new Set((entry.tags ?? []).map((tag) => tag.toLowerCase()));
+        return tags.every((tag) => entryTags.has(tag));
+      });
+    }
+
+    if (parsedFilter?.query) {
+      const terms = parsedFilter.query.toLowerCase().split(/\s+/g).filter(Boolean);
+      if (terms.length > 0) {
+        entries = entries.filter((entry) => terms.some((term) => searchHaystack(entry).includes(term)));
+      }
+    }
+
+    return entries;
   }
 
   async search(input: RegistrySearchQuery): Promise<RegistrySearchResult[]> {
     const query = RegistrySearchQuerySchema.parse(input);
     const terms = query.query.toLowerCase().split(/\s+/g).filter(Boolean);
     const tags = new Set((query.tags ?? []).map((tag) => tag.toLowerCase()));
-    const entries = await this.list();
+    // Pass `includeYanked` through to `list` so search honors the same
+    // filter contract instead of unconditionally dropping yanked entries.
+    const entries = await this.list({ includeYanked: query.includeYanked });
     const results: RegistrySearchResult[] = [];
     for (const entry of entries) {
       if (tags.size > 0) {
         const entryTags = new Set((entry.tags ?? []).map((tag) => tag.toLowerCase()));
         if (![...tags].every((tag) => entryTags.has(tag))) continue;
       }
-      const haystack = [
-        entry.name,
-        entry.title ?? '',
-        entry.description ?? '',
-        ...(entry.tags ?? []),
-        ...(entry.capabilitiesSummary ?? []),
-        entry.publisher?.id ?? '',
-        entry.publisher?.github ?? '',
-      ]
-        .join(' ')
-        .toLowerCase();
+      const haystack = searchHaystack(entry);
       const matched = terms.filter((term) => haystack.includes(term));
       if (terms.length > 0 && matched.length === 0) continue;
       results.push({
@@ -122,46 +145,64 @@ export class StaticRegistryBackend implements RegistryBackend {
     // schema-filtered set `list`/`search`/`resolve` use) — doctor's whole
     // purpose is to surface malformed data, so silently dropping a bad entry
     // before doctor sees it would hide exactly the issue it exists to report.
+    // Because these are RAW/unvalidated entries (a caller can hand a
+    // manifest object that never went through `RegistryManifestSchema`),
+    // every field is guarded before it is dereferenced — a value that isn't
+    // even a plausible object (null/array/primitive) is reported as
+    // malformed instead of throwing out of `doctor()` itself.
     const entries = this.getManifest().entries;
-    for (const entry of entries) {
-      if (!/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(entry.name)) {
+    for (const raw of entries) {
+      const value = raw as unknown;
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        issues.push({
+          severity: 'error',
+          code: 'malformed-entry',
+          message: 'Registry entry is not a valid object and could not be checked.',
+        });
+        continue;
+      }
+      const candidate = value as Partial<RegistryEntry>;
+      const name = typeof candidate.name === 'string' ? candidate.name : undefined;
+      if (!name || !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(name)) {
         issues.push({
           severity: 'error',
           code: 'invalid-name',
           message: 'Registry entry name must be vendor/name.',
-          pluginName: entry.name,
+          pluginName: name,
         });
       }
-      if (!entry.source && !entry.dist?.archive) {
+      const dist = candidate.dist && typeof candidate.dist === 'object' ? candidate.dist : undefined;
+      if (!candidate.source && !dist?.archive) {
         issues.push({
           severity: 'error',
           code: 'missing-source',
           message: 'Registry entry must provide source or dist.archive.',
-          pluginName: entry.name,
+          pluginName: name,
         });
       }
-      if (!entry.license) {
+      if (!candidate.license) {
         issues.push({
           severity: 'warning',
           code: 'missing-license',
           message: 'Registry entry should declare a license.',
-          pluginName: entry.name,
+          pluginName: name,
         });
       }
-      if (!entry.capabilitiesSummary || entry.capabilitiesSummary.length === 0) {
+      const capabilitiesSummary = Array.isArray(candidate.capabilitiesSummary) ? candidate.capabilitiesSummary : undefined;
+      if (!capabilitiesSummary || capabilitiesSummary.length === 0) {
         issues.push({
           severity: 'warning',
           code: 'missing-capabilities',
           message: 'Registry entry should summarize its capabilities.',
-          pluginName: entry.name,
+          pluginName: name,
         });
       }
-      if (entry.yanked && !entry.yankReason) {
+      if (candidate.yanked && !candidate.yankReason) {
         issues.push({
           severity: 'error',
           code: 'missing-yank-reason',
           message: 'Yanked entries must keep a human-readable reason.',
-          pluginName: entry.name,
+          pluginName: name,
         });
       }
     }
@@ -185,4 +226,19 @@ function validEntries(manifest: RegistryManifest): RegistryEntry[] {
     const parsed = RegistryEntrySchema.safeParse(entry);
     return parsed.success ? [parsed.data] : [];
   });
+}
+
+/** @internal The lowercase, space-joined text `list`/`search` match query terms against. */
+function searchHaystack(entry: RegistryEntry): string {
+  return [
+    entry.name,
+    entry.title ?? '',
+    entry.description ?? '',
+    ...(entry.tags ?? []),
+    ...(entry.capabilitiesSummary ?? []),
+    entry.publisher?.id ?? '',
+    entry.publisher?.github ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
 }

@@ -44,6 +44,82 @@ describe('StaticRegistryBackend', () => {
     expect(list.map((e) => e.name)).toEqual(['vendor/example']);
   });
 
+  describe('list filter contract (CR-009)', () => {
+    function backendWithYankedFixture() {
+      return new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: manifestOf([exampleEntry, { ...exampleEntry, name: 'vendor/yanked', yanked: true }]),
+      });
+    }
+
+    it('drops yanked entries by default (no filter, and includeYanked: false)', async () => {
+      const backend = backendWithYankedFixture();
+      await expect(backend.list()).resolves.toEqual([expect.objectContaining({ name: 'vendor/example' })]);
+      await expect(backend.list({ includeYanked: false })).resolves.toEqual([
+        expect.objectContaining({ name: 'vendor/example' }),
+      ]);
+    });
+
+    it('includes yanked entries when the filter explicitly asks for them', async () => {
+      const backend = backendWithYankedFixture();
+      const list = await backend.list({ includeYanked: true });
+      expect(list.map((e) => e.name).sort()).toEqual(['vendor/example', 'vendor/yanked']);
+    });
+
+    it('filters by publisher id or github handle', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: manifestOf([exampleEntry, { ...exampleEntry, name: 'vendor/other', publisher: { id: 'someone-else' } }]),
+      });
+      await expect(backend.list({ publisher: 'vendor' })).resolves.toEqual([
+        expect.objectContaining({ name: 'vendor/example' }),
+      ]);
+      await expect(backend.list({ publisher: 'vendor-gh' })).resolves.toEqual([
+        expect.objectContaining({ name: 'vendor/example' }),
+      ]);
+      await expect(backend.list({ publisher: 'nobody-matches-this' })).resolves.toEqual([]);
+    });
+
+    it('filters by tags (requires every requested tag)', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: manifestOf([
+          exampleEntry,
+          { ...exampleEntry, name: 'vendor/other-tag', tags: ['other'] },
+          { ...exampleEntry, name: 'vendor/no-tags', tags: undefined },
+        ]),
+      });
+      await expect(backend.list({ tags: ['fixture'] })).resolves.toEqual([
+        expect.objectContaining({ name: 'vendor/example' }),
+      ]);
+      await expect(backend.list({ tags: ['fixture', 'other'] })).resolves.toEqual([]);
+    });
+
+    it('filters by query text across name/title/description/tags/capabilities/publisher', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: manifestOf([exampleEntry, { ...exampleEntry, name: 'vendor/unrelated', description: 'nothing to do with it', title: '', tags: [], capabilitiesSummary: [] }]),
+      });
+      await expect(backend.list({ query: 'Searchable' })).resolves.toEqual([
+        expect.objectContaining({ name: 'vendor/example' }),
+      ]);
+      await expect(backend.list({ query: 'no-such-term-anywhere' })).resolves.toEqual([]);
+    });
+
+    it('search passes includeYanked through to list instead of unconditionally dropping yanked entries', async () => {
+      const backend = backendWithYankedFixture();
+      const defaultResults = await backend.search({ query: '' });
+      expect(defaultResults.map((r) => r.entry.name)).toEqual(['vendor/example']);
+
+      const withYanked = await backend.search({ query: '', includeYanked: true });
+      expect(withYanked.map((r) => r.entry.name).sort()).toEqual(['vendor/example', 'vendor/yanked']);
+    });
+  });
+
   it('resolves exact versions and dist-tags from the manifest', async () => {
     const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'trusted', manifest: manifestOf([exampleEntry]) });
     await expect(backend.resolve('vendor/example')).resolves.toMatchObject({
@@ -115,6 +191,27 @@ describe('StaticRegistryBackend', () => {
       const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'trusted', manifest: manifestOf([exampleEntry]) });
       const report = await backend.doctor();
       expect(report).toMatchObject({ ok: true, backendId: 'fixture', entriesChecked: 1, issues: [] });
+    });
+
+    it('flags a raw entry that is not a valid object instead of throwing (CR-009)', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'trusted',
+        manifest: {
+          specVersion: '1.0.0',
+          name: 'fixture',
+          version: '1.0.0',
+          // `doctor` deliberately walks RAW, unvalidated entries — a caller
+          // can hand it a manifest that never went through
+          // `RegistryManifestSchema`, so a null/primitive "entry" must be
+          // reported, not dereferenced and crashed on.
+          entries: [null, 'not-an-object', 42, exampleEntry] as never,
+        },
+      });
+      const report = await backend.doctor();
+      expect(report).toMatchObject({ ok: false, entriesChecked: 4 });
+      const malformed = report.issues.filter((issue) => issue.code === 'malformed-entry');
+      expect(malformed).toHaveLength(3);
     });
 
     it('flags an invalid name', async () => {

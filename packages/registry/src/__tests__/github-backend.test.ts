@@ -30,13 +30,28 @@ describe('GithubRegistryBackend', () => {
         return manifest;
       },
     };
-    const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+    const backend = await GithubRegistryBackend.create({
+      id: 'official',
+      owner: 'acme',
+      repo: 'registry',
+      trust: 'official',
+      client,
+    });
     expect(readArgs).toEqual(['acme', 'registry', 'main', 'registry/index.json']);
     expect(backend.kind).toBe('github');
     expect(backend.trust).toBe('official');
     expect(backend.ref).toBe('main');
     expect(backend.manifestPath).toBe('registry/index.json');
     await expect(backend.resolve('vendor/example')).resolves.toMatchObject({ source: manifest.entries[0]?.source });
+  });
+
+  it('defaults trust to restricted when no explicit trust is configured (SEC-RB-005 / CR-009)', async () => {
+    // There is no signature/allowlist proof tying a GitHub owner/repo/ref to
+    // any trust class, so construction must not silently assert `official`
+    // just because the source happens to be GitHub.
+    const client: GithubRegistryClient = { async readManifest() { return manifest; } };
+    const backend = await GithubRegistryBackend.create({ id: 'unlabeled', owner: 'acme', repo: 'registry', client });
+    expect(backend.trust).toBe('restricted');
   });
 
   it('honors an explicit ref/manifestPath', async () => {
@@ -140,7 +155,7 @@ describe('GithubRegistryBackend', () => {
     const client: GithubRegistryClient = { async readManifest() { return manifest; } };
     const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
     const outcome = await backend.yank?.('vendor/example', '1.1.0', 'security issue');
-    expect(outcome).toMatchObject({ ok: true, name: 'vendor/example', version: '1.1.0', reason: 'security issue' });
+    expect(outcome).toMatchObject({ ok: true, dryRun: true, name: 'vendor/example', version: '1.1.0', reason: 'security issue' });
     expect(outcome?.warnings).toEqual(['github mutation client unavailable; emitted dry-run yank only']);
   });
 
@@ -159,6 +174,48 @@ describe('GithubRegistryBackend', () => {
     const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
     const outcome = await backend.yank?.('vendor/example', '1.1.0', 'security issue');
     expect(mutationPath).toBe('entries/vendor/example/versions/1.1.0.json');
-    expect(outcome).toMatchObject({ ok: true, pullRequestUrl: 'https://github.com/acme/registry/pull/4' });
+    expect(outcome).toMatchObject({ ok: true, dryRun: false, pullRequestUrl: 'https://github.com/acme/registry/pull/4' });
+  });
+
+  describe('input validation (SEC-RB-005 / CR-009)', () => {
+    const client: GithubRegistryClient = {
+      async readManifest() {
+        return manifest;
+      },
+      async createPublishPullRequest() {
+        throw new Error('should not be called when validation rejects the request first');
+      },
+    };
+
+    it('publish rejects a path-traversal entry name', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(backend.publish?.({ entry: { name: '../../etc/passwd', version: '1.0.0', source: 's' } })).rejects.toThrow(
+        /invalid registry entry name/i,
+      );
+    });
+
+    it('publish rejects a version containing a path separator', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(
+        backend.publish?.({ entry: { name: 'vendor/example', version: '1.0.0/../evil', source: 's' } }),
+      ).rejects.toThrow(/invalid version/i);
+    });
+
+    it('yank rejects a path-traversal name', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(backend.yank?.('../../etc/passwd', '1.0.0', 'reason')).rejects.toThrow(/invalid registry entry name/i);
+    });
+
+    it('yank rejects a version containing whitespace', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(backend.yank?.('vendor/example', '1.0.0 ', 'reason')).rejects.toThrow(/invalid version/i);
+    });
+
+    it('yank rejects a reason containing control characters', async () => {
+      const backend = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+      await expect(backend.yank?.('vendor/example', '1.0.0', 'reason\u0000injected')).rejects.toThrow(
+        /control characters/i,
+      );
+    });
   });
 });
