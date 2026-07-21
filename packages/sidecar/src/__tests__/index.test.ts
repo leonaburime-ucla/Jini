@@ -132,6 +132,21 @@ describe("@jini/sidecar — net", () => {
     await expect(listenOnPort(address.port, "127.0.0.1")).rejects.toThrow();
     await closeServer(first);
   });
+
+  it("closeServer rejects when the underlying server.close() callback itself reports an error", async () => {
+    const server = await listenOnPort(0, "127.0.0.1");
+    try {
+      const boom = new Error("close failed");
+      vi.spyOn(server, "close").mockImplementation(((cb?: (err?: Error) => void) => {
+        cb?.(boom);
+        return server;
+      }) as typeof server.close);
+      await expect(closeServer(server)).rejects.toBe(boom);
+    } finally {
+      vi.restoreAllMocks();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 describe("@jini/sidecar — path boundary uses descriptor defaults, not hardcoded product constants", () => {

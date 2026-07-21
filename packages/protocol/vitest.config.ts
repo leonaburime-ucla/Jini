@@ -8,14 +8,10 @@ export default defineConfig({
       // json-summary/json are what a coverage-driven pass should actually
       // read (see docs/jini-port's Phase 6.5 method).
       reporter: ['text', 'json-summary', 'json'],
-      // CR-R4: widened to the whole package (matching packages/core and
-      // packages/agent-runtime's package-wide convention) — the prior config
-      // measured only tool-executor.ts, silently excluding the newly
-      // expanded run-lifecycle/event-log/agent-executor/delegated-tool-bridge
-      // coverage (see
+      // CR-R4: this package had no committed coverage gate at all (see
       // ADS-memory/reports/code-review/CR-backend-coverage-push-2026-07-20.md, R4).
-      // `src/run/core/failure-taxonomy.ts` is a genuinely zero-executable-
-      // statement file (`export type`/`export interface` only, verified via
+      // `src/common.ts` is a genuinely zero-executable-statement file
+      // (`export type`/`export interface` only, verified via
       // `grep -nE '^(export )?(const|function|class|let|var) '` finding no
       // runtime declarations) — left in `include` rather than excluded so a
       // future non-type addition to that file is still gated, same
@@ -23,13 +19,11 @@ export default defineConfig({
       include: ['src/**'],
       exclude: ['src/**/*.test.ts'],
       thresholds: {
-        // Measured 2026-07-21 package-wide honest coverage is ~99.8/99.3/
-        // 100/99.8 (statements/branches/functions/lines) — comfortably above
-        // the 98% unit-profile target. Set with a small safety margin below
-        // the measured numbers rather than pinned exactly to them.
+        // Measured 2026-07-21 package-wide honest coverage is 100% across
+        // all four metrics. Set with a small safety margin below that.
         statements: 98,
         branches: 98,
-        functions: 99,
+        functions: 98,
         lines: 98,
       },
     },

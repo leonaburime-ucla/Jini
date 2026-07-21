@@ -72,7 +72,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/chat-core: {}
+  packages/chat-core:
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/chat-react:
     dependencies:
@@ -147,6 +151,10 @@ importers:
       undici:
         specifier: ^7.25.0
         version: 7.28.0
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/desktop-host:
     dependencies:
@@ -178,6 +186,9 @@ importers:
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.25
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/mcp: {}
 
@@ -235,6 +246,10 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/registry:
     dependencies:
@@ -297,6 +312,10 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/sqlite:
     dependencies:

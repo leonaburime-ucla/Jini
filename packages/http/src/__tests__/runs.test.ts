@@ -631,6 +631,43 @@ describe('registerRunEventStream', () => {
     expect(res.end).toHaveBeenCalledTimes(1);
   });
 
+  it('CR-R1: unsubscribes immediately, without ever setting SSE headers, when the client disconnects while stream() is still resolving', async () => {
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    const unsubscribe = vi.fn();
+    deps.lifecycle.stream = vi.fn(async () => {
+      // Simulates the client closing the connection during the (real) await on stream()'s
+      // durable replay — 'close' fires and sets `closed = true` before this resolves.
+      res.emitClose();
+      return { kind: 'ok' as const, unsubscribe };
+    });
+
+    await handler(makeSseReq({ runId: run.id }), res);
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.flushHeaders).not.toHaveBeenCalled();
+  });
+
+  it('does not call res.end() a second time from the catch block when the response was already fully ended', async () => {
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    res.flushHeaders = vi.fn(() => {
+      res.headersSent = true;
+      res.writableEnded = true; // some other path already fully ended this response
+      throw new Error('boom after the response was already ended');
+    });
+
+    await handler(makeSseReq({ runId: run.id }), res);
+
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.end).not.toHaveBeenCalled();
+  });
+
   it('CR-R1: unsubscribes on a replay-write failure instead of leaking the subscription, and does not corrupt later emit()/finish() for that run', async () => {
     // Before the fix: a write failure during the buffered-replay flush ended the response but
     // never called `unsubscribe`. The dead subscriber callback stayed registered on the run, so
