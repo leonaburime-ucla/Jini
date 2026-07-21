@@ -226,6 +226,29 @@ describe('RunLifecycle — emit', () => {
 
     await expect(lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'x' } })).rejects.toThrow(/terminal/);
   });
+
+  it('CR-R1: isolates a throwing subscriber (e.g. a dead SSE writer) so emit() still resolves and other subscribers still receive the event', async () => {
+    const { lifecycle } = makeLifecycle();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    // Only throw for a *live* delivery through emit()'s fan-out — the replay-phase
+    // delivery inside stream() itself (the 'start' entry) must complete normally so the
+    // subscription is actually established, matching how a real transport (e.g. the SSE
+    // writer) only fails once flowing, not while replaying buffered history.
+    let deliveries = 0;
+    const result = await lifecycle.stream(run.id, () => {
+      deliveries += 1;
+      if (deliveries > 1) throw new Error('dead transport');
+    });
+    expect(result.kind).toBe('ok');
+    const delivered: RunProtocolEvent[] = [];
+    await lifecycle.stream(run.id, (event) => delivered.push(event));
+
+    await expect(
+      lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'x' } }),
+    ).resolves.toMatchObject({ kind: 'agent' });
+    expect(delivered.map((e) => e.kind)).toEqual(['start', 'agent']);
+  });
 });
 
 describe('RunLifecycle — finish', () => {
@@ -289,6 +312,26 @@ describe('RunLifecycle — finish', () => {
     await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
     const status = await waiter;
     expect(status.state).toBe('succeeded');
+  });
+
+  it('CR-R1: a throwing subscriber does not strand waitForTerminal() — finish() still resolves terminal waiters', async () => {
+    const { lifecycle } = makeLifecycle();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    // Same reasoning as the emit() isolation test above: let the 'start' replay delivery
+    // succeed so the subscription is actually established, then throw only on the live
+    // 'end' event delivered by finish()'s own fan-out.
+    let deliveries = 0;
+    await lifecycle.stream(run.id, () => {
+      deliveries += 1;
+      if (deliveries > 1) throw new Error('dead transport on the terminal end event');
+    });
+    const waiter = lifecycle.waitForTerminal(run.id);
+
+    await expect(
+      lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false }),
+    ).resolves.toMatchObject({ state: 'succeeded' });
+    await expect(waiter).resolves.toMatchObject({ state: 'succeeded' });
   });
 
   it('waitForTerminal() resolves immediately for an already-terminal run', async () => {

@@ -217,12 +217,27 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
     return record;
   }
 
+  /**
+   * A subscriber is a transport-owned callback (e.g. an SSE writer) outside this module's
+   * control. One subscriber throwing (a dead socket, a broken client) must never abort the
+   * fan-out to the others, nor propagate out through `emit()`/`finish()` into driver code that
+   * has nothing to do with that transport — see CR-R1 in
+   * `ADS-memory/reports/code-review/CR-backend-coverage-push-2026-07-20.md`.
+   */
+  function notifySubscribers(record: RunRecord, event: RunProtocolEvent): void {
+    for (const subscriber of record.subscribers) {
+      try {
+        subscriber(event);
+      } catch {
+        // Isolated by design — see the function doc above.
+      }
+    }
+  }
+
   async function appendEvent(runId: string, record: RunRecord, event: string, data: unknown): Promise<RunProtocolEvent> {
     const entry = await eventLog.append({ runId, event, data });
     const runEvent = toRunEvent(runId, entry);
-    for (const subscriber of record.subscribers) {
-      subscriber(runEvent);
-    }
+    notifySubscribers(record, runEvent);
     return runEvent;
   }
 
@@ -428,9 +443,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
       const endEntry = await eventLog.append({ runId: finishInput.runId, event: 'end', data: endPayload });
       record.terminalEndEntry = endEntry;
       const endEvent = toRunEvent(finishInput.runId, endEntry);
-      for (const subscriber of record.subscribers) {
-        subscriber(endEvent);
-      }
+      notifySubscribers(record, endEvent);
 
       resolveTerminalWaiters(record);
       return toPublicStatus(record);

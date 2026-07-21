@@ -51,19 +51,26 @@ function makeSseReq(overrides: { runId?: string; headers?: Record<string, string
 
 function makeSseRes() {
   const closeListeners: Array<() => void> = [];
-  return {
-    write: vi.fn(),
+  const drainListeners: Array<() => void> = [];
+  const res = {
+    write: vi.fn((_chunk: string) => true),
     status: vi.fn().mockReturnThis(),
     setHeader: vi.fn(),
     flushHeaders: vi.fn(),
-    end: vi.fn(),
+    end: vi.fn(() => {
+      res.writableEnded = true;
+    }),
     json: vi.fn().mockReturnThis(),
     headersSent: false,
+    writableEnded: false,
     on: vi.fn((event: string, listener: () => void) => {
       if (event === 'close') closeListeners.push(listener);
+      if (event === 'drain') drainListeners.push(listener);
     }),
     emitClose: () => closeListeners.forEach((listener) => listener()),
+    emitDrain: () => drainListeners.forEach((listener) => listener()),
   };
+  return res;
 }
 
 const adapter = { resolvedPortRef: { current: 7456 } };
@@ -486,7 +493,7 @@ describe('registerRunEventStream', () => {
     expect(res.on).toHaveBeenCalledWith('close', expect.any(Function));
   });
 
-  it('ends the response immediately without registering a close listener when the buffered replay already contains the terminal end event', async () => {
+  it('ends the response immediately once the buffered replay contains the terminal end event', async () => {
     const deps = makeDeps();
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
     await deps.lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
@@ -496,7 +503,13 @@ describe('registerRunEventStream', () => {
 
     expect(res.write).toHaveBeenCalledWith(expect.stringContaining('event: end'));
     expect(res.end).toHaveBeenCalledTimes(1);
-    expect(res.on).not.toHaveBeenCalled();
+    // 'close'/'drain' listeners are registered unconditionally, before the subscribe/replay
+    // await, so a client disconnect racing that window is still observed (CR-R1) — but since
+    // the subscription is already a no-op for a terminal run, firing 'close' now must not
+    // attempt a second res.end() or throw.
+    expect(res.on).toHaveBeenCalledWith('close', expect.any(Function));
+    expect(() => res.emitClose()).not.toThrow();
+    expect(res.end).toHaveBeenCalledTimes(1);
   });
 
   it('delivers a live event as it is emitted and closes the stream on a live end event', async () => {
@@ -554,10 +567,8 @@ describe('registerRunEventStream', () => {
   });
 
   it('ends the response instead of sending a JSON error when a post-subscribe failure occurs after headers were already sent', async () => {
-    // The buffered-replay flush (`for (const event of pending) writeSseEvent(res, event)`) runs
-    // strictly after `res.flushHeaders()`, so a `res.write` failure at that point is a realistic
-    // stand-in for e.g. a socket error once the stream is already flowing, and lands the catch
-    // block's `!res.headersSent` check on its `res.end()` branch instead of `sendApiError`.
+    // A `res.write` failure once the stream is already flowing (e.g. a socket error) must be
+    // isolated inside the writer, not surfaced as a JSON error response.
     const deps = makeDeps();
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
     const handler = mount(deps);
@@ -570,6 +581,109 @@ describe('registerRunEventStream', () => {
     });
     await handler(makeSseReq({ runId: run.id }), res);
     expect(res.json).not.toHaveBeenCalled();
+    expect(res.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('CR-R1: unsubscribes on a replay-write failure instead of leaking the subscription, and does not corrupt later emit()/finish() for that run', async () => {
+    // Before the fix: a write failure during the buffered-replay flush ended the response but
+    // never called `unsubscribe`. The dead subscriber callback stayed registered on the run, so
+    // a later `emit()`/`finish()` call invoked it again, its `res.write` threw a second time, and
+    // that exception propagated synchronously out through `RunLifecycle`'s subscriber fan-out —
+    // out of `emit()`/`finish()` themselves, and (for `finish()`) before `resolveTerminalWaiters`
+    // ran, stranding any `waitForTerminal()` caller. This test fails a replay write, then drives
+    // a live emit and a finish through the SAME run and asserts both still resolve cleanly, the
+    // terminal waiter unblocks, and the dead connection never receives another write attempt.
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    res.flushHeaders = vi.fn(() => {
+      res.headersSent = true;
+    });
+    res.write = vi.fn(() => {
+      throw new Error('socket write failed');
+    });
+
+    const waitForTerminal = deps.lifecycle.waitForTerminal(run.id);
+
+    await expect(handler(makeSseReq({ runId: run.id }), res)).resolves.toBeUndefined();
+    expect(res.end).toHaveBeenCalledTimes(1);
+    const writeCallsAfterStreamSetup = res.write.mock.calls.length;
+    expect(writeCallsAfterStreamSetup).toBeGreaterThan(0);
+
+    await expect(
+      deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'after leak-fix' } }),
+    ).resolves.toBeDefined();
+    // The leaked callback would otherwise still be registered and attempt another write.
+    expect(res.write.mock.calls.length).toBe(writeCallsAfterStreamSetup);
+
+    await expect(
+      deps.lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false }),
+    ).resolves.toMatchObject({ state: 'succeeded' });
+    expect(res.write.mock.calls.length).toBe(writeCallsAfterStreamSetup);
+    expect(res.end).toHaveBeenCalledTimes(1);
+
+    await expect(waitForTerminal).resolves.toMatchObject({ state: 'succeeded' });
+  });
+
+  it('SEC-006: queues events while res.write reports backpressure and resumes writing on drain, preserving order', async () => {
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    const handlerPromise = handler(makeSseReq({ runId: run.id }), res);
+    await handlerPromise;
+    res.write.mockClear();
+
+    res.write.mockReturnValueOnce(false); // simulate Node reporting a full socket buffer
+    await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'first' } });
+    await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'second' } });
+    // The second event must be queued, not written, while backpressure is in effect.
+    expect(res.write).toHaveBeenCalledTimes(1);
+
+    res.emitDrain();
+    expect(res.write).toHaveBeenCalledTimes(2);
+    expect(res.write.mock.calls[0]![0]).toContain('"label":"first"');
+    expect(res.write.mock.calls[1]![0]).toContain('"label":"second"');
+  });
+
+  it('SEC-006: disconnects a slow consumer once the bounded queue is exceeded instead of buffering without bound', async () => {
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    await handler(makeSseReq({ runId: run.id }), res);
+    res.write.mockClear();
+    res.write.mockReturnValue(false); // never drains — a permanently stalled consumer
+
+    for (let i = 0; i < 1002; i += 1) {
+      await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: String(i) } });
+    }
+
+    expect(res.end).toHaveBeenCalledTimes(1);
+    const writeCallsAtDisconnect = res.write.mock.calls.length;
+    await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'after disconnect' } });
+    expect(res.write.mock.calls.length).toBe(writeCallsAtDisconnect);
+  });
+
+  it('SEC-006: a terminal end event queued under backpressure is still written last and still ends the response', async () => {
+    const deps = makeDeps();
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const handler = mount(deps);
+    const res = makeSseRes();
+    await handler(makeSseReq({ runId: run.id }), res);
+    res.write.mockClear();
+
+    res.write.mockReturnValueOnce(false);
+    await deps.lifecycle.emit(run.id, { event: 'agent', data: { type: 'status', label: 'working' } });
+    await deps.lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+    // Both events are queued behind the backpressure; neither is written until 'drain'.
+    expect(res.write).toHaveBeenCalledTimes(1);
+    expect(res.end).not.toHaveBeenCalled();
+
+    res.emitDrain();
+    expect(res.write).toHaveBeenCalledTimes(2);
+    expect(res.write.mock.calls[1]![0]).toContain('event: end');
     expect(res.end).toHaveBeenCalledTimes(1);
   });
 });
