@@ -38,6 +38,7 @@ import {
 // (see index.ts's own module doc) — imported directly here, matching the rest of this file's
 // convention of importing everything else through the barrel.
 import { closeServer, listenOnPort } from "../net.js";
+import { allocateDynamicPort } from "../port.js";
 
 /**
  * A fake host contract, standing in for a real consumer's product-specific
@@ -381,22 +382,44 @@ describe("@jini/sidecar — port allocation", () => {
     }
   });
 
-  it("exhausts its 20-attempt dynamic-port budget when every ephemeral port the OS hands back is already reserved", async () => {
-    // The OS (observed empirically on this platform) hands out ephemeral ports
-    // sequentially/incrementing for rapid successive bind(0) calls within one
-    // process. Probe one to learn the current starting point, then pre-reserve
-    // a wide contiguous range ahead of it — wide enough to absorb any small
-    // jump from unrelated concurrent activity on the box — so every one of
-    // the 20 real allocation attempts collides against `reserved`.
-    const probe = await listenOnPort(0, "127.0.0.1");
-    const probeAddress = probe.address();
-    await closeServer(probe);
-    if (probeAddress == null || typeof probeAddress === "string") throw new Error("expected a TCP address");
+  it("exhausts its 20-attempt dynamic-port budget when every probed port is already reserved (CR-R5: deterministic, no real OS allocation)", async () => {
+    // Feeds 20 fixed reserved ports through the injected probe seam, one per attempt, in a fixed
+    // order known ahead of time — no dependency on the OS's real ephemeral-port allocation
+    // ordering, unlike the previous version of this test (see git history / CR-R5 in
+    // ADS-memory/reports/code-review/CR-backend-coverage-push-2026-07-20.md).
+    const reserved = new Set<number>(Array.from({ length: 20 }, (_, i) => 40000 + i));
+    const probedHosts: string[] = [];
+    let call = 0;
+    const fakeProbe = async (host: string): Promise<number> => {
+      probedHosts.push(host);
+      call += 1;
+      return 40000 + (call - 1);
+    };
 
-    const reserved = new Set<number>();
-    for (let p = probeAddress.port; p < probeAddress.port + 1000 && p <= 65535; p += 1) reserved.add(p);
+    await expect(allocateDynamicPort("runtime", "127.0.0.1", reserved, fakeProbe)).rejects.toThrow(
+      /failed to allocate dynamic runtime port without conflict/,
+    );
+    expect(call).toBe(20);
+    expect(probedHosts).toEqual(Array.from({ length: 20 }, () => "127.0.0.1"));
+  });
 
-    await expect(allocatePort({ reserved })).rejects.toThrow(/failed to allocate dynamic .* port without conflict/);
+  it("CR-R5: retries past reserved probes and allocates the first free one within the 20-attempt budget, deterministically", async () => {
+    // Reserve exactly the first 19 ports the fake probe will hand back — leaving room for one
+    // more attempt inside the fixed 20-attempt budget the production loop enforces (attempts
+    // are NOT unbounded across calls: a call that never gets a free port within 20 attempts
+    // throws, per the "exhausts its budget" test above).
+    const reserved = new Set<number>(Array.from({ length: 19 }, (_, i) => 50000 + i));
+    let call = 0;
+    const fakeProbe = async (): Promise<number> => {
+      call += 1;
+      // The first 19 probes collide with `reserved`; the 20th (last available attempt) is free.
+      return 50000 + (call - 1);
+    };
+
+    const result = await allocateDynamicPort("runtime", "127.0.0.1", reserved, fakeProbe);
+    expect(result).toEqual({ port: 50019, source: "dynamic" });
+    expect(call).toBe(20);
+    expect(reserved.has(50019)).toBe(true);
   });
 });
 
