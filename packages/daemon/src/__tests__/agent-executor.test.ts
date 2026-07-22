@@ -12,8 +12,10 @@ import {
   type PiRpcSession,
   type RuntimeAgentDef,
 } from '@jini/agent-runtime';
+import type { JournalEntry } from '@jini/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
 import { createRunLifecycle, type RunLifecycle } from '../run-lifecycle.js';
+import { createRunByteJournal, type RunByteJournal } from '../continuation/journal.js';
 import {
   AgentExecutorError,
   createAgentExecutor,
@@ -21,6 +23,22 @@ import {
   translateAgentRuntimeEvent,
   type AgentExecutor,
 } from '../agent-executor.js';
+
+/** Records every `record()` call in order, alongside a real `createRunByteJournal` so read-back is also exercised. */
+function createSpyJournal(): { journal: RunByteJournal; calls: Array<{ runId: string; entry: JournalEntry }> } {
+  const real = createRunByteJournal(createInMemoryEventLog());
+  const calls: Array<{ runId: string; entry: JournalEntry }> = [];
+  return {
+    calls,
+    journal: {
+      async record(runId, entry) {
+        calls.push({ runId, entry });
+        await real.record(runId, entry);
+      },
+      read: (runId) => real.read(runId),
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fake child-process harness — extends the .stdout/.stderr sub-EventEmitter +
@@ -119,6 +137,8 @@ interface HarnessOptions {
   listProcessSnapshotsRejects?: unknown;
   /** Overrides the real `@jini/agent-runtime` prompt-file stager (default: real — touches real disk under `os.tmpdir()`, a no-op for every def without `promptViaFile: true`). */
   preparePromptFileForAgent?: typeof preparePromptFileForAgent;
+  /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
+  journal?: RunByteJournal;
 }
 
 interface Harness {
@@ -191,6 +211,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
       return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
     },
     onCleanupFailure,
+    ...(options.journal !== undefined ? { journal: options.journal } : {}),
   });
 
   return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
@@ -985,6 +1006,8 @@ interface AcpHarnessOptions {
   attachThrows?: unknown;
   /** SEC-007: makes `stopProcesses` reject instead of succeeding. */
   stopProcessesRejects?: unknown;
+  /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
+  journal?: RunByteJournal;
 }
 
 interface AcpHarness {
@@ -1070,6 +1093,7 @@ function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
       return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
     },
     onCleanupFailure,
+    ...(options.journal !== undefined ? { journal: options.journal } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -1366,6 +1390,8 @@ interface PiRpcHarnessOptions {
   attachThrows?: unknown;
   /** SEC-007: makes `stopProcesses` reject instead of succeeding. */
   stopProcessesRejects?: unknown;
+  /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
+  journal?: RunByteJournal;
 }
 
 interface PiRpcHarness {
@@ -1442,6 +1468,7 @@ function createPiRpcHarness(options: PiRpcHarnessOptions = {}): PiRpcHarness {
       return { alreadyStopped: false, forcedPids: [], matchedPids: numericPids, remainingPids: [], stoppedPids: numericPids };
     },
     onCleanupFailure,
+    ...(options.journal !== undefined ? { journal: options.journal } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -1971,5 +1998,103 @@ describe('AgentExecutor — plain-format argv prompt-budget guard (aider/deepsee
 
     expect(spawnCalls).toHaveLength(0);
     expect((await lifecycle.get(run.id))?.state).toBe('failed');
+  });
+});
+
+describe('AgentExecutor — gap 1 byte-journal (CreateAgentExecutorOptions.journal)', () => {
+  it('is a no-op when no journal is configured — every other test in this file relies on this default', async () => {
+    // Sanity check for the opt-in default itself: createHarness() with no `journal` option must
+    // never throw even though every stdout/stderr/stdin call site now conditionally journals.
+    const { lifecycle, executor, child } = createHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', '{"type":"turn_end"}\n');
+    child.emit('close', 0, null);
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('succeeded');
+  });
+
+  it('records sent (trusted, stdin) and received (untrusted, stdout/stderr) bytes for a plain-text child-driven def', async () => {
+    const { journal, calls } = createSpyJournal();
+    const def = createFakeDef({ streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, journal });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', 'hello from agent');
+    child.stderr.emit('data', 'a warning');
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(calls).toEqual([
+      { runId: run.id, entry: { content: 'do the thing', provenance: { source: 'host', channel: 'stdin' }, trust: 'trusted' } },
+      { runId: run.id, entry: { content: 'hello from agent', provenance: { source: 'agent', channel: 'stdout' }, trust: 'untrusted' } },
+      { runId: run.id, entry: { content: 'a warning', provenance: { source: 'agent', channel: 'stderr' }, trust: 'untrusted' } },
+    ]);
+
+    // The journal is independently readable back — not just a spy assertion, the real
+    // createRunByteJournal storage underneath actually durably recorded these entries.
+    const replayed = await journal.read(run.id);
+    expect(replayed).toHaveLength(3);
+  });
+
+  it('records the raw stream-json line prompt as trusted stdin content, not the JSONL-wrapped wire frame', async () => {
+    const { journal, calls } = createSpyJournal();
+    const def = createFakeDef({ streamFormat: 'claude-stream-json', promptInputFormat: 'stream-json' });
+    const { lifecycle, executor, child } = createHarness({ def, journal });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'stream json prompt', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const sent = calls.filter((call) => call.entry.provenance.source === 'host');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.entry.content).toBe('stream json prompt');
+  });
+
+  it('records raw stdout/stderr for an ACP-driven def, but not the ACP prompt itself (out of this driver\'s direct view)', async () => {
+    const { journal, calls } = createSpyJournal();
+    const { lifecycle, executor, child } = createAcpHarness({ journal });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'acp prompt', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', 'raw acp stdout');
+    child.stderr.emit('data', 'raw acp stderr');
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(calls).toEqual([
+      { runId: run.id, entry: { content: 'raw acp stdout', provenance: { source: 'agent', channel: 'stdout' }, trust: 'untrusted' } },
+      { runId: run.id, entry: { content: 'raw acp stderr', provenance: { source: 'agent', channel: 'stderr' }, trust: 'untrusted' } },
+    ]);
+    expect(calls.some((call) => call.entry.content === 'acp prompt')).toBe(false);
+  });
+
+  it('records raw stdout/stderr for a pi-rpc-driven def, but not the pi-rpc prompt itself (out of this driver\'s direct view)', async () => {
+    const { journal, calls } = createSpyJournal();
+    const { lifecycle, executor, child } = createPiRpcHarness({ journal });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'pi prompt', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', 'raw pi stdout');
+    child.stderr.emit('data', 'raw pi stderr');
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(calls).toEqual([
+      { runId: run.id, entry: { content: 'raw pi stdout', provenance: { source: 'agent', channel: 'stdout' }, trust: 'untrusted' } },
+      { runId: run.id, entry: { content: 'raw pi stderr', provenance: { source: 'agent', channel: 'stderr' }, trust: 'untrusted' } },
+    ]);
+    expect(calls.some((call) => call.entry.content === 'pi prompt')).toBe(false);
   });
 });

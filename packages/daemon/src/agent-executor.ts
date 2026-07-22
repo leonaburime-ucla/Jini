@@ -68,7 +68,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { redactSecrets } from '@jini/core';
-import type { RunAgentPayload, RunErrorPayload } from '@jini/protocol';
+import type { JournalEntry, RunAgentPayload, RunErrorPayload } from '@jini/protocol';
 import {
   applyAgentLaunchEnv,
   createClaudeStreamHandler,
@@ -100,6 +100,7 @@ import {
   type StopProcessesResult,
 } from '@jini/platform';
 import { classifyRunCloseStatus } from './close-status.js';
+import type { RunByteJournal } from './continuation/journal.js';
 import type { RunLifecycle } from './run-lifecycle.js';
 
 /**
@@ -501,6 +502,26 @@ function terminateChildTreeBestEffort(
 /** A small handle `writePromptToStdin` uses to close stdin exactly once, shared with the `turn_end`-triggered close inside {@link wireChildLifecycle}. */
 interface StdinCloseHandle {
   closeStdinOnce(): void;
+  /** Journals a sent-to-stdin byte chunk, queued through the same FIFO {@link wireChildLifecycle} already uses for emitted events. No-op when no journal was configured (see `CreateAgentExecutorOptions.journal`). */
+  recordSentBytes(content: string): void;
+}
+
+/**
+ * Gap 1's byte-journal record for bytes the host sent to the child's stdin — always `trust:
+ * 'trusted'`, since these are bytes this driver itself composed and wrote, not agent output. See
+ * `packages/daemon/src/continuation/journal.ts`'s module doc.
+ */
+function sentJournalEntry(content: string): JournalEntry {
+  return { content, provenance: { source: 'host', channel: 'stdin' }, trust: 'trusted' };
+}
+
+/**
+ * Gap 1's byte-journal record for bytes a child agent process produced on `channel` — always
+ * `trust: 'untrusted'`, since this is attacker-influenceable agent output the kernel does not
+ * control (see `@jini/protocol`'s `JournalEntry` doc on why `trust` exists).
+ */
+function receivedJournalEntry(channel: 'stdout' | 'stderr', content: string): JournalEntry {
+  return { content, provenance: { source: 'agent', channel }, trust: 'untrusted' };
 }
 
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
@@ -512,6 +533,8 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
   /** Removes a `promptViaFile`-staged temp file (grok-build) after the child exits. A no-op default when no prompt file was staged for this run — see `run()`'s `preparePromptFileForAgent` call site. */
   readonly cleanupPromptFile: () => Promise<void>;
+  /** Gap 1's byte-journal (see `continuation/journal.ts`). `undefined` when a caller configured none — every journal call site below is then a no-op. */
+  readonly journal: RunByteJournal | undefined;
 }
 
 /**
@@ -554,7 +577,7 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
  * @overallScore 100/100
  */
 function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
-  const { runId, def, streamFormat, child, lifecycle } = ctx;
+  const { runId, def, streamFormat, child, lifecycle, journal } = ctx;
   let stdinClosed = false;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
@@ -593,6 +616,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
     const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stdout', text)));
     enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: text } }));
     if (streamFormat === 'plain') {
       enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: { type: 'text_delta', delta: text } }));
@@ -604,7 +628,9 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
   });
 
   child.stderr?.on('data', (chunk: Buffer | string) => {
-    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+    const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stderr', text)));
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: text } }));
   });
 
   // EPIPE-tolerant: a fast-exiting child that closes its stdin read end
@@ -642,7 +668,12 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
     })();
   });
 
-  return { closeStdinOnce };
+  return {
+    closeStdinOnce,
+    recordSentBytes(content: string): void {
+      if (journal) enqueueEmit(() => journal.record(runId, sentJournalEntry(content)));
+    },
+  };
 }
 
 interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
@@ -657,6 +688,8 @@ interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
   /** Same seam as `WireChildLifecycleContext.cleanupPromptFile` — no current ACP def declares `promptViaFile`, so this is always the no-op default in practice today, threaded through for consistency rather than special-cased away. */
   readonly cleanupPromptFile: () => Promise<void>;
+  /** Gap 1's byte-journal (see `continuation/journal.ts`). Covers this wrapper's own raw stdout/stderr forwarding only — the actual ACP prompt delivery happens inside `attachAcpSession`'s own transport, out of this module's direct view, so sent bytes are not journaled on this path (an honestly-scoped v1 gap, not an oversight). */
+  readonly journal: RunByteJournal | undefined;
 }
 
 /**
@@ -694,7 +727,7 @@ function translateAcpError(payload: unknown): RunErrorPayload {
  * success.
  */
 function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
-  const { runId, child, lifecycle } = ctx;
+  const { runId, child, lifecycle, journal } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
 
@@ -710,10 +743,14 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
   }
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
-    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+    const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stdout', text)));
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: text } }));
   });
   child.stderr?.on('data', (chunk: Buffer | string) => {
-    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+    const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stderr', text)));
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: text } }));
   });
   child.stdin?.on('error', () => {});
   child.on('error', () => {});
@@ -769,6 +806,8 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
   readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
   /** Same seam as `WireChildLifecycleContext.cleanupPromptFile` — no current pi-rpc def declares `promptViaFile`, so this is always the no-op default in practice today, threaded through for consistency rather than special-cased away. */
   readonly cleanupPromptFile: () => Promise<void>;
+  /** Gap 1's byte-journal (see `continuation/journal.ts`). Same scope boundary as `WireAcpLifecycleContext.journal`: covers this wrapper's own raw stdout/stderr forwarding only, not the prompt bytes `attachPiRpcSession` sends through its own transport. */
+  readonly journal: RunByteJournal | undefined;
 }
 
 /**
@@ -791,7 +830,7 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
  * multi-turn tool continuation, resumable session ids, etc.).
  */
 function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
-  const { runId, child, lifecycle } = ctx;
+  const { runId, child, lifecycle, journal } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
 
@@ -807,10 +846,14 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
   }
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
-    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+    const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stdout', text)));
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: text } }));
   });
   child.stderr?.on('data', (chunk: Buffer | string) => {
-    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+    const text = chunk.toString('utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stderr', text)));
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: text } }));
   });
   child.stdin?.on('error', () => {});
   child.on('error', () => {});
@@ -862,7 +905,7 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
  * @param def - The resolved agent def (only `.promptInputFormat` is read).
  * @param child - The spawned child (no-ops if `.stdin` is unexpectedly absent).
  * @param prompt - The composed user turn.
- * @param handle - Shared stdin-close guard so a `'text'` write's immediate close and a later `turn_end` close never race into a double-`end()`.
+ * @param handle - Shared stdin-close guard so a `'text'` write's immediate close and a later `turn_end` close never race into a double-`end()`; also carries gap 1's byte-journal recorder (see `StdinCloseHandle.recordSentBytes`).
  * @complexity O(1) plus the underlying stream write's own cost.
  * @overallScore 100/100
  */
@@ -872,9 +915,11 @@ function writePromptToStdin(def: RuntimeAgentDef, child: ChildProcess, prompt: s
   if (def.promptInputFormat === 'stream-json') {
     const line = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } });
     stdin.write(`${line}\n`, 'utf8');
+    handle.recordSentBytes(prompt);
     return;
   }
   stdin.write(prompt, 'utf8');
+  handle.recordSentBytes(prompt);
   handle.closeStdinOnce();
 }
 
@@ -917,6 +962,18 @@ export interface CreateAgentExecutorOptions {
   readonly stopProcesses?: typeof stopProcesses;
   /** Host-owned sink for a process-tree cleanup failure (SEC-007) — e.g. EPERM stopping descendants. @default logs a redacted diagnostic via `console.error` */
   readonly onCleanupFailure?: (context: AgentCleanupFailureContext) => void;
+  /**
+   * Gap 1's byte-journal (`packages/daemon/src/continuation/journal.ts`) — records every byte
+   * this driver sends to or receives from a child agent process, independent of and prior to any
+   * parsed/translated event. Covers `writePromptToStdin` (sent) and every `child.stdout`/
+   * `child.stderr` `'data'` handler this driver owns (received); does not cover ACP/pi-rpc's own
+   * prompt delivery, which happens inside their respective attach functions' own transport, out
+   * of this driver's direct view — see `WireAcpLifecycleContext.journal`'s doc.
+   * @default no journal — recording is entirely opt-in, unlike every other seam on this
+   * interface (which default to a real implementation): there is no generic "real" journal
+   * storage this package can default to without a caller-supplied `EventLog` instance.
+   */
+  readonly journal?: RunByteJournal;
 }
 
 /**
@@ -948,6 +1005,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const collectProcessTreePidsFn = options.collectProcessTreePids ?? collectProcessTreePids;
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
   const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
+  const journal = options.journal;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -1108,6 +1166,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
             stopProcesses: stopProcessesFn,
             onCleanupFailure: onCleanupFailureFn,
             cleanupPromptFile,
+            journal,
           });
 
     try {
@@ -1137,6 +1196,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           stopProcesses: stopProcessesFn,
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
+          journal,
         });
       } catch (err) {
         // Unlike the cancellation-listener call sites, we are already in an async function
@@ -1177,6 +1237,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           stopProcesses: stopProcessesFn,
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
+          journal,
         });
       } catch (err) {
         // Same discipline as the ACP attach-failure path directly above: await cleanup here

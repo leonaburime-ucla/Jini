@@ -26,7 +26,16 @@ import type { Server } from 'node:http';
 import express, { type Express } from 'express';
 import { bindings, createDaemon, type Bindings, type Daemon } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
-import { AgentExecutorToken, createAgentExecutor, createRunLifecycle, EventLogToken, RunLifecycleToken } from '@jini/daemon';
+import {
+  AgentExecutorToken,
+  createAgentExecutor,
+  createDefaultRunStartHandler,
+  createRunByteJournal,
+  createRunLifecycle,
+  EventLogToken,
+  RunLifecycleToken,
+  type ResolveRunInput,
+} from '@jini/daemon';
 import { createSqliteEventLog } from '@jini/sqlite';
 import {
   configuredAllowedOrigins,
@@ -117,8 +126,24 @@ export interface CreateLocalNodeDaemonConfig<
    * codebase today (see extraction-plan.md and this package's `source-map.md`).
    */
   agents?: unknown[];
-  /** Optional host-owned driver attached immediately after `POST /api/runs` durably starts a run. */
+  /**
+   * Optional host-owned driver attached immediately after `POST /api/runs` durably starts a run.
+   * Takes full precedence over {@link resolveRunInput} when both are supplied — a host that
+   * wants complete control over run-start behavior should use this, not compose alongside the
+   * default handler.
+   */
   onRunStarted?: RunStartHandler;
+  /**
+   * Host-owned prompt/cwd/env composition seam (gap 1 of the run/chat orchestration
+   * swarm-consensus Final Recommendation — see
+   * `ADS-memory/reports/swarm-consensus/runs/20260722T023000Z-consensus-report.md`). When
+   * supplied and `onRunStarted` is not, this daemon builds a default `RunStartHandler` via
+   * `@jini/daemon`'s `createDefaultRunStartHandler` that resolves each run's input through this
+   * seam and drives it straight to the zero-config `AgentExecutor` this preset already
+   * constructs. Ignored when `onRunStarted` is supplied — see that option's own doc. Omit both to
+   * durably start runs with no driver attached at all (unchanged prior behavior).
+   */
+  resolveRunInput?: ResolveRunInput;
   /**
    * Where this daemon's local discovery record (URL/host/port/pid) is written once it starts
    * listening, so a separate CLI process on the same machine can find it via
@@ -222,6 +247,14 @@ export async function createLocalNodeDaemon(
   env[DEFAULT_BIND_HOST_ENV_VAR] = host;
 
   const eventLog = createSqliteEventLog(join(config.dataDir, 'events.db'));
+  // Gap 1's byte-journal (see `@jini/daemon`'s `continuation/journal.ts`) gets its own durable
+  // sqlite file, deliberately separate from `eventLog` above — that log's `stream()` replays
+  // every entry it holds to SSE subscribers as a `RunProtocolEvent`, and a journal entry has no
+  // corresponding protocol-event kind. Always constructed, unconditionally wired into
+  // `agentExecutor` below: gap 1 is "the observability floor every later increment depends on",
+  // not an opt-in extra.
+  const journalEventLog = createSqliteEventLog(join(config.dataDir, 'journal.db'));
+  const journal = createRunByteJournal(journalEventLog);
   const runLifecycle = createRunLifecycle({ eventLog });
   try {
     await runLifecycle.rehydrate();
@@ -229,7 +262,7 @@ export async function createLocalNodeDaemon(
     // Rehydration happens before the HTTP server exists, so it cannot use the
     // later bind-failure cleanup path. Never leak the sqlite handle on corrupt
     // or otherwise unreadable durable history.
-    await eventLog.close();
+    await Promise.all([eventLog.close(), journalEventLog.close()]);
     throw error;
   }
   // Zero-config default, unlike ToolExecutorToken (which needs a caller-supplied
@@ -241,7 +274,7 @@ export async function createLocalNodeDaemon(
   // wiring. ACP agents intentionally still require a host-injected permission
   // policy before any native tool request can proceed; that fail-closed
   // authority decision has no safe zero-config default.
-  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle });
+  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle, journal });
 
   const kernelBindings = bindings()
     .bind(EventLogToken, eventLog)
@@ -287,9 +320,17 @@ export async function createLocalNodeDaemon(
     env,
   });
 
+  // `onRunStarted` always wins when supplied — see that config option's own doc. Otherwise, a
+  // supplied `resolveRunInput` gets the default RunStartHandler built for it; with neither, runs
+  // durably start with no driver attached (unchanged prior behavior).
+  const onStarted =
+    config.onRunStarted ??
+    (config.resolveRunInput === undefined
+      ? undefined
+      : createDefaultRunStartHandler({ agentExecutor, resolveRunInput: config.resolveRunInput }));
   registerRunRoutes(
     app,
-    { lifecycle: runLifecycle, ...(config.onRunStarted === undefined ? {} : { onStarted: config.onRunStarted }) },
+    { lifecycle: runLifecycle, ...(onStarted === undefined ? {} : { onStarted }) },
     { resolvedPortRef },
   );
 
