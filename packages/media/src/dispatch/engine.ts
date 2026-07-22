@@ -12,16 +12,24 @@
  * `mediaVendorRegistry` first (populated by every vendor migrated onto the
  * generic vendor-adapter dispatch engine — see `vendor-adapter.ts`'s
  * module doc), falling back to the static `ROUTES` table below for vendors
- * not yet migrated. `openai`/`minimax`/`senseaudio`/`fishaudio` are
- * imported for their registration side effect only (not by name) — their
- * `ROUTES` entries were removed, so resolution for those four vendors goes
- * through the registry exclusively, proving it's live-wired into the real
- * request path rather than parallel unused scaffolding.
+ * not yet migrated. Every vendor wired into this engine as of this pass
+ * (`openai`/`minimax`/`senseaudio`/`fishaudio`/`imagerouter`/`custom-image`/
+ * `grok`/`nanobanana`/`openrouter`/`volcengine`/`elevenlabs`/`aihubmix`) is
+ * now registered in `mediaVendorRegistry` instead — every module below is
+ * imported for its registration side effect only (not by name), except
+ * `custom-image.js`, whose `renderCustomOpenAIImage`/
+ * `customImageOverridesOpenAIModel` exports are still referenced directly
+ * by the openai-image-override branch further down. `ROUTES` itself is
+ * therefore empty right now — kept as the fallback mechanism `resolveRenderer`
+ * still checks second, for whichever vendor is ported next without going
+ * through the registry (e.g. one of the async-polling vendors in
+ * `source-map.md`'s deferred bucket, if a future pass chooses not to build
+ * its own polling-aware adapter shape).
  */
 import { AUDIO_DURATIONS_SEC, VIDEO_LENGTHS_SEC, findMediaModel, findProvider, modelsForSurface } from '../providers.js';
 import type { AudioKind, MediaModel, MediaProvider, MediaSurface } from '../types.js';
 import { buildRenderContext } from './context.js';
-import { renderAIHubMixImage, renderAIHubMixTTS } from './providers/aihubmix.js';
+import './providers/aihubmix.js';
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
 import './providers/elevenlabs.js';
 import './providers/fishaudio.js';
@@ -87,7 +95,7 @@ function clampWithWarning(
   return { value: clamped, warning: null };
 }
 
-type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promise<RenderResult>;
+export type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promise<RenderResult>;
 
 /**
  * Routing table: `providerId` -> `surface` (or `surface:audioKind` for
@@ -96,20 +104,37 @@ type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promis
  * chain — see `source-map.md` for exactly which (provider, surface) pairs
  * from the origin are ported here vs deferred to a later pass.
  *
- * `openai`/`minimax`/`senseaudio`/`fishaudio` are deliberately absent —
- * those four vendors are registered in `vendor-registry.ts`'s
- * `mediaVendorRegistry` instead (see `resolveRenderer` below and each
- * vendor's own module for its `mediaVendorRegistry.register(...)` call).
+ * Empty as of 2026-07-21: every vendor previously listed here
+ * (`imagerouter`/`custom-image`/`grok`/`nanobanana`/`openrouter`/
+ * `volcengine`/`elevenlabs`/`aihubmix`) has migrated onto
+ * `vendor-registry.ts`'s `mediaVendorRegistry` (see `resolveRenderer`
+ * below and each vendor's own module for its `mediaVendorRegistry.register(...)`
+ * call) — joining `openai`/`minimax`/`senseaudio`/`fishaudio`, migrated the
+ * pass before. Kept (not deleted) as `resolveRenderer`'s fallback path for
+ * the next vendor this engine wires up.
  */
-const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
-  aihubmix: {
-    image: renderAIHubMixImage,
-    'audio:speech': renderAIHubMixTTS,
-  },
-};
+const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {};
 
 function routeKeyFor(surface: MediaSurface, audioKind: AudioKind | undefined): string {
   return surface === 'audio' && audioKind ? `audio:${audioKind}` : surface;
+}
+
+/**
+ * Looks up `providerId`/`routeKey` in a ROUTES-shaped table. Pulled out of
+ * `resolveRenderer` into its own pure, exported function (operating on a
+ * `routes` parameter rather than closing over the module-level `ROUTES`
+ * constant) specifically so its `providerId`-found/not-found and
+ * `routeKey`-found/not-found branches stay directly testable even while
+ * the production `ROUTES` table itself is empty (every vendor wired into
+ * this engine has migrated onto `mediaVendorRegistry` — see `ROUTES`'s own
+ * doc comment above): exercising every branch through `resolveRenderer`
+ * end-to-end would otherwise need a real, currently-nonexistent
+ * ROUTES-only vendor to hit the "found" side. Same "extract to a
+ * directly-testable pure function" pattern `context.ts`'s
+ * `buildRenderContext` already established for the same reason.
+ */
+export function lookupRoute(routes: Readonly<Record<string, Readonly<Record<string, Renderer>>>>, providerId: string, routeKey: string): Renderer | undefined {
+  return routes[providerId]?.[routeKey];
 }
 
 /**
@@ -122,7 +147,7 @@ function resolveRenderer(providerId: string, routeKey: string): Renderer | undef
   if (adapter) {
     return (ctx, credentials) => dispatchVendorRequest(adapter, ctx, credentials);
   }
-  return ROUTES[providerId]?.[routeKey];
+  return lookupRoute(ROUTES, providerId, routeKey);
 }
 
 export function createMediaDispatchEngine(options: MediaDispatchEngineOptions = {}): MediaDispatchEngine {

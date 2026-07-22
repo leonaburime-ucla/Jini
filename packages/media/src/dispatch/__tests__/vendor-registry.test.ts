@@ -80,6 +80,14 @@ describe('mediaVendorRegistry — the shared singleton', () => {
     await import('../providers/minimax.js');
     await import('../providers/senseaudio.js');
     await import('../providers/fishaudio.js');
+    await import('../providers/imagerouter.js');
+    await import('../providers/custom-image.js');
+    await import('../providers/grok.js');
+    await import('../providers/nanobanana.js');
+    await import('../providers/openrouter.js');
+    await import('../providers/volcengine.js');
+    await import('../providers/elevenlabs.js');
+    await import('../providers/aihubmix.js');
 
     expect(mediaVendorRegistry.has('openai', 'image')).toBe(true);
     expect(mediaVendorRegistry.has('openai', 'audio:speech')).toBe(true);
@@ -87,10 +95,26 @@ describe('mediaVendorRegistry — the shared singleton', () => {
     expect(mediaVendorRegistry.has('senseaudio', 'image')).toBe(true);
     expect(mediaVendorRegistry.has('senseaudio', 'audio:speech')).toBe(true);
     expect(mediaVendorRegistry.has('fishaudio', 'audio:speech')).toBe(true);
+    expect(mediaVendorRegistry.has('imagerouter', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('imagerouter', 'video')).toBe(true);
+    expect(mediaVendorRegistry.has('custom-image', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('grok', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('grok', 'audio:speech')).toBe(true);
+    expect(mediaVendorRegistry.has('nanobanana', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('openrouter', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('volcengine', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('elevenlabs', 'audio:speech')).toBe(true);
+    expect(mediaVendorRegistry.has('elevenlabs', 'audio:sfx')).toBe(true);
+    expect(mediaVendorRegistry.has('aihubmix', 'image')).toBe(true);
+    expect(mediaVendorRegistry.has('aihubmix', 'audio:speech')).toBe(true);
   });
 
   it('does not have a not-yet-migrated vendor registered', () => {
-    // grok.ts is intentionally not migrated this pass — see source-map.md.
-    expect(mediaVendorRegistry.has('grok', 'image')).toBe(false);
+    // leonardo+image is genuinely unwired (submit-then-poll shaped, deferred
+    // per source-map.md's async-polling bucket — see engine.test.ts's
+    // stub-fallback tests, which use the same fixture) — every vendor that
+    // previously had a ROUTES entry has now migrated onto the registry, so
+    // this can no longer use one of those as its "not migrated" example.
+    expect(mediaVendorRegistry.has('leonardo', 'image')).toBe(false);
   });
 });

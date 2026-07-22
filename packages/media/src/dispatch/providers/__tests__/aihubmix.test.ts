@@ -179,6 +179,63 @@ describe('renderAIHubMixImage', () => {
       vi.stubGlobal('fetch', fetchMock);
       await renderAIHubMixImage(baseCtx({ prompt: '' }), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' });
     });
+
+    it('throws a truncated, tagged error on a non-OK response', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('bad request', { status: 400 })));
+      await expect(renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' })).rejects.toThrow(
+        /^aihubmix image \(gemini\) 400: bad request$/,
+      );
+    });
+
+    it('falls back to an empty error body when reading the non-OK response text itself fails', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 500, text: () => Promise.reject(new Error('stream closed')) }) as unknown as Response),
+      );
+      await expect(renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' })).rejects.toThrow(
+        /^aihubmix image \(gemini\) 500: $/,
+      );
+    });
+
+    it('throws when the response has no inline image data anywhere', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'no image' }] } }] }), { status: 200 })));
+      await expect(renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' })).rejects.toThrow(
+        /had no inline image data/,
+      );
+    });
+
+    it('throws when candidates is entirely absent', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
+      await expect(renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' })).rejects.toThrow(
+        /had no inline image data/,
+      );
+    });
+
+    it('decodes the snake_case inline_data field when that is what the response uses', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ inline_data: { data: Buffer.from('snake').toString('base64') } }] } }] }), { status: 200 })),
+      );
+      const result = await renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' });
+      expect(result.bytes.toString('utf8')).toBe('snake');
+    });
+
+    it('finds inline data in a later part when an earlier part has none', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                candidates: [{ content: { parts: [{ text: 'no image here' }, { inlineData: { data: Buffer.from('later').toString('base64') } }] } }],
+              }),
+              { status: 200 },
+            ),
+        ),
+      );
+      const result = await renderAIHubMixImage(baseCtx(), { apiKey: 'ahm-test', model: 'aihubmix-gemini-3-pro-image-preview' });
+      expect(result.bytes.toString('utf8')).toBe('later');
+    });
   });
 });
 
