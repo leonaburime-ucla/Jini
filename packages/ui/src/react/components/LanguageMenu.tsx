@@ -21,6 +21,8 @@ export interface LanguageMenuProps {
   compact?: boolean;
   placement?: 'up' | 'down';
   align?: 'start' | 'end';
+  /** Custom hook override for dependency injection / testing. */
+  useLanguageMenu?: typeof useLanguageMenu;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,8 +159,9 @@ export function LanguageMenu({
   compact = false,
   placement = 'up',
   align = 'start',
+  useLanguageMenu: useLanguageMenuHook = useLanguageMenu,
 }: LanguageMenuProps) {
-  const { open, toggle, close, containerRef, activeLabel } = useLanguageMenu(locales, locale);
+  const { open, toggle, close, containerRef, activeLabel } = useLanguageMenuHook(locales, locale);
 
   return (
     <div className="lang-menu-wrap" ref={containerRef}>

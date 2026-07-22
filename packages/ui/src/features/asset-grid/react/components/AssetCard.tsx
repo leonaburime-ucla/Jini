@@ -1,6 +1,6 @@
 import { useCallback, type MouseEvent, type ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { useInView } from '../../../../hooks/useInView.js';
+import { useInView } from '../../../../react/hooks/useInView.js';
 import { resolveCheckboxClickAction, resolvePreviewClickAction } from '../../rules.js';
 import type { AssetGridItem } from '../../types.js';
 

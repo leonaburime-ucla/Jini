@@ -40,13 +40,13 @@ export * from './utils/scroll-tabs-with-wheel.js';
 export * from './utils/color-math.js';
 export * from './utils/design-md.js';
 
-export * from './hooks/useInView.js';
-export * from './hooks/useCoalescedCallback.js';
-export * from './hooks/useStableHandler.js';
-export * from './hooks/useDebouncedValue.js';
-export * from './hooks/useResizableSplitPane.js';
-export * from './hooks/useBrandFonts.js';
-export * from './hooks/useEdgeAutoScroll.js';
+export * from './react/hooks/useInView.js';
+export * from './react/hooks/useCoalescedCallback.js';
+export * from './react/hooks/useStableHandler.js';
+export * from './react/hooks/useDebouncedValue.js';
+export * from './react/hooks/useResizableSplitPane.js';
+export * from './react/hooks/useBrandFonts.js';
+export * from './react/hooks/useEdgeAutoScroll.js';
 
 export * from './browser/useModalWindowDragGuard.js';
 

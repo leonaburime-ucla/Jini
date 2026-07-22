@@ -2,7 +2,7 @@
 // the scroll element inside a `position: relative` wrapper. Each zone is only
 // visible/interactive when there is content to scroll toward (driven by
 // `edges`).
-import type { EdgeAutoScroll } from '../../hooks/useEdgeAutoScroll';
+import type { EdgeAutoScroll } from '../hooks/useEdgeAutoScroll.js';
 import { Icon } from './Icon';
 
 export function EdgeScrollZones({

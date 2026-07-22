@@ -31,6 +31,8 @@ export interface HeaderActionsMenuProps {
   groups: HeaderMenuAction[][];
   /** Accessible label for the trigger button and the popover menu. */
   label: string;
+  /** Custom hook override for dependency injection / testing. */
+  useHeaderActionsMenu?: typeof useHeaderActionsMenu;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +161,12 @@ export function useHeaderActionsMenu(groups: HeaderMenuAction[][]): UseHeaderAct
 // Component — dumb render, all logic delegated above.
 // ---------------------------------------------------------------------------
 
-export function HeaderActionsMenu({ groups, label }: HeaderActionsMenuProps) {
-  const { open, toggle, close, containerRef, visibleGroups } = useHeaderActionsMenu(groups);
+export function HeaderActionsMenu({
+  groups,
+  label,
+  useHeaderActionsMenu: useHeaderActionsMenuHook = useHeaderActionsMenu,
+}: HeaderActionsMenuProps) {
+  const { open, toggle, close, containerRef, visibleGroups } = useHeaderActionsMenuHook(groups);
 
   if (visibleGroups.length === 0) return null;
 

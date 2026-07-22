@@ -43,6 +43,8 @@ export interface WorkingDirPickerProps {
   onOpen?: () => void;
   /** Copy — all host-supplied, no built-in i18n. */
   labels?: WorkingDirLabels;
+  /** Custom hook override for dependency injection / testing. */
+  useWorkingDirPicker?: typeof useWorkingDirPicker;
 }
 
 export const DEFAULT_WORKING_DIR_LABELS = {
@@ -233,6 +235,7 @@ export function WorkingDirPicker({
   invalid = false,
   onOpen,
   labels,
+  useWorkingDirPicker: useWorkingDirPickerHook = useWorkingDirPicker,
 }: WorkingDirPickerProps) {
   const {
     open,
@@ -246,7 +249,7 @@ export function WorkingDirPicker({
     showRecent,
     hideRecent,
     toggleRecent,
-  } = useWorkingDirPicker({ onPickDirectory, onSelectRecent, onClear, onOpen, labels });
+  } = useWorkingDirPickerHook({ onPickDirectory, onSelectRecent, onClear, onOpen, labels });
 
   return (
     <div

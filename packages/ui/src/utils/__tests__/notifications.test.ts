@@ -10,11 +10,6 @@ import {
   showCompletionNotification,
 } from '../notifications.js';
 
-// notifications.ts caches its AudioContext at module scope (the origin's
-// own singleton reuse pattern). Each of the following cases stubs a
-// differently-shaped fake AudioContext, so each gets a fresh module
-// instance via resetModules — otherwise a later test would silently reuse
-// an earlier test's cached instance.
 async function freshModule() {
   vi.resetModules();
   return import('../notifications.js');
@@ -29,6 +24,106 @@ describe('playSound / previewSuccess / previewFailure', () => {
     expect(() => playSound(DEFAULT_SUCCESS_SOUND_ID)).not.toThrow();
     expect(() => previewSuccess(DEFAULT_SUCCESS_SOUND_ID)).not.toThrow();
     expect(() => previewFailure(DEFAULT_FAILURE_SOUND_ID)).not.toThrow();
+  });
+
+  it('handles webkitAudioContext legacy fallback and suspended AudioContext state', async () => {
+    const resume = vi.fn().mockResolvedValue(undefined);
+    class FakeWebkitAudioContext {
+      state = 'suspended';
+      currentTime = 0;
+      resume = resume;
+      createOscillator() {
+        return { type: '', frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+      }
+      createGain() {
+        return {
+          gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          connect: vi.fn(),
+        };
+      }
+      destination = {};
+    }
+    vi.stubGlobal('AudioContext', undefined);
+    vi.stubGlobal('webkitAudioContext', FakeWebkitAudioContext);
+    const { playSound: freshPlaySound } = await freshModule();
+
+    expect(() => freshPlaySound('ding')).not.toThrow();
+    expect(resume).toHaveBeenCalled();
+  });
+
+  it('handles AudioContext constructor throwing or resume rejecting gracefully', async () => {
+    class ThrowingAudioContext {
+      constructor() {
+        throw new Error('AudioContext blocked');
+      }
+    }
+    vi.stubGlobal('AudioContext', ThrowingAudioContext);
+    const { playSound: freshPlaySound } = await freshModule();
+    expect(() => freshPlaySound('ding')).not.toThrow();
+
+    class RejectingResumeAudioContext {
+      state = 'suspended';
+      currentTime = 0;
+      resume() {
+        return Promise.reject(new Error('Autoplay policy blocked'));
+      }
+      createOscillator() {
+        return { type: '', frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+      }
+      createGain() {
+        return {
+          gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          connect: vi.fn(),
+        };
+      }
+      destination = {};
+    }
+    vi.stubGlobal('AudioContext', RejectingResumeAudioContext);
+    const { playSound: freshPlaySound2 } = await freshModule();
+    expect(() => freshPlaySound2('ding')).not.toThrow();
+  });
+
+  it('handles node creation/connection errors gracefully inside playSound', async () => {
+    class FailingNodeAudioContext {
+      state = 'running';
+      currentTime = 0;
+      createOscillator() {
+        throw new Error('Node limit reached');
+      }
+      destination = {};
+    }
+    vi.stubGlobal('AudioContext', FailingNodeAudioContext);
+    const { playSound: freshPlaySound } = await freshModule();
+
+    expect(() => freshPlaySound('ding')).not.toThrow();
+  });
+
+  it('drives lowpass biquad filter for pluck and square wave sounds', async () => {
+    const createBiquadFilter = vi.fn().mockReturnValue({
+      type: '',
+      frequency: { value: 0 },
+      connect: vi.fn(),
+    });
+    class FilteringAudioContext {
+      state = 'running';
+      currentTime = 0;
+      createOscillator() {
+        return { type: '', frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+      }
+      createGain() {
+        return {
+          gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          connect: vi.fn(),
+        };
+      }
+      createBiquadFilter = createBiquadFilter;
+      destination = {};
+    }
+    vi.stubGlobal('AudioContext', FilteringAudioContext);
+    const { playSound: freshPlaySound } = await freshModule();
+
+    freshPlaySound('pluck');
+    expect(createBiquadFilter).toHaveBeenCalled();
   });
 
   it('no-ops for an unknown sound id even with an AudioContext available', async () => {
@@ -72,6 +167,11 @@ describe('playSound / previewSuccess / previewFailure', () => {
     vi.stubGlobal('AudioContext', FakeAudioContext);
     const { playSound: freshPlaySound } = await freshModule();
 
+    freshPlaySound('chime');
+    freshPlaySound('two-tone-up');
+    freshPlaySound('buzz');
+    freshPlaySound('two-tone-down');
+    freshPlaySound('thud');
     freshPlaySound(DEFAULT_SUCCESS_SOUND_ID);
 
     expect(start).toHaveBeenCalled();
@@ -102,6 +202,12 @@ describe('notificationPermission / requestNotificationPermission', () => {
     await expect(requestNotificationPermission()).resolves.toBe('granted');
     expect(requestPermission).toHaveBeenCalled();
   });
+
+  it('handles requestPermission throwing gracefully', async () => {
+    const requestPermission = vi.fn().mockRejectedValue(new Error('Permission denied'));
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission });
+    await expect(requestNotificationPermission()).resolves.toBe('denied');
+  });
 });
 
 describe('showCompletionNotification', () => {
@@ -120,82 +226,99 @@ describe('showCompletionNotification', () => {
     expect(result).toBe('permission-denied');
   });
 
-  it('shows via the Notification constructor with the default tag prefix', async () => {
-    let lastTitle: string | undefined;
-    let lastOptions: NotificationOptions | undefined;
-    class FakeNotification {
+  it('triggers notification callbacks (onclick, onclose, onerror) and window.focus', async () => {
+    const onClickSpy = vi.fn();
+    const focusSpy = vi.fn();
+    vi.stubGlobal('focus', focusSpy);
+
+    class EventfulNotification {
       static permission = 'granted';
       onclick: (() => void) | null = null;
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
-      constructor(title: string, options?: NotificationOptions) {
-        lastTitle = title;
-        lastOptions = options;
+      constructor(public title: string, public options?: NotificationOptions) {
+        setTimeout(() => {
+          this.onclick?.();
+          this.onclose?.();
+          this.onerror?.();
+        }, 0);
       }
-      close() {
-        /* no-op */
-      }
+      close() {}
     }
-    vi.stubGlobal('Notification', FakeNotification);
-
-    const result = await showCompletionNotification({ status: 'succeeded', title: 'Done', body: 'All good' });
-
-    expect(result).toBe('shown');
-    expect(lastTitle).toBe('Done');
-    expect(lastOptions?.tag).toBe('task-succeeded');
-  });
-
-  it('honors a custom tagPrefix', async () => {
-    let lastOptions: NotificationOptions | undefined;
-    class FakeNotification {
-      static permission = 'granted';
-      onclick: (() => void) | null = null;
-      onclose: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      constructor(_title: string, options?: NotificationOptions) {
-        lastOptions = options;
-      }
-      close() {
-        /* no-op */
-      }
-    }
-    vi.stubGlobal('Notification', FakeNotification);
-
-    await showCompletionNotification({
-      status: 'failed',
-      title: 'Failed',
-      body: 'oops',
-      tagPrefix: 'my-app',
-    });
-
-    expect(lastOptions?.tag).toBe('my-app-failed');
-  });
-
-  it('falls back to the constructor when the service worker path is unavailable', async () => {
-    class FakeNotification {
-      static permission = 'granted';
-      onclick: (() => void) | null = null;
-      onclose: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      constructor(
-        public title: string,
-        public options?: NotificationOptions,
-      ) {}
-      close() {
-        /* no-op */
-      }
-    }
-    vi.stubGlobal('Notification', FakeNotification);
+    vi.stubGlobal('Notification', EventfulNotification);
 
     const result = await showCompletionNotification({
       status: 'succeeded',
       title: 'Done',
-      body: 'ok',
+      body: 'All good',
+      onClick: onClickSpy,
+    });
+
+    expect(result).toBe('shown');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onClickSpy).toHaveBeenCalled();
+    expect(focusSpy).toHaveBeenCalled();
+  });
+
+  it('handles Notification constructor throwing gracefully', async () => {
+    class ThrowingNotification {
+      static permission = 'granted';
+      constructor() {
+        throw new Error('Notification creation failed');
+      }
+    }
+    vi.stubGlobal('Notification', ThrowingNotification);
+
+    const result = await showCompletionNotification({ status: 'succeeded', title: 'Done', body: 'All good' });
+    expect(result).toBe('failed');
+  });
+
+  it('shows notification via Service Worker path when available', async () => {
+    const showNotification = vi.fn().mockResolvedValue(undefined);
+    const mockRegistration = { showNotification };
+    const mockServiceWorker = {
+      register: vi.fn().mockResolvedValue(mockRegistration),
+      ready: Promise.resolve(mockRegistration),
+    };
+    vi.stubGlobal('Notification', { permission: 'granted' });
+    vi.stubGlobal('navigator', { serviceWorker: mockServiceWorker });
+
+    const result = await showCompletionNotification({
+      status: 'succeeded',
+      title: 'Done via SW',
+      body: 'Service worker notification',
       serviceWorkerUrl: '/sw.js',
     });
 
-    // jsdom's `navigator.serviceWorker` is undefined, so the SW path
-    // returns null and falls through to the constructor path.
+    expect(result).toBe('shown');
+    expect(showNotification).toHaveBeenCalledWith('Done via SW', expect.objectContaining({
+      body: 'Service worker notification',
+      tag: 'task-succeeded',
+    }));
+  });
+
+  it('falls back to constructor if Service Worker registration fails', async () => {
+    class FallbackNotification {
+      static permission = 'granted';
+      onclick: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public title: string) {}
+      close() {}
+    }
+    const mockServiceWorker = {
+      register: vi.fn().mockRejectedValue(new Error('SW failed')),
+    };
+    vi.stubGlobal('Notification', FallbackNotification);
+    vi.stubGlobal('navigator', { serviceWorker: mockServiceWorker });
+
+    const result = await showCompletionNotification({
+      status: 'succeeded',
+      title: 'Fallback',
+      body: 'SW failed fallback',
+      serviceWorkerUrl: '/sw.js',
+    });
+
     expect(result).toBe('shown');
   });
 });

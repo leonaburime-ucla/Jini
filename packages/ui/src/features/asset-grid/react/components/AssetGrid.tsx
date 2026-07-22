@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { useDebouncedValue } from '../../../../hooks/useDebouncedValue.js';
+import { useDebouncedValue } from '../../../../react/hooks/useDebouncedValue.js';
 import { DEFAULT_SEARCH_DEBOUNCE_MS } from '../../constants.js';
 import { buildFacetLabelMap, dayKeyFromTimestamp, resolveFacetLabel } from '../../rules.js';
 import type { AssetGridDependencies } from '../../ports.js';

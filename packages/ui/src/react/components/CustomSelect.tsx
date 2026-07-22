@@ -40,6 +40,8 @@ export interface CustomSelectProps {
   portal?: boolean;
   title?: string;
   onFocus?: () => void;
+  /** Custom hook override for dependency injection / testing. */
+  useCustomSelect?: typeof useCustomSelect;
 }
 
 /** A single option after grouped items are flattened; `group` records the
@@ -396,6 +398,7 @@ export function CustomSelect({
   portal = true,
   title,
   onFocus,
+  useCustomSelect: useCustomSelectHook = useCustomSelect,
 }: CustomSelectProps) {
   const {
     idBase,
@@ -411,7 +414,7 @@ export function CustomSelect({
     setActiveValue,
     toggleOpen,
     onButtonKeyDown,
-  } = useCustomSelect({ value, options, onChange, portal, placeholder });
+  } = useCustomSelectHook({ value, options, onChange, portal, placeholder });
 
   const menu = (
     <div

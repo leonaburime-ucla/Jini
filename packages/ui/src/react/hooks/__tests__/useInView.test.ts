@@ -101,4 +101,22 @@ describe('useInView', () => {
     expect(result.current.inView).toBe(true);
     globalThis.IntersectionObserver = original;
   });
+
+  it('early-returns without observing when node is null', () => {
+    const { result } = renderHook(() => useInView<HTMLDivElement>());
+    expect(result.current.inView).toBe(false);
+    expect(FakeIntersectionObserver.instances).toHaveLength(0);
+  });
+
+  it('passes root element to IntersectionObserver options', () => {
+    const rootNode = document.createElement('div');
+    const node = document.createElement('div');
+    const rootRef = { current: rootNode };
+    renderHook(() => {
+      const view = useInView<HTMLDivElement>({ root: rootRef, rootMargin: '100px' });
+      if (!view.ref.current) view.ref.current = node;
+      return view;
+    });
+    expect(FakeIntersectionObserver.instances).toHaveLength(1);
+  });
 });

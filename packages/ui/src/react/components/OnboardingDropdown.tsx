@@ -62,6 +62,8 @@ interface OnboardingDropdownBaseProps {
   searchPlaceholder?: string;
   sourceTone?: string;
   className?: string;
+  /** Custom hook override for dependency injection / testing. */
+  useOnboardingDropdown?: typeof useOnboardingDropdown;
 }
 
 export type OnboardingDropdownProps =
@@ -387,6 +389,7 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
     searchPlaceholder,
     sourceTone,
     className,
+    useOnboardingDropdown: useOnboardingDropdownHook = useOnboardingDropdown,
   } = props;
 
   const {
@@ -403,7 +406,7 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
     visibleOptions,
     emptyMessage,
     selectOption,
-  } = useOnboardingDropdown(props);
+  } = useOnboardingDropdownHook(props);
 
   return (
     <div
