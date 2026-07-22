@@ -410,3 +410,166 @@ This is the first `@jini/cli` dependency on `@jini/sidecar`; both are in
 `extraction-plan.md` §3's locked fourteen, so no `UNLOCKED.md` admission is needed
 (`scripts/check-engine-boundaries.ts`'s R7 rule only restricts a locked package importing an
 *unlocked* one).
+
+## 2026-07-21 addition — `version` command, `run get <runId>`, and a bootable `jini` binary (`feat/http-routes-and-cli-commands`)
+
+Three closely-related gaps closed in one pass: the last two `UNCLEAR`-then-deferred CLI surface
+items, and the standing "no wiring of this file's commands into an actual bootable CLI
+entrypoint" gap `run-command.ts`'s own 2026-07-21 addition section (above) flagged as not built.
+
+**`version` command (`version-command.ts`, new file).** Closes the third original `UNCLEAR` row
+this file's classification table names for `version` — the immediately-preceding `daemon
+status`/`daemon stop` addition section explicitly left it unbuilt, reasoning "`@jini/http` has
+no version route yet." On closer reading that was an overstatement: `daemonStatusRoute`'s
+response body (`packages/http/src/daemon-status.ts`, `DaemonStatusResponse.version`) has carried
+a `version` field the whole time — `daemon status` already prints it as part of the full status
+envelope. No new HTTP route was needed; `versionCommand` just calls the same
+`GET /api/daemon/status` route `daemon-command.ts` already calls and extracts+prints only the
+`version` field. A 2xx response that omits (or mistypes) `version` exits via this package's
+structured-error contract using the `daemon-not-running` code — the same fallback code
+`structuredHttpFailure` itself already defaults to elsewhere — rather than inventing a new exit
+code for this one caller. Same DI/testing/`resolveBaseUrl` conventions as `daemon-command.ts`'s
+`daemon status`/`daemon stop` (this file duplicates rather than shares their small
+`errorOptions`/`transportOptions`/`defaultWrite`/`defaultWriteErr` helpers, matching that file's
+own precedent of each command module owning its copy). `registerVersionCommand(registry, deps)`
+registers a single flat `version` command (no subcommands, unlike `run`/`daemon`).
+
+Tests: `src/__tests__/version-command.test.ts` (17 tests) — 100/100/100/100 on all four coverage
+metrics, including the missing-version-field path with both injected and default (real
+`process.stderr`/`process.exit`) error sinks — the latter needed its own dedicated test distinct
+from the "non-2xx daemon response" default-fallback test, since a 500 response is handled
+entirely inside `http.ts`'s own `requestJsonFromDaemon` (its own default write/exit fallback) and
+never reaches this file's `extractVersion`/`errorOptions` path at all; only a 2xx response missing
+`version` does.
+
+**`run get <runId>` (`run-command.ts`).** Wraps the already-real `GET /api/runs/:runId`
+(`runStatusRoute`, `packages/http/src/runs.ts`) that `run-command.ts`'s original 2026-07-21
+addition section explicitly named as "not built ... a trivial follow-up given the route is real."
+`runGetCommand` follows `runCancelCommand`'s exact shape (positional `runId`, `missingInput` on
+absent/empty, URL-encoded into the route, `getJsonFromDaemon` + `printJsonResult`).
+`registerRunCommands`'s dispatcher gained a `case 'get'`; `RUN_USAGE` now reads
+`run <start|list|get|cancel|watch> ...`. Tests added to the existing `run-command.test.ts`
+(9 cases in a new `runGetCommand` describe block, plus one `registerRunCommands` dispatch case —
+10 new tests total) — package-wide `run-command.ts` coverage remains 100/100/100/100 after the
+addition.
+
+**A bootable `jini` binary (`src/main.ts`, new file; `package.json` gains `"bin": { "jini":
+"./dist/main.js" }`).** Until this file, every command module in this package was a library
+building block only — `index.ts`'s own docblock said as much ("no pack has registered against
+`CommandRegistry` yet because no HTTP-client-mode pack exists in this repo to call"), and nothing
+actually parsed `process.argv`. `main.ts` is that entrypoint: a `#!/usr/bin/env node` shebang
+file exporting a directly-testable `main(argv, deps)` plus a guarded top-level
+`if (isMainModule) await main(process.argv.slice(2));` (the ESM equivalent of CommonJS's
+`require.main === module`, using `fileURLToPath(import.meta.url) === process.argv[1]` — this
+package's `packages/metatool/src/cli.ts` has a `#!/usr/bin/env node` shebang file but no such
+guard and no `bin` wiring, since its `main` is never exported and only ever invoked via its own
+top-level side effect; `main.ts` needed the guard specifically *because* it exports `main` for
+unit testing, and an unguarded top-level call would fire on every test-file import). Deliberately
+**not** re-exported from `index.ts` — that barrel must stay side-effect-free on import; a code
+comment and `index.test.ts`'s new "does not export main.ts" case both guard against a future
+accidental re-export.
+
+Design decisions made in this pass, each documented in `main.ts`'s own module doc in full and
+summarized here:
+
+- **Daemon-URL resolution wires three already-built, previously-unconsumed pieces together**
+  rather than inventing a fourth: an explicit `--daemon-url <url>` flag (highest precedence), a
+  `JINI_DAEMON_URL` env var, and — when `--data-dir <path>` or `--registry-path <path>` is given
+  — `local-daemon-discovery.ts`'s `createLocalDaemonDiscovery` (that module's own doc flagged
+  itself as built-but-unconsumed; `main.ts` is that consumer). No baked-in `defaultUrl`: this
+  package has never had a locked default daemon port (`@jini/node-host`'s
+  `createLocalNodeDaemon` binds an ephemeral one), so with none of the three configured,
+  `resolveDaemonUrl` throws and `main.ts`'s own error boundary (below) turns that into a clean
+  structured-error exit rather than a silent wrong-port guess or a raw stack trace.
+- **Global flags are stripped from `argv` in a single pass before dispatch**, not left for
+  `CommandRegistry.dispatch`'s own `valueFlags` skip-ahead option. `valueFlags` correctly *finds*
+  the command-name token when a global flag precedes it, but the `rest` array it then hands the
+  matched handler still *contains* that leading flag+value ahead of whatever the handler expects
+  as its own first token — harmless for a flat command, but `run-command.ts`/`daemon-command.ts`'s
+  registered handlers immediately do their own second-level `const [sub, ...rest] = args`
+  dispatch assuming `args[0]` is their immediate subcommand, with no tolerance for a stray leading
+  flag. Rather than touch that already-tested, out-of-scope nested-dispatch assumption,
+  `partitionGlobalArgv` (a dedicated single-pass scanner, not a `parseFlags` call — a strict
+  known-flags `parseFlags` call would throw on any *subcommand's* own flag, and permissive-mode
+  `parseFlags` doesn't reliably agree with "always consume the very next token" for a value flag
+  immediately followed by another `--flag`) removes `--daemon-url`/`--data-dir`/`--registry-path`
+  (and their values) from `argv` before any dispatch happens, so `run`/`daemon`/`version` always
+  land as a clean first token no matter where on the command line those three flags were typed —
+  including *between* a top-level command and its own subcommand token (`jini run --daemon-url
+  <url> list`), which plain `valueFlags` skip-ahead could never have supported at all. Verified
+  by a dedicated test proving exactly that interleaved-position case.
+- **`--version`/`-v` (recognized only as the very first argv token) is a plain alias for `jini
+  version`**, not a print of this package's own build number. `package.json` is `"private": true`
+  with a placeholder `"0.0.0"` — not a real, published semver worth surfacing — so `--version`
+  prints the *running daemon's* real version instead, which is arguably more useful to a user of
+  a transport-only CLI, and keeps exactly one implementation (`version-command.ts`) to keep
+  correct rather than two.
+- **An error boundary around dispatch converts a raw, unhandled `Error` into this package's
+  structured-error contract**, closing a real gap: `parseFlags` throws a plain `Error` for an
+  unrecognized `--flag` or a value-less string flag (by design — see that module's own doc), but
+  every existing command handler calls it unwrapped, so that throw would otherwise surface as an
+  unhandled rejection with a raw stack trace instead of the `{ error: { code, message } }`
+  envelope every *other* failure path in this package produces. The boundary must not, however,
+  re-wrap an error that already represents a *legitimate* structured-error exit from a nested
+  command (e.g. `run start`'s own `missing-input` on an absent `--context-ref`) — doing so would
+  either double-report the same failure or mask the original exit code with a generic one. The
+  fix: `main.ts`'s own `exit` wrapper (passed down to every registered command's `deps`) sets a
+  local flag the instant it's invoked; the catch block re-throws untouched whenever that flag is
+  already set, and only reformats a throw that reached the boundary with the flag still unset. In
+  real operation (`process.exit`, which never returns) this distinction can never actually matter
+  — nothing downstream of a real exit call ever reaches the catch — but it is exactly what makes
+  this file's own tests (which, like every other test in this package, inject a *throwing* `exit`
+  double to make that "never returns" behavior observable without ending the test process) able to
+  assert on both cases correctly. Two dedicated tests prove each side: an unrecognized subcommand
+  flag gets reformatted into `invalid-flag`, while a nested command's own `missing-input` exit
+  passes through with its original code and message, called exactly once.
+
+**The bin wiring itself.** `package.json`'s `build` script is now `tsc -p tsconfig.json && chmod
++x dist/main.js` — `tsc` preserves a leading `#!/usr/bin/env node` shebang line verbatim in
+emitted JS (a long-standing, well-established compiler behavior; `packages/metatool/src/cli.ts`
+already relies on the same preservation, though that package has no `bin` field to actually use
+it), but it does not itself set the executable permission bit on the emitted file, so the `chmod
++x` step is required for `node_modules/.bin/jini` (or a global install) to be directly executable
+rather than merely runnable via `node dist/main.js`. Verified by building for real (`pnpm --dir
+packages/cli run build`) and confirming both the shebang line and the `rwxr-xr-x` permission bit
+survive in `dist/main.js`, then smoke-testing `node dist/main.js` for the no-args/`--help`/
+unknown-command/unreachable-daemon/missing-daemon-url/bogus-subcommand-flag cases end to end —
+every one produced a clean single-line JSON error envelope with a sensible exit code, never a raw
+stack trace.
+
+Tests: `src/__tests__/main.test.ts` (30 tests, including three dedicated to the guarded
+top-level-entrypoint block: real execution when `process.argv[1]` matches this module's own
+resolved path via a fresh `vi.resetModules()` + dynamic `import()` — mirroring
+`packages/metatool/src/__tests__/cli.test.ts`'s established pattern for getting real in-process
+v8 coverage of a top-level side-effecting line — plus the two negative cases, non-matching path
+and `process.argv[1]` undefined) — 100/100/100/100 on all four coverage metrics.
+
+**Final package-wide numbers** (`pnpm --dir packages/cli test:coverage`, 15 files, 311 tests, all
+passing): 99.73/98.72/97.8/99.73 (statements/branches/functions/lines). The one remaining gap is
+`prompt.ts` lines 123-125, already documented in this file's previous addition as predating that
+change; unchanged and not widened by this pass. `pnpm --dir packages/cli typecheck` and `pnpm
+guard` (repo root) both clean.
+
+### The `daemon start` scope question — re-affirmed, not re-opened
+
+This task's own brief restated the standing architectural decision (`cli.ts:7091-7122`'s
+classification-table row, reaffirmed in the barrel-branch-reconciliation section above) that
+`daemon start` is OD's product bootstrap, not a generic `@jini/cli` concern, and explicitly
+instructed against building it even if that reasoning seemed wrong, absent a flagged human
+review. Nothing found in this pass changes that reasoning or the facts it rests on:
+`@jini/node-host`'s `createLocalNodeDaemon` (the actual generic analog) remains, by
+extraction-plan §2.4's own design, "a composition preset a consumer calls from code," not a CLI
+subcommand — a `jini daemon start` would need to hardcode a concrete `dataDir`/port/host
+composition decision that only a specific product (or `apps/reference-web`) actually owns, which
+is precisely the kind of product-shaped decision this package's own `source-map.md` has
+consistently kept out of `@jini/cli` (see the `daemon db`, `config`, and `memory` OD-verdict rows
+above for the same pattern elsewhere). No new evidence surfaced to suggest this verdict should
+change; it was not re-litigated further, and no `daemon start` command was added.
+
+## Dependencies (updated)
+
+No new dependency. `version-command.ts` and `main.ts` both use only this package's own existing
+exports (`errors.ts`/`http.ts`/`usage.ts`/`command-registry.ts`/`daemon-url.ts`/
+`local-daemon-discovery.ts`/`run-command.ts`/`daemon-command.ts`) plus Node built-ins
+(`node:url`'s `fileURLToPath`, already indirectly available via `@jini/sidecar`'s own dependency
+tree but now imported directly here for the first time).
