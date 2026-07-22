@@ -1,11 +1,11 @@
 /**
  * @module run-command
  *
- * `run start` / `run list` / `run cancel` / `run watch` — the first concrete
- * commands registered against this package's `CommandRegistry`
- * (`command-registry.ts`'s own docblock notes none existed yet because no
- * HTTP-client-mode pack had landed to call). Built directly against
- * `@jini/http`'s real run transport (`packages/http/src/runs.ts`:
+ * `run start` / `run list` / `run get` / `run cancel` / `run watch` — the
+ * first concrete commands registered against this package's
+ * `CommandRegistry` (`command-registry.ts`'s own docblock notes none existed
+ * yet because no HTTP-client-mode pack had landed to call). Built directly
+ * against `@jini/http`'s real run transport (`packages/http/src/runs.ts`:
  * `POST /api/runs`, `GET /api/runs`, `GET /api/runs/:runId`,
  * `POST /api/runs/:runId/cancel`, `GET /api/runs/:runId/events` SSE) — a
  * thin HTTP-transport-mode CLI over the kernel's own `Run` noun, with no
@@ -65,6 +65,11 @@ const RUN_LIST_USAGE = renderUsage({
   options: [{ flag: '--context-ref', description: 'Only list runs belonging to this contextRef.' }],
 });
 
+const RUN_GET_USAGE = renderUsage({
+  usage: ['run get <runId>'],
+  description: 'Fetches a single run by id.',
+});
+
 const RUN_CANCEL_USAGE = renderUsage({
   usage: ['run cancel <runId> [--reason <text>]'],
   description: 'Requests cancellation of an in-progress run. A no-op on an already-terminal run.',
@@ -78,7 +83,7 @@ const RUN_WATCH_USAGE = renderUsage({
 });
 
 const RUN_USAGE = renderUsage({
-  usage: ['run <start|list|cancel|watch> ...'],
+  usage: ['run <start|list|get|cancel|watch> ...'],
   description: 'Manage runs against a Jini daemon over HTTP.',
 });
 
@@ -156,6 +161,22 @@ export async function runListCommand(args: readonly string[], deps: RunCommandDe
 
   const baseUrl = await resolveBaseUrl(deps);
   const result = await getJsonFromDaemon(baseUrl, route, transportOptions(deps));
+  printJsonResult(deps, result);
+}
+
+/** `run get <runId>` */
+export async function runGetCommand(args: readonly string[], deps: RunCommandDeps): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    (deps.write ?? defaultWrite)(`${RUN_GET_USAGE}\n`);
+    return;
+  }
+  const runId = positionalArgs(args)[0];
+  if (typeof runId !== 'string' || runId.length === 0) {
+    missingInput(deps, 'runId is required: run get <runId>');
+  }
+
+  const baseUrl = await resolveBaseUrl(deps);
+  const result = await getJsonFromDaemon(baseUrl, `/api/runs/${encodeURIComponent(runId)}`, transportOptions(deps));
   printJsonResult(deps, result);
 }
 
@@ -297,6 +318,8 @@ export function registerRunCommands(registry: CommandRegistry, deps: RunCommandD
           return runStartCommand(rest, deps);
         case 'list':
           return runListCommand(rest, deps);
+        case 'get':
+          return runGetCommand(rest, deps);
         case 'cancel':
           return runCancelCommand(rest, deps);
         case 'watch':

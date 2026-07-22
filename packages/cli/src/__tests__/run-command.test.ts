@@ -4,6 +4,7 @@ import { CommandRegistry } from '../command-registry.js';
 import {
   registerRunCommands,
   runCancelCommand,
+  runGetCommand,
   runListCommand,
   runStartCommand,
   runWatchCommand,
@@ -193,6 +194,86 @@ describe('runListCommand', () => {
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage:'));
     } finally {
       stdoutSpy.mockRestore();
+    }
+  });
+});
+
+describe('runGetCommand', () => {
+  it('prints usage and returns for --help without making a request', async () => {
+    const deps = makeDeps();
+    const fetchImpl = vi.fn();
+    await runGetCommand(['--help'], { ...deps, fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deps.written.join('')).toContain('Usage:');
+  });
+
+  it('exits with missing-input when runId is absent', async () => {
+    const deps = exitingDeps();
+    await expect(runGetCommand([], deps)).rejects.toThrow(ExitSentinel);
+    expect(deps.exit).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['missing-input']);
+  });
+
+  it('treats an empty-string runId the same as a missing one', async () => {
+    const deps = exitingDeps();
+    await expect(runGetCommand([''], deps)).rejects.toThrow(ExitSentinel);
+    expect(deps.exit).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['missing-input']);
+  });
+
+  it('GETs /api/runs/:runId and prints the JSON result', async () => {
+    const deps = makeDeps();
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      expect(url).toBe('http://d.example/api/runs/run-1');
+      return jsonResponse(200, { run: { id: 'run-1', state: 'running' } });
+    });
+    await runGetCommand(['run-1'], { ...deps, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(deps.written[0]).toBe(`${JSON.stringify({ run: { id: 'run-1', state: 'running' } })}\n`);
+  });
+
+  it('URL-encodes the runId', async () => {
+    const deps = makeDeps();
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      expect(url).toBe('http://d.example/api/runs/run%2Fid');
+      return jsonResponse(200, {});
+    });
+    await runGetCommand(['run/id'], { ...deps, fetchImpl });
+  });
+
+  it('accepts "-h" as a --help alias', async () => {
+    const deps = makeDeps();
+    const fetchImpl = vi.fn();
+    await runGetCommand(['-h'], { ...deps, fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('exits through the structured-error path on a non-2xx daemon response (e.g. an unknown runId)', async () => {
+    const deps = exitingDeps();
+    const fetchImpl = vi.fn(async () => jsonResponse(404, { error: { code: 'not-found', message: 'run "missing" was not found' } }));
+    await expect(runGetCommand(['missing'], { ...deps, fetchImpl })).rejects.toThrow(ExitSentinel);
+  });
+
+  it('prints --help usage via process.stdout.write when no write is injected', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await runGetCommand(['--help'], { resolveBaseUrl: () => 'http://d.example' });
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage:'));
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
+
+  it('defaults writeErr/exit to process.stderr/process.exit on a structured error when nothing is injected', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number): never => {
+      throw new ExitSentinel(code ?? 0);
+    }) as never);
+    try {
+      await expect(runGetCommand([], { resolveBaseUrl: () => 'http://d.example' })).rejects.toThrow(ExitSentinel);
+      expect(stderrSpy).toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(DEFAULT_CLI_EXIT_CODES['missing-input']);
+    } finally {
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
     }
   });
 });
@@ -443,6 +524,18 @@ describe('registerRunCommands', () => {
     registerRunCommands(registry, deps);
     await registry.dispatch(['run', '-h']);
     expect(deps.written.join('')).toContain('Usage:');
+  });
+
+  it('dispatches "run get" to runGetCommand', async () => {
+    const deps = makeDeps();
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      expect(url).toBe('http://d.example/api/runs/run-1');
+      return jsonResponse(200, { run: { id: 'run-1' } });
+    });
+    const registry = new CommandRegistry();
+    registerRunCommands(registry, { ...deps, fetchImpl });
+    await registry.dispatch(['run', 'get', 'run-1']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('dispatches "run cancel" to runCancelCommand', async () => {
