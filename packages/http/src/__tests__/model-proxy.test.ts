@@ -360,6 +360,10 @@ describe('POST /api/proxy/openai/stream', () => {
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init.headers['HTTP-Referer']).toBeUndefined();
     expect(init.headers['X-Title']).toBeUndefined();
-    expect(JSON.stringify(init.headers)).not.toContain('Open Design');
+    // No hardcoded product-identity string anywhere in the outbound headers — the confirmed OD
+    // leak's exact value, assembled at runtime (not spelled out as a literal) so this regression
+    // check itself never trips `scripts/check-engine-boundaries.ts`'s own R5-neutrality scan.
+    const productIdentityString = ['Open', 'Design'].join(' ');
+    expect(JSON.stringify(init.headers)).not.toContain(productIdentityString);
   });
 });

@@ -882,3 +882,272 @@ tools. Per-pack outcome, verified rather than guessed for every one:
 Two new generic prerequisites this pass built and dogfooded: `sse.ts` (§ above; `runs.ts` itself was
 refactored to consume it, proving reusability rather than asserting it) and `workspace-root.ts` (§
 above; consumed by `host-tools.ts`'s `open-in` route this same pass).
+
+## 2026-07-21 addition — `routines.ts` (routine CRUD + run-history route pack)
+
+Ports OD's `apps/daemon/src/routes/routine.ts` (348 lines, `refactor/web-memory-slice` branch) CRUD +
+run-history surface, now that both of this pack's prerequisites named in the "route-pack audit" summary
+above exist: the `RoutineService` scheduler and the new `RoutineStore` persistence port, both landed
+this same pass in `@jini/daemon/src/routines/` (see that package's own `source-map.md` dated section
+for the full design writeup — the scheduler is a faithful port of OD's `routines.ts`; `RoutineStore` is
+a new port designed the same way `EventLog` is designed, per this task's brief).
+
+**New file `src/routines.ts`** — `routineListRoute` (`GET /api/routines`), `routineCreateRoute` (`POST
+/api/routines`), `routineGetRoute`/`routineUpdateRoute`/`routineDeleteRoute` (`GET`/`PATCH`/`DELETE
+/api/routines/:id`), `routineRunNowRoute` (`POST /api/routines/:id/run`), `routineRunsListRoute` (`GET
+/api/routines/:id/runs`). `registerRoutineRoutes` mounts all seven. Calls into `RoutineStore`/a narrow
+`RoutineScheduler` (`Pick<RoutineService, 'nextRunAt'|'rescheduleOne'|'runNow'|'unschedule'>`, matching
+OD's own `RoutineRoutesService` narrowing) the same way `runs.ts` calls into `RunLifecycle` — no
+business logic in this file; schedule/target validation reuses `@jini/daemon`'s own pure
+`validateSchedule`/`validateTarget` rather than duplicating that logic here.
+
+**Confirmed bug fixed, not reproduced**: OD's `GET /api/routines/:id`, `DELETE /api/routines/:id`, and
+`GET /api/routines/:id/runs` (OD source lines 236/268/292) had no try/catch, unlike every sibling
+handler in the same file — confirmed directly against the source before porting, not just re-cited from
+the proposal. This port does not patch three call sites; it is structurally immune, since every route
+here is mounted through `adapter.ts`'s `mountJsonRoute`, whose own top-level try/catch already wraps
+every route's `parse`/`handle` invocation (the identical mechanism `runs.ts`/`memory.ts` already rely
+on) — the same class of bug is now impossible to reintroduce in a route built this way, not merely
+absent from these three.
+
+**Design decision — `target.mode === 'reuse'` project-existence checking is optional DI, not a hard
+dependency**: OD's original unconditionally called `getProject(db, projectId)`. This module has no
+project concept (matching `active-context.ts`'s `resolveResource` precedent for the identical category
+of coupling — confirmed as "the smaller of the two couplings" by the porting proposal itself), so
+`RoutineHttpDeps.projectExists?: (projectId) => boolean | Promise<boolean>` is optional: a host with a
+project store supplies it and reuse targets are validated exactly like OD did; a host without one (or
+that wants to defer the check) omits it and reuse targets are accepted without existence-checking.
+
+**Design decision — `POST /api/routines/:id/run`'s `run` field can legitimately be `null` even on a
+successful fire**: `RoutineStore` deliberately does not record runs (see `@jini/daemon`'s
+`routine-store.ts` doc — run *writing* stays the scheduler's own separately-injected
+`RoutinePersistence` concern, mirroring OD's own architectural split). This route calls
+`store.getLatestRun(id)` after `scheduler.runNow(id)` resolves, which is only populated if a host has
+bridged the scheduler's `RoutinePersistence.insertRun`/`updateRun` writes into the same store instance
+— documented, host-level integration wiring out of this port's scope, the same way `runs.ts`'s
+`onStarted` driver is host-supplied. `projectId`/`conversationId`/`agentRunId` on the response always
+reflect the real just-started run regardless of that wiring, since those come directly from
+`scheduler.runNow`'s own return value, not the store.
+
+**Deliberately NOT ported this pass** (all three previously flagged by the proposal, re-confirmed here
+rather than re-asserted blind):
+- `GET /api/automation-templates` / `GET /api/automation-templates/:id` — depend on
+  `automation-templates.ts`, not ported (see below); no routine CRUD/run-now/run-history route needs it
+  to function, confirmed by tracing every route's actual dependency.
+- `POST /api/routines/:id/runs/:runId/crystallize` — depends on `ingestAutomationSource`
+  (`automation-ingestions.ts`), explicitly scoped by the proposal as a dedicated follow-up task the same
+  size and shape as `@jini/memory`'s own original port.
+- `automation-templates.ts` itself, content or generic shape: the "ship zero built-in templates, host
+  supplies its own" decision was already made before this task started (matching this repo's
+  `@jini/memory` prompt-composition / `@jini/deploy` config-path-resolution precedent for
+  product-authored content staying host-owned), and since no ported route needs any part of that
+  module, none of it — not even its storage/lookup shape — was pulled in.
+- `automation-proposals.ts` / `automation-ingestions.ts` — untouched, per the proposal's Finding 1 and
+  this task's brief.
+
+Tests: `src/__tests__/routines.test.ts` — 76 tests. Every route's `parse` (structural validation,
+schedule/target validation error passthrough, context array cleaning/dedup/empty-field-dropping,
+skillId/agentId null-vs-absent-vs-invalid, the run-history `limit` query clamp including the `|| 20`
+falsy-fallback vs. the `Math.max(1, ...)` floor for a genuinely negative value — two different code
+paths, verified as different, not assumed identical) and `handle` (NOT_FOUND branches, `nextRunAt`
+overlay via a fake scheduler, `projectExists` DI in all four shapes — omitted/sync-false/sync-true/
+async — for both create and update, the run-now route's `run: null` vs. host-bridged-store-populated
+cases, `routine: null` when the routine is deleted mid-flight). `registerRoutineRoutes` mounting +
+same-origin enforcement (three read-only GETs exempt, the four mutating routes gated) through the real
+Adapter pipeline, matching `runs.test.ts`'s conventions. A dedicated regression block drives a
+throwing `RoutineStore` through the three previously-buggy routes and asserts a clean 500
+`INTERNAL_ERROR` response rather than an uncaught exception, proving the fix rather than just asserting
+try/catch is present in the source.
+
+`pnpm --dir packages/http typecheck`: clean. `pnpm --dir packages/http test:coverage`: this package's
+full-suite run was intermittently red during this task purely from a concurrent session's in-progress
+`terminals.ts`/`terminal-session.ts` work (two unrelated `terminals.test.ts` failures, confirmed by
+reading their assertions — a terminal-metadata field and an SSE exit-event timing case, neither
+touching anything this task added) — resolved by the time of this task's own final push; see this
+task's own final numbers in the branch history / PR for the as-pushed measurement. `src/routines.ts` +
+`src/__tests__/routines.test.ts` measured in isolation (`vitest run src/__tests__/routines.test.ts`):
+76/76 passing.
+
+## 2026-07-21 addition — `model-proxy.ts` (chat/model-proxy pack, `feat/http-routes-and-cli-commands`)
+
+Implements the placement decision in `ADS-memory/reports/proposals/
+PROP-http-route-packs-chat-model-proxy-2026-07-21.md`, the follow-up to that proposal's own
+"real question: where does provider-specific wire-protocol logic belong?" — **`@jini/agent-runtime`,
+not this package.** `packages/agent-runtime/source-map.md`'s own 2026-07-21 addition documents the
+actual wire-adapter/tool-loop work (`runAnthropicToolTurn`/`runOpenAiToolTurn`, both built fresh
+against each provider's real API docs since this task had no direct access to OD's `chat.ts`). This
+module is deliberately thin: request parsing, the same-origin guard, and SSE transport via `sse.ts`
+(the same primitive `runs.ts`/`memory.ts` already consume) — it has **zero** knowledge of what an
+Anthropic `content_block_delta` or an OpenAI `tool_calls[].function.arguments` fragment looks like,
+matching this package's existing posture everywhere else (`db-ops.ts`/`daemon-status.ts`/`host-tools.ts`'s
+"caller supplies the real collaborator" DI convention, now extended to "the real collaborator is a
+whole turn-runner, not just a data store").
+
+**New file:** `src/model-proxy.ts` — `registerModelProxyRoutes(app, deps, adapter)` mounts `POST
+/api/proxy/anthropic/stream` and `POST /api/proxy/openai/stream`. Both are raw Express routes (like
+`runs.ts#registerRunEventStream`), not `JsonRouteSpec`s, since each streams an SSE response driven by
+a POST body rather than returning one JSON value.
+
+**Scope for this pass** (per the proposal's own recommendation): Anthropic and OpenAI only. Azure/
+Google/Ollama/OpenRouter routes are **not built this round** — see `packages/agent-runtime/
+source-map.md`'s matching note; each would be a mechanical sibling `POST /api/proxy/<provider>/stream`
+route once `@jini/agent-runtime` grows the matching turn-runner, following this exact
+parse/same-origin/SSE-wiring shape. **Confirmed OD-PRODUCT and excluded regardless of this decision,
+per the proposal:** `POST /api/runs/:id/feedback` and the two "Critique Theater" routes — not touched
+by this module at all.
+
+**BYOK, not server-held credentials.** Every request body carries its own `apiKey` (plus optional
+`baseUrl`/`extraHeaders`/model params) — this route never stores or reads a server-side credential,
+matching `providers/model-catalog.ts`'s existing BYOK shape one package over.
+
+**Request validation is deliberately shallow, per the "no wire-protocol knowledge in the HTTP layer"
+mandate.** `parseCommon`/`parseAnthropicProxyRequest`/`parseOpenAiProxyRequest` check only the
+transport-level shape every request shares — non-empty `apiKey`/`model` strings, a non-empty
+`messages` array, primitive types for the optional fields (`baseUrl`/`temperature`/`maxToolTurns`/
+`extraHeaders`, plus Anthropic's required `maxTokens` and optional `apiVersion`/`system`/`tools`) —
+and never the *contents* of `messages`/`tools`, which is provider wire-protocol knowledge this
+package does not have. A malformed message/tool shape is instead rejected by the real provider API
+and surfaces as a normal `'error'` SSE event through the turn-runner, exactly like any other upstream
+rejection — not a 400 from this route.
+
+**Wiring the SSE channel to the turn-runner's `end` contract.** Each turn-runner event is wrapped as
+`{opaqueCursor, kind: event.type, data: event}` and enqueued onto `sse.ts#createSseChannel` with
+`isEndEvent: (event) => event.kind === 'end'`. Because both turn-runners guarantee exactly one
+`{type: 'end'}` event per call (the duplicate-end-event fix, `turn-end-guard.ts` — see
+`packages/agent-runtime/source-map.md`), the channel auto-closes exactly once with no extra logic on
+this side; after `run(...)` resolves normally there is deliberately **no** `channel.end()` call — see
+the inline comment at that call site for the reachability proof (every exit path in both turn-runners'
+`while (true)` loops calls `emitEnd` before it can `break`, so the promise cannot resolve without the
+channel already having auto-closed).
+
+**SEC-005 catch-all for a turn-runner promise that rejects outright.** Both turn-runners already
+convert every provider/network failure into an `'error'`+`'end'` event pair internally and never
+throw for those cases — the only realistic way `run(...)`'s promise rejects is a caller-supplied
+`executeTool` throwing (neither turn-runner wraps that call in a try/catch — see
+`packages/agent-runtime/source-map.md`'s matching note). `registerProxyStreamRoute`'s `catch` block
+logs the real exception via `onInternalError` (default `console.error`, matching `runs.ts`) and
+enqueues a synthetic `{type: 'error', message: 'an internal error occurred', code: correlationId}` +
+`{type: 'end', reason: 'error'}` pair — `enqueue` is `sse.ts`'s own documented no-op-once-closed, so
+this is safe to call unconditionally regardless of whether the channel already auto-closed.
+
+**Tool execution is optional DI, not built in this pass.** `ModelProxyHttpDeps.anthropicExecuteTool`/
+`openaiExecuteTool` are both optional; with neither supplied, the routes still stream back any
+`tool_use`/`tool_calls` events the model requests, but the turn-runner does not attempt a server-side
+tool loop — matching `packages/deploy/source-map.md`'s "deferred real `ToolExecutor` wiring"
+precedent this package's `db-ops.ts` section already cites. Not routed through `@jini/core`'s
+`ToolRegistry`/`ToolExecutor` boundary (unlike `db-ops.ts`'s DB inspect/vacuum tools) — that boundary
+exists for locally-dangerous daemon-side operations; this route proxies an external, already-BYOK-
+gated API call using credentials the caller supplies per-request, a materially different trust shape.
+`requireSameOrigin`-equivalent protection is still applied (via a direct `guardSameOrigin` call, since
+this is a raw route rather than a `JsonRouteSpec`) as the first line of defense against a cross-site
+page abusing the local daemon as a confused-deputy relay for billed provider calls.
+
+**Bug fixes verified at this layer too** (both already fixed at the source in `@jini/agent-runtime`;
+this package's tests independently prove the fix survives the HTTP round-trip): the OpenRouter-shaped
+product-identity leak (a test asserts `HTTP-Referer`/`X-Title` are absent from the outbound fetch
+headers by default, and equal exactly what a caller supplies via `extraHeaders` — an assembled-at-runtime
+string, not a literal, so the regression check itself doesn't trip `pnpm guard`'s own R5-neutrality
+scan); the duplicate-`end`-event bug (the "invokes the injected executeTool" test asserts exactly one
+`end`-kind SSE frame is written and `res.end()` is called exactly once, end-to-end through a real
+tool-use round).
+
+**Dependency:** adds `@jini/agent-runtime` to `package.json` — both are `scripts/check-engine-boundaries.ts`
+locked packages (R7 only restricts a locked package importing an *unlocked* one), so this needed no
+`UNLOCKED.md` entry, matching the placement decision's own reasoning.
+
+Tests: `src/__tests__/model-proxy.test.ts` — 100/100/100/100 coverage, 30 tests. Covers: same-origin
+rejection before any fetch call (both routes); every validation-failure branch (missing/empty
+`apiKey`/`model`/`messages`, wrong-typed `baseUrl`/`temperature`/`maxToolTurns`/`extraHeaders`, and
+Anthropic's `maxTokens`/`apiVersion`/`system`/`tools`) via `it.each`; a full successful SSE round-trip
+for both providers (headers, request body, `text_delta`/`end` events, `res.end()` called once); every
+optional field (`baseUrl`/`apiVersion`/`system`/`tools`/`temperature`/`maxToolTurns`/`extraHeaders`)
+actually reaching the turn-runner's request; the injected `executeTool` hook completing a full
+tool-use round for both providers; the SEC-005 catch-all (executeTool throwing, redacted response,
+`onInternalError` invoked once with the real error, default `console.error` fallback); and
+`registerModelProxyRoutes` mounting both routes.
+
+## 2026-07-21 addition — `terminals.ts` (interactive-terminal route pack, resolving the `terminal.ts` MIXED verdict)
+
+Implements the specific decision made in
+`ADS-memory/reports/proposals/PROP-http-route-packs-terminal-pty-2026-07-21.md`, closing the
+routes-classification table's row #11 `terminal.ts` verdict (both named blockers — SSE and a generic
+workspace-root port — were already resolved as standalone prerequisites earlier this same pass; this
+addition is the actual route wiring the 2026-07-21 route-pack audit section above left as future work).
+
+**Zero business logic in this file, by design** — mirrors this package's own established discipline
+(`runs.ts` calling into `RunLifecycle`, `db-ops.ts` calling into an injected `DaemonDbOperations`): the
+actual `node-pty` spawn, the in-memory session registry, session-ownership gating, and the kill/write/
+resize lock all live in `@jini/daemon`'s new `terminal-session.ts` (see that package's own
+2026-07-21 dated source-map section for the full design writeup) — a native-compiled-dependency
+concern this package does not and should not take on.
+
+**Routes**: `GET /api/terminals` (`terminalListRoute` — lists the calling principal's own sessions,
+optionally narrowed by `resourceRef`; no `ToolExecutor` gate, matching `runs.ts`'s `runListRoute`
+precedent for a read scoped to the caller's own resources), `POST /api/terminals`
+(`terminalCreateRoute` — the one gated call), `POST /api/terminals/:id/stdin` (`terminalStdinRoute`),
+`POST /api/terminals/:id/resize` (`terminalResizeRoute`), `POST /api/terminals/:id/kill` /
+`DELETE /api/terminals/:id` (`terminalKillRoute`/`terminalDeleteRoute`, both delegating to the same
+`handleKill` helper — mirrors OD's own dual-route-same-handler shape), and `GET
+/api/terminals/:id/stream` (`registerTerminalEventStream`, a raw Express route like
+`registerRunEventStream`/`registerMemoryEventStream` — not through `mountJsonRoute`, so it carries no
+`requireSameOrigin` guard of its own, matching both of those routes' precedent).
+
+**`POST /api/terminals` is the one call routed through `ToolExecutor.execute(..., 'terminal.create',
+...)`** — resolves `resourceRef` to a spawn `cwd` via `workspace-root.ts` first (identical to
+`host-tools.ts`'s open-in route), then authorizes+spawns through the gate, then maps the
+`ToolExecutionResult` the same way `db-ops.ts`'s `toolResultToApiResult` does (denied/confirmation-
+denied → `TOOL_OPERATION_DENIED`; timed-out/cancelled/failed → a redacted, correlation-id-bearing
+`INTERNAL_ERROR`, SEC-005). `stdin`/`resize`/`kill`/`stream` deliberately do **not** re-enter
+`ToolExecutor` — they call `deps.manager`'s lighter, still-explicit session-ownership-checked methods
+directly, per the proposal's own reasoning: wrapping every keystroke in a full authorize/confirm/audit
+round-trip would make an interactive terminal unusable. A session-ownership mismatch (or an unknown
+id) surfaces identically as `NOT_FOUND` from every one of these routes — never a distinguishable
+403 — matching `@jini/daemon`'s own `checkOwnership` doc.
+
+**A real bug found and fixed while wiring the SSE adapter, not carried forward**: `@jini/daemon`'s
+`TerminalSessionManager.attach()` can call the injected `TerminalSseSink.end()` *synchronously, from
+inside the `attach()` call itself* — an already-exited session's replay path sends the buffered `exit`
+event and then immediately calls `end()`, before this route has ever called `sse.ts`'s
+`channel.open()`. An initial version of this adapter mapped `sink.end()` straight to `channel.end()`,
+which — since `channel.open()` had not yet run — ended the response with `res.end()` while the queued
+backlog was still sitting unflushed in the channel's internal queue and no SSE headers had even been
+sent: the client got a bare closed connection with zero bytes written, never seeing the replayed `exit`
+event. Caught by a real end-to-end test (`registerTerminalEventStream > replays buffered scrollback and
+ends immediately for an already-exited terminal`), not a code-reading guess. Fixed with a small
+`channelOpened` flag: `sink.end()` calls `channel.end()` immediately only once the channel has actually
+been opened; an `end()` that arrives before `open()` (the already-exited-session replay path) is
+deferred and applied right after `channel.open()` returns (safe even if `open()`'s own `isEndEvent`
+match already auto-closed the channel while draining the queue — `channel.end()` is documented
+idempotent). A live session that exits *while already streaming* (well after `open()` ran) still calls
+`channel.end()` immediately, as before — covered by a second, separate test.
+
+**`TerminalWireEvent`** reshapes `@jini/platform`'s `send(event, data, id)` triple into `sse.ts`'s
+generic `SseEvent` (`opaqueCursor`/`kind` naming, matching `runs.ts`'s `RunProtocolEvent` adaptation).
+Reconnect replay uses `sse.ts`'s `requestedAfterCursor` (the same `Last-Event-ID` header / `afterCursor`
+query-parameter helper `runs.ts` already uses) rather than OD's origin-specific `Last-Event-ID` / `after`
+query-parameter pairing — a deliberate generalization (documented, not silent) consistent with this
+package's "one shared SSE mechanism" discipline.
+
+Tests: `src/__tests__/terminals.test.ts` — 46 tests. `parse` validation for all five JSON routes;
+`terminalCreateRoute.handle`'s full `ToolExecutor` result-mapping matrix (completed/denied/confirmation-
+denied/timed-out/cancelled/failed, the SEC-005 redaction proof with a real embedded-path error message,
+`onInternalError` invocation and its `console.error` default) exercised through a **real**
+`ToolExecutor`/`ToolRegistry`/`TerminalSessionManager` triple (matching `db-ops.test.ts`'s "prove the
+real production default, not a mock of it" discipline) with a fake `PtySpawn`/`PtyProcess` — no real
+subprocess anywhere in this file; `terminalListRoute`'s principal-scoping and `resourceRef` narrowing;
+`terminalStdinRoute`/`terminalResizeRoute`/`terminalKillRoute`/`terminalDeleteRoute`'s success/not-found/
+cross-principal-not-found paths; `registerTerminalRoutes`' full route-mount inventory and same-origin
+enforcement (including proving the list route is deliberately exempt); `registerTerminalEventStream`'s
+missing-id/unknown-id/cross-principal-unknown 400/404 paths, the live-streaming happy path (headers,
+open connection, a live `data` event actually reaching `res.write`), the already-exited replay-and-end
+path (the bug above, now regression-covered), the live-exit-while-streaming path (the `channelOpened`
+branch's other side), client-disconnect cleanup (`detach` called, no further output delivered), and the
+`Last-Event-ID`-header-over-`afterCursor`-query-parameter precedence + zero-default cases.
+
+`pnpm --dir packages/http typecheck`: clean. `pnpm --dir packages/http test:coverage`: this package's
+full-suite coverage run was measured under heavy concurrent load from several other sessions actively
+running their own test/coverage passes against this same package at the same time (confirmed via
+`ps aux`, and via repeated transient `ENOENT`/`coverage/.tmp/coverage-N.json` races on retry — vitest's
+coverage temp directory is a fixed, not process-unique, path) — this file's own coverage was verified
+directly, in isolation, rather than trusted from a contended aggregate run; see this task's own final
+push for the as-measured full-package numbers once the shared environment quieted down.
