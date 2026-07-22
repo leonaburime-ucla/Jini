@@ -124,6 +124,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.0
         version: 19.2.3(@types/react@19.2.17)
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -189,12 +192,20 @@ importers:
       '@jini/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/diagnostics:
     dependencies:
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/http:
     dependencies:
@@ -269,6 +280,10 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/node-host:
     dependencies:
@@ -411,6 +426,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.11
         version: 7.6.13
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.51.0))
 
   packages/ui:
     dependencies:
