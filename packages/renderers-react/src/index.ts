@@ -105,3 +105,5 @@ export {
   openSandboxedPreviewInNewTab,
   type NewTabPreviewOptions,
 } from './new-tab-preview.js';
+
+export * from './preview-modal-shell/index.js';

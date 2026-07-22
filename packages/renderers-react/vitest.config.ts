@@ -20,6 +20,7 @@ export default defineConfig({
         // carve-out `packages/ui`'s vitest.config.ts uses for its
         // `settings-dialog` types.ts files.
         'src/types.ts',
+        'src/preview-modal-shell/types.ts',
       ],
     },
   },
