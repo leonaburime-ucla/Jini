@@ -15,6 +15,14 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@jini/core": "workspace:*"
+    "@jini/core": "workspace:*",
+    "@jini/platform": "workspace:*",
+    "better-sqlite3": "^11.10.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/ws": "^8.18.0",
+    "@vitest/coverage-v8": "^2.1.9"
   }
 }
