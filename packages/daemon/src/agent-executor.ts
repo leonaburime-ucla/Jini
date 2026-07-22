@@ -190,9 +190,20 @@ function createStreamHandlerForDef(
  * type values `run()` handles specially rather than passing through (see
  * module doc); `'ignored'` covers anything the 4 parsers never actually
  * produce plus defensively malformed/non-record input.
+ *
+ * `'agent'`'s optional `sessionId` (gap 5, session resume — see
+ * `RunEndPayload.sessionRef`'s doc in `@jini/protocol`) is a daemon-internal
+ * side channel, not part of the `RunAgentPayload` wire payload itself:
+ * OpenCode's `sessionID`/Codex's `thread_id`/Qoder's and Claude's
+ * `session_id` all arrive on a `'status'` event alongside fields
+ * `RunAgentPayload`'s `'status'` variant already models (`label`/`model`/
+ * `ttftMs`/`detail`) but has no room for a session id itself — surfacing it
+ * here lets a lifecycle-wiring function capture it into a local variable and
+ * thread it into its own terminal `finish()` call, without widening the
+ * public wire protocol just to carry a value that only this module reads.
  */
 export type AgentRuntimeEventTranslation =
-  | { readonly kind: 'agent'; readonly payload: RunAgentPayload }
+  | { readonly kind: 'agent'; readonly payload: RunAgentPayload; readonly sessionId?: string }
   | { readonly kind: 'error'; readonly payload: RunErrorPayload }
   | { readonly kind: 'turn-end' }
   | { readonly kind: 'ignored' };
@@ -278,6 +289,7 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
       const model = asOptionalString(rawEvent.model);
       const ttftMs = asOptionalNumber(rawEvent.ttftMs);
       const detail = asOptionalString(rawEvent.detail);
+      const sessionId = asOptionalString(rawEvent.sessionId);
       return {
         kind: 'agent',
         payload: {
@@ -287,6 +299,7 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
           ...(ttftMs !== undefined ? { ttftMs } : {}),
           ...(detail !== undefined ? { detail } : {}),
         },
+        ...(sessionId !== undefined ? { sessionId } : {}),
       };
     }
     case 'text_delta':
@@ -581,6 +594,10 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
   let stdinClosed = false;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — the last session/thread id a 'status' event reported, threaded into
+  // finish()'s sessionRef below. `streamFormat === 'plain'` defs have no structured parser and
+  // therefore never populate this — an honest scope limit, not an oversight.
+  let capturedSessionId: string | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -606,6 +623,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       : createStreamHandlerForDef(def, streamFormat, (rawEvent) => {
           const translation = translateAgentRuntimeEvent(rawEvent);
           if (translation.kind === 'agent') {
+            if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
             enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
           } else if (translation.kind === 'error') {
             enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
@@ -664,7 +682,14 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = classifyRunCloseStatus({ cancelRequested, code, signal });
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable: false,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -730,6 +755,8 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
   const { runId, child, lifecycle, journal } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
+  let capturedSessionId: string | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -768,7 +795,14 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable: false,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -782,6 +816,7 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       if (event === 'agent') {
         const translation = translateAgentRuntimeEvent(payload);
         if (translation.kind === 'agent') {
+          if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
           enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
         } else if (translation.kind === 'error') {
           enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
@@ -833,6 +868,8 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
   const { runId, child, lifecycle, journal } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
+  let capturedSessionId: string | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -871,7 +908,14 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable: false,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -882,6 +926,7 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
     send(_channel, payload) {
       const translation = translateAgentRuntimeEvent(payload);
       if (translation.kind === 'agent') {
+        if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
         enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
       } else if (translation.kind === 'error') {
         enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));

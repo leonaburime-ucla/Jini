@@ -69,6 +69,16 @@ export interface RunEndPayload {
   status?: 'succeeded' | 'failed' | 'canceled';
   /** True when a `failed` run can be recovered by resuming the underlying agent-CLI session instead of starting a new run. */
   resumable?: boolean;
+  /**
+   * The child agent CLI's own session/thread identifier, when its stream reported one (e.g.
+   * OpenCode's `sessionID`, Codex's `thread_id`, Qoder's/Claude's `session_id`) — gap 5 of the
+   * run/chat orchestration swarm-consensus Final Recommendation. A host reads this after a run
+   * ends to link its *own* next `start()` call (new `runId`, same `contextRef`) back to the
+   * underlying CLI session, e.g. passing a resume flag to the next spawn. This is metadata for a
+   * host's own follow-up run, not something `RunLifecycle.resume()` itself uses — `resume()`
+   * remains a pure attempt-recovery state-machine flip on the same run, unaffected by this field.
+   */
+  sessionRef?: string;
 }
 
 export type RunAgentPayload =

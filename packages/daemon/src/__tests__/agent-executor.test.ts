@@ -846,8 +846,22 @@ describe('translateAgentRuntimeEvent', () => {
     });
   });
 
-  it('translates status carrying only sessionId (dropped — no RunAgentPayload field for it)', () => {
+  it('translates status carrying a sessionId onto the translation result, not into the RunAgentPayload wire shape (gap 5 — session resume)', () => {
     expect(translateAgentRuntimeEvent({ type: 'status', label: 'initializing', sessionId: 'sess-1' })).toEqual({
+      kind: 'agent',
+      payload: { type: 'status', label: 'initializing' },
+      sessionId: 'sess-1',
+    });
+  });
+
+  it('omits sessionId from the translation result when the raw status event has none', () => {
+    const translation = translateAgentRuntimeEvent({ type: 'status', label: 'initializing' });
+    expect(translation).toEqual({ kind: 'agent', payload: { type: 'status', label: 'initializing' } });
+    expect(translation).not.toHaveProperty('sessionId');
+  });
+
+  it('ignores a non-string sessionId rather than propagating a malformed value', () => {
+    expect(translateAgentRuntimeEvent({ type: 'status', label: 'initializing', sessionId: 12345 })).toEqual({
       kind: 'agent',
       payload: { type: 'status', label: 'initializing' },
     });
@@ -2096,5 +2110,72 @@ describe('AgentExecutor — gap 1 byte-journal (CreateAgentExecutorOptions.journ
       { runId: run.id, entry: { content: 'raw pi stderr', provenance: { source: 'agent', channel: 'stderr' }, trust: 'untrusted' } },
     ]);
     expect(calls.some((call) => call.entry.content === 'pi prompt')).toBe(false);
+  });
+});
+
+describe('AgentExecutor — gap 5 session resume (RunEndPayload.sessionRef)', () => {
+  it('threads a captured ACP session id through to the terminal end event as sessionRef', async () => {
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'status', label: 'initializing', sessionId: 'acp-sess-1' });
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'acp-sess-1' });
+  });
+
+  it('threads a captured pi-rpc session id through to the terminal end event as sessionRef', async () => {
+    const { lifecycle, executor, child, attachCalls } = createPiRpcHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'status', label: 'initializing', sessionId: 'pi-sess-1' });
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'pi-sess-1' });
+  });
+
+  it('omits sessionRef from the terminal end event when no session id was ever reported (ACP)', async () => {
+    const { lifecycle, executor, child } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).not.toHaveProperty('sessionRef');
+  });
+
+  it('keeps the most recently reported session id when multiple status events arrive (child-driven path)', async () => {
+    const def = createFakeDef({ streamFormat: 'json-event-stream', eventParser: 'codex' });
+    const { lifecycle, executor, child } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-first' })}\n`);
+    child.stdout.emit('data', `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-second' })}\n`);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'thread-second' });
   });
 });

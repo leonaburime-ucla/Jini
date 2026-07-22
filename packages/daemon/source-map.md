@@ -976,3 +976,66 @@ Not yet built (gaps 5/3/4, per the debate's locked MVP sequencing — this addit
 session-resume capture, capability-routed continuation transport, retry-classifier port. The
 human-in-the-loop pause question (debate's one Unresolved Delta) is also not addressed here — it's
 scoped for gap 3's design, not gap 1's.
+
+## 2026-07-22 addition — run/chat orchestration gap 5: session resume
+
+Implements gap 5 of the debate's locked MVP sequencing (gap 1 → 5 → 3 → 4 — gap 5 is second in
+sequence order but keeps its own item number from the Final Recommendation; there is no "gap 2" work
+item at all, that number is permanently out of scope — prompt/skill/memory composition, staying
+host-owned). Final Recommendation: "stop dropping `sessionID`/`thread_id`/`session_id` fields
+already present in existing per-format parsers; persist as an optional `sessionRef` on
+`RunEndPayload`/`FinishRunInput`, riding the existing `EventLog` terminal-entry retention — no new
+storage."
+
+**Where the id was already being dropped (confirmed by direct research, not assumed)**: four of
+`@jini/agent-runtime`'s stream parsers already extract a session/thread id and surface it on a
+`'status'` event's `sessionId` field — OpenCode (`json-event-stream.ts:161-172`, `sessionID`), Codex
+(`json-event-stream.ts:699-716`, `thread_id`), Qoder (`qoder-stream.ts:74-85`, `session_id`), Claude
+(`claude-stream.ts:419-427`, `session_id`). `translateAgentRuntimeEvent`'s `'status'` case
+(`agent-executor.ts`) read every other field off that raw event but never `sessionId` — confirmed the
+exact drop point, since `RunAgentPayload`'s `'status'` variant (`@jini/protocol`) has no field for it
+either.
+
+**Design: `sessionId` stays off the wire protocol.** `AgentRuntimeEventTranslation`'s `'agent'` variant
+gained an optional `sessionId?: string` field, separate from `payload` — a daemon-internal side
+channel a lifecycle-wiring function reads into a local variable, not a new field on the public
+`RunAgentPayload` wire shape. `RunEndPayload`/`FinishRunInput` each gained an optional `sessionRef?:
+string` (widened in `@jini/protocol`/`@jini/daemon` respectively) — all three lifecycle-wiring
+functions (`wireChildLifecycle`/`wireAcpLifecycle`/`wirePiRpcLifecycle`) now track a local
+`capturedSessionId` (last-write-wins across however many `'status'` events a run emits) and thread it
+into their own terminal `finish()` call. Zero new storage: `finish()` already durably appends the
+`'end'` entry to `EventLog`; widening `RunEndPayload` costs nothing beyond one more optional field on
+an existing append.
+
+**`RunLifecycle.resume()` is untouched, on purpose** — confirmed by direct reading (`run-lifecycle.ts`
+lines 452-471) that it is a pure attempt-recovery state-machine flip (terminal → `'running'`) gated
+only on `FinishRunInput.resumable`, keyed only on `runId`. `sessionRef` is read-only metadata for a
+*host's own* next `start()` call (new `runId`, same `contextRef`, host decides whether/how to pass a
+resume flag to the underlying agent CLI) — matching the debate's DP5 framing that a `Run` is one
+attempt, not a multi-turn session, and continuity across turns is `contextRef` + an optional captured
+`sessionRef`, never automatic.
+
+**Deliberately NOT widened this pass**: `RunStatus`/`toPublicStatus` (`run-lifecycle.ts`) — a host
+polling the plain `GET /api/runs/:runId` JSON endpoint still cannot see `sessionRef` (or `code`/
+`signal`/`resumable`, which were already excluded before this task). `sessionRef` is visible today only
+via the SSE event stream's terminal `'end'` event (`GET /api/runs/:runId/events`), which already
+replays the full `RunEndPayload`. Staying this minimal matches the Final Recommendation's precise
+wording ("no new storage") rather than also taking on a `RunStatus` shape change the debate never
+asked for — a host that needs `sessionRef` without SSE is a real, identifiable follow-up, not silently
+solved here.
+
+**Honest scope limit**: `streamFormat: 'plain'` defs (grok-build/aider/deepseek/qwen) never populate
+`capturedSessionId` — they have no structured parser, hence no `'status'` events to read a session id
+from in the first place. ACP/pi-rpc's own prompt-delivery bytes were already out of the byte-journal's
+view (gap 1's documented boundary); this gap only concerns bytes *received*, which both transports do
+route through `translateAgentRuntimeEvent`.
+
+Tests: 3 new cases in `translateAgentRuntimeEvent`'s existing describe block (`sessionId` present /
+absent / non-string-defensive-coerced), plus a new "gap 5 session resume" describe block in
+`agent-executor.test.ts` (4 tests: ACP session id reaches the terminal `'end'` event's `sessionRef`,
+same for pi-rpc, `sessionRef` omitted entirely when no session id was ever reported, and
+last-write-wins when the child-driven/Codex path reports two different thread ids across two `status`
+events). One pre-existing test's title/assertion updated (`translates status carrying only sessionId
+(dropped...)` → now asserts it's captured, not dropped — the old title described exactly the behavior
+this task intentionally changed). 319/319 tests in the package, 100% on all 4 coverage metrics for
+every file this task touched (`agent-executor.ts`, `run-lifecycle.ts`). `pnpm guard`: clean.
