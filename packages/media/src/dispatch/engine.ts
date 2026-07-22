@@ -106,9 +106,6 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
     image: renderImageRouterImage,
     video: renderImageRouterVideo,
   },
-  'custom-image': {
-    image: renderCustomOpenAIImage,
-  },
   grok: {
     image: renderGrokImage,
     'audio:speech': renderXAITTS,
