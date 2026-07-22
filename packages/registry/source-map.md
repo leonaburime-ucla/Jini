@@ -485,3 +485,74 @@ that one *is* covered, via the Ed25519 test above). Kept rather than
 deleted, and documented rather than silently left unexplained, matching
 `@jini/deploy`'s `netlify.ts`/`github-pages.ts` precedent for this repo.
 
+## 2026-07-21 — concrete `GithubApiRegistryClient`
+
+Closes the "no concrete `GithubRegistryClient` HTTP implementation exists"
+gap this doc's hardening passes both flagged and explicitly deferred (see
+"Observed, not fixed" above). Independent of, and kept in a separate commit
+from, the signature-verification work in the section above — different
+files, different concern (a real HTTP client vs. a cryptographic verifier),
+even though both were scoped in the same task.
+
+**New file `src/github-client.ts`** — a real `GithubRegistryClient`
+implementation (the interface `github-backend.ts` already defined but no
+concrete implementation existed for, confirmed via repo-wide grep before
+this task and re-confirmed in this doc's own prior "Observed, not fixed"
+section above). Built directly against GitHub's REST API docs (fetched via
+WebFetch this session, not recalled from memory):
+
+- `readManifest(owner, repo, ref, path)` — `GET
+  /repos/{owner}/{repo}/contents/{path}?ref={ref}` (the Contents API).
+  Verified against GitHub's own documented size tiers: ≤1MB returns inline
+  `content`/`encoding: "base64"`; 1-100MB returns `encoding: "none"` with
+  empty `content` (requiring the raw media type or Git Trees API instead);
+  >100MB isn't supported by this endpoint at all. A registry manifest is a
+  JSON index, expected well under 1MB, so this implementation reads the
+  standard base64 response and throws a clear, attributable error for the
+  oversized case rather than silently misreading it.
+- `createPublishPullRequest(request)` — the Git Data API flow (create
+  blob(s) → a tree layered on the base commit's tree → a commit → a branch
+  ref) followed by an actual `POST /repos/{owner}/{repo}/pulls` call.
+  Mirrors the blob/tree/commit/ref mechanics `@jini/deploy`'s
+  `github-pages.ts` already verified against the same Git Data API docs
+  (written fresh for this package — no cross-package dependency added, this
+  package does not gain a dependency on `@jini/deploy`), extended with the
+  Pulls API call that file didn't need (it force-pushes a branch directly;
+  this one opens a PR against `baseRef`, matching `GithubPublishMutation`'s
+  shape). Branch-already-exists (`409`) falls back to a `force: true` PATCH
+  update, matching `github-pages.ts`'s own "last publish wins" reasoning for
+  a retried/racing publish. PR-already-exists (a `422` whose message says
+  so) falls back to looking up and returning the existing open PR's URL,
+  matching `netlify.ts`'s `ensureNetlifySite` create-then-recover-on-conflict
+  shape for a different provider's analogous race.
+- No token is required for `readManifest` (GitHub's Contents API supports
+  anonymous reads of a public repo, subject to its lower unauthenticated
+  rate limit) but `createPublishPullRequest` throws immediately, before any
+  network call, when constructed without one — matching
+  `NetlifyDeployTarget.publish()`/`GitHubPagesDeployTarget.publish()`'s own
+  "throw immediately on missing token" convention rather than silently
+  downgrading behavior.
+
+**Tests:** `src/__tests__/github-client.test.ts` (37 tests), `fetch` mocked
+at the HTTP-client boundary via `vi.stubGlobal('fetch', ...)` — the exact
+pattern `@jini/deploy`'s `netlify.test.ts` established (no real network call
+anywhere in this file) — covering every guard/error path in both methods
+(oversized file, non-file/directory path, malformed JSON, missing sha/tree/
+commit/html_url fields, branch-conflict recovery, PR-already-exists
+recovery and its own failure/not-found sub-cases, custom `apiUrl` override
+for GitHub Enterprise Server).
+
+**Also:** added a `test:coverage` script to `package.json` (this package had
+`test` but not `test:coverage`, unlike `@jini/deploy`) since this task's
+process required running it.
+
+**Verification:** `pnpm --dir packages/protocol build` clean (registry
+depends on protocol's dist). `pnpm --dir packages/registry typecheck` clean
+under this repo's `exactOptionalPropertyTypes: true`. `pnpm --dir
+packages/registry test:coverage` — 183/183 tests pass, package-wide
+aggregate 99.76/99.61/100/99.76 statements/branches/functions/lines (up from
+the prior pass's 100/100/100/100 on a smaller file set — the drop is
+entirely the one documented unreachable `catch` branch above), still above
+the package's configured 99% threshold gate on every metric. `pnpm --dir
+packages/protocol exec vitest run` — 11/11 passing (2 new assertions on the
+additive schema fields). `pnpm guard` (repo root) clean.

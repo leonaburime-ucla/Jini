@@ -22,3 +22,6 @@ export { DatabaseRegistryBackend, ensureRegistryTables, upsertRegistryEntry } fr
 
 export type { GithubOidcTrustRoot, RegistryTrustRoot, SignatureVerificationResult } from './trust.js';
 export { GITHUB_ACTIONS_OIDC_ISSUER, canonicalRegistrySigningPayload, verifyRegistryEntrySignatures, verifyRegistrySignature } from './trust.js';
+
+export type { GithubApiRegistryClientOptions } from './github-client.js';
+export { GithubApiRegistryClient } from './github-client.js';
