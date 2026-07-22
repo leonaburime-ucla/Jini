@@ -467,3 +467,27 @@ intermediate failure during this pass — draft tests using the literal string
 check; fixed by using a synthetic `legacy-scheme://...` placeholder instead,
 which exercises the identical "unregistered uri rejects" code path without
 any product-identity string).
+
+## 2026-07-22 — verifying (not re-doing) the spike commit's open items: `serve.ts`'s `isMainModule` coverage, plus the gap-3-part-2 spawn wiring it depends on
+
+The `2a081c5` "MCP-callback spike items 1-3" commit shipped `src/bin/serve.ts`,
+`src/server/tools/delegated-tool.ts`, and the module top-level entrypoint-guard test block for
+`serve.ts`'s `isMainModule` check, but its own commit message flagged that block as **added but
+never run**: *"local test/coverage/guard runs were halted mid-task ... NOT been run."* This pass
+personally re-ran it rather than trusting that note either way (it could have been wrong in either
+direction — the fix might not have actually worked, or might have). `pnpm --dir packages/mcp exec
+vitest run --coverage`: **300/300 tests pass**, `bin/serve.ts` **100/100/100/100**
+(statements/branches/functions/lines) — the module-reimport guard block (mirroring
+`packages/cli/src/__tests__/main.test.ts`'s identical pattern for `main.ts`'s own guard) does
+close the gap the spike commit left open. Package-wide aggregate: **100/99.75/100/100** — the only
+remaining sub-100% file is `core/oauth.ts` (98.77% branches, lines 190/240), pre-existing and
+untouched by this task or the spike before it (already noted in this file's prior dated section).
+`pnpm --dir packages/mcp exec tsc --noEmit`: clean.
+
+**Item 4 of that same spike** (the actual spawn-time `.mcp.json` injection that makes `serve.ts`
+and `delegated-tool.ts` reachable from a real `claude` run at all) landed this pass in
+`packages/daemon/src/agent-executor.ts` — see that package's own 2026-07-22 dated entry for the
+full design. This package's own files needed no code change for that: `serve.ts` already read
+`JINI_RUN_ID`/`JINI_DAEMON_URL` from its environment exactly as the daemon-side injection now sets
+them, and `createExecuteDelegatedToolTool` already posted to `packages/http/src/delegated-tools.ts`
+exactly as designed — the wiring gap was entirely on the daemon's spawn side, not here.

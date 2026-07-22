@@ -283,6 +283,58 @@ interface TerminalWireEvent extends SseEvent {
   readonly data: unknown;
 }
 
+/** The one method {@link createDeferredEndGate} needs from `sse.ts`'s channel — narrowed so the gate is unit-testable against a bare fake, not a real `SseChannel`. */
+interface DeferredEndChannel {
+  end(): void;
+}
+
+/**
+ * The `channelOpened`/`endRequestedBeforeOpen` state machine `registerTerminalEventStream`'s
+ * `TerminalSseSink.end()` needs, extracted into its own directly-testable unit — see that
+ * function's inline comment for *why* the deferral exists (an already-exited session's replay
+ * path can call `end()` before `open()` has ever run).
+ *
+ * **On the `markOpened()`-then-`end()` ordering (opened=true when `end()` runs):** this is the
+ * ordering every *currently reachable* production call graph in this repo takes for a live
+ * session that exits while already streaming — but it is unreachable through that graph, not
+ * unreachable in principle. `@jini/platform`'s `TerminalService.finish()` (`packages/platform/src/
+ * terminal.ts`) calls `sink.send('exit', ...)` immediately before `sink.end()` for every live
+ * client; `send()` here forwards straight to `channel.enqueue()`, whose `isEndEvent: (e) => e.kind
+ * === 'exit'` match auto-closes the channel *synchronously inside that same `enqueue()` call* —
+ * which synchronously runs `registerTerminalEventStream`'s own `channel.onClose` callback, which
+ * detaches this sink from `TerminalService`'s `session.clients` before `finish()`'s own, separate
+ * `sink.end()` loop ever runs. That loop iterates `session.clients` fresh at call time (not a
+ * snapshot taken before `emit()`), so by the time it runs, this sink has already removed itself —
+ * `sink.end()` is consequently never invoked while `channelOpened` is `true` via any call graph
+ * this repo's own `@jini/platform` + `@jini/http` composition can currently produce (confirmed by
+ * instrumenting the real call path directly, not inferred from reading the source — a synchronous
+ * console probe in `end()` never fired across this file's full "live-exit-while-streaming" test).
+ * That is a fact about today's specific `TerminalService`/`SseChannel` wiring, not a proof that no
+ * future caller of `TerminalSseSink` could ever call `end()` post-open (a hypothetical non-SSE
+ * sink, or a future `TerminalService` exit reason not preceded by a matching `send()`, would hit
+ * exactly this branch) — so the branch stays as real, intentional defensive code, tested directly
+ * here rather than deleted for being unreachable *today* or left silently uncovered.
+ */
+export function createDeferredEndGate(channel: DeferredEndChannel): { markOpened(): void; end(): void } {
+  let opened = false;
+  let endRequestedBeforeOpen = false;
+  return {
+    markOpened(): void {
+      opened = true;
+      // Idempotent-safe even if the queued 'exit' event already auto-closed the channel via
+      // `isEndEvent` during `open()`'s own drain (`channel.end()` is documented safe to call twice).
+      if (endRequestedBeforeOpen) channel.end();
+    },
+    end(): void {
+      if (opened) {
+        channel.end();
+      } else {
+        endRequestedBeforeOpen = true;
+      }
+    },
+  };
+}
+
 /**
  * `GET /api/terminals/:id/stream` — SSE, with `Last-Event-ID`/`afterCursor`
  * reconnect replay (via `sse.ts`'s `requestedAfterCursor`, the same helper
@@ -305,22 +357,16 @@ export function registerTerminalEventStream(app: Express, deps: TerminalsHttpDep
     // `deps.manager.attach` can call `sink.end()` synchronously, from inside the very call below
     // (an already-exited session's replay path) — before the channel has ever been `open()`ed. If
     // `end()` mapped straight to `channel.end()`, that would end the response with the queued
-    // backlog never flushed (headers never even sent). `channelOpened` defers the actual
-    // `channel.end()` call until after `open()` has drained whatever `send()` already queued; a
-    // later, live `end()` (the session exits while already streaming, well after `open()` ran)
-    // still ends the channel immediately, as normal.
-    let channelOpened = false;
-    let endRequestedBeforeOpen = false;
+    // backlog never flushed (headers never even sent). `createDeferredEndGate` defers the actual
+    // `channel.end()` call until after `open()` has drained whatever `send()` already queued — see
+    // that function's own doc for the full reachability analysis of its other branch.
+    const deferredEnd = createDeferredEndGate(channel);
     const sink: TerminalSseSink = {
       send(event, data, eventId) {
         channel.enqueue({ opaqueCursor: String(eventId), kind: event, data });
       },
       end() {
-        if (channelOpened) {
-          channel.end();
-        } else {
-          endRequestedBeforeOpen = true;
-        }
+        deferredEnd.end();
       },
     };
 
@@ -339,10 +385,7 @@ export function registerTerminalEventStream(app: Express, deps: TerminalsHttpDep
       attachedSink = sink;
     }
     channel.open();
-    channelOpened = true;
-    // Idempotent-safe even if the queued 'exit' event already auto-closed the channel via
-    // `isEndEvent` during `open()`'s own drain (`channel.end()` is documented safe to call twice).
-    if (endRequestedBeforeOpen) channel.end();
+    deferredEnd.markOpened();
   });
 }
 

@@ -1151,3 +1151,71 @@ running their own test/coverage passes against this same package at the same tim
 coverage temp directory is a fixed, not process-unique, path) — this file's own coverage was verified
 directly, in isolation, rather than trusted from a contended aggregate run; see this task's own final
 push for the as-measured full-package numbers once the shared environment quieted down.
+
+## 2026-07-22 addition — full re-test against the new `delegated-tools.ts` route + a real fix for `terminals.ts`'s coverage discrepancy
+
+**`delegated-tools.ts` re-tested against `packages/daemon`'s gap-3-part-2 spawn wiring** (see that
+package's own 2026-07-22 dated entry): `packages/daemon/src/agent-executor.ts` gained spawn-time
+`.mcp.json` injection this same pass, which is the piece that actually makes a `claude`-spawned
+run's own MCP client call back into this route for real. This route itself needed no code change —
+its contract (`{runId, toolUseId, toolId, input}` → `createDelegatedToolBridge`) was already
+correct — but per this task's anti-cheating standard it was re-run rather than assumed still
+passing: `pnpm --dir packages/http exec vitest run --coverage` — **694/694 tests pass** (up from
+690 before this pass's `terminals.ts` addition below), `delegated-tools.ts` **100/100/100/100**.
+
+**`terminals.ts`'s line-320 coverage discrepancy: root-caused for real, not left as "unreachable."**
+The prior pass's own note guessed the cause was contended coverage instrumentation under parallel
+vitest workers. That guess was checked and **ruled out**: `pnpm --dir packages/http exec vitest run
+src/__tests__/terminals.test.ts --coverage` (this single file, in complete isolation, no other
+worker running) reproduced the identical gap — line 320 (`channel.end()` inside `TerminalSseSink
+.end()`'s `if (channelOpened)` branch) stayed uncovered every time. The real cause, confirmed by a
+synchronous `console.log` probe placed directly inside that branch and removed once the diagnosis
+was confirmed (not inferred from reading the source): it is a genuine **reentrancy** between this
+route and `@jini/platform`'s `TerminalService.finish()` (`packages/platform/src/terminal.ts`). For
+a *live* session that exits while already streaming, `finish()` calls `sink.send('exit', ...)`
+before its own separate `sink.end()` loop. `send()` here forwards straight to
+`channel.enqueue()`, whose `isEndEvent: (e) => e.kind === 'exit'` match auto-closes the channel
+*synchronously inside that same `enqueue()` call* — which synchronously runs this route's own
+`channel.onClose` callback, which calls `deps.manager.detach(id, attachedSink)`, removing this
+sink from `TerminalService`'s live `session.clients` Set *before* `finish()`'s own `sink.end()`
+loop (which iterates `session.clients` fresh, not a pre-`emit()` snapshot) ever runs. By the time
+that loop executes, this sink has already detached itself — `sink.end()` is consequently never
+invoked while `channelOpened` is `true` via any call graph this repo's current `@jini/platform` +
+`@jini/http` composition can produce. The route's own prior doc comment claiming this path "still
+calls `channel.end()` immediately, as before — covered by a second, separate test" was **wrong**:
+that second test only proves `res.end()` gets called (via the channel's own generic auto-close),
+never that this route's own explicit `sink.end()` → `channel.end()` statement executes.
+
+**The fix, per this task's "extract, don't cut" standard — not a deletion, not a forced test.**
+The branch is not provably *permanently* unreachable (a hypothetical non-SSE `TerminalSseSink`, or
+a future `TerminalService` exit reason not preceded by a matching `send()`, would hit it), so it
+was not deleted as dead code. It also cannot be exercised in place without either (a) changing real
+production timing/wiring purely to satisfy a coverage number — rejected, since the *current*
+behavior is already correct (proven: `res.end()` fires exactly once for the live-exit case, per
+this file's own long-standing, still-passing test) — or (b) extracting it into a directly-testable
+unit, which is what this repo's own established convention calls for. `createDeferredEndGate(
+channel)` is the extraction: the `channelOpened`/`endRequestedBeforeOpen` state machine, pulled out
+of `registerTerminalEventStream`'s closure into its own small, exported, pure-ish factory
+(`{markOpened(), end()}` over a minimal `{end(): void}` channel shape) that needs no `SseChannel`,
+no `TerminalSessionManager`, no Express req/res — just a fake with one spied method. Four new
+direct unit tests in `createDeferredEndGate`'s own describe block cover both orderings explicitly:
+`end()` before `markOpened()` (the already-exited-at-attach-time replay path, previously the only
+one production could reach) and `markOpened()` before `end()` (the previously-unreachable-via-
+integration branch, now exercised directly and permanently regression-covered regardless of
+whether any future production call graph happens to reach it). `registerTerminalEventStream`
+itself is otherwise unchanged in behavior — it now delegates to `createDeferredEndGate` instead of
+inlining the two local variables, a mechanical extraction with a full reachability analysis
+recorded in the function's own doc comment (see `terminals.ts`).
+
+**Verified, personally, this session:** `pnpm --dir packages/http exec vitest run --coverage` —
+**694/694 tests pass**, `terminals.ts` **100% statements/functions/lines**. Branch coverage for
+this file is 93.45% in the full-suite run; the residual uncovered branches (lines 165–167, 209,
+215, 237–238 — `parseCreateTerminalInput`'s three optional-field spread ternaries,
+`actionResultToApiResult`'s `result.session ?` spread, and one guard-clause side each in
+`parseStdinInput`/`parseResizeInput`) are **pre-existing**, not introduced by this pass, not named
+in this task's own item-2 scope (which named line 320 specifically), and not hit by this task's
+fix — flagged here honestly rather than silently left out of the record, but left as a genuine,
+separate finding for a future pass rather than folded into this one. Package-wide aggregate
+remains comfortably above this package's committed threshold (98/98/98/98):
+**100/99.28/100/100** measured this run. `pnpm --dir packages/http exec tsc --noEmit`: clean. Root
+`pnpm guard`: clean (re-run after this change, not assumed still clean from before it).

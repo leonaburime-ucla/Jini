@@ -11,6 +11,7 @@ import {
 import type { PtyProcess, PtySpawn } from '@jini/platform';
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
+  createDeferredEndGate,
   registerTerminalEventStream,
   registerTerminalRoutes,
   terminalCreateRoute,
@@ -517,6 +518,51 @@ describe('registerTerminalRoutes', () => {
     const res = makeRes();
     await app.handlers['GET /api/terminals']!({ body: {}, query: {}, params: {} }, res);
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('createDeferredEndGate', () => {
+  function makeFakeChannel(): { end: ReturnType<typeof vi.fn> } {
+    return { end: vi.fn() };
+  }
+
+  it('defers end() until markOpened() when end() is called first (the already-exited-at-attach-time replay path)', () => {
+    const channel = makeFakeChannel();
+    const gate = createDeferredEndGate(channel);
+
+    gate.end();
+    expect(channel.end).not.toHaveBeenCalled();
+
+    gate.markOpened();
+    expect(channel.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends immediately when end() is called after markOpened() (a live session that exits post-open)', () => {
+    const channel = makeFakeChannel();
+    const gate = createDeferredEndGate(channel);
+
+    gate.markOpened();
+    expect(channel.end).not.toHaveBeenCalled();
+
+    gate.end();
+    expect(channel.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('never calls channel.end() when end() is never called at all', () => {
+    const channel = makeFakeChannel();
+    const gate = createDeferredEndGate(channel);
+
+    gate.markOpened();
+    expect(channel.end).not.toHaveBeenCalled();
+  });
+
+  it('does not double-fire channel.end() when markOpened() runs with no pending end(), even if end() arrives later', () => {
+    const channel = makeFakeChannel();
+    const gate = createDeferredEndGate(channel);
+
+    gate.markOpened();
+    gate.end();
+    expect(channel.end).toHaveBeenCalledTimes(1);
   });
 });
 
