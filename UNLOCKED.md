@@ -85,6 +85,13 @@ every entry; see the "Promotion" section below for what changes that.
     "lockedPackagesMayImport": false,
     "signOff": "PENDING",
     "note": "Own source-map.md states: 'Ported speculatively with no current consumer... likely not needed by an engine.' No other package in this repo imports it. Highest-priority candidate for archival alongside capability-providers."
+  },
+  "@jini/agui": {
+    "status": "incubating",
+    "consumers": [],
+    "lockedPackagesMayImport": false,
+    "signOff": "PENDING",
+    "note": "Added 2026-07-19, before this manifest existed — fell through the admission process entirely rather than being deliberately deferred like the other 10 entries here. Not named anywhere in extraction-plan.md §3's locked set or its own §10 roadmap appendix. Backfilled 2026-07-22 to close the gap; needs the same named-consumer promotion path as every other incubating package."
   }
 }
 ```
