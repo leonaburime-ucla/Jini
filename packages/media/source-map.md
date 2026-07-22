@@ -269,6 +269,133 @@ package-wide (`pnpm --dir packages/media exec vitest run --coverage`) —
 496 tests across 28 files, up from 316/20. `tsc --noEmit` and `pnpm guard`
 both clean.
 
+## 2026-07-21 addition (round 3) — generalize the dispatch engine into a real multi-provider mechanism + durable task-store adapter (`feat/http-routes-and-cli-commands`)
+
+The prior two 2026-07-21 passes ported vendor after vendor, but each was
+still its own hand-written `render*` async function — a growing pile of
+similar-shaped but independently-implemented fetch/error-handling/byte-
+extraction logic, not a system where registering a new vendor is
+*configuration*. This pass closes that gap for a first slice of vendors,
+plus adds the durable task-store adapter `task-store.ts`'s row above always
+called out as a deferred future task.
+
+**New generic mechanism:**
+
+| Jini file | What it is |
+|---|---|
+| `src/dispatch/vendor-adapter.ts` | `VendorAdapter<Meta>` — `{ requireCredential?, buildRequest, parseResponse }` — plus `dispatchVendorRequest(adapter, ctx, credentials)`, the generic harness: `requireCredential` -> `buildRequest` -> one `fetch` -> `parseResponse`. `parseResponse` stays a full function (not a further declarative shape) because some vendors need a *second* network call mid-parse (SenseAudio's SSRF-guarded asset download) — see the module's own doc comment for why a purely declarative parser DSL was rejected. Also exports `requireApiKey(message)`, a reference `VendorCredentialGuard` covering the identical `if (!credentials.apiKey) throw ...` check every vendor previously hand-wrote. |
+| `src/dispatch/vendor-registry.ts` | `VendorAdapterRegistry` — a `(providerId, routeKey) -> VendorAdapter` map a vendor module registers into at import time, keyed by the same `routeKey` shape `engine.ts`'s `routeKeyFor` already produces (`'image'`, `'audio:speech'`, ...). `register()` throws on a duplicate `(providerId, routeKey)` pair (a vendor module should register each pair exactly once). Exports both `createVendorAdapterRegistry()` (an isolated instance, used by tests) and the shared `mediaVendorRegistry` singleton every migrated vendor module registers into and `engine.ts` consults. |
+| `src/dispatch/response-parsers.ts` | Two `VendorResponseParser` factories for response shapes verified (by reading real vendor bodies, not assumed) to repeat byte-for-byte across multiple vendors: `createRawBytesParser` (POST JSON, raw bytes back with no envelope — `fishaudio.ts`, `openai.ts`'s speech renderer) and `createHexEnvelopeAudioParser` (POST JSON, hex-encoded audio inside a `base_resp`-enveloped JSON body where an HTTP 200 can still be a logical failure — `minimax.ts`, `senseaudio.ts`'s TTS renderer, verified identical down to the literal error-message templates). Vendors whose shape doesn't genuinely match either factory (OpenAI's own image response, whose non-JSON error is deliberately NOT azure-tag-aware while its non-OK error IS; SenseAudio's image response, which needs a second SSRF-guarded fetch) correctly keep bespoke `parseResponse` functions instead of being forced through a shared shape that would silently change their behavior. |
+
+**`engine.ts`**: `resolveRenderer(providerId, routeKey)` now checks
+`mediaVendorRegistry` first, falling back to the static `ROUTES` table for
+vendors not yet migrated. The `openai`/`minimax`/`senseaudio`/`fishaudio`
+`ROUTES` entries were *removed* (not left as a redundant duplicate path) and
+those four providers' modules are now imported for their registration side
+effect only (`import './providers/openai.js'` etc.) — proving resolution
+for those four goes through the registry exclusively, not parallel unused
+scaffolding sitting beside the old table.
+
+**Vendors actually migrated onto the generic engine this pass (4):**
+`providers/openai.ts` (both `renderOpenAIImage` — custom `parseResponse`,
+kept bespoke deliberately, see its own doc comment — and
+`renderOpenAISpeech` — via `createRawBytesParser`), `providers/minimax.ts`
+(`renderMinimaxTTS`, via `createHexEnvelopeAudioParser`),
+`providers/senseaudio.ts` (`renderSenseAudioTTS` via
+`createHexEnvelopeAudioParser`; `renderSenseAudioImage` keeps a custom
+`parseResponse` for its SSRF-guarded second fetch + dual `base_resp`/
+`error_message` failure paths), `providers/fishaudio.ts`
+(`renderFishAudioTTS`, via `createRawBytesParser`). Each vendor's public
+`render*` export is now a one-line `dispatchVendorRequest(adapter, ctx,
+credentials)` call; the adapter itself is registered into
+`mediaVendorRegistry` at module load.
+
+**Not migrated this pass** (still hand-written functions dispatched via the
+static `ROUTES` table): `aihubmix.ts`, `custom-image.ts`, `elevenlabs.ts`,
+`grok.ts`, `imagerouter.ts`, `nanobanana.ts`, `openrouter.ts`,
+`volcengine.ts`. A real, itemized remaining gap, not silently dropped — a
+future pass can migrate these the same way; nothing about the mechanism is
+vendor-count-limited.
+
+**Proof external behavior didn't regress**: `openai.test.ts`,
+`minimax.test.ts`, `senseaudio.test.ts`, `fishaudio.test.ts`, and
+`engine.test.ts` — all pre-existing, all asserting real URL/body/header/
+error-message/`providerNote` shape against a mocked `fetch` — were **not
+edited** during this pass (confirmed via `git log` on each file: no commit
+in this pass touches them) and still pass unmodified against the refactored
+adapters. `engine.test.ts` in particular still exercises the four migrated
+(provider, surface) pairs end-to-end through `createMediaDispatchEngine()`
+without knowing the registry exists — proving the registry-first resolution
+is a transparent internal reshuffle from a caller's perspective, not a
+public-behavior change.
+
+**Durable task-store adapter (`src/sqlite-task-store.ts`, new):**
+`createSqliteMediaTaskStore(dbPath)` — a `better-sqlite3`-backed
+`MediaTaskStore` implementation, added per this pass's explicit "durable
+task adapter" brief: several already-ported/future vendors are async
+submit-then-poll jobs, so a job's state must survive a process restart, not
+just live in the in-memory reference (`createInMemoryMediaTaskStore` in
+`task-store.ts`). Reuses this repo's existing durability pattern exactly —
+`packages/sqlite/src/event-log.ts`'s `createSqliteEventLog` (the durable
+adapter for `@jini/daemon`'s `EventLog` port) — rather than inventing a
+parallel one: `new Database(dbPath)`, `db.pragma('journal_mode = WAL')`,
+idempotent `CREATE TABLE IF NOT EXISTS` (so reopening the same file resumes
+from whatever was durably committed), `db.transaction()` for atomic
+multi-statement writes, every public method still `Promise`-returning
+despite `better-sqlite3` being synchronous under the hood, and a `close():
+Promise<void>` addition beyond the port interface. Implements the exact same
+`queued -> running -> done|failed|interrupted` transition legality
+(`ALLOWED_TRANSITIONS`), duplicate-id rejection, `listByOwner` terminal-
+status filtering, and two-phase `reconcileOnBoot` boot reconciliation as
+`createInMemoryMediaTaskStore` — proven, not asserted, by
+`sqlite-task-store.test.ts` running the same conformance shape as
+`task-store.test.ts` against the sqlite adapter instead, plus a
+durability-across-restart section with no in-memory equivalent: creates a
+task, `close()`s the store (simulating the process dying), opens a **fresh**
+`createSqliteMediaTaskStore(dbPath)` instance against the same file, and
+confirms an in-flight (`running`) job's state — including its `progress`
+array — is readable from that new instance and that `reconcileOnBoot` on
+the fresh instance correctly marks it `interrupted` with `DAEMON_RESTART`.
+This is a genuine "does state survive a restart" test, not just "state is
+written somewhere."
+
+**Why `@jini/media`, not `@jini/sqlite`** (the `EventLog` precedent's
+"natural" home, where the durable adapter lives in a package separate from
+the port it implements): `@jini/sqlite` is one of
+`scripts/check-engine-boundaries.ts`'s 14 *locked* packages (per
+`UNLOCKED.md`); `@jini/media` is listed there with `status: "incubating"`.
+The boundary rule forbids a locked package from importing an unlocked,
+non-`"stable"` one — `@jini/sqlite` depending on `@jini/media` for
+`MediaTaskStore`'s types would fail `pnpm guard` outright. Implementing the
+adapter inside `@jini/media` (itself unlocked, so unrestricted in what it
+may depend on) keeps the identical schema/transaction/WAL/`close()`
+conventions without a guard violation. The open question of whether this
+should move to `@jini/sqlite` once `@jini/media` is promoted to `"stable"`
+is tracked in
+`ADS-memory/reports/proposals/PROP-media-durable-tasks-2026-07-21.md`.
+
+**New dependency**: `better-sqlite3 ^11.10.0` (dependency) + `@types/
+better-sqlite3 ^7.6.11` (devDependency) — the first `better-sqlite3` use in
+this package (`task-store.ts`'s in-memory reference adapter has none).
+
+**Tests**: `response-parsers.test.ts` (14), `vendor-adapter.test.ts` (9),
+`vendor-registry.test.ts` (11 — including one asserting every vendor
+migrated onto the generic engine is actually registered once its module is
+imported, not just registrable in principle), `sqlite-task-store.test.ts`
+(33, including the four-test durability-across-restart `describe` block
+above). Package-wide: **563 tests across 32 files, up from 496/28** (a net
++67 tests / +4 files — the four new test files above; the four migrated
+providers' own pre-existing test files are unchanged in file and test
+count, per the "proof external behavior didn't regress" note above).
+
+**Coverage**: 100% statements / 100% branches / 100% functions / 100% lines,
+package-wide (`pnpm --dir packages/media exec vitest run --coverage`),
+including every new file (`vendor-adapter.ts`, `vendor-registry.ts`,
+`response-parsers.ts`, `sqlite-task-store.ts`) and every refactored one
+(`engine.ts`, `providers/openai.ts`, `providers/minimax.ts`,
+`providers/senseaudio.ts`, `providers/fishaudio.ts`). `tsc --noEmit` and
+`pnpm guard` both clean.
+
 ## Not ported / explicitly out of scope (pre-existing, from the original pass)
 
 - **`media/config.ts` in full** (23,414 bytes) — grepped for its exported
@@ -294,9 +421,13 @@ both clean.
 `@jini/core` (workspace) for `token()` — see `src/tokens.ts`. `undici` (as of
 the dispatch engine — `providers/openai.ts`'s long-timeout `Agent` for image
 generation, mirroring `packages/deploy`'s use of the same package).
+`better-sqlite3` + `@types/better-sqlite3` (as of the 2026-07-21 round-3
+dispatch-engine-generalization pass — `src/sqlite-task-store.ts`'s durable
+`MediaTaskStore` adapter; see that dated section above for why this
+package, not `@jini/sqlite`, owns it).
 `node:crypto` (`randomUUID`), `node:fs`/`node:path` (staging), and
 `node:dns` (`ssrf-guard.ts`'s hostname-resolve check, added 2026-07-21
-round 2) — Node built-ins. No `better-sqlite3`, no `@open-design/contracts`.
+round 2) — Node built-ins. No `@open-design/contracts`.
 
 ## Coverage
 
