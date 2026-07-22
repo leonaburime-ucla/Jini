@@ -24,6 +24,7 @@ import {
   isSupportedStreamFormat,
   translateAgentRuntimeEvent,
   type AgentExecutor,
+  type ClassifyFailure,
   type ContinuationOptions,
 } from '../agent-executor.js';
 
@@ -171,6 +172,8 @@ interface HarnessOptions {
   journal?: RunByteJournal;
   /** Gap 3's stdin-tool-result injection config — omitted by default, matching `CreateAgentExecutorOptions.continuation`'s own opt-in default. */
   continuation?: ContinuationOptions;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
 }
 
 interface Harness {
@@ -245,6 +248,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
     ...(options.continuation !== undefined ? { continuation: options.continuation } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
   });
 
   return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
@@ -1062,6 +1066,8 @@ interface AcpHarnessOptions {
   stopProcessesRejects?: unknown;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
 }
 
 interface AcpHarness {
@@ -1148,6 +1154,7 @@ function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -1446,6 +1453,8 @@ interface PiRpcHarnessOptions {
   stopProcessesRejects?: unknown;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
 }
 
 interface PiRpcHarness {
@@ -1523,6 +1532,7 @@ function createPiRpcHarness(options: PiRpcHarnessOptions = {}): PiRpcHarness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -2417,5 +2427,130 @@ describe('AgentExecutor — gap 3 capability-routed continuation (stdin-tool-res
     // 3's MCP-callback spike (not this stdin path) is what drives those in production.
     const def = streamJsonDef();
     expect(def.externalMcpInjection).toBeUndefined();
+  });
+});
+
+describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions.classifyFailure)', () => {
+  it('stays resumable:false on a failed run when no classifier is configured (default, unchanged behavior) — child-driven path', async () => {
+    const { lifecycle, executor, child } = createHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('failed');
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+
+  it('never consults the classifier for a succeeded run', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const def = createFakeDef({ streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 0, null);
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('succeeded');
+    expect(classifyFailure).not.toHaveBeenCalled();
+  });
+
+  it('never consults the classifier for a cancelled run', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const def = createFakeDef({ streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    await lifecycle.cancel({ runId: run.id });
+    child.emit('close', null, 'SIGTERM');
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('cancelled');
+    expect(classifyFailure).not.toHaveBeenCalled();
+  });
+
+  it('consults the classifier on a failed child-driven run and honors a synchronous true result', async () => {
+    const classifyFailure = vi.fn((ctx: { runId: string; agentId: string; code: number | null; signal: string | null }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      expect(ctx.code).toBe(1);
+      expect(ctx.signal).toBeNull();
+      return true;
+    });
+    const { lifecycle, executor, child } = createHarness({ classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('honors an asynchronous (Promise-returning) classifier and a false result', async () => {
+    const classifyFailure = vi.fn(async () => false);
+    const { lifecycle, executor, child } = createHarness({ classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+
+  it('consults the classifier on a failed ACP-driven run', async () => {
+    const classifyFailure = vi.fn((ctx: { agentId: string }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      return true;
+    });
+    const { lifecycle, executor, child } = createAcpHarness({ completedSuccessfully: false, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('consults the classifier on a failed pi-rpc-driven run', async () => {
+    const classifyFailure = vi.fn((ctx: { agentId: string }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      return true;
+    });
+    const { lifecycle, executor, child } = createPiRpcHarness({ hasFatalError: true, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('never consults the classifier for a pre-spawn failure (no child ever ran)', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const { lifecycle, executor } = createHarness({ def: null, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' })).rejects.toMatchObject({
+      code: 'AGENT_NOT_FOUND',
+    });
+
+    expect(classifyFailure).not.toHaveBeenCalled();
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
   });
 });

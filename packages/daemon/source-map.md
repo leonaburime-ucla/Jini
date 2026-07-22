@@ -1127,3 +1127,272 @@ Recommendation calls for needs, at minimum: a real `@jini/mcp` bin entry point, 
 bridging an MCP tool call to `delegated-tool-bridge.execute()`, and wiring that writes `.mcp.json` into
 the spawn cwd before the child launches. Scoped as its own follow-up task rather than rushed alongside
 the stdin-injection half above.
+
+## 2026-07-21 addition — `routines/`: the routine scheduler engine + `RoutineStore` CRUD/history port
+
+Implements the two decisions made in response to `ADS-memory/reports/proposals/
+PROP-http-route-packs-automation-routines-2026-07-21.md` (Finding 2) for automation/routines' non-HTTP
+half — the `@jini/http` route pack itself lives in `packages/http/src/routines.ts` (see that package's
+own `source-map.md` dated section).
+
+**New module `src/routines/`** (not mixed into `agent-executor.ts`/`run-lifecycle.ts` — a different
+session was concurrently editing those files for the run/chat orchestration gaps above; this task
+stayed out of them per its own brief):
+
+- **`types.ts`** — `Routine`/`RoutineRun`/`RoutineSchedule`/`RoutineProjectTarget`/
+  `RoutineContextSelection`/`RoutineRunHandler`/`RoutinePersistence`/etc., ported field-for-field from
+  OD's `apps/daemon/src/routines.ts` (726 lines, `refactor/web-memory-slice` branch) local type mirror —
+  that file's own header comment already documented these as "a local mirror... kept here so this
+  service typechecks under NodeNext," not a product coupling, confirmed directly rather than re-cited
+  from the proposal blind.
+- **`schedule.ts`** — the DST-safe wall-clock schedule math (`nextRunAtForSchedule`,
+  `nextHourlyRunAt`, `nextWallTimeMatching`, the `Intl.DateTimeFormat`-based `partsInTimezone`/
+  `tzWallToUtcCandidates`/`tzWallToUtcGapFallback` gap/fall-back-transition handling) plus
+  `validateSchedule`/`validateTarget`/`isValidWallTime`/`isValidTimezone`. Logic unchanged from the OD
+  source — a faithful port, not a redesign, per the proposal's own warning against "casually
+  reinventing" this. `nextWallTimeMatching`/`tzWallToUtcCandidates`/`tzWallToUtcGapFallback`/
+  `partsInTimezone` are exported (OD kept them module-private) specifically so their defensive/
+  edge-case branches — the 14-day walk-exhaustion fallback, the invalid-timezone catch blocks, two ICU
+  quirks (`hour: "24"` at local midnight, an unrecognized weekday abbreviation) — are directly
+  unit-testable instead of structurally unreachable through the public schedule-kind API alone (every
+  real `RoutineSchedule` a caller can construct guarantees a predicate match within 7 days, and reaches
+  `validateSchedule` before ever reaching these functions).
+- **`scheduler.ts`** — `RoutineService` (start/stop/rescheduleAll/rescheduleOne/unschedule/nextRunAt/
+  runNow), `ScheduledRunPersistenceError`. A faithful port of OD's `routines.ts` scheduler class:
+  same `setTimeout`-chained re-schedule (capped at the ~24.8-day `setTimeout` ceiling), same
+  race-safe scheduled-slot claim (a sibling daemon's losing `insertRun()` distinguished from a real
+  persistence failure via `ScheduledRunPersistenceError`, with retry-same-slot vs. advance-to-next-
+  cadence branching on that distinction), same routine-placeholder-id scrubbing
+  (`clearRoutinePlaceholderId`) on a failed prepare. Only cosmetic change: the `[od]` console-log
+  prefix became `[@jini/daemon]`. `RoutinePersistence` (the port `RoutineService` is injected with)
+  is **deliberately kept synchronous**, not converted to this package's usual "ports are async-only
+  from day one" convention (`event-log.ts`'s own doc note, extraction-plan §2.6) — see `types.ts`'s
+  `RoutinePersistence` doc comment for why: the `setTimeout`-driven fire path and the scheduled-slot
+  race logic are exactly the "genuinely hard to get right" logic the proposal flagged as not to
+  casually reinvent, and a mechanical async conversion of every internal call site risks introducing
+  new races for no behavioral gain, since a real backing store can still satisfy this port
+  synchronously (an in-process cache a host keeps warm) even when the durable writes underneath it are
+  async.
+- **`routine-store.ts`** — **new**, no OD source (no such port existed anywhere in this repo before
+  this file; OD's own `routine.ts` route file called eight raw `db.js` SQL functions directly against
+  `routines`/`routine_runs` tables `packages/sqlite/source-map.md` already flags as explicitly out of
+  scope for the db-barrel port). `RoutineStore` — `list`/`get`/`create`/`update`/`delete`/`listRuns`/
+  `getLatestRun` — designed the same way `EventLog` is designed per this task's explicit brief: a
+  storage-agnostic async interface plus `createInMemoryRoutineStore()`, the in-memory reference
+  implementation, so a durable `@jini/sqlite` adapter is a drop-in swap later without an API break.
+  **Deliberately does not write run records** (no `insertRun`/`updateRun` on the public interface) —
+  mirrors OD's own architectural split, where the scheduler's `RoutinePersistence.insertRun`/
+  `updateRun` (the write path for a routine actually firing) and the HTTP layer's run-history reads
+  were always two different narrow ports over the same conceptual table, not one shared interface. A
+  host bridging both against one real durable table is host-level integration wiring (the same way
+  `runs.ts`'s `onStarted` driver is host-supplied rather than built into `RunLifecycle`), not attempted
+  here. The concrete `createInMemoryRoutineStore()` factory does expose two extra methods beyond the
+  `RoutineStore` contract itself — `recordRun`/`patchRun` — documented as existing only so (a) this
+  module's own tests can seed `listRuns`/`getLatestRun` fixtures without a second store, and (b) a host
+  building that bridge adapter has a shape-matched target to forward the scheduler's writes to.
+  `summarizeLastRun` (the `Routine.lastRun` display-shaped projection embedded by `list`/`get`/`create`/
+  `update` — OD's own `routineDbRowToContract` mapping) is its own exported pure function, directly
+  unit-tested rather than inlined.
+- **`index.ts`** — barrel; re-exported from the package's top-level `index.ts` (`export * from
+  './routines/index.js';`, alongside a new module-doc paragraph there).
+
+**Confirmed no name collisions** against the rest of the package's public surface before adding this
+(`Routine`/`Schedule`/`Weekday`/`validate*`/`nextRunAt*` greppped clean across every other exported
+module).
+
+Tests: `src/routines/__tests__/schedule.test.ts` (30 tests — the DST spring-forward-gap/fall-back-
+ambiguous-hour cases adapted from OD's own `apps/daemon/tests/routines.test.ts`, since that suite tests
+exactly this generic scheduling math with zero OD product coupling, plus new tests this port added for
+branches OD's own suite didn't cover: the 14-day walk exhaustion, the two ICU-quirk fallbacks via a
+mocked `Intl.DateTimeFormat.prototype.formatToParts`, and both arms of the gap-fallback candidate-
+ordering ternary using two different real timezones' spring-forward transitions), `scheduler.test.ts`
+(25 tests — same OD-suite-adapted idempotency/race/discard-cleanup coverage, plus new tests for
+`rescheduleAll`/`rescheduleOne` re-invocation branches, `retryScheduledSlot`'s two guard branches via
+a synchronous `stop()`/routine-removal race simulated inside a mocked `insertRun`, the async closure's
+defensive run-handler re-check via `Object.defineProperty` on the instance — TS `private` is
+compile-time-only, so this is a legitimate runtime override, not a hack — and the raw-non-Error-value
+branches of every `error instanceof Error ? error.message : error` ternary), `routine-store.test.ts`
+(23 tests — full CRUD, run-history recording/patching/limiting, defensive-clone-on-read verified by
+mutating a returned `Routine`'s array/object fields and re-fetching). One inherited, faithfully-ported
+behavior documented rather than "fixed": `nextWallTimeMatching`'s per-day loop calls the unguarded
+`partsInTimezone` without a try/catch (unlike `isValidTimezone`, which does wrap it) — an invalid
+timezone reaching `nextRunAtForSchedule` throws rather than returning `null`; in practice a schedule
+only reaches this function after `validateSchedule` has already rejected a bad timezone, so this
+mirrors the OD original's own reachability assumption rather than a new gap.
+
+`pnpm --dir packages/daemon typecheck`: clean. `pnpm --dir packages/daemon test:coverage`: this
+package's coverage gate was intermittently red during this task purely from a concurrent session's
+in-progress, uncommitted work on `agent-executor.ts`/`terminal-session.ts` (unrelated to routines,
+confirmed via `git diff`/`git status` showing those files mid-edit) — resolved by the time of this
+task's own final push; see this task's own final numbers in the `feat/http-routes-and-cli-commands`
+branch history / PR for the as-pushed measurement. This task's own new files
+(`src/routines/**`) measured in isolation at effectively 100% across statements/functions/lines with
+branches in the high 90s before the final full-package run.
+
+Not built this pass (explicitly out of scope, per the task brief): any built-in automation-template
+content (`automation-templates.ts`'s `BUILT_IN_AUTOMATION_TEMPLATES`, ~145 lines of authored product
+prompts — the host-supplies-its-own-templates decision was already made before this task started, so
+none of that file's content or its template-lookup shape was ported, matching this repo's existing
+`@jini/memory` prompt-composition / `@jini/deploy` config-path-resolution precedent for product-authored
+content staying host-owned); `automation-proposals.ts`/`automation-ingestions.ts` (per the proposal's
+Finding 1, scoped as "a dedicated follow-up task the same size and shape as `@jini/memory`'s own
+original port," not attempted here); wiring a `RoutineStore`↔`RoutinePersistence` bridge adapter (host-
+level integration, see `routine-store.ts`'s module doc).
+
+## 2026-07-22 addition — run/chat orchestration gap 4: retry classifier port
+
+Implements gap 4 of the run/chat orchestration Final Recommendation, the last of the 5 gaps in the
+debate's locked MVP sequencing (1 → 5 → 3 → 4): "an injectable `classifyFailure?` port on
+`CreateAgentExecutorOptions`, with no default classifier — absent, behavior stays byte-identical to
+today's hardcoded `resumable: false`."
+
+**`ClassifyFailure`** (new type in `agent-executor.ts`): `(context: FailureClassificationContext) =>
+boolean | Promise<boolean>`, where `FailureClassificationContext = {runId, agentId, code, signal}`.
+Deliberately minimal — those four fields are the only signals cheaply available at each of the three
+lifecycle-wiring close handlers without new buffering machinery. No stderr/stdout tail is accumulated
+for this purpose; a host wanting output-pattern-based classification (the way OD's own ~20-vendor-CLI
+text-matching classifier worked, per this module's own doc — "deliberately never ported") would need
+its own listener for that. An honest scope limit, not an oversight.
+
+New optional `classifyFailure?: ClassifyFailure` on `CreateAgentExecutorOptions`, opt-in only like
+`journal`/`continuation` — there is no generic "real" classification logic this package could supply on
+a caller's behalf. Threaded into all three lifecycle-wiring functions
+(`wireChildLifecycle`/`wireAcpLifecycle`/`wirePiRpcLifecycle`), each of which now computes `resumable`
+as: `status === 'failed' && classifyFailure !== undefined ? await classifyFailure({...}) : false` — the
+exact fallback (`false`) matches every prior hardcoded value byte-for-byte. **Never consulted** for
+`'succeeded'`/`'cancelled'` outcomes (nothing to reclassify), and **never consulted** for a pre-spawn
+failure (`failBeforeSpawn`'s call sites, unknown-agentId/unsupported-format/binary-not-resolved/spawn-
+error) — those represent failures where no child process ever ran, so there is nothing a classifier
+could meaningfully examine; those paths keep their original hardcoded `resumable: false` untouched.
+
+ACP and pi-rpc's wiring contexts (`WireAcpLifecycleContext`/`WirePiRpcLifecycleContext`) previously
+carried no agent identity at all (only `WireChildLifecycleContext` had `def`) — both gained a new
+`agentId: string` field, populated from `def.id` at each construction call site in `run()`, purely so
+`classifyFailure`'s context can report which agent failed.
+
+Tests: a new "gap 4 failure classifier" describe block in `agent-executor.test.ts` (8 tests): default-
+unchanged `resumable:false` with no classifier configured, the classifier is never consulted for a
+succeeded run, never consulted for a cancelled run, a synchronous `true` result is honored (child-driven
+path, also asserting the exact `{runId, agentId, code, signal}` context shape passed in), an asynchronous
+(`Promise`-returning) classifier and a `false` result are both honored, the classifier is consulted on a
+failed ACP-driven run, on a failed pi-rpc-driven run, and never consulted for a pre-spawn failure. Initial
+draft of three of these tests raced `runPromise` (which resolves at spawn confirmation, not at run
+termination) against the close handler's own async chain — fixed by awaiting
+`lifecycle.waitForTerminal(run.id)` before asserting on `classifyFailure`'s call count, matching this
+package's own established pattern elsewhere in the same test file. 475/475 tests in the package
+(package-wide, including sibling gap-3-part-2/terminal-pty/automation-routines work landing
+concurrently), 100% coverage on all 4 metrics for every file this task touched. `pnpm guard`: clean.
+
+**This closes all 5 gaps the swarm-consensus debate's Final Recommendation named for its MVP sequencing**
+(1: default wiring + byte-journal; 5: session resume; 3: transport resolution + stdin-tool-result
+injection, with the MCP-callback spike split out as its own follow-up per the Final Recommendation's own
+"validate... before committing" framing; 4: this addition). Gap 2 (prompt/skill/memory composition)
+remains permanently out of scope per the debate's own decision — not a gap left open, a deliberate
+boundary.
+
+## 2026-07-21 addition — `terminal-session.ts`: interactive-terminal session manager (session-token gating + the kill/write/resize lock)
+
+Implements the specific decision made in
+`ADS-memory/reports/proposals/PROP-http-route-packs-terminal-pty-2026-07-21.md` — that document's own
+"What would need to happen before this ports" §1/§2 candidate (a): `ToolExecutor.execute('terminal.create',
+...)` returns a session id a lighter, still-explicit per-call ownership check validates on every
+subsequent `write`/`resize`/`kill`/`attach`, rather than either (1) gating only `create` and leaving
+`stdin` reachable through an ordinary same-origin-gated route with no further capability check, or (2)
+wrapping every keystroke in `ToolExecutor`'s full authorize/confirm/audit round-trip.
+
+**Not a port of OD's `apps/daemon/src/terminals.ts`** — that file's ring-buffer/coalescing/SSE-agnostic
+session engine was already ported to `@jini/platform`'s `terminal.ts` on 2026-07-18 (see that package's
+own `source-map.md`), before this task, as part of the "flat daemon primitives" batch — with its own
+`PtySpawn`/`PtyProcess`/`TerminalSseSink` ports specifically because `@jini/platform` does not and
+should not depend on `node-pty` (a native compiled addon). This module is new work layered on top of
+that existing port, not a re-port of the origin.
+
+**What this module adds, concretely:**
+
+1. **`loadRealSpawnPty`** — the real `node-pty`-backed `PtySpawn` `@jini/platform`'s `TerminalService`
+   is constructed with by default. Dynamically imports `node-pty` (mirroring OD's origin `await
+   import('node-pty')`) so a host whose platform lacks a usable addon still boots; only an actual
+   `terminal.create` call fails. Before the first spawn, repairs `node-pty`'s bundled `spawn-helper`
+   executable bit via `@jini/platform`'s own `spawnHelperCandidatePaths`/`ensureSpawnHelperExecutable`
+   — reused, not reimplemented — but with the resolver anchored at **this** module
+   (`createRequire(import.meta.url)` here), since `@jini/platform`'s own default resolver would not
+   find `node-pty` (that package deliberately does not depend on it).
+
+2. **Session-ownership gating** — `TerminalSessionManager` records which `Principal` created each
+   session (at `create()` time, inside the `ToolExecutor`-gated tool handler) and every subsequent
+   `write`/`resize`/`kill`/`attach`/`get` call verifies the calling principal matches, denying
+   otherwise. A mismatch is reported identically to "no such session" (`'not-found'`), never a
+   distinguishable "forbidden" — matching OD's own `resolveSession` precedent (a foreign `projectId`
+   was already a 404 in the origin, not a 403) and avoiding session-id enumeration.
+
+3. **The kill/write/resize race fix** (the proposal's own named secondary blocker, and the routes-
+   classification table's original note against `terminal.ts`: "No lock between a `kill` and a
+   concurrent `stdin`/`resize` on the same session id"). The underlying engine's `kill()` only
+   *requests* the real OS process die (`SIGTERM`) — `status` does not flip to `'exited'` until the
+   pty's own `onExit` fires asynchronously once the process actually dies, so a `write`/`resize`
+   processed in that window still reaches the real pty. `runExclusive` (a per-session-id promise chain,
+   the same `withLock` idiom `agent-runtime/src/providers/oauth-tokens.ts` already established in this
+   codebase) serializes `write`/`resize`/`kill` calls for the same session id; `kill()` sets its own
+   immediate `killed` flag inside that same locked critical section, before delegating to the
+   underlying engine — so any `write`/`resize` queued behind it observes `killed: true` and is
+   rejected, regardless of whether the real OS process has actually exited yet. Verified directly: a
+   test drives a fake pty that never fires `onExit`, issues `kill()` then `write()` concurrently, and
+   asserts the write never reaches the fake pty's `write()` — proving the fix does not depend on the
+   underlying async status transition.
+
+**A fourth, self-imposed constraint drove one design choice**: `@jini/platform`'s `TerminalSession`/
+`CreateTerminalOptions` carry a per-session grouping field this package's own identifier-neutrality
+lint (`__tests__/identifier-lint.test.ts`) forbids naming anywhere in `packages/daemon/src/**`. Rather
+than working around the lint, this module's public `TerminalSessionInfo` type is its own shape — every
+field explicitly enumerated in `toSessionInfo` (no object spread, which would have silently carried the
+forbidden field through) — and the caller-supplied `resourceRef` this module tracks in its own metadata
+map is never forwarded to `@jini/platform`'s `create`/`list` calls at all (that field is simply omitted
+on every call into the underlying engine).
+
+**`node-pty` as a new workspace dependency** — this is the first native compiled addon dependency
+anywhere in this monorepo. Investigated and resolved empirically, not assumed:
+
+- Confirmed absent from `pnpm-lock.yaml` before this task (checked directly).
+- Added to `@jini/daemon`'s `package.json` only (`"node-pty": "^1.1.0"`), not the workspace root and
+  not `@jini/http` (a pure HTTP/SSE transport package has no business taking on a process-spawning
+  native dependency) — matching the task brief's explicit placement decision.
+- This workspace's root `package.json` already gates native postinstall/build scripts behind a
+  `pnpm.onlyBuiltDependencies` allow-list (previously `["better-sqlite3"]`, for `@jini/sqlite`) —
+  `pnpm install` otherwise silently skips a new native dependency's install/postinstall lifecycle
+  scripts by design (a deliberate supply-chain-safety default, not a bug). `"node-pty"` was added to
+  that same allow-list; without it, `node-pty`'s bundled prebuilt binary is never linked and every
+  spawn fails.
+- Verified end to end, for real, in this sandbox (darwin, this environment's Node binary reports
+  `x64` — Rosetta or an actual Intel runtime, not the host's `arm64`): `pnpm install` fetches
+  `node-pty@1.1.0`, which ships **bundled prebuilt binaries for `darwin-arm64`, `darwin-x64`,
+  `win32-arm64`, `win32-x64` inside the npm tarball itself** (no network fetch at install time) — but
+  **no `linux-*` prebuild is bundled**. A real spawn was confirmed working after `pnpm install`
+  (`ensureSpawnHelperExecutable` repairing the bundled `spawn-helper`'s permission bit, exactly the
+  same fix `@jini/platform`'s `terminal.ts` module doc already documents needing) by actually forking
+  `/bin/echo` through the addon and reading its output back. **This is a real, confirmed gap for any
+  Linux CI runner or Linux-hosted daemon deployment**: `node-pty`'s own `install` script falls back to
+  `node-gyp rebuild` when no bundled prebuild matches, which needs a full native toolchain
+  (python/make/a C++ compiler) present at install time — this workspace's `onlyBuiltDependencies` gate
+  means that fallback only even runs where explicitly allowed, and this repo currently has no CI
+  configuration at all (confirmed: no `.github/workflows`), so this gap is undiscovered rather than
+  mitigated. Flagged here rather than silently absorbed, per the task brief's explicit instruction.
+
+Tests: `src/__tests__/terminal-session.test.ts` — `loadRealSpawnPty` driven end to end against a fully
+mocked `node-pty`/`@jini/platform` (spawn-helper repair, the resolver-anchoring proof, the `IPty`→
+`PtyProcess` adapter's every member) with zero real filesystem or subprocess touched; the session
+manager built on the **real** `@jini/platform` `TerminalService` (that package's own ring-buffer/
+coalescing/TTL logic is not re-tested here) with an injected fake `PtySpawn`, covering ownership
+denial (cross-principal `get`/`write`/`resize`/`kill`/`attach`/`list`, always `'not-found'`, never a
+distinguishable forbidden), the kill/write/resize lock's actual race-closing behavior (including the
+"write queued before kill still lands" non-starvation case), TTL-driven metadata pruning (via fake
+timers), a narrow-but-real defensive branch (a session reaped by TTL cleanup between a call's ownership
+check and its own turn in the lock reports a null snapshot rather than throwing — deterministically
+forced by advancing fake timers inside the synchronous window before the queued lock body runs), and
+`createTerminalToolRegistrations`'s deny-by-default/policy-override/confirmation/malformed-input
+handling end to end through a real `ToolExecutor`/`ToolRegistry` (matching `db-ops.test.ts`'s own
+"prove the real production default, not a test fixture's" discipline). `pnpm --dir packages/daemon
+typecheck`: clean. This file's own coverage measured in isolation at 100% statements/branches/
+functions/lines; see this task's final push for the as-measured full-package numbers (the package's
+existing coverage gate was intermittently red during this task purely from a different, concurrent
+session's in-progress, uncommitted edits to `agent-executor.ts` — unrelated to this module, resolved by
+that session before this task's own final push).

@@ -587,6 +587,34 @@ export interface ContinuationOptions {
   readonly autonomousToolNames: ReadonlySet<string>;
 }
 
+/**
+ * Gap 4 of the run/chat orchestration Final Recommendation: what
+ * `classifyFailure` (see `CreateAgentExecutorOptions.classifyFailure`) is
+ * given to decide whether a `'failed'` run is `resumable`. Deliberately
+ * minimal — `code`/`signal` are the only signals cheaply available at every
+ * one of the three lifecycle-wiring close handlers without new buffering
+ * machinery (no stderr/stdout tail is accumulated for this purpose; a host
+ * wanting output-pattern-based classification, the way OD's own ~20-vendor
+ * text-matching classifier worked, would need its own listener for that —
+ * an honest scope limit, not an oversight).
+ */
+export interface FailureClassificationContext {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly code: number | null;
+  readonly signal: string | null;
+}
+
+/**
+ * Host-owned failure classifier — gap 4. Decides, for one specific
+ * `'failed'` run, whether `RunLifecycle.finish()`'s `resumable` flag should
+ * be `true`. Never consulted for `'succeeded'`/`'cancelled'` outcomes, and
+ * never consulted for a pre-spawn failure (`failBeforeSpawn`'s call sites) —
+ * those represent failures where no child process ever ran, so there is
+ * nothing a classifier could meaningfully examine.
+ */
+export type ClassifyFailure = (context: FailureClassificationContext) => boolean | Promise<boolean>;
+
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
   readonly def: RuntimeAgentDef;
@@ -600,6 +628,8 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly journal: RunByteJournal | undefined;
   /** Gap 3's stdin-tool-result injection config. `undefined` means every `turn_end` closes stdin unconditionally — see `ContinuationOptions`'s own doc. */
   readonly continuation: ContinuationOptions | undefined;
+  /** Gap 4's failure classifier. `undefined` means every `'failed'` outcome stays `resumable: false` — byte-identical to pre-gap-4 behavior. See `ClassifyFailure`'s own doc. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -642,7 +672,7 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
  * @overallScore 100/100
  */
 function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
-  const { runId, def, streamFormat, child, lifecycle, journal, continuation } = ctx;
+  const { runId, def, streamFormat, child, lifecycle, journal, continuation, classifyFailure } = ctx;
   let stdinClosed = false;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
@@ -798,12 +828,16 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = classifyRunCloseStatus({ cancelRequested, code, signal });
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId: def.id, code, signal: signal ?? null })
+          : false;
       await lifecycle.finish({
         runId,
         status,
         code,
         signal: signal ?? null,
-        resumable: false,
+        resumable,
         ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
       });
     })();
@@ -819,6 +853,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
 
 interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
+  readonly agentId: string;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
   readonly prompt: string;
@@ -831,6 +866,8 @@ interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). Covers this wrapper's own raw stdout/stderr forwarding only — the actual ACP prompt delivery happens inside `attachAcpSession`'s own transport, out of this module's direct view, so sent bytes are not journaled on this path (an honestly-scoped v1 gap, not an oversight). */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 4's failure classifier — see `ClassifyFailure`'s own doc. `undefined` means every `'failed'` outcome stays `resumable: false`. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -868,7 +905,7 @@ function translateAcpError(payload: unknown): RunErrorPayload {
  * success.
  */
 function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
-  const { runId, child, lifecycle, journal } = ctx;
+  const { runId, agentId, child, lifecycle, journal, classifyFailure } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
   // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
@@ -911,12 +948,16 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          : false;
       await lifecycle.finish({
         runId,
         status,
         code,
         signal: signal ?? null,
-        resumable: false,
+        resumable,
         ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
       });
     })();
@@ -949,6 +990,7 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
 
 interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
+  readonly agentId: string;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
   readonly prompt: string;
@@ -959,6 +1001,8 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). Same scope boundary as `WireAcpLifecycleContext.journal`: covers this wrapper's own raw stdout/stderr forwarding only, not the prompt bytes `attachPiRpcSession` sends through its own transport. */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 4's failure classifier — see `ClassifyFailure`'s own doc. `undefined` means every `'failed'` outcome stays `resumable: false`. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -981,7 +1025,7 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
  * multi-turn tool continuation, resumable session ids, etc.).
  */
 function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
-  const { runId, child, lifecycle, journal } = ctx;
+  const { runId, agentId, child, lifecycle, journal, classifyFailure } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
   // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
@@ -1024,12 +1068,16 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          : false;
       await lifecycle.finish({
         runId,
         status,
         code,
         signal: signal ?? null,
-        resumable: false,
+        resumable,
         ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
       });
     })();
@@ -1144,6 +1192,14 @@ export interface CreateAgentExecutorOptions {
    * "tools okay to auto-continue without a human" this package can supply on a caller's behalf.
    */
   readonly continuation?: ContinuationOptions;
+  /**
+   * Gap 4's failure classifier — see `ClassifyFailure`'s own doc.
+   * @default undefined — every `'failed'` run stays `resumable: false`, byte-identical to
+   * pre-gap-4 behavior. No default classifier exists: OD's own ~20-vendor-CLI text-matching
+   * failure classifier was deliberately never ported (see this module's own doc), so there is no
+   * generic "real" classification logic this package could supply on a caller's behalf.
+   */
+  readonly classifyFailure?: ClassifyFailure;
 }
 
 /**
@@ -1177,6 +1233,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
   const journal = options.journal;
   const continuation = options.continuation;
+  const classifyFailure = options.classifyFailure;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -1339,6 +1396,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
             cleanupPromptFile,
             journal,
             continuation,
+            classifyFailure,
           });
 
     try {
@@ -1356,6 +1414,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       try {
         wireAcpLifecycle({
           runId: input.runId,
+          agentId: def.id,
           child,
           lifecycle,
           prompt: input.prompt,
@@ -1369,6 +1428,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
           journal,
+          classifyFailure,
         });
       } catch (err) {
         // Unlike the cancellation-listener call sites, we are already in an async function
@@ -1399,6 +1459,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       try {
         wirePiRpcLifecycle({
           runId: input.runId,
+          agentId: def.id,
           child,
           lifecycle,
           prompt: input.prompt,
@@ -1410,6 +1471,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
           journal,
+          classifyFailure,
         });
       } catch (err) {
         // Same discipline as the ACP attach-failure path directly above: await cleanup here
