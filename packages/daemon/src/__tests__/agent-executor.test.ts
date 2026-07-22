@@ -20,12 +20,15 @@ import { createRunByteJournal, type RunByteJournal } from '../continuation/journ
 import type { ToolExecutionResult, ToolExecutor } from '../tool-executor.js';
 import {
   AgentExecutorError,
+  buildMcpJsonServerEntry,
   createAgentExecutor,
   isSupportedStreamFormat,
+  mergeMcpJsonContent,
   translateAgentRuntimeEvent,
   type AgentExecutor,
   type ClassifyFailure,
   type ContinuationOptions,
+  type McpJsonInjectionOptions,
 } from '../agent-executor.js';
 
 const TEST_PRINCIPAL: Principal = { id: 'test-principal' };
@@ -174,6 +177,8 @@ interface HarnessOptions {
   continuation?: ContinuationOptions;
   /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
   classifyFailure?: ClassifyFailure;
+  /** Gap 3 part 2's spawn-time `.mcp.json` injection — omitted by default, matching `CreateAgentExecutorOptions.mcpJsonInjection`'s own opt-in default. */
+  mcpJsonInjection?: McpJsonInjectionOptions;
 }
 
 interface Harness {
@@ -249,6 +254,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
     ...(options.continuation !== undefined ? { continuation: options.continuation } : {}),
     ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
+    ...(options.mcpJsonInjection !== undefined ? { mcpJsonInjection: options.mcpJsonInjection } : {}),
   });
 
   return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
@@ -836,6 +842,56 @@ describe('createAgentExecutor — real default collaborators', () => {
       expect(typeof secondArg).toBe('string');
     } finally {
       consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('mcpJsonInjection with no readFile/writeFile override touches the real filesystem (defaultReadMcpJsonFile/defaultWriteMcpJsonFile)', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jini-mcp-json-'));
+    try {
+      const eventLog = createInMemoryEventLog();
+      const lifecycle = createRunLifecycle({ eventLog });
+      const def = createFakeDef({ id: 'claude', externalMcpInjection: 'claude-mcp-json' });
+      const child = createFakeChild(6100);
+      const fakeSpawn = (() => {
+        queueMicrotask(() => child.emit('spawn'));
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof nodeSpawn;
+
+      const executor = createAgentExecutor({
+        lifecycle,
+        getAgentDef: (id: string) => (def.id === id ? def : null),
+        resolveAgentLaunch: () =>
+          ({
+            selectedPath: '/fake/claude-bin',
+            pathResolvedPath: '/fake/claude-bin',
+            configuredOverridePath: null,
+            launchPath: '/fake/claude-bin',
+            launchKind: 'selected',
+            childPathPrepend: [],
+            diagnostic: null,
+          }) as AgentLaunchResolution,
+        applyAgentLaunchEnv: (env) => env,
+        spawn: fakeSpawn,
+        listProcessSnapshots: async () => [],
+        stopProcesses: async () => ({ alreadyStopped: false, forcedPids: [], matchedPids: [], remainingPids: [], stoppedPids: [] }),
+        // command/args/daemonUrl only — readFile/writeFile deliberately omitted so this exercises
+        // the real fs.promises defaults, not a fake.
+        mcpJsonInjection: { command: '/usr/bin/jini-mcp', daemonUrl: 'http://127.0.0.1:4242' },
+      });
+
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: tmpDir });
+
+      const written = JSON.parse(await fs.readFile(path.join(tmpDir, '.mcp.json'), 'utf8'));
+      expect(written).toEqual({
+        mcpServers: {
+          jini: { command: '/usr/bin/jini-mcp', args: [], env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' } },
+        },
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
@@ -2552,5 +2608,191 @@ describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions
     expect(classifyFailure).not.toHaveBeenCalled();
     const events = await collectEvents(lifecycle, run.id);
     expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+});
+
+describe('buildMcpJsonServerEntry', () => {
+  it('defaults args to an empty array when omitted', () => {
+    expect(buildMcpJsonServerEntry('run-1', { command: '/usr/bin/jini-mcp', daemonUrl: 'http://127.0.0.1:4242' })).toEqual({
+      command: '/usr/bin/jini-mcp',
+      args: [],
+      env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+    });
+  });
+
+  it('copies (does not alias) a supplied args array', () => {
+    const args = ['--flag'];
+    const entry = buildMcpJsonServerEntry('run-1', { command: 'jini-mcp', args, daemonUrl: 'http://127.0.0.1:4242' });
+    expect(entry.args).toEqual(['--flag']);
+    expect(entry.args).not.toBe(args);
+  });
+});
+
+describe('mergeMcpJsonContent', () => {
+  const entry = { command: 'jini-mcp', args: [], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://d' } };
+
+  it('produces a fresh document when no existing content is given', () => {
+    expect(JSON.parse(mergeMcpJsonContent(undefined, entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('preserves unrelated top-level keys and other registered servers', () => {
+    const existing = JSON.stringify({ someOtherKey: true, mcpServers: { other: { command: 'other-bin', args: [], env: {} } } });
+    const merged = JSON.parse(mergeMcpJsonContent(existing, entry));
+    expect(merged).toEqual({
+      someOtherKey: true,
+      mcpServers: { other: { command: 'other-bin', args: [], env: {} }, jini: entry },
+    });
+  });
+
+  it('overwrites a pre-existing "jini" entry rather than merging into it', () => {
+    const existing = JSON.stringify({ mcpServers: { jini: { command: 'stale', args: ['--old'], env: {} } } });
+    const merged = JSON.parse(mergeMcpJsonContent(existing, entry));
+    expect(merged.mcpServers.jini).toEqual(entry);
+  });
+
+  it('starts fresh when the existing content is not valid JSON', () => {
+    expect(JSON.parse(mergeMcpJsonContent('{not json', entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('starts fresh when the existing content parses to a JSON array, not an object', () => {
+    expect(JSON.parse(mergeMcpJsonContent('[1,2,3]', entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('starts fresh when the existing document has a non-object "mcpServers" field', () => {
+    const existing = JSON.stringify({ mcpServers: 'not-an-object' });
+    expect(JSON.parse(mergeMcpJsonContent(existing, entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('emits pretty-printed JSON terminated by a trailing newline', () => {
+    const content = mergeMcpJsonContent(undefined, entry);
+    expect(content.endsWith('\n')).toBe(true);
+    expect(content).toContain('\n  "mcpServers"');
+  });
+});
+
+describe('AgentExecutor — gap 3 part 2 spawn-time .mcp.json injection (CreateAgentExecutorOptions.mcpJsonInjection)', () => {
+  function createMcpFsSpies(existing: string | undefined = undefined): {
+    mcpJsonInjection: McpJsonInjectionOptions;
+    readCalls: string[];
+    writeCalls: Array<{ path: string; content: string }>;
+  } {
+    const readCalls: string[] = [];
+    const writeCalls: Array<{ path: string; content: string }> = [];
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      args: ['--quiet'],
+      daemonUrl: 'http://127.0.0.1:4242',
+      readFile: async (path: string) => {
+        readCalls.push(path);
+        if (existing === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return existing;
+      },
+      writeFile: async (path: string, content: string) => {
+        writeCalls.push({ path, content });
+      },
+    };
+    return { mcpJsonInjection, readCalls, writeCalls };
+  }
+
+  it('spawns normally with no .mcp.json read/write attempted when mcpJsonInjection is unconfigured, even for a claude-mcp-json def', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('does not write .mcp.json for a def whose externalMcpInjection is not claude-mcp-json, even when configured', async () => {
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'acp-merge' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(readCalls).toEqual([]);
+    expect(writeCalls).toEqual([]);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('does not write .mcp.json for a claude-mcp-json def when externalMcpInjection is simply absent', async () => {
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies();
+    const def = createFakeDef();
+    const { lifecycle, executor } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(readCalls).toEqual([]);
+    expect(writeCalls).toEqual([]);
+  });
+
+  it('reads, merges, and writes .mcp.json into the run cwd before spawn for a configured claude-mcp-json def', async () => {
+    const existing = JSON.stringify({ mcpServers: { other: { command: 'x', args: [], env: {} } } });
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies(existing);
+    const def = createFakeDef({ id: 'claude', externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work/proj' });
+
+    expect(readCalls).toEqual(['/work/proj/.mcp.json']);
+    expect(writeCalls).toHaveLength(1);
+    expect(writeCalls[0]!.path).toBe('/work/proj/.mcp.json');
+    const written = JSON.parse(writeCalls[0]!.content);
+    expect(written).toEqual({
+      mcpServers: {
+        other: { command: 'x', args: [], env: {} },
+        jini: {
+          command: '/usr/bin/jini-mcp',
+          args: ['--quiet'],
+          env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+        },
+      },
+    });
+    // The write happens strictly before spawn, not merely before this assertion.
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('treats a rejecting readFile (e.g. ENOENT — no existing file) as "start fresh", not a failure', async () => {
+    const { mcpJsonInjection, writeCalls } = createMcpFsSpies(undefined);
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(writeCalls).toHaveLength(1);
+    expect(JSON.parse(writeCalls[0]!.content)).toEqual({
+      mcpServers: {
+        jini: {
+          command: '/usr/bin/jini-mcp',
+          args: ['--quiet'],
+          env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+        },
+      },
+    });
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('fails the run before spawn (never a bare throw) when writeFile rejects', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      daemonUrl: 'http://127.0.0.1:4242',
+      readFile: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+      writeFile: async () => {
+        throw new Error('EACCES: permission denied');
+      },
+    };
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' })).rejects.toMatchObject({
+      code: 'AGENT_SPAWN_FAILED',
+    });
+
+    expect(spawnCalls).toHaveLength(0);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ status: 'failed', resumable: false });
   });
 });

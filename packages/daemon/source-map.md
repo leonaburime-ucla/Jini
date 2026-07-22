@@ -1396,3 +1396,111 @@ functions/lines; see this task's final push for the as-measured full-package num
 existing coverage gate was intermittently red during this task purely from a different, concurrent
 session's in-progress, uncommitted edits to `agent-executor.ts` — unrelated to this module, resolved by
 that session before this task's own final push).
+
+## 2026-07-22 addition — run/chat orchestration gap 3, part 2: MCP-callback spawn-time `.mcp.json` injection (finishing item 4 of the spike commit `2a081c5`)
+
+Closes the one deliverable the MCP-callback continuation-transport spike's own commit message
+named as undone: *"Item 4 (agent-executor.ts mcp.json spawn-time injection for the claude def)
+... [is] NOT done yet."* Items 1–3 (`packages/mcp/src/bin/serve.ts`, `packages/mcp/src/server/
+tools/delegated-tool.ts`, `packages/http/src/delegated-tools.ts`) already existed but had no
+spawn-time caller — `resolveContinuationTransport` already resolved `'mcp-callback'` for every def
+with `externalMcpInjection !== undefined`, but nothing in this package ever *acted* on that
+resolution by actually launching `jini-mcp` as the spawned CLI's own MCP server subprocess.
+
+**What shipped, concretely** (`agent-executor.ts`): a new opt-in `mcpJsonInjection?:
+McpJsonInjectionOptions` field on `CreateAgentExecutorOptions` — `{command, args?, daemonUrl,
+readFile?, writeFile?}`, host-resolved (no default `command`/`daemonUrl`, matching every other
+seam on this interface that defaults to *nothing* rather than a real implementation, since there
+is no install layout or loopback URL this package could assume on a caller's behalf). `run()`
+calls a new `writeMcpJsonForRun` right after `buildArgs`, before spawn — a no-op whenever
+`mcpJsonInjection` is unconfigured (byte-identical to pre-this-task behavior) or `def
+.externalMcpInjection !== 'claude-mcp-json'`. That gate is deliberately keyed off the injection
+*strategy*, not a hardcoded `def.id === 'claude'` check — matching `resolveContinuationTransport`'s
+own established capability-based-dispatch convention in this same file — which means it also
+covers `codebuddy` (the only other def declaring `'claude-mcp-json'`) as an honest consequence,
+not scope creep: `'acp-merge'` defs deliver `mcpServers` through the ACP `session/new` params
+`wireAcpLifecycle` already carries, and `'opencode-env-content'`/`'mimo-env-content'` defs deliver
+through spawn-env content — neither wants or needs a written file, so `writeMcpJsonForRun` is
+correctly a no-op for both.
+
+**Merge, never clobber.** `mergeMcpJsonContent` (pure, exported for direct unit testing) reads any
+existing `.mcp.json` at `<cwd>/.mcp.json` first and merges only the `mcpServers.jini` key,
+preserving every other top-level key and every other registered server untouched — a missing file
+(the common case; `ENOENT` from the injected `readFile`), an unreadable file, or one that doesn't
+parse as a JSON object all degrade to "start from an empty document" (an unparseable project
+`.mcp.json` is a pre-existing problem this driver did not create and cannot safely repair, so it is
+overwritten with a fresh, valid file rather than left broken or blocking the run — documented, not
+silent). A write failure is treated exactly like every other pre-spawn filesystem guard in this
+file (`preparePromptFileForAgentFn`'s own try/catch): `cleanupPromptFile()` then
+`failBeforeSpawn('AGENT_SPAWN_FAILED', ...)` — never a bare throw, the run is already transitioned
+to `'failed'` before rejecting, matching this module's own Invariant.
+
+**Tests**: `src/__tests__/agent-executor.test.ts` gained 17 new tests — `buildMcpJsonServerEntry`
+(2, pure), `mergeMcpJsonContent` (7, pure — fresh document, preserves unrelated keys/other
+servers, overwrites a stale `jini` entry, and three "start fresh" degradation cases: unparseable
+JSON, a JSON array instead of an object, a non-object `mcpServers` field), and a `gap 3 part 2`
+integration describe block (7 — no-op when unconfigured even for a `claude-mcp-json` def, no-op
+for a configured `'acp-merge'` def, no-op for a claude-mcp-json def with `externalMcpInjection`
+simply absent, a full read-merge-write round trip through a real `ToolExecutor`-free harness
+proving the write happens strictly before spawn, `ENOENT`-as-start-fresh, and the write-failure
+pre-spawn-failure path). One further test in `createAgentExecutor — real default collaborators`
+touches a real temp directory (`fs.mkdtemp` under `os.tmpdir()`) with no `readFile`/`writeFile`
+override at all, so `defaultReadMcpJsonFile`/`defaultWriteMcpJsonFile` (the real
+`fs.promises` defaults) are exercised for real, not just their injected-fake seams — this repo's
+own "extract, don't cut" coverage convention: rather than leaving the real default branch
+undercovered, it is driven directly.
+
+**Verification, personally re-run this session** (not propagated from the spike commit's own
+"NOT LOCALLY VERIFIED" note): `pnpm --dir packages/daemon exec vitest run --coverage` — **491/491
+tests pass**, `agent-executor.ts` **100/100/100/100** (statements/branches/functions/lines),
+package-wide aggregate **100/99.92/100/100** (the two pre-existing sub-100% files —
+`routines/schedule.ts` line 219 and the zero-executable-statement `run/core/failure-taxonomy.ts` —
+are untouched by this task and already documented as such). `pnpm --dir packages/daemon exec tsc
+--noEmit`: clean. Root `pnpm typecheck` (all 28 workspace projects) and root `pnpm guard`: both
+clean — see this task's final integration-verification section for the full command transcript.
+
+## 2026-07-22 addition — terminal/PTY route pack: `pnpm guard` re-run, and `node-pty`'s missing Linux prebuild — a real deployment decision, not a bare flag
+
+The 2026-07-21 `terminal-session.ts` addition above flagged the `node-pty` Linux-prebuild gap but
+left it as "undiscovered rather than mitigated" pending a real decision. This pass makes that
+decision, backed by evidence gathered in this session, not assumption:
+
+**`pnpm guard`, actually run this session** (it had not been, per this task's own open-items
+list): root `pnpm guard` (scans all of `packages/@jini/**`, including `terminal-session.ts`) — zero
+violations. No R1–R7 boundary/neutrality/sprawl issues in this file.
+
+**The decision.** This repo's own `docs/jini-port/START-HERE.md` states the architecture plainly:
+*"Jini is a headless daemon"* — a long-running Node server process, the deployment shape that
+overwhelmingly means a Linux host (container or bare server) in practice, not a developer's own
+macOS/Windows machine. `node-pty@1.1.0`'s npm tarball bundles prebuilt native addons for
+`darwin-arm64`/`darwin-x64`/`win32-arm64`/`win32-x64` but ships **no `linux-*` prebuild** — on a
+Linux install, `node-pty`'s own `install` script falls back to `node-gyp rebuild`, which needs a
+C/C++ toolchain (python3/make/a C compiler) present at `pnpm install` time.
+
+**Empirically verified in this exact session**, not inferred from reading `node-pty`'s source: this
+task's own `pnpm install` ran on a real Linux (x64) sandbox with a standard build toolchain present
+and the fallback **worked correctly and automatically** — `node-gyp rebuild` compiled
+`pty.node` from source (`CXX(target) Release/obj.target/pty/src/unix/pty.o` →
+`SOLINK_MODULE(target) Release/obj.target/pty.node`, `gyp info ok`) with zero manual intervention
+beyond the `pnpm.onlyBuiltDependencies` allow-list entry the 2026-07-21 addition already added
+(without that entry, pnpm's supply-chain-safety default silently skips native postinstall scripts
+entirely and this fallback would never run at all — confirmed by that entry already being present
+in this checkout's root `package.json` before this pass touched anything).
+
+**Decision: accept the gap, with a documented, actionable requirement — not a code fallback.**
+Build-from-source *is* the fallback (already the default, already proven working end-to-end this
+session); nothing further needs to be built. What was missing was making the requirement this
+implies for a deployer explicit rather than silent: **a Linux host deploying this daemon must
+have a C/C++ build toolchain (`python3`, `make`, a C compiler — e.g. Debian/Ubuntu's
+`build-essential` package) available at `pnpm install` time.** This is *not* satisfied by a
+minimal/`slim`/`alpine`-family base image out of the box (those deliberately omit build tooling to
+stay small) — a deploying host must either use a base image that already includes one (e.g. the
+non-slim `node:*-bookworm` family) or install the toolchain as an explicit build-stage step before
+`pnpm install`. No CI configuration exists anywhere in this repo to encode this in (confirmed: no
+`.github/workflows` directory) — this paragraph, plus the 2026-07-21 addition's own flag above, is
+this decision's durable record until a real deployment/CI configuration task exists to encode it
+as an executable check instead of documentation. Rejected alternatives: vendoring a prebuilt
+`linux-x64`/`linux-arm64` `.node` binary into this repo (adds binary artifacts + a maintenance
+burden for a native addon this package doesn't own) and pinning an older `node-pty` version that
+might ship a Linux prebuild (checked — no version in this package's supported range ships one;
+Linux users of `node-pty` upstream are documented to be expected to build from source).

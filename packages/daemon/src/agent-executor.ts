@@ -67,6 +67,8 @@
  * blanket "not retryable" default is the only honest answer available.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { promises as fsPromises } from 'node:fs';
+import { join } from 'node:path';
 import { redactSecrets } from '@jini/core';
 import type { Principal, RunRef } from '@jini/core';
 import type { JournalEntry, RunAgentPayload, RunErrorPayload } from '@jini/protocol';
@@ -585,6 +587,136 @@ export interface ContinuationOptions {
   readonly principal: Principal;
   /** Tool names this host has pre-classified as safe to auto-resolve without human involvement. See this interface's own doc for why this — not stream-inferred intent — is gap 3's answer to the human-in-the-loop pause question. */
   readonly autonomousToolNames: ReadonlySet<string>;
+}
+
+/**
+ * Gap 3, part 2 (MCP-callback continuation transport — the spawn-time half the spike's own
+ * commit message named as undone: "Item 4 ... NOT done yet"). `resolveContinuationTransport`
+ * already resolves `'mcp-callback'` for every def with `externalMcpInjection !== undefined`, but
+ * nothing in this file ever *acted* on that resolution — `execute_delegated_tool`
+ * (`@jini/mcp`'s `../server/tools/delegated-tool.ts`) only does anything useful once the spawned
+ * CLI's own client actually launches `jini-mcp` as its MCP server subprocess, and the only
+ * `externalMcpInjection` strategy that mechanism is wired for here is `'claude-mcp-json'`
+ * (`claude`/`codebuddy` — see `@jini/agent-runtime`'s `types.ts` doc on the other three
+ * strategies: `'acp-merge'` delivers `mcpServers` through the ACP `session/new` params
+ * `wireAcpLifecycle`/`attachAcpSession` already carry, and `'opencode-env-content'`/
+ * `'mimo-env-content'` deliver through spawn-env content, neither of which needs or wants a
+ * written file — a future task wiring those two would extend `wireAcpLifecycle`'s existing
+ * `envFormat`/`mcpServers` passthrough or `applyAgentLaunchEnv`'s env composition respectively,
+ * not this function).
+ *
+ * **Host-resolved, not this package's to know.** `command`/`daemonUrl` have no default the way
+ * `journal`/`continuation`/`classifyFailure` don't either — there is no "real" install layout or
+ * loopback URL this package could assume on a caller's behalf (matching every other seam on this
+ * interface that defaults to *nothing* rather than a real implementation).
+ */
+export interface McpJsonInjectionOptions {
+  /** Absolute path (or PATH-resolvable name) to the `jini-mcp` bin entry (`packages/mcp/src/bin/serve.ts`) this driver tells the spawned CLI to launch as its own MCP server subprocess. */
+  readonly command: string;
+  /** Extra argv for `command`. @default [] */
+  readonly args?: readonly string[];
+  /** The daemon's own loopback base URL the spawned `jini-mcp` process calls back into via `JINI_DAEMON_URL` (see `packages/mcp/src/bin/serve.ts`'s `DAEMON_URL_ENV_VAR`). */
+  readonly daemonUrl: string;
+  /** Reads an existing `.mcp.json` at the given absolute path so this driver merges rather than clobbers a project's own file. Rejecting (ENOENT or otherwise) is treated as "no existing file" — see `writeMcpJsonForRun`. @default the real `fs.promises.readFile` (utf8) */
+  readonly readFile?: (path: string) => Promise<string>;
+  /** Writes the merged `.mcp.json` content back out. @default the real `fs.promises.writeFile` (utf8) */
+  readonly writeFile?: (path: string, content: string) => Promise<void>;
+}
+
+const JINI_MCP_SERVER_KEY = 'jini';
+
+/** One `.mcp.json` `mcpServers` entry — the shape Claude Code's own config schema expects. */
+interface McpJsonServerEntry {
+  readonly command: string;
+  readonly args: string[];
+  readonly env: { readonly JINI_RUN_ID: string; readonly JINI_DAEMON_URL: string };
+}
+
+/**
+ * Builds this run's `mcpServers.jini` entry — pure, so every field mapping is directly
+ * assertable without touching the filesystem.
+ * @complexity O(1).
+ * @overallScore 100/100
+ */
+export function buildMcpJsonServerEntry(
+  runId: string,
+  options: Pick<McpJsonInjectionOptions, 'command' | 'args' | 'daemonUrl'>,
+): McpJsonServerEntry {
+  return {
+    command: options.command,
+    args: options.args !== undefined ? [...options.args] : [],
+    env: { JINI_RUN_ID: runId, JINI_DAEMON_URL: options.daemonUrl },
+  };
+}
+
+/**
+ * Merges {@link JINI_MCP_SERVER_KEY} into an existing `.mcp.json`'s `mcpServers` map, preserving
+ * every other key and every other registered server untouched. A missing (`existingRaw ===
+ * undefined`), empty, or unparseable-as-a-JSON-object existing file all degrade to "start from an
+ * empty document" rather than throwing — an unparseable project `.mcp.json` is a pre-existing
+ * problem this driver did not create and cannot safely repair, so it is deliberately overwritten
+ * with a fresh, valid file containing just this run's bridge entry rather than left broken or
+ * left blocking the run. Pure — no I/O — so every branch is directly assertable.
+ * @complexity O(1) plus `JSON.parse`/`JSON.stringify`'s own cost on a small config file.
+ * @overallScore 100/100
+ */
+export function mergeMcpJsonContent(existingRaw: string | undefined, serverEntry: McpJsonServerEntry): string {
+  let doc: Record<string, unknown> = {};
+  if (existingRaw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(existingRaw);
+      if (isRecord(parsed)) doc = parsed;
+    } catch {
+      doc = {};
+    }
+  }
+  const existingServers = isRecord(doc.mcpServers) ? doc.mcpServers : {};
+  const mcpServers = { ...existingServers, [JINI_MCP_SERVER_KEY]: serverEntry };
+  return `${JSON.stringify({ ...doc, mcpServers }, null, 2)}\n`;
+}
+
+function defaultReadMcpJsonFile(path: string): Promise<string> {
+  return fsPromises.readFile(path, 'utf8');
+}
+
+function defaultWriteMcpJsonFile(path: string, content: string): Promise<void> {
+  return fsPromises.writeFile(path, content, 'utf8');
+}
+
+/**
+ * Writes (merging, never clobbering — see {@link mergeMcpJsonContent}) `.mcp.json` into `cwd`
+ * before spawn, so Claude Code's own spawn-time config load (confirmed in `@jini/agent-runtime`'s
+ * `defs/claude.ts` doc: "Claude Code auto-loads `.mcp.json` from the project cwd at spawn")
+ * discovers the `jini-mcp` bridge server without this driver needing to pass any CLI flag at all.
+ * A no-op when `mcpJsonInjection` is `undefined` (opt-in, see `CreateAgentExecutorOptions`'s doc)
+ * or `def.externalMcpInjection !== 'claude-mcp-json'` (every other injection strategy delivers
+ * `mcpServers` a different way — see this module's own doc above).
+ * @throws Whatever `writeFile` rejects with — the caller (`run()`) turns that into a pre-spawn
+ * `AGENT_SPAWN_FAILED` failure, matching every other pre-spawn filesystem guard in this file
+ * (`preparePromptFileForAgentFn`'s own try/catch).
+ * @complexity O(1) plus one `readFile`/`writeFile` round trip.
+ * @overallScore 100/100
+ */
+async function writeMcpJsonForRun(
+  cwd: string,
+  runId: string,
+  def: RuntimeAgentDef,
+  mcpJsonInjection: McpJsonInjectionOptions | undefined,
+): Promise<void> {
+  if (mcpJsonInjection === undefined || def.externalMcpInjection !== 'claude-mcp-json') return;
+  const readFileFn = mcpJsonInjection.readFile ?? defaultReadMcpJsonFile;
+  const writeFileFn = mcpJsonInjection.writeFile ?? defaultWriteMcpJsonFile;
+  const filePath = join(cwd, '.mcp.json');
+  let existingRaw: string | undefined;
+  try {
+    existingRaw = await readFileFn(filePath);
+  } catch {
+    // No existing file (ENOENT — the common case) or unreadable for any other reason: both
+    // degrade to "start fresh", matching mergeMcpJsonContent's own doc.
+    existingRaw = undefined;
+  }
+  const serverEntry = buildMcpJsonServerEntry(runId, mcpJsonInjection);
+  await writeFileFn(filePath, mergeMcpJsonContent(existingRaw, serverEntry));
 }
 
 /**
@@ -1200,6 +1332,15 @@ export interface CreateAgentExecutorOptions {
    * generic "real" classification logic this package could supply on a caller's behalf.
    */
   readonly classifyFailure?: ClassifyFailure;
+  /**
+   * Gap 3, part 2's spawn-time `.mcp.json` injection — see {@link McpJsonInjectionOptions}'s own
+   * doc for the full design (why only `'claude-mcp-json'`-injection defs, why host-resolved).
+   * @default undefined — no `.mcp.json` is written and no filesystem access beyond what already
+   * happened (prompt-file staging) occurs on this path, byte-identical to pre-this-task behavior.
+   * Opt-in only, like `journal`/`continuation`/`classifyFailure`: there is no safe default
+   * `command`/`daemonUrl` this package could assume on a caller's behalf.
+   */
+  readonly mcpJsonInjection?: McpJsonInjectionOptions;
 }
 
 /**
@@ -1234,6 +1375,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const journal = options.journal;
   const continuation = options.continuation;
   const classifyFailure = options.classifyFailure;
+  const mcpJsonInjection = options.mcpJsonInjection;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -1348,6 +1490,20 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       : undefined;
 
     const args = def.buildArgs(input.prompt, [], undefined, undefined, runtimeContext);
+
+    // Gap 3, part 2 — write .mcp.json into the managed cwd before spawn, so a 'claude-mcp-json'
+    // def's own spawn-time config load discovers the jini-mcp bridge server. A no-op for every
+    // other def and whenever mcpJsonInjection is unconfigured — see writeMcpJsonForRun's doc.
+    try {
+      await writeMcpJsonForRun(input.cwd, input.runId, def, mcpJsonInjection);
+    } catch (err) {
+      await cleanupPromptFile();
+      return failBeforeSpawn(
+        input.runId,
+        'AGENT_SPAWN_FAILED',
+        `AgentExecutor: could not write .mcp.json for agent "${def.id}": ${errorMessage(err)}`,
+      );
+    }
 
     // Post-buildArgs guard for argv-bound defs whose resolved binary is a
     // Windows .cmd/.bat shim or a direct .exe: a prompt under the raw byte
