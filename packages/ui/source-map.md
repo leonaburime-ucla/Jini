@@ -3846,3 +3846,798 @@ verified stable across 5 consecutive full-package `test:coverage` runs afterward
   lines — matches `vitest.config.ts`'s newly-added committed threshold exactly (no test added or
   removed since; the threshold is the real number, not a margin below it).
 - `pnpm guard` (repo root): `[guard] ok` — clean, no boundary violations introduced.
+## Section: `features/source-config-list/` — generic `SourceConfigList<TSource>` (2026-07-18)
+
+Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A row
+`features/source-config-list/`, and r6 §3's cross-cutting pattern table: "URL/OAuth source
+add + trust/status + list + per-item test/refresh/remove" is the single most-repeated shape
+in the entire 23-file god-component sweep — appears in at least 6 places. This task ships the
+4 in scope per the plan's own row (not `ConnectorsBrowser.tsx`, already shipped separately as
+`features/connectors/` — confirmed a genuinely different shape, OAuth-catalog-*browse* rather
+than add-by-URL/key; not Memory slice's connector reducers either, a rules-level-only future
+reuse, flagged below, not this task's UI).
+
+Sources, read in FULL from `/tmp/od-source` (public OD fork, `main` branch, commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`, 2026-07-02 — the same commit already pinned below for
+`features/resource-dashboard/`), not the vendored snapshot. This SHA was not recorded when this
+section was first written (it cited only the now-gone `/tmp/od-source` checkout with no commit
+pin, an unreproducible provenance gap flagged by a 2026-07-18 audit). Re-verified directly against
+the real fork clone (`https://github.com/leonaburime-ucla/open-design.git`) via `git show
+0b88ef56144b5a42dc427c1292ae22676d698a34:<path>`: `McpClientSection.tsx` is exactly 1,471 lines,
+`PluginsView.tsx`'s `SourcesPanel` function starts at exactly line 1402, `EntryShell.tsx`'s
+`OnboardingByokSetupPanel` function starts at exactly line 2904, and all 6
+`apps/web/src/components/byok/*` files listed below are present at that commit — every cited
+location matches exactly, confirming this SHA (not merely a plausible candidate) as the actual
+extraction revision:
+
+1. `apps/web/src/components/McpClientSection.tsx` (1,471 lines) — the strongest reference: an
+   add-server picker (template categories + custom-blank), a draft-rows-with-bulk-Save-button
+   list, per-row expand-to-edit, and a per-row `McpOAuthControl` (OAuth postMessage/focus/
+   visibility handshake + fallback polling).
+2. `apps/web/src/components/byok/*` (6 files) — `ByokProviderPicker`, `ByokConnectionTestControl`,
+   `ByokModelField`, `ByokProviderBaseUrl`, `ByokKeyField`, `validation.ts`: a single-item
+   (not list) form for one BYOK provider config — protocol picker, masked API-key field with
+   show/hide + cleaned-whitespace notice, base-URL field with default/customize toggle, model
+   field with a searchable-select + custom-model fallback, and a connection-test status/button
+   control.
+3. `apps/web/src/components/PluginsView.tsx`'s `SourcesPanel` (line ~1402) — r6 §1.11 calls this
+   the near-exact structural twin of `McpClientSection.tsx`: add-a-marketplace-by-URL form with
+   a trust-level `<select>` (`restricted`/`trusted`/`official`), a list of marketplace cards each
+   with its own trust `<select>` + Refresh + Remove buttons, no per-item test.
+4. `apps/web/src/components/EntryShell.tsx`'s `OnboardingByokSetupPanel` (line ~2904) — r6 §1.7:
+   reinforces, does not newly discover, the byok pattern above, inside OD's onboarding flow: a
+   protocol-tab strip, a provider quick-fill dropdown, API-key/base-URL/model fields, and both a
+   "Fetch models" and a "Test" mini-button with inline running/success/error status text.
+
+Per r6 §3, comparing (1) and (3) side-by-side first (as the task brief required) confirmed they
+really are near-identical in shape (add-by-URL form + trust-or-mode select + list + per-item
+refresh/remove), which is what let this primitive generalize confidently rather than guessing
+from one source and hoping the rest fit.
+
+### What shipped — `packages/ui/src/features/source-config-list/`
+
+Uses the **new** `react/{hooks,components}/` layout end-to-end (per `god-components-extraction-plan.md`'s React-layout policy) — every file with zero React import stays at the feature's top level, everything importing React lives under `react/`.
+
+| File | Contents |
+|---|---|
+| `types.ts` | Generic `SourceFieldKind`/`SourceFieldSpec`/`SourceFieldValues` (the host-supplied field-config seam), `SourceTrustOption` (host-supplied trust vocabulary — never baked in), `SourceConnectionStatus`/`SourceTestResult`, `SourceConfigItem` (`id`/`label?`/`trust?`/`enabled?`/`fields`/`status?`/`statusMessage?`), `SourceActionKind`, `SourceDraftIssue`/`SourceDraftValidation`, `AddSourceInput`/`AddSourceResult<TSource>`. |
+| `constants.ts` | `MASK_CHAR`, `MASKED_VALUE_VISIBLE_SUFFIX_LENGTH`, `MASKED_VALUE_MIN_MASK_LENGTH` — the password-field masking convention (ported in spirit from `ByokKeyField.tsx`'s show/hide, generalized to a "always mask by default, show trailing 4 chars" rule not present verbatim in any one origin file). |
+| `rules.ts` | `emptySourceDraft`, `validateSourceDraft` (required-field + `url`-kind http(s) format check, ported from the shared rule underlying both `McpClientSection.tsx`'s `validateRow` and `PluginsView.tsx`'s URL-add flow), `issueForField`, `pendingActionKey`/`isActionPending`/`withPendingAction`/`withoutPendingAction` (per-`(id,kind)` independent in-flight tracking, generalizing the `` `refresh:${marketplace.id}` `` string-key convention `PluginsView.tsx`'s `pendingAction` state already used ad hoc), `upsertSourceById`/`removeSourceById`/`updateSourceById`, `maskFieldValue`, `sourceDisplayLabel`. |
+| `ports.ts` | `SourceConfigPort<TSource>` — `fetchSources`/`addSource`/`removeSource` required; `refreshSource`/`setTrust`/`testSource` **optional**, so the React layer derives which per-item actions to render from which methods a host's port actually implements rather than a separate set of boolean flags to keep in sync. `SourceConfigDependencies<TSource>` wraps it. |
+| `dependencies.ts` | `createFakeSourceConfigPort`/`createFakeSourceConfigDependencies` — an in-memory fake requiring a host-supplied `createSource` callback (unlike `features/asset-grid/`'s read-only fake, this feature's `addSource` inherently needs to synthesize a `TSource` from an arbitrary host's `AddSourceInput`, so there's no zero-config default — see the file's own header comment). `supportsRefresh`/`supportsTrust`/`supportsTest` let a test/demo scope the fake to exactly the capabilities one origin shape actually has. |
+| `react/hooks/useSourceConfigList.ts` | Loads the list, exposes `remove`/`refresh`/`setTrust`/`test` (each independently pending-tracked), `addSourceToList` (local upsert after a successful add, no reload), and `capabilities` (`canRefresh`/`canSetTrust`/`canTest`, derived from which optional port methods exist). Plus `useWiredSourceConfigList` (binds a required `dependencies` — see below for why this one isn't optional-defaulting). |
+| `react/hooks/useSourceConfigAddForm.ts` | Owns the add-form draft (values + optional trust), live validation, and submit-through-the-port. Deliberately **not** i18n-aware (per the i18n policy: hooks stay `t`-free; the component wraps `validation.issues[i].message` in `t()` at render time) and deliberately not a `McpClientSection.tsx`-style bulk-dirty-tracked draft-rows-with-Save — see "Dropped" below. Plus `useWiredSourceConfigAddForm`. |
+| `react/components/SourceConfigField.tsx` | One field per `SourceFieldSpec`: `text`/`url`/`password`(with show/hide, small local disclosure state)/`select`/`textarea`. |
+| `react/components/SourceConfigTestControl.tsx` | Generic per-item status-line + Test/Retry button — simplified descendant of `ByokConnectionTestControl.tsx`'s status/button shape and `McpOAuthControl`'s status/action shape (OAuth-handshake specifics dropped, see below). |
+| `react/components/SourceConfigAddForm.tsx` | Renders `fieldSpecs.map(SourceConfigField)` + an optional trust `<select>` (only when `trustOptions` is given) + submit button. Errors only render once a submit has been attempted (ported UX judgment from the byok/onboarding sources' "don't yell before submit" convention). |
+| `react/components/SourceConfigItemCard.tsx` | Collapsed summary (label + trust badge) that expands (ported from `McpClientSection.tsx`'s `McpRow` expand-to-edit) to show every field (masked) + capability-gated Refresh/Remove/trust-`<select>`/Test. |
+| `react/components/SourceConfigListView.tsx` | Pure composition (props in, JSX out): title/subtitle head, the add form, loading/error/empty states, the item-card list. |
+| `react/components/SourceConfigList.tsx` | The orchestrator: composes `useWiredSourceConfigList` + `useWiredSourceConfigAddForm` + `SourceConfigListView`. Also re-exports the two feature hooks so a caller/test can compose them directly without a separate `../hooks/*` import. |
+| `index.ts` | Public barrel. |
+
+### Dropped — per source, never silently
+
+**`McpClientSection.tsx`:**
+- The categorized template **picker** (`PickerPanel`/`PickerCard`, `CATEGORY_ORDER`, collapsible `<details>` groups, inline search-filter-by-category) — this is a curated-catalog-of-presets UX specific to "which MCP servers does OD recommend," not a generic "add a source" concern. A host wanting a picker composes one itself and calls `addSource` with the chosen preset's field values.
+- The **draft-rows-with-a-separate-bulk-Save-button** pattern (`rows`/`savedSig`/`dirty` signature-diff, a single `save()` that validates and PUTs the whole list at once, `useImperativeHandle`'s `save`/`hasDirty` surfaced to a dialog footer). The generic primitive instead adds/removes/updates **immediately per action** — the shape 3 of the 4 origin sources (byok, PluginsView, onboarding) actually use, and the one that composes cleanly with independent per-item pending state. A host that truly wants McpClientSection's specific batch-save UX needs its own wrapper; this primitive doesn't attempt to generalize batch-dirty-tracking.
+- `McpOAuthControl`'s OAuth-specific concurrency handshake: `postMessage`/`BroadcastChannel` listening, a 2-second fallback poll with a 5-minute timeout, `window.open` with Electron-`shell.openExternal`-aware null-return handling, and a manual "I've approved — Refresh" fallback button. `SourceConfigTestControl`'s generic `onTest` callback can be *bound* to an OAuth-kicking-off port method, but none of this handshake machinery is generic primitive code — a host with an OAuth-backed source shape re-implements (or reuses `features/connectors/`'s already-shipped `useConnectorAuthorization` handshake logic, a more direct fit for that specific need).
+- `McpAgentSupportBanner` (which installed CLI agents receive external MCP servers) — pure OD-runtime-catalog display, no generic analog.
+- Row reordering (`moveRow`, ↑/↓ buttons) — no other of the 4 sources has an ordering concept; omitted rather than forced onto shapes that don't need it.
+- The env/headers `KEY=VALUE`-per-line textarea convention (`mapToText`/`textToMap`) and the inline "Need help? Map your MCP JSON config" collapsible example panel — MCP-transport-specific, not generic form-field material. A host with a similar need models it as its own `textarea`-kind field and does its own text↔map parsing outside this primitive.
+
+**`byok/*`:**
+- `validation.ts`'s **protocol-specific API-key shape validation** — `sk-ant-`/`sk-`/`AIza`/`AQ.` prefix detection, first-party-base-URL-aware "this looks like an OpenAI key, not an Anthropic key" cross-protocol mismatch errors, and `cleanByokApiKey`'s zero-width-character/newline stripping. `rules.ts`'s `validateSourceDraft` only does host-agnostic required/URL-format checks — a host with real per-provider key-shape rules must run its own extra validation before calling `addSource` (the port's `AddSourceResult.message` is the seam for surfacing that failure back to the form).
+- `normalizeByokBaseUrl`'s provider-specific URL normalization (auto-adding `https://`, inserting OpenAI's `/v1` path for `api.openai.com`, trimming trailing slashes with protocol-specific exceptions) — not ported; a `url`-kind field only gets a plain http(s)-format check.
+- `resolveByokModelPreference`'s explicit/account/provider-default/empty precedence resolution, and `ByokModelField`'s searchable-combobox-with-custom-model-sentinel UX (`SearchableModelSelect`, `CUSTOM_MODEL_SENTINEL`) — model selection here is generalized only as far as `select`/`text`-kind fields go; the "suggested models" hint, the "loaded from account" success message, and the Azure-specific model-fetch hint are all origin-source-specific copy/state this primitive doesn't model.
+- `apiKeyConsoleLink`'s per-provider "get an API key" external link — a host with per-provider help links renders its own `SourceConfigField` variant or wraps the primitive; not a generic concept (which provider, which URL).
+
+**`PluginsView.tsx`'s `SourcesPanel`:**
+- The **specific trust vocabulary** `restricted`/`trusted`/`official` — never hardcoded in this primitive; a host supplies its own `SourceTrustOption[]` (`trustOptions` prop), which is exactly how the MCP-shaped test scenario below uses a *different* two-value vocabulary (`restricted`/`trusted`) than any origin source used verbatim.
+- Marketplace-specific summary metadata: plugin count (`` `${n} plugins` ``), catalog `version` display, and the manifest-`name`-vs-raw-URL title fallback logic tied to `PluginMarketplace.manifest`. Generalized only as far as `sourceDisplayLabel`'s generic "explicit label, else first field value, else id" rule — a host wanting richer per-item metadata composes its own summary line via `SourceConfigItemCard`'s field list (expanded state) rather than a dedicated metadata row.
+- `sourceUrlTrackedRef`'s one-time analytics-on-first-focus tracking hook — analytics is host-owned; not part of this primitive at all.
+
+**`EntryShell.tsx`'s `OnboardingByokSetupPanel`:**
+- The onboarding-flow-specific **framing**: the protocol-tab strip copy (`API_PROTOCOL_TABS`), the "Quick-fill provider" dropdown pre-filling a whole provider preset (base URL + suggested model) in one click, and the mini-button-with-inline-status-text visual treatment (`onboarding-view__mini-button is-loading`). This primitive's `SourceConfigAddForm`/`SourceConfigTestControl` are deliberately plainer — a host embedding this primitive inside its own onboarding flow supplies its own surrounding chrome/copy.
+- The **separate "Fetch models" action** (`onFetchModels`/`modelsState`/`ProviderModelsResponse`, `mergeOnboardingProviderModelOptions`) alongside "Test" — this primitive generalizes only the single "test this source" concept (`testSource`); a host wanting a second independent async action (fetch available models, in this case) composes its own control alongside `SourceConfigItemCard`, there's no second generic port method for it.
+- `onboardingProviderModelLabel`/`renderOnboardingProviderTestMessage`/`onboardingTestVariant`'s origin-specific message-formatting logic (embeds the tested model name, latency, and a sample response into localized copy) — `SourceConfigTestResult.message` is a plain host-supplied string; formatting it richly is the host's job via its `testSource` port implementation, not this primitive's.
+
+### Design choices flagged for reviewers
+
+- **`dependencies` is a required prop/param, not optional-defaulting-to-a-fake** (on `SourceConfigList`, `useWiredSourceConfigList`, `useWiredSourceConfigAddForm`) — a deliberate difference from `features/asset-grid/`'s `useWiredAssetGridData`, which can supply a zero-config fake because its port is read-only. This primitive's `addSource` inherently needs a host-specific `createSource: (input) => TSource` to synthesize a new item for an arbitrary generic `TSource`, so there is no generic default that could exist. `createFakeSourceConfigPort`/`createFakeSourceConfigDependencies` are still shipped, per the mandated pattern, for tests and demos — they just require that one callback.
+- **A real bug was caught while writing tests, not by inspection**: `rules.ts`'s `sourceDisplayLabel` originally fell back to the *raw, unmasked* first-field value when a source had no explicit `label` — meaning a labelless BYOK-key-shaped source with only an `apiKey` field would leak the full secret into the always-visible card summary row. Fixed to mask the fallback value through the same `maskFieldValue` rule used everywhere else (see `rules.ts`'s doc comment and `rules.test.ts`'s dedicated regression test).
+- **Two dead `?? []` fallbacks were refactored away, not tested around**, per Phase 9.5 point 2: `SourceConfigAddForm.tsx` and `SourceConfigItemCard.tsx` each originally computed a separate boolean (`hasTrustOptions`/`showTrustSelect`) to decide whether to render a trust `<select>`, then separately null-coalesced `trustOptions` again inside the JSX — but TypeScript can't narrow through an intermediate boolean, so the `?? []` branch could never actually fire once the boolean was already true. Refactored to narrow `trustOptions` directly in the JSX condition (`trustOptions && trustOptions.length > 0 ? trustOptions.map(...) : null`), which both satisfies the type checker without a fallback and removes the genuinely-unreachable branch instead of writing a test that could never hit it.
+- **A real, if minor, UX bug surfaced by the same loop**: neither trust `<select>` (add-form or item-card) had a placeholder `<option>` for "no trust chosen yet" — so with a controlled `value=""` and no matching `<option value="">`, the DOM silently displayed the *first* trust option as selected even though no explicit choice had been made. Added a disabled/hidden placeholder option to both, gated on `!trust`/`!source.trust`.
+
+### BYOK "test before save" fix (2026-07-18 audit)
+
+A 2026-07-18 audit found that `ports.ts`'s own `testSource(id, draft?)` doc comment already promised
+support for testing an unsaved draft (the `draft` param), but the shipped implementation contradicted
+that promise: the add form had no test control at all, and `SourceConfigList.tsx`'s orchestrator only
+ever called `list.test(id)` for an already-persisted item — an unsaved draft has no id, so this flow
+was genuinely unrepresentable, not just unwired. Real OD `ByokConnectionTestControl.tsx` (lines 36-42,
+75-105) and `EntryShell.tsx`'s `testProviderInline` (lines 2120-2144) confirm the actual origin shape:
+the test call is made with the CURRENT FORM FIELD VALUES directly (`testApiProvider({ protocol,
+baseUrl, apiKey, model, ... })`), never an item id — there is no id to have yet.
+
+Fixed for real (not narrowed/disclosed-as-dropped), matching the port's own already-stated contract:
+
+- `ports.ts`'s `testSource` signature widened from `testSource(id: string, draft?)` to
+  `testSource(id: string | undefined, draft?)` — `id === undefined` is the real "no persisted item
+  yet" case; a host implementation branches on it (test the draft directly) vs. a defined `id`
+  (test an existing item, optionally with unsaved edits to it).
+- `useSourceConfigList.ts`'s `test(id, draft?)` now accepts `id: string | undefined` and keys its
+  pending/result tracking (`pendingKeys`/`testResults`) by `id ?? DRAFT_TEST_SCOPE` (a new
+  `constants.ts` pseudo-id, `'__draft__'`) — the same "give a not-yet-real id a stable pseudo-key"
+  pattern `features/resource-dashboard`'s `BULK_DELETE_SCOPE` already established for its own
+  not-scoped-to-one-item bulk-delete tracking.
+- `SourceConfigAddForm.tsx` gained an optional test-before-save control (reusing the existing
+  `SourceConfigTestControl` presentational component — no new UI primitive needed), rendered only
+  when the host's port implements `testSource` at all (`canTest`, mirroring `capabilities.canTest`)
+  and disabled while the current draft fails required-field/URL validation (mirroring the origin's
+  own `canTestProvider`/`baseUrlValid` gate — testing an incomplete draft isn't meaningful).
+- `SourceConfigList.tsx` wires it: `onTest={() => void list.test(undefined, addForm.values)}`,
+  `testing={list.isPending(DRAFT_TEST_SCOPE, 'test')}`, `testResult={list.testResults[DRAFT_TEST_SCOPE]}`.
+- `createFakeSourceConfigPort`'s `testSource`/`onTest` fake also widened to accept `id: string |
+  undefined` (resolving `source` to `undefined` when `id` is `undefined`, since there is nothing
+  persisted to look up yet).
+
+Verified with real tests, not just re-reading the source: `useSourceConfigList.test.ts` gained a
+regression proving a draft test (`id === undefined`) is forwarded to the port verbatim and its
+result is stored under `DRAFT_TEST_SCOPE` — NOT mixed into any real source id's `testResults` entry
+— plus a pending-state-isolation regression. `SourceConfigAddForm.test.tsx` gained a `describe`
+block covering: the control is absent when `canTest` is false or `onTest` is omitted, it renders and
+calls `onTest` when the draft is valid, it stays disabled while the draft is invalid (even before a
+submit attempt — deliberately NOT gated on `submitAttempted` like field errors are, since testing
+never "yells" the way a submit-validation error does), and it shows running/result state.
+`SourceConfigList.test.tsx` gained a full end-to-end regression: render the real add form, type BYOK
+draft values, click its own "Test" button BEFORE any submit, and assert the injected port's
+`testSource` was called with `(undefined, { apiKey: ..., model: ... })` and the result renders — with
+no item card ever created (nothing was persisted). Full package after this fix: 171 source-config-list
+tests, all green (up from 162 after the i18n fix, 152 at the pinned audit head).
+
+### MCP enable/edit fix (2026-07-18 audit)
+
+A 2026-07-18 audit found that `types.ts` already declared `SourceConfigItem.enabled`, but nothing in
+the shipped port or UI ever rendered or mutated it, and the expanded item card was an entirely
+read-only `<dl>` — no way to edit a source's `label`/fields after creation at all. Real OD
+`McpClientSection.tsx`'s `McpRow` (lines 779-794, 908-960) supports both: an always-visible
+enable/disable checkbox in the collapsed summary row (`onChange({ enabled: e.target.checked })`,
+never gated behind expanding the row), and, once expanded, an editable label input plus editable
+transport/config fields. The audit also found the existing "MCP-server-shaped source" test describe
+block actually proved a *BYOK/marketplace-style trust* interaction (`MCP_TRUST_OPTIONS`), not MCP's
+own real shape — `ports.ts`'s own `SourceTrustOption` doc comment states "the origin MCP-server shape
+has none" (no trust concept at all), so that test, however useful as the two-shape ABSTRACTION proof
+(see below), was never actually representative MCP behavior on its own.
+
+Fixed for real (not narrowed/disclosed-as-dropped):
+
+- `types.ts` gained `SourceUpdateInput` (`{ label?; enabled?; fields? }`) and added `'update'` to
+  `SourceActionKind`.
+- `ports.ts` gained an optional `updateSource?(id, patch: SourceUpdateInput): Promise<TSource | null>`
+  — ONE generic partial-patch method rather than one method per editable property (`setEnabled`,
+  `setLabel`, `setFields`, ...), matching the primitive's existing "one capability = one optional
+  port method" convention (`refreshSource`/`setTrust`/`testSource`). A host with nothing editable
+  after creation simply omits it, same as any other optional capability here.
+- `useSourceConfigList.ts` gained `update(id, patch)` (pending-tracked under the new `'update'` kind,
+  mirroring `setTrust`) and `capabilities.canUpdate` (derived from `Boolean(port.updateSource)`).
+- `SourceConfigItemCard.tsx`: an always-visible enable/disable checkbox in the summary row (rendered
+  whenever `source.enabled !== undefined && capabilities.canUpdate` — never gated behind expanding,
+  matching the origin exactly), and, once expanded, an "Edit" toggle that swaps the read-only field
+  list for editable `SourceConfigField`s (reusing the SAME component the add form uses) plus an
+  editable label input, with Save/Cancel committing or discarding the local draft. Deliberately
+  immediate-commit-on-Save per source (NOT the cross-row batch-save-with-dirty-signature pattern
+  `source-map.md` already documents as dropped from `McpClientSection.tsx` — that pattern tracks
+  dirty state across an entire LIST of rows behind one shared Save button; a single card's own
+  Save/Cancel is a different, smaller, already-namespaced-as-generic concern).
+- `SourceConfigField.tsx` gained an `idPrefix` prop (defaulting to the unchanged
+  `'source-config-field'`) — a real bug was caught while writing the end-to-end test for this fix:
+  the add form and an item card's new expand-to-edit fields render the SAME `fieldSpecs`
+  simultaneously once a card is in edit mode, and the component's DOM id was derived from `spec.key`
+  alone with no scoping, producing duplicate ids (and `getByLabelText` ambiguity — an accessibility
+  bug, not just a test artifact) whenever both were mounted at once. `SourceConfigItemCard.tsx` now
+  passes a per-source `idPrefix` when rendering its edit-mode fields.
+- `createFakeSourceConfigPort` gained a `updateSource`/`onUpdate` fake option (defaulting to a plain
+  shallow merge — `fields` merged key-by-key, `label`/`enabled` replaced when present in the patch).
+
+Verified with real tests, not just re-reading the source: `useSourceConfigList.test.ts` gained an
+`update` describe block (no-op with no port method, patches and persists on success, leaves the
+source in place when the port returns `null`, pending-state isolation). `SourceConfigItemCard.test.tsx`
+gained two describe blocks: enable/disable (checkbox presence tied to BOTH `source.enabled !==
+undefined` AND `capabilities.canUpdate`, calls `onUpdate({ enabled })` without needing to expand
+first, disabled while updating) and expand-to-edit (read-only-by-default, Edit reveals editable
+inputs seeded with CURRENT values, Save calls `onUpdate` with the edited patch and closes edit mode,
+Cancel discards without calling `onUpdate`, Save/Cancel disabled while updating).
+`SourceConfigField.test.tsx` gained a regression proving two instances for the same field key never
+collide when given different `idPrefix`es. `SourceConfigList.test.tsx` gained a full end-to-end
+regression against a real MCP-shaped source with `enabled: true`: click the real always-visible
+checkbox (asserts the persisted source's `enabled` actually flipped via a `fetchSources()` round
+trip), then expand, click the real "Edit" button, change the label and the URL field, click "Save",
+and assert BOTH persisted via another `fetchSources()` call — not just that a callback fired. This is
+the "representative MCP interaction proof" the audit asked for, alongside (not replacing) the
+existing trust-vocabulary two-shape abstraction test, which is left in place and re-labeled nowhere
+— it remains a real, useful proof of the generic trust capability, it is simply not itself proof of
+MCP-specific behavior; the new enable/edit test now supplies that. Full package after this fix: 186
+source-config-list tests, all green.
+
+### i18n
+
+**Correction (2026-07-18 audit + fix-up):** this section previously claimed "every user-facing
+string in every component is wrapped in `t()`" and that `<SourceConfigField error={issue.message}>`
+was evidence of that. Both claims were false. `rules.ts`'s `validateSourceDraft` built pre-baked
+English sentences (`` `${spec.label} is required.` ``) that rendered straight through, unwrapped;
+`SourceConfigField.tsx` rendered host-supplied `spec.label`/`spec.placeholder`/`option.label` raw
+(never passed through `t()`); `SourceConfigItemCard.tsx` rendered the trust badge/select
+`option.label` and expanded-field `spec.label` raw; `SourceConfigListView.tsx` rendered custom
+`title`/`subtitle`/`emptyMessage`/`loadError` raw when a host supplied them. The dedicated i18n
+test's dictionary translated only `Add source`/the empty-state string, plus an *identity*
+`URL -> URL` entry that could never distinguish "translated" from "never wrapped" — and the suite
+never submitted an invalid form, so the raw validation-message path was never exercised at all.
+
+Fixed for real, verified with actual failing-then-passing tests (not just re-reading the source):
+
+- `rules.ts`'s `validateSourceDraft` now returns an i18n-ready TEMPLATE (`'{label} is required.'`,
+  `'{label} must be a valid http:// or https:// URL.'`) instead of a baked English sentence —
+  `rules.ts` stays hook-free per policy; the render boundary (`SourceConfigAddForm.tsx`) wraps it
+  via `t(issue.message, { label: t(spec.label) })`, translating both the template AND the
+  interpolated field label.
+- `SourceConfigField.tsx` now wraps `spec.label`, `spec.placeholder` (input/textarea/select
+  fallback), and every `option.label` in `t()`.
+- `SourceConfigItemCard.tsx` now wraps the trust badge (`trustOption?.label ?? source.trust`),
+  every trust-`<select>` `option.label`, and each expanded field's `spec.label` in `t()`.
+- `SourceConfigListView.tsx` now wraps custom `title`/`subtitle`/`emptyMessage`/`loadError` in
+  `t()` (falling back to the existing built-in `t('No sources configured yet.')` etc. when a host
+  doesn't override them).
+- `SourceConfigAddForm.tsx` also now wraps `addLabel` and `submitError` (a host-suppliable
+  `AddSourceResult.message` or the hook's own `'Failed to add source.'` fallback) in `t()`.
+- Masking (`maskFieldValue`) and label-derivation (`sourceDisplayLabel`) stay pure with no i18n
+  wrapping — they operate on arbitrary host DATA (a source's own field values, an id), not
+  translatable vocabulary, matching how `ResourceBoard.tsx`'s item titles are handled elsewhere in
+  this package.
+
+Real-provider regression tests were added specifically to close the gap the audit's own citation
+described (not just re-running the existing happy-path smoke test): `SourceConfigList.test.tsx`'s
+i18n block now includes a real INVALID submission under a dictionary translating both `URL` and
+the `'{label} is required.'` template, asserting the fully-translated sentence
+(`'Adresse URL est requis.'`) renders — not just the field label alone — plus a second test
+translating a host-supplied `select`-kind field's placeholder/option label. `SourceConfigField.test.tsx`,
+`SourceConfigItemCard.test.tsx`, and `SourceConfigListView.test.tsx` each gained their own `describe('i18n — ...')`
+blocks mounting under a real `I18nProvider` with a non-identity French dictionary and asserting the
+translated string actually renders, covering: field label/placeholder/select-option translation,
+trust badge/trust-select-option/expanded-field-label translation, and custom title/subtitle/
+emptyMessage/loadError translation respectively. All pre-existing tests (162 total after these
+additions, up from 152) still pass unmodified in default/passthrough locale.
+
+### Two-shape proof (the actual abstraction test, per the task's own instruction)
+
+`SourceConfigList.test.tsx` exercises the **same** `SourceConfigList<TSource>` component against two
+deliberately different injected shapes:
+
+- An **MCP-server-shaped** source (`{ fields: { url: string }, trust?: string }`) with a
+  `restricted`/`trusted` trust vocabulary, `refreshSource`+`setTrust` enabled, `testSource`
+  disabled (matching the real origin `McpClientSection.tsx` shape, which has no per-item test
+  concept in this primitive's sense).
+- A **BYOK-key-shaped** source (`{ fields: { apiKey: string, model: string } }`) with **no**
+  trust concept at all (`trustOptions` omitted, `setTrust` disabled), `refreshSource` disabled,
+  `testSource` enabled with a host-supplied `onTest` returning a custom message.
+
+Both load existing items, add a new item through the generic add form, and — the MCP shape only
+— change trust and refresh; the BYOK shape proves the trust `<select>` never renders at all
+(`queryByRole('combobox')` is null) and that its labelless summary masks the API key, while the
+MCP shape proves its Test button never renders (`queryByRole('button', {name:'Test'})` is null).
+Same component, same `rules.ts`, two different `dependencies`/`fieldSpecs`/`trustOptions` —
+this is the abstraction actually holding, not two presentational smoke tests.
+
+### Phase 9.5 coverage-driven loop
+
+Quoting the header this task was required to quote: **"Phase 9.5 — Coverage-driven refactor loop
+(repeat until ≥99% on all 4 metrics, 100% is the goal)"**, and the coverage-bar changelog's point 1:
+**"Coverage bar raised from the original's ≥98% to ≥99% on all 4 metrics, with 100% as the actual
+goal (see Phase 9.5) — after 6 extractions landed against the original's 98% floor, one shipped
+with a genuine bug and needed a real coverage-driven bug hunt after the fact."**
+
+Ran the classify-then-fix loop once (`json-summary`/`json` reporters, per Phase 9.5's own
+instruction that the v8 text table drops rows): every initially-uncovered branch was genuinely
+reachable-but-untested (documented above with the tests that now cover them) except the two dead
+`?? []` fallbacks, which were refactored away rather than tested around, per Phase 9.5 point 2 —
+no `/* v8 ignore */` or any coverage-suppression comment was used anywhere, per Phase 9.5 point 3.
+`types.ts`/`ports.ts` (verified interface-only via `grep -nE '^(export )?(const|function|class|let|var) '`
+finding no runtime declarations) were added to `vitest.config.ts`'s existing documented
+zero-executable-statement carve-out, the same pattern already used for `settings-dialog`'s
+`types.ts` files.
+
+**Final coverage (json-summary, 2026-07-18) — 100% on all 4 metrics, every file, no exclusions
+needed beyond the two documented interface-only files:**
+
+| File | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| `constants.ts` | 100 | 100 | 100 | 100 |
+| `dependencies.ts` | 100 | 100 | 100 | 100 |
+| `index.ts` | 100 | 100 | 100 | 100 |
+| `rules.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useSourceConfigList.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useSourceConfigAddForm.ts` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigField.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigTestControl.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigAddForm.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigItemCard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigListView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/SourceConfigList.tsx` | 100 | 100 | 100 | 100 |
+
+### Purity grep
+
+`grep -rniE "open design|OD_|--od-stamp|open-design\.ai|openDesignDesktop|@open-design/" packages/ui/src/features/source-config-list/`: **clean, zero matches.**
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors). Needed the same `exactOptionalPropertyTypes`-driven fix the settings-dialog/connectors sections above already document: an optional prop whose value can be explicitly `undefined` at the call site (`SourceConfigAddFormProps.trust`/`submitError`) needs `| undefined` added to its declared type, not just a `?`.
+- `pnpm --filter @jini/ui exec vitest run src/features/source-config-list`: **152 tests, 11 files, all green** — `rules.test.ts` (33), `dependencies.test.ts` (17), `useSourceConfigList.test.ts` (16), `useSourceConfigAddForm.test.ts` (10), `SourceConfigField.test.tsx` (11), `SourceConfigTestControl.test.tsx` (8), `SourceConfigAddForm.test.tsx` (11), `SourceConfigItemCard.test.tsx` (21), `SourceConfigListView.test.tsx` (12), `SourceConfigList.test.tsx` (8, including the two-shape proof and the i18n end-to-end test), `index.test.ts` (5, barrel smoke test).
+- Full package `pnpm --filter @jini/ui exec vitest run`: **151 files, 1361 tests, all green** — 11 of those 151 files are this feature's new test files (152 of the 1361 tests).
+- Full monorepo `pnpm -r run typecheck`: fails only at `packages/agent-runtime` and `packages/chat-react` (both missing a `tsconfig.json` entirely) — the same two pre-existing, unrelated stub-package failures every prior section in this doc has already documented; not touched by this task.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)` — unchanged, no boundary violations introduced.
+
+### Flag for future work
+
+`features/connectors/`'s `ConnectorsBrowser.tsx` canary and Memory slice's connector-reconciliation
+reducers (`mergeMemoryConnector`/`applyMemoryConnectorStatus(es)`/`connectorWithPendingAuthorization`/
+`connectorStatusesChanged`, per r6 §2 and this doc's `features/connectors/` section) both independently
+manage "a list of connected things, reconcile live status onto it" state — structurally adjacent to
+this primitive's `rules.ts` (`upsertSourceById`/`updateSourceById`/`removeSourceById`/
+`isActionPending`/pending-key tracking), even though their UI stays separate (OAuth-catalog-browse
+vs. add-by-URL/key are genuinely different interaction shapes, confirmed by the consolidation map).
+When Memory slice work happens, or when `ConnectorsBrowser.tsx`'s own reducers get revisited, check
+whether either can adopt this primitive's `rules.ts` directly (or extract a shared "keyed-list
+reconciliation" module both `rules.ts` files import) instead of maintaining three independently-evolving
+implementations of essentially the same upsert/status-reconcile logic. Not resolved here — flagged
+per the task's own instruction, a rules-level opportunity only, never a UI-level one.
+
+## Section: `features/resource-dashboard/` — DesignsTab.tsx + TasksView.tsx "resource-dashboard shell, twice" (2026-07-18)
+
+Part B of a two-part scheduled task (Part A shipped `features/source-config-list/`, section
+above). Per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" section:
+
+> **Resource-dashboard shell, twice, both directly Run-vocabulary-relevant**: `DesignsTab.tsx`'s
+> dashboard shell (§1.17 — sub-tabs, search, bulk-actions, a **config-driven status-kanban** whose
+> vocabulary `not_started/running/awaiting_input/succeeded/failed/canceled` "reads like a generic
+> agent-run/job lifecycle") and `TasksView.tsx`'s list shells (§1.20 — hero+metric-tile header,
+> tabbed template gallery, **row-list-with-expandable-run-history**, "a recognizable generic
+> scheduled-job list CRUD shape"). ... evaluate together, likely as one `features/resource-dashboard/`
+> (or a name that doesn't presuppose "design" — this is the single most core-engine-relevant cluster
+> in the whole sweep and deserves care over speed).
+
+### Provenance
+
+Both sources read in FULL from `/tmp/od-source` (public OD fork, `main` branch, commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`, 2026-07-02), not the vendored snapshot:
+
+1. `apps/web/src/components/DesignsTab.tsx` (1,404 lines).
+2. `apps/web/src/components/TasksView.tsx` (1,135 lines).
+
+### The shared-vs-separate verdict: TWO distinct composition shapes, ONE shared low-level primitive
+
+The orchestrator's own pre-read notes hypothesized a "PARTIAL overlap, not a clean single shape and
+not two fully unrelated shapes" and explicitly asked for independent verification rather than
+presuming either answer. A full read of both files confirms: **genuinely two distinct top-level
+composition shapes**, sharing only a thin, genuinely-common layer (a status vocabulary + a
+status-badge presentational primitive + a "group items by status" pure rule) — not a shared
+dashboard shell. Evidence, quoted with line ranges:
+
+**1. Kanban/status-grouping exists in exactly one of the two files, not both.**
+`DesignsTab.tsx` lines 1012–1095 build a real grouped-by-status board:
+```
+const filtered = filtered.map(...)... // search+sub-sort applied first
+{STATUS_ORDER.map((status) => {
+  const colProjects = filteredProjects.filter(
+    (item) => normalizeStatus(item.project.status?.value ?? "not_started") === status,
+  );
+  return (<div key={status} className="design-kanban-col">...
+```
+`STATUS_ORDER` (lines 48–55) is a fixed 6-value array (`not_started`/`running`/`awaiting_input`/
+`succeeded`/`failed`/`canceled`), and this is a real column-per-status board, toggle-able against a
+card grid via `view: "grid" | "kanban"` state (line 33, persisted to `localStorage` at line
+45/277-281). `TasksView.tsx` has **no equivalent anywhere** — grep for `STATUS_ORDER`,
+`.filter(.*status`, or any per-status grouping construct across its 1,135 lines returns nothing. Its
+only status-vocabulary usage (`statusLabel()`, lines 203-209, and `StatusPill`, lines 211-213) renders
+a single row's OR a single run's status as an inline badge — never as a grouping/column key. This
+directly falsifies "both express the same shape, just differently" — one origin has a literal kanban
+board; the other has never grouped anything by status at any nesting depth, including inside its own
+nested run-history sublist (`AutomationRunHistory`, lines 1029–1135, which is itself a flat
+chronological list of runs, not grouped/bucketed by status).
+
+**2. The header/toolbar shapes are structurally unrelated.**
+`DesignsTab.tsx`'s toolbar (lines 509-693): a sub-tab-pill sort selector (`recent`/`yours` —
+confirmed a SORT, not a filter, by reading the `filtered` `useMemo` at lines 343-388, which always
+returns every item, just re-ordered), a search input, a select-mode toggle + bulk-delete bar (lines
+614-651, only in grid view), and the grid/kanban view toggle. `TasksView.tsx`'s header (lines
+636-667): an `<header className="automations-hero">` with an eyebrow/title/lede block and 3 metric
+tiles (`Metric` component, lines 1020-1027) plus a single primary CTA button. Zero structural overlap
+— no sort selector, no search input, no select-mode, no bulk-delete anywhere in `TasksView.tsx`'s
+"your automations" list (the only filtering/tabs in the whole file are in the template gallery
+section, lines 909-988, which is create-flow content, not a filter over existing items).
+
+**3. Per-item chrome is a kebab menu in one, always-visible inline buttons in the other.**
+`DesignsTab.tsx`'s card kebab menu (lines 842-940): rename/duplicate/delete behind a
+`design-card-more` button + popover, with outside-click/Escape dismiss
+(`menuContainerRef`/`menuOpenId`, lines 130, 245-261, 844). `TasksView.tsx`'s row actions (lines
+756-819): run/history/edit/pause-resume/delete are ALL always-visible inline buttons
+(`automation-row__btn`), never collapsed into an overflow menu. This is a real interaction-pattern
+difference, not just a visual one — DesignsTab's kanban-card variant (lines 1052-1064) drops the
+kebab menu entirely in favor of a single always-visible delete button, closer to TasksView's
+always-visible-buttons style, which is itself evidence the kebab-vs-inline choice tracks the SURROUNDING
+shell's density (grid card vs. list row), not a fixed universal pattern either file
+independently discovered.
+
+**4. The row/item's OWN data shape differs at the type level, not just presentationally.**
+DesignsTab's top-level items (`Project`) ARE themselves status-bearing resources — `p.status?.value`
+(line 799) is a first-class field driving both the grid card's badge and the kanban column placement.
+TasksView's top-level items (`Routine`) are NOT themselves status-bearing in the same sense — a
+routine has `enabled`/`schedule`/`nextRunAt`; its `lastRun` (optional, lines 732-753) and its
+`runs` (lines 1044-1062, lazy-fetched only on expand) are what actually carry a `RoutineRun['status']`
+value. This is why TasksView never groups by status: the thing being listed at the top level isn't a
+status-bearing resource at all, just a schedule that OWNS a collection of status-bearing sub-resources
+one level down.
+
+**5. Non-overlapping content confirmed present in only one file each**, closing the loop on the
+orchestrator's own pre-read hypothesis: DesignsTab's card-grid/cover-thumbnail resolution (lines
+942-974, OD-specific html/image/video/logo/brand kind dispatch), select-mode+bulk-delete+kebab-menu,
+and `localStorage` view-toggle have no TasksView analog anywhere. TasksView's hero+metrics header,
+template gallery (lines 909-988, a curated catalog of automation presets — create-flow content, not
+a resource list concern), proposals-review section (lines 837-907, apply/reject an
+automation-evolution workflow — no status-bearing-resource-list concept at all), and
+inline-expandable-nested-run-history (lines 820-829, 1029-1135) have no DesignsTab analog.
+
+**What IS genuinely shared**, confirmed by direct comparison: `statusLabel()` (DesignsTab lines
+1185-1190) and `statusLabel()` (TasksView lines 203-209) are structurally identical functions — a
+status-value-to-translated-string lookup, called at a leaf render site to build a small badge/pill.
+This is the ONE real shared shape, and it is exactly as small as it looks: a status vocabulary + a
+`StatusPill` presentational primitive + a pure "given items and a status order, bucket them into
+columns" rule (a generalization of DesignsTab's `STATUS_ORDER.map` + `normalizeStatus`, usable by
+ANY future consumer that wants kanban grouping, not just this one).
+
+**Resulting design**: ship ONE feature folder, `packages/ui/src/features/resource-dashboard/`,
+containing the shared low-level layer (`StatusPill`, `ResourceMetrics`, `groupItemsByStatus`,
+`statusToneFor`, the pending-action-tracking pattern) PLUS two genuinely separate composed
+orchestrators built on top of it: `ResourceBoard` (the DesignsTab shape: search/sort/select-mode/
+bulk-delete/kebab-menu/grid-kanban-toggle) and `ResourceRowList` (the TasksView shape: hero+metrics+
+CTA/flat-row-list/inline-actions/expandable-lazy-loaded-run-history). This is the outcome the task
+brief flagged as plausible ("a shared 'status-badged list item + StatusPill' primitive doesn't
+necessarily mean the surrounding dashboard shells are one shape") and the evidence above confirms it
+directly — forcing both shapes through one composed shell would mean bolting kanban-grouping onto a
+shape that never uses it (TasksView), or bolting expandable nested run-history onto a shape that
+never had it (DesignsTab).
+
+### What shipped — `packages/ui/src/features/resource-dashboard/`
+
+Uses the `react/{hooks,components}/` layout throughout (zero-React files at the feature top level).
+
+| File | Contents |
+|---|---|
+| `types.ts` | Shared: `ResourceStatusOption`, `ResourceStatusTone`/`ResourceStatusToneMap`. Board-shape: `ResourceBoardViewMode`, `ResourceSortOption`, `ResourceMenuActionSpec`, `ResourceBoardItem<TBody>` (generic `body` render-slot, `sortValues` keyed-by-sort-option map, `menuActions`). Row-list-shape: `ResourceMetric`, `ResourceRowAction`, `ResourceRowItem`, `ResourceRunHistoryItem`. |
+| `constants.ts` | `DEFAULT_STATUS_TONE`, `UNMATCHED_STATUS_BUCKET`, `DEFAULT_BOARD_VIEW_MODE`. |
+| `rules.ts` | Shared: `statusToneFor`, `pendingActionKey`/`isActionPending`/`withPendingAction`/`withoutPendingAction` (re-derived fresh, NOT imported from `source-config-list` despite identical shape — see "Design choices" below). Board-shape: `groupItemsByStatus` (generalizes `STATUS_ORDER.map`, with an `UNMATCHED_STATUS_BUCKET` catch-all so an unrecognized status is never silently dropped — DesignsTab itself has no such case since every `Project` defaults to `not_started`, but a generic primitive can't assume that), `filterBoardItemsByQuery`, `sortBoardItems` (generic over a host-supplied `sortValues` map, since DesignsTab's `recent`/`yours` sort by two different `Project` timestamp fields), `toggleSelectedId`, `pruneSelectedIds`. |
+| `ports.ts` | `ResourceBoardPort<TItem>` (`fetchItems`/`deleteItem` required, `renameItem`/`duplicateItem` optional — no "add" method at all, since both origins delegate creation entirely to host UI), `ResourceViewModeStoragePort` (scoped by a host-supplied `scopeKey`, never DesignsTab's literal `"od:designs:view"`), `ResourceRowListPort<TRow>` (`fetchRows` required, `fetchRowHistory` optional — everything else TasksView's rows can DO is host-dispatched, not a port method, see below). |
+| `dependencies.ts` | `createFakeResourceBoardPort`/`createFakeResourceRowListPort` — both can ship genuinely useful zero-config defaults (unlike `source-config-list`'s fake, which needs a required `createSource` callback) precisely because neither port has an "add" concept. `createLocalStorageViewModeStorage` — real, SSR-guarded `localStorage`-backed default (same "browser-only generic behavior ships as a real implementation, not a fake" reasoning as `features/browser-chrome`'s history storage). |
+| `react/components/StatusPill.tsx` | The one genuinely shared UI primitive (see verdict above). |
+| `react/components/ResourceMetrics.tsx` | Generalizes TasksView's `Metric` tile row over an arbitrary host-supplied list. |
+| `react/components/ResourceCard.tsx` | DesignsTab's `design-card`: click-to-open/toggle-select, select-mode checkbox XOR kebab menu, status pill, host `renderBody` slot (cover-thumbnail resolution stays host-owned). |
+| `react/components/ResourceKanbanBoard.tsx` | The status-grouped board — a deliberately LIGHTER card than `ResourceCard` (no select-mode, no kebab menu, no visible status pill — status conveyed by column + a CSS class only, matching the origin's own `design-kanban-card` exactly, confirmed by reading that branch specifically rather than assuming symmetry with the grid card). |
+| `react/components/ResourceBoardToolbar.tsx` | Sort pills + search + select-mode/bulk-delete bar (grid-view-only) + view toggle + optional create button. |
+| `react/components/ResourceBoardView.tsx` | Pure composition: toolbar + loading/error/two-distinct-empty-states (no-items-at-all vs. search-matched-nothing, DesignsTab's own distinction) + grid-or-kanban. |
+| `react/hooks/useResourceBoard.ts` + `useWiredResourceBoard` | Owns search/sort/view-mode-persistence/select-mode/bulk-delete/the single-open-at-a-time kebab menu (with a REAL outside-click/Escape dismiss bug found and fixed while writing tests — see below)/kanban-column derivation. |
+| `react/components/ResourceBoard.tsx` | Orchestrator. `rename`/`duplicate`/`delete` menu-action kinds are natively understood (mapped to the matching port method or, for `rename`, bubbled to `onRenameRequest` since it needs a text input this primitive doesn't collect — no `Dialog` is ported, see Dropped); any other kind bubbles to `onCustomItemAction`. |
+| `react/components/ResourceRunHistoryList.tsx` | TasksView's `AutomationRunHistory` sublist: loading/empty states, a `StatusPill` + timing per run, an optional error/summary message, host-defined actions. |
+| `react/components/ResourceRowListItem.tsx` | One row: title/meta/detail lines, last-run `StatusPill`, ALWAYS-VISIBLE inline action buttons (never a kebab — see verdict point 3), an optional history-expand toggle, the expanded sublist. |
+| `react/components/ResourceRowListView.tsx` | Pure composition: hero header (eyebrow/title/lede) + metrics + CTA + a clickable empty state (TasksView's own empty state IS the create button) OR the row list. |
+| `react/hooks/useResourceRowList.ts` + `useWiredResourceRowList` | Owns row loading, a generic `dispatchRowAction` (busy-tracks + reloads + refreshes the expanded row's history on success — mirrors TasksView's own `runNow` bumping `historyTick`), and expand/collapse with re-fetch-on-every-expand (not cached, matching the origin). |
+| `react/components/ResourceRowList.tsx` | Orchestrator. `onRowAction` is REQUIRED and bubbles for every action kind (unlike `ResourceBoard`, nothing is natively understood here — see ports.ts). |
+| `index.ts` | Public barrel — `isActionPending`/`pendingActionKey`/`withPendingAction`/`withoutPendingAction` deliberately NOT re-exported (see Design choices). |
+
+### Dropped — per source, never silently
+
+**`DesignsTab.tsx`:**
+- Cover-thumbnail resolution across html/image/video/logo/brand kinds (lines 1240-1352,
+  `projectCover`/`ProjectBrandCover`/`brandHostname`) — entirely OD-specific file-kind dispatch and
+  brand-logo-fallback-chain logic. `ResourceBoardItem.body` + `ResourceCard`'s `renderBody` slot is the
+  seam a host uses instead.
+- Rename/delete/bulk-delete confirmation dialogs (`Dialog`/`DialogFooter` from `@open-design/components`,
+  lines 1097-1163) — a third-party product component library, not ported. `ResourceBoard`'s `rename`/
+  `duplicate`/`delete` methods perform the mutation directly with no confirm step; a host wanting
+  confirmation wraps its own dialog around the call (same "host-owned modal chrome" pattern already
+  established — no feature in this package has ported a generic `Dialog` primitive).
+- Analytics tracking calls threaded through nearly every handler (`trackProjectsListClick`,
+  `trackProjectsListControlsClick`, `trackProjectsMorePopoverClick`, `trackPageView`) — host-owned,
+  analytics is cross-cutting concern territory per this package's existing convention (see
+  `features/connectors`'/`features/asset-grid`'s own "analytics is host-owned" notes).
+- The manual-refresh button and 15-second auto-refresh polling (`refreshProjectsList`,
+  `PROJECTS_AUTO_REFRESH_MS`, lines 46, 287-341) — not ported; a host wanting this composes it around
+  the hook's exposed `reload()`.
+- `Toast`-based success/error notifications after bulk-delete (lines 1164-1174) — host-owned; the
+  hook's `bulkDelete()` return value (`{ deleted, failed }`) is the seam.
+- Live-artifact-specific card variant (`liveArtifactCardTitle`/`liveArtifactCardMetaLead`/
+  `artifactStatusLabel`, lines 1204-1237, and the whole `item.type === "live-artifact"` branch) —
+  a second, OD-specific item shape layered onto the same grid, not generalized (a host with a
+  similarly dual-shaped list composes two `ResourceBoardItem[]` arrays itself).
+
+**`TasksView.tsx`:**
+- The entire template-gallery section (lines 909-988, plus `buildAutomationTemplates`/
+  `filterTemplates`/`templateFilters`/the 6 hardcoded `buildStaticTemplates` presets, lines 58-331) —
+  a curated create-flow catalog, a fundamentally different concern from listing existing resources
+  (confirmed by the shared-vs-separate analysis above: this section has no DesignsTab analog at all).
+- The proposals-review section (lines 837-907, `AutomationEvolutionProposal` apply/reject workflow,
+  `proposalTargetLabel`/`proposalActionLabel`) — OD's automation-evolution-specific feature, no
+  generic resource-list analog.
+- The `crystallize` action (lines 564-595, 1097-1111) — a specific OD workflow (turn a successful
+  run into review-able proposals). `ResourceRunHistoryItem.actions` generalizes only the OTHER kept
+  action ("open"/"view progress"); crystallize's own semantics (and its dedicated `crystallizingRunId`
+  busy-state, separate from the generic row-busy tracking) are not ported.
+- `NewAutomationModal` (the create/edit form + REST wiring) — entirely host-owned; `onCreate`/
+  `onRowAction`'s `'edit'` kind are the seams a host wires its own modal through.
+- `scheduleStatusLabel`/`nextRunLabel`/`formatAutomationTimestamp`/`formatRunDuration` (lines
+  172-201) — OD's `Routine`/`RoutineRun`-specific formatting logic. `ResourceRowItem.metaLine`/
+  `detailLine` and `ResourceRunHistoryItem.startedAtLabel`/`durationLabel` are pre-formatted
+  host-supplied strings; this primitive never re-derives them.
+- Analytics (`fireClick`/`trackAutomationsClick`/`trackPageView`) — host-owned, same as DesignsTab.
+- `window.confirm` before delete (line 618) — a bare browser confirm, itself a UX choice; not baked
+  into this primitive's `dispatchRowAction`, same "host wraps its own confirmation" reasoning as
+  DesignsTab's dropped `Dialog`.
+
+### Mutation error handling and run-history race/failure fix (2026-07-18 audit)
+
+A 2026-07-18 audit found two real, undisclosed behavior regressions (distinct from the
+deliberately-disclosed "Dropped" list above, which covers intentional simplifications, not bugs):
+
+1. **Resource mutations lost visible failure handling.** `useResourceBoard.ts`'s `remove`/
+   `duplicate` let a rejected `port.deleteItem`/`duplicateItem` propagate uncaught;
+   `ResourceBoard.tsx`'s `handleItemAction`/`onKanbanDelete` called them with a bare `void`, which
+   discards a promise's return value WITHOUT attaching a rejection handler — both an unhandled
+   rejection and, because nothing ever surfaced a message, a delete/duplicate could silently fail
+   with the item still shown and no explanation. Real OD `DesignsTab.tsx`'s own
+   `handleDuplicateProject` (lines 440-449) catches exactly this into a toast. Fixed by adding an
+   `actionError: string | null` field to `ResourceBoardController`, set (and cleared at the start
+   of the next call) inside `remove`/`duplicate`'s own `catch`, so both hook methods now always
+   resolve (never reject) while still surfacing a visible message. `ResourceBoardView.tsx` renders
+   it as its own `actionError`/`actionErrorLabel` banner ALONGSIDE the still-visible item list
+   (deliberately NOT reusing `error`/`errorLabel`, which is the LOAD failure and hides the whole
+   list — a mutation failure must not hide items that already loaded fine).
+   `useResourceRowList.ts`'s `dispatchRowAction` has an explicit, tested contract ("a rejection
+   propagates to the caller and does NOT reload") that a fix must not break; instead of catching
+   silently, it now records the same kind of `actionError` in its own `catch` and then RE-THROWS,
+   preserving that contract for a caller that awaits/catches directly while giving a
+   fire-and-forget caller (`ResourceRowList.tsx`'s `onRowAction`) a real value to render.
+   `ResourceRowList.tsx` was also changed to attach `.catch(() => {})` to the now-still-rethrown
+   promise — `void` alone does not prevent an unhandled rejection, it only discards the resolved
+   value. `ResourceRowListView.tsx` gained the matching `actionError`/`actionErrorLabel` banner.
+2. **Run-history loading lost real OD's cancellation and failure semantics.**
+   `useResourceRowList.ts`'s `fetchHistoryFor` had no `catch` at all — a rejected
+   `port.fetchRowHistory` was an unhandled rejection AND left `historyByRowId[id]` `undefined`
+   forever, which `ResourceRunHistoryList.tsx` renders as a permanent "Loading…" (its
+   `items === undefined` check). Separately, collapsing then re-expanding the SAME row before its
+   first fetch settled started a second, overlapping fetch for that id with no protection against
+   the OLDER one resolving after the newer one and overwriting fresh history with stale data. Exact
+   OD `TasksView.tsx` (lines ~1044-1062) catches a failure to an empty result and effectively
+   ignores stale responses. Fixed with a per-row request-generation counter
+   (`historyRequestSeqRef`): each `fetchHistoryFor(id)` call captures its own sequence number at
+   start, and both the success and failure branches (plus the loading-flag clear in `finally`) check
+   whether they're still the most recent request for that id before committing anything — a stale
+   response is silently discarded rather than applied. A genuine failure now commits an empty array
+   (matching OD) instead of leaving history stuck at `undefined`.
+
+Both fixes are covered by new mounted/hook tests, not just re-reading the source: `useResourceBoard.test.ts`
+gained `remove`/`duplicate` rejection regressions (`actionError` set, cleared on retry, item never
+optimistically removed on a rejected delete) and `ResourceBoard.test.tsx` gained end-to-end
+regressions clicking the real kebab-menu delete/duplicate actions against a rejecting fake port and
+asserting the translated banner renders while the existing items stay on screen.
+`useResourceRowList.test.ts` gained a rejected-`fetchRowHistory`-commits-empty-array regression, a
+genuine overlapping-same-row race regression (older response resolves after the newer one; asserts
+the newer data survives), and `dispatchRowAction` `actionError` regressions; `ResourceRowList.test.tsx`
+gained an end-to-end regression clicking a real row action against a rejecting `onRowAction` and
+asserting the translated banner renders without hiding the row. `ResourceBoardView.test.tsx`/
+`ResourceRowListView.test.tsx` gained direct prop-level tests for the new `actionError`/
+`actionErrorLabel` props (present, absent, falls back to raw string, renders alongside — not instead
+of — the list).
+
+### Design choices flagged for reviewers
+
+- **`isActionPending`/`pendingActionKey`/`withPendingAction`/`withoutPendingAction` are re-derived
+  fresh in this feature's `rules.ts`, not imported from `features/source-config-list`**, even though
+  they are byte-for-byte the same pattern (confirmed while writing this feature — both independently
+  generalize "track an in-flight action per `(id, kind)` key" from their respective origin's ad hoc
+  string-key convention). Per this package's own "share only what correctness forces" rule (no
+  shared/app-level layer), and per the **fixing-open-design-web** skill's hooks discipline
+  ("duplication across slices is welcome; share only what *correctness* forces"), this is the correct
+  call — but it does mean the SAME helper now exists twice in the package under the same names. To
+  keep the package's own public barrel unambiguous, this feature deliberately does NOT re-export
+  these four names from its `index.ts` (they stay internal, used only by this feature's own hooks) —
+  `features/source-config-list` already publishes them at the package barrel; a host needing this
+  exact utility uses that one. A real `TS2308` ambiguous-export compiler error at `src/index.ts` is
+  what caught this during `pnpm --filter @jini/ui run typecheck`, not a design review — flagged here
+  as a genuine, if narrow, argument for eventually promoting this pattern to a shared
+  non-feature-owned module (a `src/utils/` helper, e.g.) rather than letting a third independent
+  copy appear the next time this shape recurs (r6 §3's cross-cutting pattern table already lists
+  "Progress bar + status icon + step/todo list" as a related, not-yet-extracted third instance in
+  `DesignSystemFlow.tsx`). Not resolved here — flagged for a future consolidation pass, same spirit
+  as the `features/connectors`/`features/source-config-list` rules-level reuse flag already recorded
+  above in this document.
+- **`ResourceRowList`'s `onRowAction` bubbles EVERY action kind, unlike `ResourceBoard`'s native
+  rename/duplicate/delete handling.** This asymmetry is intentional, not an inconsistency: DesignsTab's
+  kebab menu has a small, fixed, cross-source-stable vocabulary (rename/duplicate/delete — the exact
+  3 methods `ResourceBoardPort` already needs), whereas TasksView's row actions (run/edit/
+  pause-resume/delete) have no such fixed, generalizable semantics — "pause/resume" alone requires
+  toggling arbitrary host state with no universal shape, and "edit" always opens host UI. Rather than
+  invent 1-2 native port methods and leave the rest host-dispatched (an arbitrary, hard-to-predict
+  split), `ResourceRowList` dispatches ALL of them uniformly, letting the host's single `onRowAction`
+  implementation branch on `kind` itself.
+- **A real bug was caught while writing `ResourceBoard`'s own orchestrator tests, not by inspection**:
+  the kebab menu's outside-click dismiss effect (`useResourceBoard.ts`) closed on ANY `window`
+  `mousedown`, including a mousedown on the menu's OWN items — so clicking Rename/Duplicate/Delete
+  inside an already-open menu closed the menu (via the native `mousedown` bubbling to `window`,
+  BEFORE React's synthetic `click` handler could fire) before the click could ever register. Every
+  "dispatch a native menu action" test failed cleanly, catching this immediately rather than shipping
+  a silently-broken menu. Fixed with a `menuContainerRef` containment check — DesignsTab's OWN
+  pattern (`menuContainerRef`/`el.contains(e.target)`, lines 130, 247-249), which this port had
+  initially simplified away and shouldn't have. Threaded through `useResourceBoard` ->
+  `ResourceBoardView` -> `ResourceCard`, with a dedicated regression test in
+  `useResourceBoard.test.ts` (`stays open on a mousedown INSIDE menuContainerRef`) so this exact
+  regression can't silently reappear.
+- **Two Phase 9.5 dead-branch refactors, not tested around** (see the coverage section below for the
+  full loop): `ResourceBoard.tsx`'s `kanbanColumns` lookup and rename-target lookup both originally
+  had a defensive `??`/`?.` fallback that can never actually fire given this component's own call
+  contract; `useResourceRowList.ts`'s `fetchHistoryFor` had a dead `port.fetchRowHistory` existence
+  guard for the same reason (every call site already guarantees it). All three replaced with a
+  non-null assertion plus an explanatory comment, per the skill's Phase 9.5 point 1's
+  "TS-required fallback with no real runtime path" classification.
+
+### `RunState` vocabulary-reconciliation note (flagged, NOT resolved — out of scope for this task)
+
+Per the task brief, this UI primitive's status vocabulary is close to, but not identical with,
+`@jini/protocol`'s own `RunState`:
+
+- `@jini/protocol`'s `RunState` (`packages/protocol/src/run.ts`): `['queued', 'starting', 'running',
+  'succeeded', 'failed', 'cancelled']` — 6 values, spelled `cancelled`.
+- DesignsTab's `STATUS_ORDER`: `['not_started', 'running', 'awaiting_input', 'succeeded', 'failed',
+  'canceled']` — 6 values, spelled `canceled`; has `not_started`/`awaiting_input` with no `RunState`
+  analog; has no `queued`/`starting` analog (its own `normalizeStatus` actually MAPS `queued` onto
+  `running` for display purposes — DesignsTab's `ProjectDisplayStatus` type is a superset that
+  includes `queued` as a raw value even though `STATUS_ORDER`/the kanban board never surfaces it as
+  its own column).
+- TasksView's `RoutineRun['status']` (`statusLabel()`, lines 203-209): `succeeded`/`failed`/`running`/
+  `queued`/`canceled` — 5 values, spelled `canceled`; no `starting`/`not_started`/`awaiting_input`
+  analog at all — the narrowest of the three vocabularies.
+
+This feature's own `ResourceStatusOption[]`/`ResourceStatusToneMap` types (`types.ts`) are
+DELIBERATELY generic string-keyed maps with no hardcoded vocabulary at all — neither DesignsTab's nor
+TasksView's status values are baked into this primitive anywhere; a host supplies whichever
+vocabulary its own domain needs (see `ResourceBoard.test.tsx`/`ResourceRowList.test.tsx`, which each
+use their own literal `STATUS_OPTIONS` array, not an imported constant). This means when a future
+Jini `RunsView`/job-dashboard consumer wires this primitive to `@jini/protocol`'s real `RunState`,
+that consumer supplies `statusOptions: [{value: 'queued', label: 'Queued'}, ...]` matching
+`RUN_STATES` verbatim (spelled `cancelled`, no `not_started`/`awaiting_input`) — no code in this
+primitive needs to change for that to work, since the vocabulary is a runtime prop, not a compile-time
+union. The THREE-WAY spelling/vocabulary mismatch (`cancelled` vs. `canceled` vs. `canceled`, and the
+`not_started`/`awaiting_input`/`starting` non-overlaps) is real and will need a decision when that
+wiring actually happens (does a future `RunsView` normalize `RunState` into a DesignsTab-shaped
+6-value display vocabulary with synthetic `not_started`/`awaiting_input` states derived from
+elsewhere, or does it accept a narrower kanban with only `RunState`'s own 6 values and no
+`awaiting_input` column?) — flagged here per the task's explicit instruction, deliberately NOT
+resolved, since resolving it requires knowing how a real `RunsView` consumer wants to present
+`awaiting_input`-shaped states (which don't exist in the engine's `RunState` at all — that would be
+an application-level concept layered on top, e.g. a paused-for-input tool-call).
+
+### i18n
+
+Every user-facing string in every component (`StatusPill`, `ResourceMetrics`, `ResourceCard`,
+`ResourceKanbanBoard`, `ResourceBoardToolbar`, `ResourceBoardView`, `ResourceRunHistoryList`,
+`ResourceRowListItem`, `ResourceRowListView`) is either passed in pre-translated (leaf/pure-composition
+components take `statusLabel`/`errorLabel`/etc. as already-resolved strings, never call `t()`
+themselves) or wrapped via `useT()` at the two orchestrators (`ResourceBoard`/`ResourceRowList`),
+which is where every literal English string this primitive owns (`'Search…'`, `'Select'`, `'Delete
+selected'`, `'New'`, `'History'`, `'No items yet.'`, etc.) is wrapped in `t()`, following this
+package's "the English string itself is the key" convention. `rules.ts` stays hook-free (pure);
+`statusToneFor` and `groupItemsByStatus` never produce user-facing text, only tone/grouping keys.
+`ResourceBoard.test.tsx` and `ResourceRowList.test.tsx` each have a dedicated i18n end-to-end test
+mounting the full orchestrator under `I18nProvider` with a real dictionary and asserting the
+translated strings actually render (not just the unconfigured passthrough case) — e.g.
+`ResourceRowList.test.tsx`'s test asserts `'No items yet.'` (unconfigured) resolves to the French-ish
+`'Rien pour le moment'` string via a mounted dictionary.
+
+### Phase 9.5 coverage-driven loop
+
+Quoting the header this task was required to quote: **"Phase 9.5 — Coverage-driven refactor loop
+(repeat until ≥99% on all 4 metrics, 100% is the goal)"**, and the coverage-bar changelog's point 1:
+**"Coverage bar raised from the original's ≥98% to ≥99% on all 4 metrics, with 100% as the actual
+goal (see Phase 9.5) — after 6 extractions landed against the original's 98% floor, one shipped
+with a genuine bug and needed a real coverage-driven bug hunt after the fact."**
+
+Ran the classify-then-fix loop once (`json-summary`/`json` reporters, per Phase 9.5's own
+instruction that the v8 text table drops rows). Every initially-uncovered branch/line was classified
+per Phase 9.5 point 1:
+- **Genuinely reachable, just untested** (the large majority): a `toneMap`-threading branch left
+  untested in four components (`ResourceBoard`/`ResourceRowList`/`ResourceRowListItem`/
+  `ResourceRowListView`), an `eyebrow`/`lede` branch and an unmatched-status label-fallback branch in
+  `ResourceRowList.tsx`, the grid-view-mode toggle button (only kanban had been clicked in existing
+  tests), and a message-without-`isError` branch in `ResourceRunHistoryList.tsx` — all closed with
+  real, behavior-asserting tests, not padding.
+- **A genuine race-condition branch, not previously exercised**: `useResourceRowList.ts`'s
+  `historyLoadingRowId` clear-on-settle logic (`current === id ? null : current`) guards against an
+  OLDER, slower history fetch for row A finally resolving AFTER the user has already switched the
+  expanded row to B (and B's own fetch already cleared/set the loading flag) — closed with a
+  dedicated test using a manually-controlled deferred Promise to force that exact interleaving,
+  documented in the test as a real (if narrow) behavior this primitive protects, not a padding test.
+- **Dead branches, refactored away rather than tested around** (Phase 9.5 point 1, "Dead branch"
+  classification): `ResourceBoard.tsx`'s `kanbanColumns` lookup (`board.kanbanColumns.get(...) ?? []`)
+  and rename-target lookup (`current?.title ?? ''`), plus `useResourceRowList.ts`'s
+  `fetchHistoryFor`'s `if (!port.fetchRowHistory) return;` guard — all three provably unreachable
+  given this component/hook's own internal call contract (documented per-site above in "Design
+  choices"), replaced with a non-null assertion and an explanatory comment each, per Phase 9.5 point
+  1's "TS-required fallback with no real runtime path" classification.
+- No `/* v8 ignore */` or any coverage-suppression comment was used anywhere, per Phase 9.5 point 3.
+
+`types.ts`/`ports.ts` (verified interface-only via `grep -nE '^(export )?(const|function|class|let|var) '`
+finding no runtime declarations in either) were added to `vitest.config.ts`'s existing documented
+zero-executable-statement carve-out, the same pattern already used for `settings-dialog`'s and
+`source-config-list`'s `types.ts`/`ports.ts` files.
+
+**Final coverage (json-summary, 2026-07-18) — 100% on all 4 metrics, aggregate AND every individual
+file, no exclusions needed beyond the two documented interface-only files:**
+
+Aggregate: **1204/1204 statements (100%), 488/488 branches (100%), 73/73 functions (100%), 1204/1204
+lines (100%).**
+
+| File | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| `constants.ts` | 100 | 100 | 100 | 100 |
+| `dependencies.ts` | 100 | 100 | 100 | 100 |
+| `index.ts` | 100 | 100 | 100 | 100 |
+| `rules.ts` | 100 | 100 | 100 | 100 |
+| `react/components/StatusPill.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceMetrics.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceCard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceKanbanBoard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoardToolbar.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoardView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceBoard.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRunHistoryList.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowListItem.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowListView.tsx` | 100 | 100 | 100 | 100 |
+| `react/components/ResourceRowList.tsx` | 100 | 100 | 100 | 100 |
+| `react/hooks/useResourceBoard.ts` | 100 | 100 | 100 | 100 |
+| `react/hooks/useResourceRowList.ts` | 100 | 100 | 100 | 100 |
+
+(`types.ts`/`ports.ts` excluded per the documented zero-executable-statement carve-out — both
+interface-only, no runtime declarations.)
+
+### Purity grep
+
+`grep -rniE "open design|OD_|--od-stamp|open-design\.ai|openDesignDesktop|@open-design/" packages/ui/src/features/resource-dashboard/`: **clean, zero matches** (exit code 1).
+
+### Test/typecheck/guard results
+
+- `pnpm --filter @jini/ui run typecheck`: green (zero errors).
+- `pnpm --filter @jini/ui exec vitest run src/features/resource-dashboard`: **270 tests, 16 files, all
+  green** (re-counted 2026-07-18, correcting the `useResourceBoard.test.ts` count below, which this
+  section originally mis-stated as 35 when the executed suite reported 34 — a documentation error a
+  2026-07-18 audit flagged; counts here also include the mutation-error-handling/run-history-race
+  regressions added by that same audit's required fixes, see the dedicated section above) —
+  `rules.test.ts` (27), `dependencies.test.ts` (25), `index.test.ts` (6),
+  `useResourceBoard.test.ts` (38), `useResourceRowList.test.ts` (22), `StatusPill.test.tsx` (5),
+  `ResourceMetrics.test.tsx` (2), `ResourceCard.test.tsx` (17), `ResourceKanbanBoard.test.tsx` (11),
+  `ResourceBoardToolbar.test.tsx` (18), `ResourceBoardView.test.tsx` (20), `ResourceBoard.test.tsx`
+  (21, including the two-orchestrator native-action-dispatch tests, the i18n end-to-end test, and the
+  actionError regressions), `ResourceRunHistoryList.test.tsx` (12), `ResourceRowListItem.test.tsx`
+  (11), `ResourceRowListView.test.tsx` (19, including the actionError regressions),
+  `ResourceRowList.test.tsx` (16, including the i18n end-to-end test and the actionError regression).
+- Full package `pnpm --filter @jini/ui exec vitest run`: counts drift as sibling features land in
+  parallel; re-run `pnpm --filter @jini/ui exec vitest run` for the current total rather than trusting
+  a number recorded here — see the full-package coverage section (added by the same 2026-07-18 audit
+  pass) for why this package's full-suite number is tracked separately from any one feature's count.
+- Full monorepo `pnpm -r run typecheck`: `packages/ui typecheck: Done` (clean). Failures exist
+  elsewhere in the monorepo (`packages/agent-runtime`, `packages/chat-react`, `packages/cli`,
+  `packages/http`, `packages/node-host`, `packages/renderers-react`, `packages/sqlite` — all missing
+  a `tsconfig.json` entirely; `packages/daemon`/`packages/deploy` — unresolved `@jini/protocol`/
+  `@jini/core` module references, apparently missing built `dist` output in this session) — **all
+  pre-existing, entirely unrelated to this task** (this task touched only `packages/ui`); a strictly
+  larger failing-package set than the two (`agent-runtime`/`chat-react`) the prior
+  `source-config-list` section documented, most plausibly because this session never ran a full
+  `pnpm install`/build across the workspace before starting, not because of anything this task
+  changed — flagged for the record, not fixed (out of scope for a `packages/ui`-only task).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending implementation during extraction)`
+  — unchanged, no boundary violations introduced.

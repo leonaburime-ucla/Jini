@@ -86,6 +86,19 @@ export default defineConfig({
         'src/features/version-manager/types.ts',
         'src/features/viewer-shell/ports.ts',
         'src/features/viewer-shell/types.ts',
+        // Same carve-out for source-config-list: types.ts is interface-only,
+        // and ports.ts here is ALSO interface-only (unlike
+        // features/observability/ports.ts above, it has no runtime binding
+        // helper) — verified with the same grep before excluding.
+        'src/features/source-config-list/types.ts',
+        'src/features/source-config-list/ports.ts',
+        // Same carve-out for resource-dashboard: types.ts and ports.ts are
+        // both interface-only (two separate port interfaces, ResourceBoardPort
+        // and ResourceRowListPort, but no runtime binding helper lives in
+        // ports.ts itself — that's dependencies.ts, which IS covered) —
+        // verified with the same grep before excluding.
+        'src/features/resource-dashboard/types.ts',
+        'src/features/resource-dashboard/ports.ts',
       ],
       // Measured 2026-07-22 (audit fix — coverage-hardening pass): 99.98%
       // statements / ~99.86-99.88% branches / 100% functions / 99.98% lines
