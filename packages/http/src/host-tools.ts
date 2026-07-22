@@ -5,10 +5,12 @@
  * from the routes-classification table's `host-tools.ts` MIXED row (see
  * `source-map.md`): the editor catalogue, `$PATH`/mac-bundle probing, and
  * guarded detached-spawn machinery have zero OD dependency and are ported
- * here in full. Only `GET /api/editors` (which uses solely this machinery)
- * is mounted as a route; `POST /api/projects/:id/open-in` additionally
- * resolves a project's working directory via OD's project store and is
- * explicitly not ported — see the source-map's note on this file.
+ * here in full. `GET /api/editors` (which uses solely this machinery) was
+ * mounted first; `POST /api/resources/:resourceRef/open-in` (OD's `POST
+ * /api/projects/:id/open-in`) is now ported too, now that a generic
+ * workspace-root port exists (`workspace-root.ts`) to stand in for OD's
+ * `projectStore.getProject`/`projectFiles.resolveProjectDir` — see that
+ * route's own doc below for the exact mapping.
  *
  * The probing functions take an injectable `HostToolProbeEnv` (filesystem
  * `access`, `env`, `platform`) rather than reading `process.env`/`fs`
@@ -19,8 +21,11 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { access as fsAccess, constants as fsConstants } from 'node:fs/promises';
 import { createCommandInvocation } from '@jini/platform';
 import type { Express } from 'express';
+import { createApiError } from '@jini/protocol';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
-import { ok } from './types.js';
+import { validationError } from './request.js';
+import { err, ok, type Result, type RouteInputContext } from './types.js';
+import { denyAllWorkspaceRoots, resolveWorkspaceRoot, WorkspaceRootDeniedError, type WorkspaceRootResolver } from './workspace-root.js';
 
 export type RealPlatform = 'darwin' | 'win32' | 'linux';
 export type Platform = RealPlatform | 'unknown';
@@ -329,7 +334,117 @@ export const hostEditorsRoute = defineJsonRoute<void, HostEditorsResponse, Recor
   handle: async () => ok(await listAvailableEditors()),
 });
 
-/** Mounts `GET /api/editors` on `app`. A pack's `http(app, services)` calls this directly. */
-export function registerHostToolsRoutes(app: Express, adapter: AdapterContext): void {
+export interface OpenResourceInEditorRequest {
+  readonly resourceRef: string;
+  readonly editorId: string;
+  readonly detail?: string;
+}
+
+export interface OpenResourceInEditorResponse {
+  readonly ok: true;
+  readonly editorId: string;
+  readonly path: string;
+}
+
+/** Everything `POST /api/resources/:resourceRef/open-in` needs from the host. */
+export interface HostToolsOpenInDeps {
+  /** Resolves a resource reference to a filesystem working directory. Defaults to {@link denyAllWorkspaceRoots} — a host that never wires a real resolver gets a 404 on every call, never a guessed path (see `workspace-root.ts`). */
+  readonly resolveRoot?: WorkspaceRootResolver;
+  readonly probeEnv?: HostToolProbeEnv;
+  readonly spawnImpl?: typeof nodeSpawn;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseOpenResourceInEditor(input: RouteInputContext): Result<OpenResourceInEditorRequest> {
+  const resourceRef = input.params.resourceRef;
+  if (typeof resourceRef !== 'string' || resourceRef.length === 0) {
+    return err(validationError('resourceRef must be a non-empty path parameter'));
+  }
+  if (!isRecord(input.body)) return err(validationError('body must be a JSON object'));
+  const editorId = input.body.editorId;
+  if (typeof editorId !== 'string' || editorId.length === 0) {
+    return err(validationError('editorId is required', [{ path: 'editorId', message: 'required non-empty string' }]));
+  }
+  const detail = input.body.detail;
+  if (detail !== undefined && (typeof detail !== 'string' || detail.length === 0)) {
+    return err(validationError('detail must be a non-empty string when provided'));
+  }
+  return ok({ resourceRef, editorId, ...(detail === undefined ? {} : { detail }) });
+}
+
+/**
+ * `POST /api/resources/:resourceRef/open-in` — launches `editorId` (from
+ * {@link CATALOGUE}) rooted at the working directory `deps.resolveRoot`
+ * resolves for `resourceRef`. Ported from OD's `POST
+ * /api/projects/:id/open-in`: `projectId` generalizes to the opaque
+ * `resourceRef` this package already uses (`active-context.ts`,
+ * `cancel-owned-runs.ts`), and `getProject`/`resolveProjectDir` generalize
+ * to the injected {@link WorkspaceRootResolver}. `PROJECT_NOT_FOUND` (an
+ * OD-product-only code with no `@jini/protocol` equivalent — see
+ * `response.ts`'s file-map note) becomes a generic `NOT_FOUND` when the
+ * resolver denies. `EDITOR_NOT_AVAILABLE` (OD's 409 for "installed catalogue
+ * entry, but not found on this machine") becomes `CONFLICT`, which already
+ * maps to 409 in this package's `ERROR_STATUS_BY_CODE`.
+ *
+ * The launch-failure message is returned to the caller verbatim (unlike
+ * `runs.ts`'s SEC-005 redaction of internal agent-run errors): this is a
+ * same-origin, explicitly-consented, single local action the caller just
+ * asked for (open the tool it named, at the directory it's authorized to
+ * open) — the underlying spawn error (e.g. a quarantined/missing binary) is
+ * operationally useful to the caller and does not cross a trust boundary
+ * the way an internal agent-run exception can.
+ */
+export const openResourceInEditorRoute = defineJsonRoute<
+  OpenResourceInEditorRequest,
+  OpenResourceInEditorResponse,
+  HostToolsOpenInDeps
+>({
+  method: 'post',
+  path: '/api/resources/:resourceRef/open-in',
+  requireSameOrigin: true,
+  parse: parseOpenResourceInEditor,
+  handle: async (input, deps) => {
+    const entry = CATALOGUE.find((c) => c.id === input.editorId);
+    if (!entry) return err(createApiError('BAD_REQUEST', `unknown editor: ${input.editorId}`));
+    const probeEnv = deps.probeEnv ?? defaultProbeEnv();
+    if (!applicableForPlatform(entry, probeEnv.platform)) {
+      return err(createApiError('BAD_REQUEST', `${entry.label} is not available on ${probeEnv.platform}`));
+    }
+
+    let resolvedDir: string;
+    try {
+      resolvedDir = await resolveWorkspaceRoot(
+        { resourceRef: input.resourceRef, ...(input.detail === undefined ? {} : { detail: input.detail }) },
+        { resolver: deps.resolveRoot ?? denyAllWorkspaceRoots },
+      );
+    } catch (error) {
+      if (error instanceof WorkspaceRootDeniedError) {
+        return err(createApiError('NOT_FOUND', `resource "${input.resourceRef}" was not found`));
+      }
+      throw error;
+    }
+
+    const launchPlan = await resolveHostToolLaunchPlan(input.editorId, resolvedDir, probeEnv);
+    if (!launchPlan.available || !launchPlan.command || !launchPlan.args) {
+      return err(createApiError('CONFLICT', `${entry.label} is not installed`));
+    }
+    const launch = await launchHostTool(launchPlan.command, launchPlan.args, deps.spawnImpl ?? nodeSpawn);
+    if (!launch.ok) {
+      return err(createApiError('INTERNAL_ERROR', `failed to launch ${entry.label}: ${launch.error}`));
+    }
+    return ok({ ok: true, editorId: input.editorId, path: resolvedDir });
+  },
+});
+
+/** Mounts `GET /api/editors` and `POST /api/resources/:resourceRef/open-in` on `app`. A pack's `http(app, services)` calls this directly. */
+export function registerHostToolsRoutes(
+  app: Express,
+  adapter: AdapterContext,
+  openInDeps: HostToolsOpenInDeps = {},
+): void {
   mountJsonRoute(app, hostEditorsRoute, {}, adapter);
+  mountJsonRoute(app, openResourceInEditorRoute, openInDeps, adapter);
 }

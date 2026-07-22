@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { isLocalSameOrigin } from '../origin-validation.js';
 import {
   CATALOGUE,
   applicableForPlatform,
@@ -7,6 +8,7 @@ import {
   hostEditorsRoute,
   launchHostTool,
   listAvailableEditors,
+  openResourceInEditorRoute,
   pathDirs,
   probeCommandOnPath,
   probeMacBundle,
@@ -16,15 +18,27 @@ import {
   type CatalogueEntry,
   type HostToolProbeEnv,
 } from '../host-tools.js';
+import type { WorkspaceRootResolver } from '../workspace-root.js';
+
+vi.mock('../origin-validation.js', () => ({
+  isLocalSameOrigin: vi.fn(() => true),
+}));
 
 interface MockApp {
   get: (path: string, handler: any) => void;
+  post: (path: string, handler: any) => void;
+  put: (path: string, handler: any) => void;
+  delete: (path: string, handler: any) => void;
+  patch: (path: string, handler: any) => void;
   handlers: Record<string, (req: any, res: any) => Promise<void> | void>;
 }
 
 function makeApp(): MockApp {
   const handlers: MockApp['handlers'] = {};
-  return { get: (path, handler) => { handlers[`GET ${path}`] = handler; }, handlers };
+  const make = (method: string) => (path: string, handler: any) => {
+    handlers[`${method.toUpperCase()} ${path}`] = handler;
+  };
+  return { get: make('get'), post: make('post'), put: make('put'), delete: make('delete'), patch: make('patch'), handlers };
 }
 
 function makeRes() {
@@ -365,12 +379,250 @@ describe('hostEditorsRoute', () => {
 });
 
 describe('registerHostToolsRoutes', () => {
-  it('mounts exactly GET /api/editors', async () => {
+  it('mounts exactly GET /api/editors and POST /api/resources/:resourceRef/open-in', async () => {
     const app = makeApp();
     registerHostToolsRoutes(app as any, { resolvedPortRef: { current: 0 } } as any);
-    expect(Object.keys(app.handlers)).toEqual(['GET /api/editors']);
+    expect(Object.keys(app.handlers).sort()).toEqual(
+      ['GET /api/editors', 'POST /api/resources/:resourceRef/open-in'].sort(),
+    );
     const res = makeRes();
     await app.handlers['GET /api/editors']!({ body: {}, query: {}, params: {} }, res);
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('openResourceInEditorRoute.parse', () => {
+  it('rejects a missing resourceRef path parameter', () => {
+    const result = openResourceInEditorRoute.parse({ body: { editorId: 'vscode' }, query: {}, params: {} });
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: 'resourceRef must be a non-empty path parameter' },
+    });
+  });
+
+  it('rejects a non-object body', () => {
+    const result = openResourceInEditorRoute.parse({ body: 'nope', query: {}, params: { resourceRef: 'r1' } });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a missing editorId with a structured validation issue', () => {
+    const result = openResourceInEditorRoute.parse({ body: {}, query: {}, params: { resourceRef: 'r1' } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.details).toEqual({
+        kind: 'validation',
+        issues: [{ path: 'editorId', message: 'required non-empty string' }],
+      });
+    }
+  });
+
+  it('rejects a non-string editorId', () => {
+    const result = openResourceInEditorRoute.parse({ body: { editorId: 42 }, query: {}, params: { resourceRef: 'r1' } });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects an empty-string detail when provided', () => {
+    const result = openResourceInEditorRoute.parse({
+      body: { editorId: 'vscode', detail: '' },
+      query: {},
+      params: { resourceRef: 'r1' },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('accepts a bare resourceRef + editorId, omitting detail entirely rather than as undefined', () => {
+    const result = openResourceInEditorRoute.parse({
+      body: { editorId: 'vscode' },
+      query: {},
+      params: { resourceRef: 'r1' },
+    });
+    expect(result).toEqual({ ok: true, value: { resourceRef: 'r1', editorId: 'vscode' } });
+  });
+
+  it('accepts an optional detail field', () => {
+    const result = openResourceInEditorRoute.parse({
+      body: { editorId: 'vscode', detail: 'src/index.ts' },
+      query: {},
+      params: { resourceRef: 'r1' },
+    });
+    expect(result).toEqual({ ok: true, value: { resourceRef: 'r1', editorId: 'vscode', detail: 'src/index.ts' } });
+  });
+});
+
+describe('openResourceInEditorRoute.handle', () => {
+  const vscodeEntry = CATALOGUE.find((c) => c.id === 'vscode')!;
+  const availableProbeEnv: HostToolProbeEnv = {
+    access: async () => {},
+    env: {},
+    platform: 'linux',
+  };
+  const spawnSuccess = () => {
+    const spawnImpl = vi.fn(() => {
+      const child: any = new EventEmitter();
+      child.unref = vi.fn();
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    });
+    return spawnImpl as any;
+  };
+
+  it('success: resolves the workspace root, launches the editor, and reports the resolved path', async () => {
+    const resolveRoot: WorkspaceRootResolver = vi.fn(() => '/home/user/projects/proj-1');
+    const spawnImpl = spawnSuccess();
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode' },
+      { resolveRoot, probeEnv: availableProbeEnv, spawnImpl },
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: { ok: true, editorId: 'vscode', path: '/home/user/projects/proj-1' },
+    });
+    expect(resolveRoot).toHaveBeenCalledWith({ resourceRef: 'proj-1' });
+  });
+
+  it('passes an optional detail field through to the resolver', async () => {
+    const resolveRoot: WorkspaceRootResolver = vi.fn(() => '/root');
+    await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode', detail: 'src/index.ts' },
+      { resolveRoot, probeEnv: availableProbeEnv, spawnImpl: spawnSuccess() },
+    );
+    expect(resolveRoot).toHaveBeenCalledWith({ resourceRef: 'proj-1', detail: 'src/index.ts' });
+  });
+
+  it('malformed/unknown editor: rejects an editorId not in the catalogue', async () => {
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'not-a-real-editor' },
+      { resolveRoot: () => '/root' },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: 'unknown editor: not-a-real-editor' },
+    });
+  });
+
+  it('rejects an editor not applicable for the current platform', async () => {
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'explorer' }, // win32-only
+      { resolveRoot: () => '/root', probeEnv: { access: async () => {}, env: {}, platform: 'linux' } },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: 'Explorer is not available on linux' },
+    });
+  });
+
+  it('auth-denial (workspace-root port): the default resolver (denyAllWorkspaceRoots) denies every resource, and the route never reaches the editor launch', async () => {
+    // Proves the "conservative default that denies rather than guessing" contract: a host that
+    // never wires `resolveRoot` gets a 404 on every call, not a guessed path.
+    const spawnImpl = vi.fn();
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode' },
+      { probeEnv: availableProbeEnv, spawnImpl },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'NOT_FOUND', message: 'resource "proj-1" was not found' },
+    });
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  it('an explicit resolver that denies a specific resource also reports NOT_FOUND', async () => {
+    const resolveRoot: WorkspaceRootResolver = () => null;
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'unknown-resource', editorId: 'vscode' },
+      { resolveRoot, probeEnv: availableProbeEnv },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'NOT_FOUND', message: 'resource "unknown-resource" was not found' },
+    });
+  });
+
+  it('propagates a non-WorkspaceRootDeniedError thrown by the resolver rather than mapping it to NOT_FOUND', async () => {
+    const resolveRoot: WorkspaceRootResolver = () => {
+      throw new Error('lookup backend unavailable');
+    };
+    await expect(
+      openResourceInEditorRoute.handle({ resourceRef: 'proj-1', editorId: 'vscode' }, { resolveRoot }),
+    ).rejects.toThrow('lookup backend unavailable');
+  });
+
+  it('reports CONFLICT when the editor is a known catalogue entry but not installed on this machine', async () => {
+    const notInstalledProbeEnv: HostToolProbeEnv = {
+      access: async () => {
+        throw new Error('ENOENT');
+      },
+      env: {},
+      platform: 'linux',
+    };
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode' },
+      { resolveRoot: () => '/root', probeEnv: notInstalledProbeEnv },
+    );
+    expect(result).toEqual({ ok: false, error: { code: 'CONFLICT', message: 'VS Code is not installed' } });
+  });
+
+  it('reports INTERNAL_ERROR with the real launch error inline (not redacted) when the OS refuses the spawn', async () => {
+    const spawnImpl = vi.fn(() => {
+      const child: any = new EventEmitter();
+      child.unref = vi.fn();
+      queueMicrotask(() => child.emit('error', new Error('EACCES: permission denied')));
+      return child;
+    });
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode' },
+      { resolveRoot: () => '/root', probeEnv: availableProbeEnv, spawnImpl: spawnImpl as any },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'failed to launch VS Code: EACCES: permission denied' },
+    });
+  });
+
+  it('uses the real defaultProbeEnv() and the real node:child_process spawn when neither is injected', async () => {
+    // Only asserts this doesn't throw synchronously constructing its plan — the real launch
+    // outcome depends on the actual host machine, which is why every other test above injects
+    // both. WorkspaceRootDeniedError still fires first since no resolveRoot is supplied.
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'vscode' },
+      {},
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'NOT_FOUND', message: 'resource "proj-1" was not found' },
+    });
+  });
+});
+
+describe('registerHostToolsRoutes — POST /api/resources/:resourceRef/open-in, mounted end to end', () => {
+  it('requires same-origin: blocks a cross-origin request before resolveRoot ever runs', async () => {
+    vi.mocked(isLocalSameOrigin).mockReturnValue(false);
+    const app = makeApp();
+    const resolveRoot = vi.fn(() => '/root');
+    registerHostToolsRoutes(app as any, { resolvedPortRef: { current: 0 } } as any, { resolveRoot });
+    const res = makeRes();
+    await app.handlers['POST /api/resources/:resourceRef/open-in']!(
+      { body: { editorId: 'vscode' }, query: {}, params: { resourceRef: 'proj-1' } },
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(resolveRoot).not.toHaveBeenCalled();
+    vi.mocked(isLocalSameOrigin).mockReturnValue(true);
+  });
+
+  it('allows a same-origin request and threads openInDeps through to the real handler', async () => {
+    const app = makeApp();
+    const resolveRoot = vi.fn(() => '/root');
+    registerHostToolsRoutes(app as any, { resolvedPortRef: { current: 0 } } as any, {
+      resolveRoot,
+      probeEnv: { access: async () => { throw new Error('ENOENT'); }, env: {}, platform: 'linux' },
+    });
+    const res = makeRes();
+    await app.handlers['POST /api/resources/:resourceRef/open-in']!(
+      { body: { editorId: 'vscode' }, query: {}, params: { resourceRef: 'proj-1' } },
+      res,
+    );
+    expect(resolveRoot).toHaveBeenCalledWith({ resourceRef: 'proj-1' });
+    expect(res.status).toHaveBeenCalledWith(409); // installed catalogue entry, not found on this fake machine
   });
 });
