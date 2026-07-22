@@ -32,7 +32,7 @@ import { renderNanoBananaImage } from './providers/nanobanana.js';
 import './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
 import './providers/senseaudio.js';
-import { renderVolcengineImage } from './providers/volcengine.js';
+import './providers/volcengine.js';
 import { renderStub } from './stub.js';
 import type {
   MediaDispatchEngine,
@@ -111,9 +111,6 @@ const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
   },
   openrouter: {
     image: renderOpenRouterImage,
-  },
-  volcengine: {
-    image: renderVolcengineImage,
   },
   elevenlabs: {
     'audio:speech': renderElevenLabsTTS,
