@@ -28,7 +28,7 @@ import './providers/fishaudio.js';
 import './providers/grok.js';
 import './providers/imagerouter.js';
 import './providers/minimax.js';
-import { renderNanoBananaImage } from './providers/nanobanana.js';
+import './providers/nanobanana.js';
 import './providers/openai.js';
 import { renderOpenRouterImage } from './providers/openrouter.js';
 import './providers/senseaudio.js';
@@ -102,9 +102,6 @@ type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promis
  * vendor's own module for its `mediaVendorRegistry.register(...)` call).
  */
 const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
-  nanobanana: {
-    image: renderNanoBananaImage,
-  },
   openrouter: {
     image: renderOpenRouterImage,
   },
