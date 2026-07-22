@@ -500,3 +500,190 @@ the pre-existing baseline this addition found in place. `pnpm --dir packages/dep
 Vercel/Cloudflare Pages (cosmetic only — the handler/policy logic already dispatched generically
 over whatever `DeployTarget[]` a host binds, so no behavioral change was needed for
 `GitHubPagesDeployTarget` to become reachable through the existing `deploy.publish` tool).
+
+## 2026-07-22 addition — genuine ~100%-of-reachable branch coverage across the whole package (audit fix, coverage pass)
+
+An earlier audit flagged this package at 85.41% branch coverage, calling cloudflare-pages.ts "the
+most concerning" gap, and asked to re-derive from scratch whether each claimed-defensive branch is
+really unreachable rather than trust any existing comment. This addition did that: read every
+uncovered branch in every file (obtained authoritatively from `coverage/coverage-final.json`'s
+`branchMap`/`b`, not the truncated text-table), closed the overwhelming majority with real tests
+exercising real API-response shapes, applied two real refactors that eliminated genuinely dead code
+in `reachability.ts`, and — only where independently re-proven, never accepted on a prior comment's
+word — documented the rest as unreachable with both an inline code comment at the exact branch and
+an entry here.
+
+**`reachability.ts`** (87.95% → 98.61% branch; **2 real refactors that eliminate dead branches
+entirely**, not just test them):
+- **Refactor 1 — `checkDeploymentUrl`'s two `? get : head` / `? get : get.statusMessage ? get :
+  head` ternaries were provably always `get`.** Traced every return shape `requestDeploymentUrl`
+  can produce: the two `reachable: false` shapes reachable at those exact lines (the generic
+  non-2xx/3xx fallback, and the outer-catch fallback) always set a non-empty template-string
+  `statusMessage`; the `status: 'protected'` shape is already excluded by an earlier `if
+  (...status === 'protected') return ...` check on the same variable. So `get.statusMessage` is
+  unconditionally truthy wherever those ternaries ran, and (for the `get.reachable ? get : ...`
+  outer case) the `reachable: true` shape is handled identically by both branches anyway.
+  Simplified both to `return get;`, with a comment recording the case-by-case proof so a future
+  editor doesn't have to re-derive it. Same reasoning eliminated `waitForReachableDeploymentUrl`'s
+  `result.statusMessage || lastMessage` (always truthy `result.statusMessage` by the point
+  reached, since the `reachable`/`'protected'` cases already `return`ed) — replaced with a
+  documented non-null assertion (`result.statusMessage!`), not `||`/`??`, so the dead branch
+  can't silently come back.
+- **Refactor 2 — `requestDeploymentUrl`'s `try/catch/finally` was leaving one branch structurally
+  uncoverable by any test, independent of the code's own logic.** Built a throwaway local repro
+  (a standalone `async function f` with the same `try { ...returns... } catch(err){ return }
+  finally { cleanup }` shape, iterated three times to isolate the cause — see the git history of
+  this session's scratch files, not committed) and empirically confirmed: V8's own coverage
+  instrumentation for a `try/catch/finally` whose `catch` always returns (never rethrows) emits a
+  synthetic branch, at the `finally` keyword's own source position, that stays at count 0 no
+  matter how thoroughly the `catch` itself is exercised (tested with a catch hit via both an
+  `Error` and a non-Error throw — still 0). This is a compiler/instrumentation artifact tied to
+  the `try/finally` construct itself, not a real code path. Confirmed the fix independently in the
+  same repro: replacing `try/finally` with an explicit `clearTimeout(timer)` call on every real
+  exit path (right after the `fetch` that could need aborting, plus one in `catch`) — same runtime
+  behavior, timer cleared on every exit either way — made the artifact disappear entirely (100%
+  branches with the same test count). Applied the identical restructuring to the real
+  `requestDeploymentUrl`, with a comment recording the repro methodology.
+- **Documented unreachable, re-derived, not trusted from any prior comment:** `assertSafeDeploymentUrl`'s
+  catch's `err instanceof Error ? ... : String(err)` — the `String(err)` side is unreachable
+  because `assertSafeDeploymentUrl`'s only two throw sources (`assertSafePublicUrl`, read directly
+  from `packages/platform/src/asset-cache.ts`, and this function's own explicit throw) both only
+  ever throw `AssetCacheError`, which `extends Error`. `reachability.ts:118` (inline comment there
+  has the full trace).
+- **Real tests added:** a non-Error rejection (`mockRejectedValue('boom')`) proving the *other*
+  catch's own `String(err)` side genuinely is reachable (fetch/a dispatcher can reject with any
+  thrown value in real JS — this one isn't provably dead, unlike the sibling above); a
+  `null`/`undefined` `urls` argument to the exported `waitForReachableDeploymentUrl` (defensive
+  against a non-TypeScript or `as any` caller — the function is public API); an explicit empty
+  `protectedMessage: ''` (caller-supplied, not internally-computed, so genuinely testable via the
+  public surface even though no *current* target in this package passes one); and a negative
+  `timeoutMs` forcing zero poll sweeps to exercise the final `lastMessage || generic` fallback for
+  real (the one remaining `||` in this file that isn't dead, since it's about the loop never
+  running at all, not about `statusMessage` being falsy).
+
+**`vercel.ts`** (81.7% → 97.82% branch; 2 documented-unreachable, the rest real tests):
+- **Documented unreachable:** `ready ?? undefined` in the `readyState === 'ERROR'` throw
+  (`vercel.ts:119`) — `ready` is already known-truthy by the time this runs (the `readyState ===
+  'ERROR'` check on the same optionally-chained `ready?.readyState` couldn't have matched
+  otherwise); kept for TypeScript's sake only (`ready`'s static type is `JsonObject | null`,
+  `DeployError`'s `details` param doesn't accept `null`) since the optional-chain check doesn't let
+  TS narrow that away. `deploymentUrlCandidates`'s `if (!json) continue` (`vercel.ts:237`) —
+  unreachable via its one real call site (`deploymentUrlCandidates(ready, created)`), both of which
+  are provably non-null (`created` from `readVercelJson`, which either returns an object or throws;
+  `ready` from `pollVercelDeployment`, whose loop always assigns `last` before any return) — same
+  shape `netlify.ts`'s own `netlifyUrlCandidates` already documents.
+- **Real tests:** `uid`-only create response (the `typeof created.uid === 'string'` fallback side
+  of the id/uid nested ternary); a terminal `ERROR` state with no `error` object at all (generic
+  "Vercel deployment failed." message); the poll endpoint itself (not just the create call)
+  returning non-ok; a zero-status `Response.error()` that's also non-JSON (`resp.status || 502`);
+  a deployment URL that already carries an explicit `https://` prefix (the regex-test true side);
+  a plain-string entry inside the `aliases` array (as opposed to only `{domain}`/`{url}`-shaped
+  entries); `deploymentUrl()`'s own `alias[0]` fallback when the response has no top-level `url`
+  field at all; and the full empty-candidates-and-empty-initialUrl fallthrough (`candidates.length
+  === 0` → `[initialUrl]`, `link.url || deploymentUrl(ready) || initialUrl` bottoming all the way
+  out, and `reachableAt` staying absent) in one combined scenario.
+
+**`netlify.ts`** and **`github-pages.ts`**: both already had their 2 (netlify.ts:164,306) and 1
+(github-pages.ts:185) remaining gaps documented as unreachable from the prior session's own work
+(`fallback || generic` in each file's own error formatter, and `netlifyUrlCandidates`'s `if
+(!json) continue`). Independently re-derived this session, per the standing "re-derive, don't
+trust" rule: read every call site of `netlifyError`/`githubError` (5 and 8 respectively) and
+confirmed each passes a non-empty string literal, so the generic-message fallback truly can't be
+selected; re-confirmed `netlifyUrlCandidates`'s single real call site
+(`netlifyUrlCandidates(finalState, site)`) always supplies two non-null `JsonObject`s the same way
+`vercel.ts`'s `deploymentUrlCandidates` does. No code changes needed in either file — the existing
+comments already matched what re-derivation found.
+
+**`cloudflare-pages.ts`** (77.09% → 93.43% branch — by far the largest gap, ~75 distinct uncovered
+branch outcomes spanning nearly the whole 857-line file; this is where nearly all of this addition's
+effort went). Worked top to bottom. Broad picture: **most of the ~75 gaps were real, reachable,
+untested branches** (optional-field parsing across a dozen-plus Cloudflare API response shapes —
+projects, upload tokens, asset check-missing/upload/upsert, zones, DNS records, custom domains,
+deployments — each with a "response has the field" and "response omits the field" side that only
+one side had a test for) and got closed with **~50 new real tests** added to
+`src/__tests__/cloudflare-pages.test.ts`, following the file's own established
+mocked-`fetch`-by-URL-pattern convention (extending `baseHandlers`/`baseHandlers2`/`baseHandlers3`/
+`coreHandlers` rather than inventing a new mocking style). A **smaller but real cluster (26
+branches) is genuinely unreachable**, and all 26 trace back to a small number of shared root
+causes, each proven by reading the actual call graph (not assumed):
+
+- **Root cause A — `config.projectName` is provably always non-empty.** `deriveCloudflarePagesProjectName`
+  always returns a non-empty string (`safeDnsLabel(projectName) || 'site'`, then re-sanitized with
+  a `'jini-'` prefix that itself always survives `safeDnsLabel`). This single fact makes
+  unreachable: `cloudflarePagesProductionUrl`'s `config?.projectName ? ... : ''` (line 329);
+  `cloudflarePagesProjectUrl`'s and `cloudflareAccountPagesProjectsUrl`'s own redundant
+  `!config.projectName`/`!config.accountId` guards (lines 293, 307 — both already validated by
+  `publish()` before `config` is ever built, for every real call path into these URL builders);
+  `publish()`'s own `if (!projectName) throw ...` right after deriving it (line 956); and, one
+  level further downstream, `setupCloudflarePagesCustomDomain`'s `productionUrl ? [productionUrl] :
+  [deployment?.url]` / `productionUrl || link.url` (lines 993, 996) — `productionUrl` being always
+  truthy means `link.url`/`deployment?.url` are never the value actually used.
+- **Root cause B — a non-empty `productionUrl` cascades into `pagesDevUrl`/`hostnameFromUrl`/
+  `normalizeDeploymentUrlToHostname` always seeing a well-formed, already-prefixed URL.** Since
+  `pagesDevUrl = productionUrl || link.url` is always `productionUrl` (root cause A),
+  `hostnameFromUrl(pagesDevUrl)` (line 770) is always called with a real `https://<dns-safe>.pages.dev`
+  string — meaning `normalizeDeploymentUrlToHostname`'s own internal fallbacks (`raw || ''`, the
+  `!trimmed` early return, the protocol-prefix ternary's `false` side, and the entire `catch` block
+  — lines 161-168, a 4-branch cluster on one function) are all unreachable too: a non-empty,
+  already-`https://`-prefixed string never fails `new URL(...)`, is never falsy, and never needs
+  re-prefixing. One level further, `cloudflarePagesDnsMarker`'s `pagesTarget || projectName` (line
+  864) and `shortHash`'s own `value || ''` (line 79) are unreachable for the same chained reason —
+  `pagesTarget` (built from `hostnameFromUrl`'s always-succeeding result) is always truthy by the
+  time either of those run.
+- **Root cause C — every `DeployError` this file's own call graph can throw is a genuine `Error`
+  instance.** `setupCloudflarePagesCustomDomain`'s two `err instanceof Error ? err.message :
+  'fallback'` constructs (lines 793, 810) are unreachable: every throw reachable from
+  `ensureCloudflarePagesCnameRecord`/`ensureCloudflarePagesDomain`'s own call graphs is either a
+  `new DeployError(...)`/`cloudflareError(...)` construction or a rethrow of one — this file never
+  throws a bare string/object anywhere.
+- **Root cause D — `aggregateCloudflarePagesStatus`'s one real caller always supplies a defined
+  `statusMessage`.** `pagesDev.statusMessage` comes from `link.statusMessage`
+  (`reachability.ts`'s `ReachabilityWaitResult.statusMessage`, a *required* field, verified
+  non-empty on every return path when that file's own coverage was closed this session). That
+  single fact cascades through `aggregateCloudflarePagesStatus`'s own 5 remaining branches (lines
+  888, 896, 900, 902, 905 — the `!customDomain` branch's `{}` alternate, the `ready`-branch and
+  `else`-branch's own `pagesDev.statusMessage || fallback` constructs, and — since every one of
+  `setupCloudflarePagesCustomDomain`'s return shapes always sets a truthy `statusMessage` or
+  `errorCode` of its own — the `pending`-branch's `customDomain.statusMessage || fallback` and the
+  `else`-branch's final `'Custom domain setup failed.'` literal) and one level further out, into
+  `publish()`'s own final `aggregate.statusMessage !== undefined ? ... : {}` (line 1020 — the 26th
+  and last of this file's remaining branches, same root cause, one hop further downstream).
+- **Two standalone unreachable branches, proven independently (not part of clusters A-D):**
+  `isCloudflareAlreadyExists`'s `body || {}` (line 254) — all 3 real call sites pass either a real
+  `JsonObject` (even `{}` is truthy) or, in the one case where `err.details` could be falsy (a
+  non-JSON-response `DeployError`), the fallback lands on `err.message`, always a non-empty string.
+  `isCloudflareCommentError`'s `value || {}` (line 279, **not** the whole ternary — the
+  `typeof value === 'string'` side is real and is exercised by the new "captures a non-JSON
+  DNS-record-creation response" test) — reaching the non-string side already means `value` is a
+  truthy `JsonObject` (the one way to get a non-string `value` at this call site is `err.details`
+  itself being truthy). `ensureCloudflarePagesCnameRecord`'s `if (!conflictingId) throw ...`
+  (line 658) — `canPatchCloudflarePagesCname`, just called to reach this branch, already requires
+  `record.id` to be a truthy string as part of its own condition. `findCloudflarePagesDomain`'s `if
+  (!normalizedHostname) return null` (line 716) — its one call site always passes
+  `selection.hostname`, built from an already-validated non-empty `domainPrefix`/`zoneName` pair
+  that can't normalize to `''`. `cloudflareError`'s own final `fallback || generic-template` (lines
+  234-235) — all 14 direct call sites plus the one indirect (`fetchCloudflarePaginatedResult`,
+  itself only ever called with a literal) pass a non-empty fallback string, same pattern
+  `netlify.ts`/`github-pages.ts` already establish for their own error formatters.
+
+One genuinely-caught **real bug** surfaced while writing these tests (not a coverage gap, a
+behavioral one): an early draft test assumed `normalizeCloudflarePagesDeploySelection` would reject
+a `customDomain` object whose fields were all non-string (numbers) with a validation error: it
+doesn't — every field normalizes to `''`, tripping the "all three blank" early-exit that treats the
+whole selection as *absent* rather than *invalid*. Not a bug in the production code (arguably the
+more defensible behavior — malformed-to-nothing is closer to "not requested" than "requested
+wrong"), but the test's wrong assumption caused a real crash (network calls attempted against an
+un-mocked `fetch`) that surfaced the actual behavior; the test was rewritten to assert the real
+behavior instead, and a `-bad-prefix`/non-string-in-isolation set of tests were added alongside it
+to still exercise each individual field's own non-string branch.
+
+**Verified, personally, this session**: `pnpm --dir packages/deploy exec tsc --noEmit`: clean.
+`pnpm --dir packages/deploy run test:coverage` — **231/231 tests pass** (59 new: ~7 in
+reachability.test.ts, ~7 in vercel.test.ts, ~50 in cloudflare-pages.test.ts), **package-wide
+99.78/95.95/100/99.78** (statements/branches/functions/lines) — every remaining uncovered branch in
+every file is individually proven unreachable via its real call graph and documented both inline
+and above; there is no untested *reachable* branch left anywhere in this package.
+`packages/deploy/vitest.config.ts`'s committed threshold raised from the prior 98/78/98/98
+ratchet-baseline to 99.7/95.9/100/99.7, just under the real measured numbers (a regression now fails
+CI instead of silently sliding under a wide safety margin). `pnpm --dir packages/deploy run build`:
+clean. Root `pnpm guard`: clean.

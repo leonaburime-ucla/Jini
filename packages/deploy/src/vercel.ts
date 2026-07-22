@@ -101,6 +101,21 @@ export class VercelDeployTarget implements DeployTarget {
     const ready = deploymentId ? await pollVercelDeployment(this.config, deploymentId) : created;
     if (ready?.readyState === 'ERROR') {
       const readyError = ready?.error as JsonObject | undefined;
+      // `ready ?? undefined` — the `undefined` side is unreachable: this line
+      // only runs when `ready?.readyState === 'ERROR'` just matched, which
+      // requires `ready` itself to already be a real object (optional
+      // chaining on a null/undefined `ready` would make the whole comparison
+      // `undefined === 'ERROR'`, i.e. false, skipping this block entirely).
+      // So by the time `ready ?? undefined` evaluates, `ready` is always
+      // truthy and the `??` is a no-op at runtime. Kept (not simplified to
+      // just `ready`) purely for type-level reasons: `ready`'s static type is
+      // `JsonObject | null` (from `pollVercelDeployment`'s return type /
+      // `created`'s), and `DeployError`'s `details` parameter accepts
+      // `JsonObject | string | undefined` — not `null` — so this coalesce is
+      // a compile-time-required null-to-undefined conversion that TypeScript's
+      // control-flow analysis cannot narrow away just from the optional-chained
+      // comparison above. See packages/deploy/source-map.md's 2026-07-22
+      // addition for the full re-derivation.
       throw new DeployError((readyError?.message as string | undefined) || 'Vercel deployment failed.', 502, ready ?? undefined);
     }
 
@@ -200,6 +215,22 @@ function deploymentUrl(json: JsonObject | null | undefined): string {
   return /^https?:\/\//i.test(url) ? url : `https://${url}`;
 }
 
+/**
+ * `if (!json) continue` is unreachable via this file's one call site,
+ * `deploymentUrlCandidates(ready, created)` in `publish()`: `created` comes
+ * from `readVercelJson`, which either returns a real parsed `JsonObject` or
+ * throws (never resolves to null/undefined); `ready` is either `created`
+ * itself (same guarantee) or `pollVercelDeployment`'s result, which — per
+ * that function's own loop shape (`i < 30` starting at `i = 0`, so it always
+ * runs at least one full iteration before it can return, and that iteration
+ * unconditionally assigns `last = json` right after the `!resp.ok` throw
+ * check, before any `return`) — can only resolve to a real `JsonObject` or
+ * throw, never resolve to `null`. The wider `(JsonObject | null | undefined)[]`
+ * parameter type is deliberately more permissive than what this one caller
+ * can ever supply — same "general-purpose helper, defense-in-depth beyond
+ * today's only caller" reasoning `netlify.ts`'s own `netlifyUrlCandidates`
+ * already documents for its structurally identical guard.
+ */
 function deploymentUrlCandidates(...responses: (JsonObject | null | undefined)[]): string[] {
   const urls: string[] = [];
   for (const json of responses) {

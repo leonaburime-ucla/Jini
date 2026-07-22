@@ -89,6 +89,17 @@ describe('checkDeploymentUrl', () => {
     expect(result.statusMessage).toContain('fetch failed');
   });
 
+  it('folds a non-Error rejection (fetch/dispatcher can reject with any thrown value in JS) into reachable:false via String(err)', async () => {
+    // Exercises the `err instanceof Error ? err.message : String(err)` false side: JS's
+    // `throw`/`Promise.reject` accept any value, so a misbehaving fetch implementation or
+    // dispatcher rejecting with a plain string is real defensive-programming territory, not a
+    // hypothetical this test invents out of thin air.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue('boom'));
+    const result = await checkDeploymentUrl('https://site.example');
+    expect(result.reachable).toBe(false);
+    expect(result.statusMessage).toBe('Public link is not reachable yet: boom');
+  });
+
   describe('SEC-003: hostile provider-returned URLs are rejected before any network call', () => {
     it('rejects a literal private/loopback IP address without calling fetch', async () => {
       const fetchSpy = vi.fn();
@@ -186,6 +197,34 @@ describe('waitForReachableDeploymentUrl', () => {
     expect(result.statusMessage).toContain('Test Provider');
   });
 
+  it('treats a null/undefined urls argument the same as an empty array (defensive against a non-TypeScript or `as any` caller)', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await waitForReachableDeploymentUrl(null as unknown as unknown[], { providerLabel: 'Test Provider' });
+    expect(result.status).toBe('link-delayed');
+    expect(result.url).toBe('');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a generic protected message when the caller explicitly passes an empty protectedMessage', async () => {
+    // `options.protectedMessage ?? 'default'` in reachability.ts's own protected-response
+    // branch only replaces null/undefined, not '' — so a caller-supplied empty string survives
+    // all the way to this function's own `result.statusMessage || generic` fallback, which is
+    // what this test actually exercises. No real target in this package passes '' today (Vercel
+    // passes a real constant, others omit protectedMessage entirely), but `protectedMessage` is
+    // public API on an exported function, so a future/external caller doing this is real
+    // behavior to cover, not a hypothetical.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, {}, 'Authentication Required')));
+    const result = await waitForReachableDeploymentUrl(['site.example'], {
+      timeoutMs: 60_000,
+      intervalMs: 5_000,
+      detectProtected: (_resp, body) => body.includes('Authentication Required'),
+      protectedMessage: '',
+    });
+    expect(result.status).toBe('protected');
+    expect(result.statusMessage).toBe('Deployment provider is gating this link behind its own auth wall.');
+  });
+
   it('resolves ready as soon as a candidate is reachable, without waiting out the timeout', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200)));
     const result = await waitForReachableDeploymentUrl(['site.example'], { timeoutMs: 60_000, intervalMs: 5_000 });
@@ -202,6 +241,20 @@ describe('waitForReachableDeploymentUrl', () => {
       detectProtected: (_resp, body) => body.includes('Authentication Required'),
     });
     expect(result.status).toBe('protected');
+  });
+
+  it('falls back to a generic link-delayed message when the timeout budget is already spent before a single sweep runs', async () => {
+    // A negative timeoutMs makes `Date.now() - startedAt <= timeoutMs` false on the very first
+    // check, so the while loop's body — which is the only place `lastMessage` is ever assigned —
+    // never executes even once. That's the one real way `lastMessage` can still be '' when the
+    // function falls through to its final return, exercising the `lastMessage || generic` fallback.
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await waitForReachableDeploymentUrl(['site.example'], { timeoutMs: -1, providerLabel: 'Test Provider' });
+    expect(result.status).toBe('link-delayed');
+    expect(result.url).toBe('https://site.example');
+    expect(result.statusMessage).toBe('Test Provider returned a deployment URL, but it is not reachable yet.');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('reports link-delayed once the timeout budget elapses with no reachable/protected candidate', async () => {
