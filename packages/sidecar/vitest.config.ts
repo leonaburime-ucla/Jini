@@ -19,22 +19,28 @@ export default defineConfig({
       include: ['src/**'],
       exclude: ['src/**/*.test.ts'],
       thresholds: {
-        // Ratchet baseline, NOT a final target (CR-R4): measured 2026-07-21
-        // package-wide honest coverage is ~97.9/89.6/98/97.9 (statements/
-        // branches/functions/lines). The sidecar port-exhaustion
-        // determinism fix (CR-R5) and json-ipc frame/idle/concurrency/error
-        // hardening (SEC-004) already closed several gaps (net.ts is now
-        // 100%); the remainder in json-ipc.ts/port.ts is either tied to
-        // running tests as root in this sandbox — chmod(0o000)-based
-        // permission-denial tests can't actually deny access to root, so
-        // those branches don't execute here even though the tests exist —
-        // or a defensively-unreachable non-Error-throw branch in a helper
-        // whose only real caller always throws a real Error. Raise these
-        // numbers as that remainder is closed — do not lower them.
-        statements: 97,
-        branches: 89,
-        functions: 98,
-        lines: 97,
+        // Measured 2026-07-22 (audit fix, coverage pass): genuine
+        // 100/98.34/100/100 package-wide. The prior 97/89/98/97 baseline
+        // predated (1) replacing the root-vs-chmod-regressed tests with
+        // `vi.mock("node:fs/promises"|"node:net", ...)`-based deterministic
+        // error/race injection (see index.test.ts's own top-of-file note —
+        // same technique and same reasoning as packages/platform's), and
+        // (2) closing port.ts's/json-ipc.ts's remaining pre-existing gaps
+        // for real. `branches` sits at 98.34, not 100, because of exactly 4
+        // branches confirmed genuinely unreachable through any real call
+        // path this session (each independently verified, not assumed —
+        // see source-map.md's 2026-07-22 entry): json-ipc.ts's idle-timer
+        // `handled` re-check (single-threaded execution already guarantees
+        // `clearTimeout` always precedes it) and three `error instanceof
+        // Error` checks whose real inputs (a `Socket`'s `'error'` event —
+        // typed `Error` by `@types/node` itself and never anything else by
+        // Node's own implementation — and a `JSON.parse` failure, always a
+        // real `SyntaxError`) can never be non-Error. Raise these numbers if
+        // a future change closes one of those — do not lower them.
+        statements: 100,
+        branches: 98,
+        functions: 100,
+        lines: 100,
       },
     },
   },

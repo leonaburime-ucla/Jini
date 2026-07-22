@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AssetCacheError,
@@ -18,6 +18,7 @@ import {
   assetCacheRewriteUrl,
   createAssetCache,
   createValidatingLookup,
+  expandIpv6,
   isCacheableExternalUrl,
   isPrivateAddress,
 } from '../asset-cache.js';
@@ -101,6 +102,43 @@ describe('isPrivateAddress', () => {
   });
 });
 
+describe('expandIpv6 (direct — the only real caller, isPrivateAddress, gates every call behind net.isIP(addr) === 6, which already fully validates syntax, so these parse-failure guards are unreachable through that path; exercised directly against the exported function instead)', () => {
+  it('rejects an input with no colon at all', () => {
+    expect(expandIpv6('not-ipv6-shaped')).toBeNull();
+  });
+
+  it('rejects an embedded IPv4 tail with an out-of-range octet', () => {
+    // net.isIP() would refuse "::999.1.1.1" outright (verified empirically:
+    // isIP('::999.1.1.1') === 0), so this can only be reached by calling
+    // expandIpv6 directly, bypassing that gate.
+    expect(expandIpv6('::999.1.1.1')).toBeNull();
+  });
+
+  it('rejects more than one "::" compression', () => {
+    expect(expandIpv6('1::2::3')).toBeNull();
+  });
+
+  it('rejects a group with invalid hex characters', () => {
+    expect(expandIpv6('gggg::1')).toBeNull();
+  });
+
+  it('rejects a group with more than 4 hex digits', () => {
+    expect(expandIpv6('12345::1')).toBeNull();
+  });
+
+  it('rejects compression that leaves no room to fill (too many explicit groups)', () => {
+    expect(expandIpv6('1:2:3:4::5:6:7:8')).toBeNull();
+  });
+
+  it('rejects an uncompressed address with the wrong total group count', () => {
+    expect(expandIpv6('1:2:3')).toBeNull();
+  });
+
+  it('parses a valid address with an embedded IPv4 tail', () => {
+    expect(expandIpv6('::ffff:127.0.0.1')).toEqual([0, 0, 0, 0, 0, 0xffff, 0x7f00, 1]);
+  });
+});
+
 describe('assertSafePublicUrl (up-front rejection)', () => {
   it('rejects unsupported schemes and embedded credentials', () => {
     expect(() => assertSafePublicUrl('ftp://host/x.png')).toThrow(
@@ -166,6 +204,55 @@ describe('createValidatingLookup (DNS-rebinding / TOCTOU guard)', () => {
       ]),
     );
     expect(err).toBeInstanceOf(AssetCacheError);
+  });
+
+  it('accepts an all:true result whose entries are raw address strings (not {address} objects)', async () => {
+    const { err, address } = await run((_h, _o, cb) => cb(null, ['93.184.216.34', '1.1.1.1']));
+    expect(err).toBeNull();
+    expect(address).toEqual(['93.184.216.34', '1.1.1.1']);
+  });
+
+  it('rejects when a raw-string entry in the list is private', async () => {
+    const { err } = await run((_h, _o, cb) => cb(null, ['93.184.216.34', '127.0.0.1']));
+    expect(err).toBeInstanceOf(AssetCacheError);
+  });
+
+  it('propagates a lookup error untouched', async () => {
+    const boom = new Error('dns resolution failed');
+    const { err } = await run((_h, _o, cb) => cb(boom));
+    expect(err).toBe(boom);
+  });
+
+  it('supports the 2-arg dns.lookup call form (options omitted, callback in its place)', () => {
+    return new Promise<void>((resolve) => {
+      const lookupImpl = ((_h: string, _o: unknown, cb: (e: Error | null, a?: unknown, f?: number) => void) =>
+        cb(null, '93.184.216.34', 4)) as never;
+      const wrapped = createValidatingLookup(lookupImpl);
+      // Real dns.lookup allows `lookup(hostname, callback)` — the wrapper
+      // must detect the 2nd positional arg is itself the callback.
+      (wrapped as unknown as (h: string, cb: (e: Error | null, a?: unknown) => void) => void)(
+        'host.example',
+        (err, address) => {
+          expect(err).toBeNull();
+          expect(address).toBe('93.184.216.34');
+          resolve();
+        },
+      );
+    });
+  });
+
+  it('defaults options to {} when called with options explicitly undefined', () => {
+    return new Promise<void>((resolve) => {
+      const lookupImpl = ((_h: string, opts: unknown, cb: (e: Error | null, a?: unknown, f?: number) => void) => {
+        expect(opts).toEqual({});
+        cb(null, '93.184.216.34', 4);
+      }) as never;
+      const wrapped = createValidatingLookup(lookupImpl);
+      wrapped('host.example', undefined, (err) => {
+        expect(err).toBeNull();
+        resolve();
+      });
+    });
   });
 });
 
@@ -358,6 +445,116 @@ describe('createAssetCache', () => {
       status: 502,
       message: expect.stringContaining('network down'),
     });
+  });
+
+  it('wraps a non-Error fetch rejection as a 502, stringifying the thrown value', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error, testing String(err)
+        throw 'connection reset';
+      }) as typeof fetch,
+    });
+    await expect(cache.get('https://res.cloudinary.com/x/non-error-throw.png')).rejects.toMatchObject({
+      status: 502,
+      message: expect.stringContaining('connection reset'),
+    });
+  });
+
+  it('falls back to global fetch when no fetchImpl is supplied', async () => {
+    const fetchSpy = vi.fn(async () => pngResponse(4));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const cache = createAssetCache({ cacheDir: dir });
+      const out = await cache.get('https://res.cloudinary.com/x/default-fetch.png');
+      expect(out.buf.byteLength).toBe(4);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects with 415 when neither the header nor the URL pathname extension is a recognized media type', async () => {
+    // isCacheableExternalUrl matches on the raw URL string (not just the
+    // pathname), so a URL whose *query string* ends in a recognized
+    // extension passes the up-front cacheability check even though its
+    // pathname extension (what resolveContentType actually inspects) is not
+    // itself recognized (and here, `?f=` keeps it off the exact `pathOnly`
+    // match too) — a real, reachable mismatch, not synthetic.
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () =>
+        new Response(Buffer.alloc(4), { status: 200, headers: { 'content-type': 'application/octet-stream' } })) as typeof fetch,
+    });
+    await expect(cache.get('https://cdn.example.com/render.php?f=photo.png')).rejects.toMatchObject({
+      status: 415,
+      message: expect.stringContaining('unsupported content-type'),
+    });
+  });
+
+  it('rejects with 415 and an "unknown" placeholder when there is no content-type header at all either', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => new Response(Buffer.alloc(4), { status: 200 })) as typeof fetch,
+    });
+    await expect(cache.get('https://cdn.example.com/render.php?f=photo.png')).rejects.toMatchObject({
+      status: 415,
+      message: expect.stringContaining('unsupported content-type: unknown'),
+    });
+  });
+
+  it('derives content-type from the extension when there is no content-type header at all', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => new Response(Buffer.alloc(4, 3), { status: 200 })) as typeof fetch,
+    });
+    const out = await cache.get('https://cdn.example.com/clip.webm');
+    expect(out.contentType).toBe('video/webm');
+  });
+
+  it('falls back to application/octet-stream when a disk-cached sidecar has no usable contentType', async () => {
+    const url = 'https://res.cloudinary.com/x/corrupt-meta.png';
+    const key = assetCacheKey(url);
+    await writeFile(path.join(dir, key), Buffer.alloc(4, 5));
+    // A sidecar whose contentType is missing/non-string — readFromDisk must
+    // still succeed, replaying with the generic fallback content-type.
+    await writeFile(path.join(dir, `${key}.json`), JSON.stringify({ contentType: 42 }));
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => {
+        throw new Error('must not fetch — should replay from disk');
+      }) as typeof fetch,
+    });
+    const out = await cache.get(url);
+    expect(out.contentType).toBe('application/octet-stream');
+    expect(out.buf.byteLength).toBe(4);
+  });
+
+  it('skips a falsy (undefined) chunk from the reader without treating it as data', async () => {
+    let reads = 0;
+    const fakeBody = {
+      getReader: () => ({
+        read: async () => {
+          reads += 1;
+          if (reads === 1) return { done: false, value: undefined };
+          if (reads === 2) return { done: false, value: new Uint8Array(4).fill(6) };
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {},
+      }),
+    };
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/png' : null) },
+      body: fakeBody,
+    };
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => fakeResponse) as unknown as typeof fetch,
+    });
+    const out = await cache.get('https://res.cloudinary.com/x/undefined-chunk.png');
+    expect(out.buf.byteLength).toBe(4);
   });
 
   it('rejects a non-OK upstream response as a 502', async () => {

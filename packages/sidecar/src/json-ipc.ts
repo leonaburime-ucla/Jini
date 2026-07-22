@@ -100,9 +100,17 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * @internal Shape an unknown error into the `{code?,message}` IPC error payload.
+ * Shape an unknown error into the `{code?,message}` IPC error payload.
+ *
+ * Exported (previously module-private) for direct unit testing: its only
+ * current caller (a `JSON.parse` frame-parse failure) always passes a
+ * codeless `SyntaxError`, so the `code`-present branch below is real,
+ * generically useful behavior (any future caller with a Node-style errno
+ * error benefits from it) with no in-tree caller that happens to have one in
+ * hand today — matching this repo's "extract into a directly-testable pure
+ * function" convention rather than narrowing the type away.
  */
-function jsonIpcError(error: unknown): { code?: string; message: string } {
+export function jsonIpcError(error: unknown): { code?: string; message: string } {
   return {
     ...(errorCode(error) == null ? {} : { code: errorCode(error) as string }),
     message: errorMessage(error),
@@ -124,10 +132,17 @@ async function staleUnixSocketExists(socketPath: string): Promise<boolean> {
 
   return await new Promise<boolean>((resolveStale, rejectStale) => {
     const socket = createConnection(socketPath);
-    let settled = false;
+    // No `settled`-flag re-entrancy guard: `connect`/`error` are each
+    // registered with `.once()` (which self-removes *before* invoking the
+    // listener), and `settle` itself calls `removeAllListeners()` as its
+    // first side effect — so no code path here can ever invoke `settle`
+    // twice. A prior version carried a defensive `if (settled) return;` that
+    // was provably unreachable (verified empirically this session: forcing
+    // a second event through a fake socket finds zero listeners and crashes
+    // the process outright, rather than reaching that guard — see
+    // source-map.md's 2026-07-22 entry) — removed as a real refactor rather
+    // than padded with a test that can't exercise real behavior.
     const settle = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
       socket.removeAllListeners();
       socket.destroy();
       callback();
@@ -146,10 +161,18 @@ async function staleUnixSocketExists(socketPath: string): Promise<boolean> {
 }
 
 /**
- * @internal Prepare a socket path for binding: ensure the parent dir exists and
+ * Prepare a socket path for binding: ensure the parent dir exists and
  * unlink a stale socket (no-op for Windows named pipes).
+ *
+ * Exported (previously module-private) for direct unit testing: its
+ * Windows-named-pipe early return is real, load-bearing behavior (skipping
+ * filesystem staging that would be meaningless — or fail outright — for a
+ * pipe path), but this repo's CI runs on Linux, so the only way to actually
+ * *bind* one end-to-end and observe the early return's effect is on real
+ * Windows. Testing this function directly (asserting no filesystem call
+ * happens) verifies the real behavior on every platform this runs on.
  */
-async function prepareIpcPath(socketPath: string): Promise<void> {
+export async function prepareIpcPath(socketPath: string): Promise<void> {
   if (isWindowsNamedPipePath(socketPath)) return;
   await mkdir(dirname(socketPath), { recursive: true });
   if (await staleUnixSocketExists(socketPath)) await rm(socketPath, { force: true });
@@ -199,6 +222,15 @@ export async function createJsonIpcServer({
     // newline-terminated frame (or dribbles bytes indefinitely) would otherwise hold the
     // connection — and this closure's buffer — open forever.
     const idleTimer = setTimeout(() => {
+      // Defense-in-depth, not reachable through any real timer/socket
+      // interleaving: every real path that sets `handled = true` (a
+      // complete frame arriving, or the oversized-frame guard) calls
+      // `clearTimeout(idleTimer)` in the very same synchronous prefix of a
+      // single `data`-listener invocation — and Node/V8's single-threaded
+      // execution model means no other callback (including this one) can
+      // run in between that assignment and the `clearTimeout` call. Kept as
+      // a real fail-safe (in case a future edit reorders that sequence)
+      // rather than asserted away — see source-map.md's 2026-07-22 entry.
       if (handled) return;
       handled = true;
       traceJsonIpc("server.idle_timeout", {
@@ -212,6 +244,15 @@ export async function createJsonIpcServer({
     idleTimer.unref();
 
     socket.on("error", (error) => {
+      // `error instanceof Error` here is defense-in-depth, not reachable
+      // through real socket usage: @types/node itself types a `Socket`'s
+      // `'error'` listener parameter as `Error` (not `unknown`), matching
+      // Node's own real implementation, which only ever emits genuine
+      // `Error`/`SystemError` instances for this event — verified against
+      // the installed `@types/node`'s `net.d.ts` this session; not asserted
+      // away since a test would have to manually `.emit()` a fabricated
+      // non-Error value to reach the other side, which isn't real socket
+      // behavior (see source-map.md's 2026-07-22 entry).
       traceJsonIpc("server.socket_error", {
         durationMs: jsonIpcTraceDurationMs(startedAt),
         error: error instanceof Error ? error.message : String(error),
@@ -265,6 +306,12 @@ export async function createJsonIpcServer({
       try {
         message = JSON.parse(frame);
       } catch (error) {
+        // `error instanceof Error` here is defense-in-depth, not reachable
+        // through a real `JSON.parse` failure: it only ever throws a
+        // genuine `SyntaxError` (an `Error` instance) for any string input
+        // — never a non-Error value — matching the same reasoning as the
+        // socket-error `instanceof Error` checks above (see
+        // source-map.md's 2026-07-22 entry).
         traceJsonIpc("server.frame_parse_failed", {
           durationMs: jsonIpcTraceDurationMs(startedAt),
           error: error instanceof Error ? error.message : String(error),
@@ -462,6 +509,9 @@ export async function requestJsonIpc<T = any>(
       });
     });
     socket.on("error", (error) => {
+      // Same defense-in-depth, not-reachable-through-real-usage reasoning as
+      // the server-side `error instanceof Error` check above (see that
+      // comment + source-map.md's 2026-07-22 entry).
       traceJsonIpc("client.socket_error", {
         durationMs: jsonIpcTraceDurationMs(startedAt),
         error: error instanceof Error ? error.message : String(error),

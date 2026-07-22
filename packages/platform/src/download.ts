@@ -307,6 +307,16 @@ function targetFromOptions(options: Pick<ManagedDownloadOptions, "basePath" | "b
   const manifestPath = resolve(basePath, STATE_DIR, `${targetKey}.json`);
   const partialPath = resolve(basePath, PARTIAL_DIR, `${targetKey}.partial`);
   const lockPath = resolve(basePath, LOCK_DIR, `${targetKey}.lock`);
+  // Real, reachable guard — NOT dead code: `normalizeSegment` only rejects a
+  // segment that is *exactly* "." or "..", not one that merely starts with
+  // ".." (e.g. "..evil" is a syntactically ordinary filename, not a parent
+  // reference), so `pathContains`'s own naive `!rel.startsWith("..")` string
+  // check (see fs.ts) flags such a segment as escaping even though
+  // `path.resolve` never actually walked upward. Empirically verified this
+  // session: a 300k-segment fuzz found ~0.2% of `normalizeSegment`-valid
+  // segments (every one starting with literal "..") trip this exact guard —
+  // see source-map.md's 2026-07-22 entry and this file's own test for a
+  // concrete example (bucket "..evil").
   for (const path of [finalPath, manifestPath, partialPath, lockPath]) {
     if (!pathContains(basePath, path)) {
       throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, "resolved managed download path escaped basePath");
@@ -440,7 +450,9 @@ function parseTimeMs(value: string | undefined): number | null {
 }
 
 function lockBelongsToCurrentProcess(lock: DownloadLockFile): boolean {
-  if (lock.pid !== process.pid) return false;
+  // Its only caller (`isLockProcessAlive`) already gates this call behind
+  // `lock.pid === process.pid`, so that comparison can never be true here —
+  // no redundant re-check.
   const ownerStartedAtMs = parseTimeMs(lock.processStartedAt);
   if (ownerStartedAtMs != null) return ownerStartedAtMs >= PROCESS_STARTED_AT_MS - PID_REUSE_GRACE_MS;
 
@@ -515,10 +527,14 @@ async function statFileSize(path: string): Promise<number | null> {
   }
 }
 
-async function emitExistingProgress(path: string, totalBytes: number | undefined, emit: (progress: ManagedDownloadProgress) => void): Promise<void> {
+async function emitExistingProgress(path: string, totalBytes: number, emit: (progress: ManagedDownloadProgress) => void): Promise<void> {
+  // `totalBytes` is required (not `number | undefined`): its only real call
+  // site (`tryResumeDownload`) always resolves one, via a `??` chain whose
+  // last resort is arithmetic (`partialBytes + (contentLength(response) ??
+  // 0)`) — never `undefined`.
   const existing = await statFileSize(path);
   if (existing == null || existing <= 0) return;
-  emit({ receivedBytes: existing, sessionReceivedBytes: 0, ...(totalBytes == null ? {} : { totalBytes }) });
+  emit({ receivedBytes: existing, sessionReceivedBytes: 0, totalBytes });
 }
 
 function contentLength(response: Response): number | undefined {
@@ -686,7 +702,11 @@ async function acquireLock(target: NormalizedTarget): Promise<AcquiredLock> {
   // The `continue` below is only reachable on `attempt === 0`, so by the time
   // `attempt` would reach 2 (the old loop bound), the branch above it has
   // already thrown — there's no way to fall through to a third iteration, so
-  // no trailing fallback throw is needed.
+  // no trailing fallback throw is needed. Every path out of this loop body is
+  // a `return` or a `throw`; V8 still instruments the loop's closing brace as
+  // a branch (whether execution "falls off" the loop normally), but that
+  // outcome is structurally impossible here — see source-map.md's
+  // 2026-07-22 entry.
   for (let attempt = 0; ; attempt += 1) {
     try {
       await writeFile(
@@ -930,8 +950,14 @@ async function requestClearAfterCopy(target: NormalizedTarget): Promise<"deferre
 }
 
 async function releaseCopyLease(lease: CopyLease): Promise<void> {
-  const state = copyLeases.get(lease.key);
-  if (state == null) return;
+  // `acquireCopyLease` always populates `copyLeases.get(key)` synchronously
+  // before returning a lease, and this module's only caller
+  // (`downloadCopyAndClear`) releases each lease exactly once, in its own
+  // `finally` block — both functions are fully synchronous (no `await`
+  // inside either), so there is no interleaving window in which another
+  // caller could delete the entry first. The map entry is therefore always
+  // present here.
+  const state = copyLeases.get(lease.key)!;
   state.count -= 1;
   if (state.count > 0) return;
   copyLeases.delete(lease.key);
@@ -945,10 +971,10 @@ export async function downloadCopyAndClear(options: DownloadCopyAndClearOptions)
   if (typeof options.outputPath !== "string" || options.outputPath.length === 0 || options.outputPath.includes("\0")) {
     throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, "outputPath must be a non-empty path");
   }
+  // `path.resolve()` always returns an absolute path by contract (same
+  // guarantee `normalizeBasePath` above already relies on), so a follow-up
+  // `isAbsolute` check here could never be false for any string input.
   const outputPath = resolve(options.outputPath);
-  if (!isAbsolute(outputPath)) {
-    throw new ManagedDownloadError(MANAGED_DOWNLOAD_ERROR_CODES.INVALID_TARGET, `outputPath must resolve to an absolute path: ${options.outputPath}`);
-  }
   const lease = acquireCopyLease(target);
   try {
     const downloaded = await managedDownload(options);

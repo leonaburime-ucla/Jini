@@ -115,6 +115,16 @@ describe('@jini/platform — proxy-env — parseMacosScutilProxyOutput', () => {
     const env = parseMacosScutilProxyOutput('HTTPEnable : 1\nHTTPProxy : proxy.example\n');
     expect(env.HTTP_PROXY).toBeUndefined();
   });
+
+  it('passes an already-schemed HTTPProxy scalar straight through instead of double-prefixing it', () => {
+    // scutil's HTTPProxy scalar is normally a bare host, but this is
+    // defensively handled the same way as an already-schemed value —
+    // normalizeHostPortProxyUrl composes "<host>:<port>", and if that
+    // *combined* string already looks scheme-qualified (a malformed/unusual
+    // scutil output), it must not get a second "http://" prefix applied.
+    const env = parseMacosScutilProxyOutput('HTTPEnable : 1\nHTTPProxy : http\nHTTPPort : //proxy.example:8080\n');
+    expect(env.HTTP_PROXY).toBe('http://proxy.example:8080');
+  });
 });
 
 describe('@jini/platform — proxy-env — parseWindowsInternetSettingsProxyOutput', () => {
@@ -172,11 +182,25 @@ describe('@jini/platform — proxy-env — parseWindowsInternetSettingsProxyOutp
 });
 
 describe('@jini/platform — proxy-env — resolveSystemProxyEnv', () => {
-  it('exercises the real default command runner on darwin (shells out to the actual scutil)', () => {
-    if (process.platform !== 'darwin') return;
-    expect(() => resolveSystemProxyEnv()).not.toThrow();
-    const env = resolveSystemProxyEnv();
+  it('exercises the real default command runner (no injected runCommand) — forced to the darwin branch regardless of host OS', () => {
+    // No `runCommand` is supplied, so this calls the *real*
+    // `defaultSystemProxyCommandRunner` (a real `execFileSync`). On a
+    // non-darwin CI host `scutil` doesn't exist, so the shell-out itself
+    // fails — but `tryRun` swallows that, and the point of this test is
+    // exercising the real default runner's own code, not what it returns.
+    expect(() => resolveSystemProxyEnv({ platform: 'darwin' })).not.toThrow();
+    const env = resolveSystemProxyEnv({ platform: 'darwin' });
     expect(typeof env).toBe('object');
+  });
+
+  it('defaults to process.platform when no platform override is given', () => {
+    // Exercises the `options.platform ?? process.platform` fallback for
+    // real: whatever this host's platform is, it must not throw, and on
+    // any platform other than darwin/win32 it resolves to an empty env.
+    expect(() => resolveSystemProxyEnv({ runCommand: () => '' })).not.toThrow();
+    if (process.platform !== 'darwin' && process.platform !== 'win32') {
+      expect(resolveSystemProxyEnv({ runCommand: () => '' })).toEqual({});
+    }
   });
 
   it('swallows a runCommand failure and falls back to an empty parse', () => {

@@ -149,3 +149,117 @@ package-wide `pnpm --dir packages/sidecar exec vitest run --coverage` is 98.42/9
 
 No new dependency — `daemon-registry.ts` uses only this package's own existing `json-file.ts`
 exports plus `node:path` and the global `process`.
+
+## 2026-07-22 addition — genuine 100%-minus-4-provably-unreachable-branches coverage (audit fix, coverage pass)
+
+Per this task's standing "check every other package with a source-map.md for coverage gaps
+beyond the named list" rule: `packages/sidecar` (alongside `packages/platform`) was discovered
+mid-sweep, not in the original named list. A prior step in this same task added `isRoot`-guarded
+`it.skipIf` around this package's `chmod(0o000)`-based permission-denial tests (root's
+CAP_DAC_OVERRIDE bypasses directory/file permission bits) in `index.test.ts` (2 tests) — see that
+file's own `isRoot` comment. This entry documents closing the gaps that regression left behind,
+plus the separate, pre-existing gaps in `port.ts`/`json-ipc.ts` this package's own prior
+vitest.config.ts comment had already flagged and deferred.
+
+**Method for every chmod-regression / OS-dependent gap**: `vi.mock("node:fs/promises", ...)` and
+`vi.mock("node:net", ...)` at the top of `index.test.ts`, each wrapping the specific functions
+needed (`lstat`/`mkdir` for fs; `createServer`/`createConnection` for net) in `vi.fn(actual.fn)`
+(default: real behavior), then `.mockImplementationOnce`/`.mockImplementation` per test to inject
+a real-shaped error or a deterministic race — identical technique and identical empirical
+justification to `packages/platform`'s own 2026-07-22 entry (`vi.spyOn` on a `node:fs/promises` or
+`node:net` namespace object fails outright — frozen ESM module-namespace bindings — and this
+package's source files call these as plain destructured imports, so `vi.mock` replacing the whole
+module for every importer is what actually reaches the real call sites).
+
+**`port.ts`** (4 pre-existing gaps, unrelated to the chmod regression — this file had no
+`isRoot`-skipped tests at all):
+- `allocateForcedPort`'s `errorCode(error) ?? errorMessage(error)` fallback chain: a real
+  `listenOnPort` bind failure always carries a `.code` (EADDRINUSE/EACCES/...), so reaching
+  `errorMessage`'s side, and separately `errorCode`'s own "code explicitly null" and
+  "non-Error thrown value" sub-branches, needed a mocked `net.createServer()` whose returned
+  server's `.listen()` is overridden to synchronously emit a fabricated error instead of actually
+  attempting to bind — three new tests, one per fallback shape (codeless `Error`, explicit
+  `code: null`, a plain string throw).
+- `probeEphemeralPort`'s `address == null || typeof address === "string"` guard: never true for
+  a real TCP bind (a `host`-bound socket's `.address()` is always a real `AddressInfo` while
+  listening) — reached by mocking `createServer()`'s returned server's own `.address()` method to
+  report `null`.
+- `port.ts`: **100/100/100/100**.
+
+**`index.test.ts` → `json-ipc.ts`** (the 2 chmod-regression gaps, replaced with `vi.mock`-based
+always-run twins, plus a substantial pool of separate pre-existing gaps found during the sweep):
+- The 2 `isRoot`-skipped tests ("propagates a non-ENOENT error from the stale-socket lstat check",
+  "rejects when probing a stale socket fails with something other than ENOENT/ECONNREFUSED") each
+  got a `vi.mock`-based always-run twin: the first via a mocked `lstat` throwing a codeless/
+  explicit-null-code error (also closing `errorCode`'s own two sub-branches, matching
+  `packages/platform/fs.ts`'s identical pair); the second via a fake socket (a real
+  `node:events.EventEmitter` stood in for `net.Socket`, stubbed with `destroy`/`write`/`end`) that
+  emits a scripted `'error'` with an `EACCES` code deterministically instead of chasing that exact
+  race on a real dead socket.
+- `jsonIpcError` and `prepareIpcPath` exported (previously module-private) for direct unit
+  testing, matching `packages/platform/asset-cache.ts`'s established "extract into a
+  directly-testable pure function" convention:
+  - `jsonIpcError`'s `code`-present branch: its only in-tree caller (a `JSON.parse` frame-parse
+    failure) always passes a codeless `SyntaxError`, so that branch is real, generically useful
+    behavior (any future caller with a Node-style errno error benefits) with no in-tree caller
+    that has one in hand today. Directly tested with a manufactured `ErrnoException`, a codeless
+    `SyntaxError`, and a non-Error string (`errorMessage`'s own non-Error branch).
+  - `prepareIpcPath`'s Windows-named-pipe early return: real, load-bearing behavior, but this
+    repo's CI runs on Linux, so no test can actually *bind* a named pipe end-to-end to observe it
+    (the pre-existing test for this silently no-op'd off Windows via a bare `if (...) return;`
+    instead of `it.skipIf`, matching a same-shaped bug independently found and fixed in
+    `packages/platform/proxy-env.ts`'s `resolveSystemProxyEnv` darwin test — see that package's
+    own 2026-07-22 entry). Fixed by testing the exported function directly: mocked `mkdir`/`lstat`
+    to throw if called at all, proving a pipe path triggers zero filesystem staging on every
+    platform this runs on.
+- `staleUnixSocketExists`'s own `if (settled) return;` double-settle guard: investigated for a
+  race test and found genuinely unreachable — `.once()` self-removes *before* invoking its
+  listener, and `settle` itself calls `socket.removeAllListeners()` as its first side effect, so
+  no code path can invoke either handler twice. Verified empirically by attempting to force it
+  via a fake socket: emitting a second event finds zero listeners and crashes the process outright
+  (Node's special "throw on unhandled 'error'" behavior) — itself proof the guard is unreachable,
+  since a real double-fire would crash the same way. Removed via a real refactor (the flag and
+  guard deleted, not asserted away) rather than left as untestable dead code — unlike
+  `requestJsonIpc`'s own, analogous `settled` guard on the client side, which does NOT call
+  `removeAllListeners()` and so genuinely can double-fire (its own persistent `.on()` listeners
+  stay registered) — kept, and closed with a real test (a fake socket emitting a successful
+  response followed by a trailing `'error'`).
+- `summarizeJsonIpcMessage`'s whole-message-not-an-object branch and its object-with-no-string-
+  `type` branch: both real, reachable behavior (a client can legitimately send any JSON value as
+  the whole request payload) — closed with new `requestJsonIpc` calls sending a bare string and an
+  object with no `type` field.
+- A genuine server-side socket `'error'` event (ECONNRESET-shaped) had literally zero test
+  coverage at the *statement* level, not just a branch gap — no existing test caused the server's
+  per-connection socket to ever error at all. Closed by wrapping the mocked `net.createServer`'s
+  real connection listener to fire a genuine `'error'` event (a real `Error` instance) on the
+  real per-connection socket right after connecting, then `destroy()` it to complete the
+  simulated reset — deterministic, and a real socket throughout (not a fake one), matching the
+  same "wrap the real thing, inject only the trigger" style as `port.ts`'s tests above.
+- `requestJsonIpc`'s `response.error?.message ?? "IPC request failed"` fallback (both the trace
+  payload and the constructed rejection's own message): the response is untrusted wire JSON from
+  the peer, and a buggy/malicious peer can send `{ok:false,error:{}}` with no `message` field at
+  all — closed with a fake-socket test sending exactly that.
+- **Four branches confirmed genuinely unreachable**, each independently verified this session
+  (not inherited from an earlier claim):
+  - The idle-timer callback's `if (handled) return;` (`createJsonIpcServer`): every real path that
+    sets `handled = true` (a complete frame, or the oversized-frame guard) calls
+    `clearTimeout(idleTimer)` in the same synchronous prefix of a single `data`-listener
+    invocation, and Node/V8's single-threaded execution model means nothing (including this
+    timer's own callback) can run in between — so the timer can never fire once `handled` is true.
+  - Three `error instanceof Error ? error.message : String(error)` trace-formatting expressions
+    (server socket-error, client socket-error, server frame-parse-failure): a `Socket`'s
+    `'error'` listener is typed `Error` by `@types/node` itself (verified against the installed
+    `net.d.ts` this session) and Node's own implementation never emits anything else for it; a
+    `JSON.parse` failure is always a real `SyntaxError`. Forcing the non-Error side would require
+    manually `.emit()`-ing a fabricated value on a socket, which isn't real socket behavior — the
+    same reasoning `packages/platform`'s `proxy-env.ts` entry applies to its own outer `catch`.
+
+**Package-wide, verified personally this session**: `pnpm --dir packages/sidecar exec tsc
+--noEmit`: clean. `pnpm --dir packages/sidecar run test:coverage`: **81 tests (79 passed, 2
+skipped — the 2 already-`isRoot`-skipped chmod tests, each with a real, always-run `vi.mock`-based
+twin providing the actual coverage), genuine 100/98.34/100/100 package-wide** — every uncovered
+branch remaining is one of the 4 documented above. `pnpm --dir packages/sidecar run build`: clean.
+`vitest.config.ts`'s committed threshold raised from 97/89/98/97 to 100/98/100/100 (a small margin
+under the real branches number, matching `packages/registry/vitest.config.ts`'s own
+just-under-measured convention, to leave room for the 4 permanently-unreachable branches without
+the threshold silently sliding if a future change reduces real coverage elsewhere).

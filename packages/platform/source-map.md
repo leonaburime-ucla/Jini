@@ -274,3 +274,207 @@ objects, including pagination, malformed/missing-field list-XML, and a
 No new dependency — `aws-sigv4.ts` uses only `node:crypto`; `blob-storage.ts`
 uses only `node:path`/`node:fs/promises` plus `aws-sigv4.ts` and the global
 `fetch` (Node 18+ built-in, matching the origin's `globalThis.fetch` default).
+
+## 2026-07-22 addition — genuine 100%-minus-3-provably-unreachable-branches coverage (audit fix, coverage pass)
+
+Per this task's standing "check every other package with a source-map.md for
+coverage gaps beyond the named list" rule: `packages/platform` and
+`packages/sidecar` were discovered mid-sweep, not in the original named list.
+A prior step in this same task added `isRoot`-guarded `it.skipIf` around
+this package's `chmod(0o000)`-based permission-denial tests (root's
+CAP_DAC_OVERRIDE bypasses directory/file permission bits, so those tests
+cannot work under root) in `download.test.ts` (2 tests) and `index.test.ts`
+(2 tests) — see each file's own `isRoot` comment. That removed the *only*
+coverage those specific branches had. This entry documents closing those
+gaps for real, plus the large pool of separate, pre-existing gaps the
+`vitest.config.ts` comment this replaces had explicitly deferred
+(asset-cache.ts's ~36 branches, download.ts's ~52 branches).
+
+**Method used for every chmod-regression gap**: `vi.mock("node:fs/promises",
+...)` at the top of the test file, wrapping the specific functions needed
+(`stat`/`writeFile`/`rename`/`rm`/`lstat`/`mkdir`/`copyFile`/`readFile`) in
+`vi.fn(actual.fn)` (default: real behavior), then
+`.mockImplementationOnce`/`.mockImplementation` per test to inject a
+real-shaped error (`Object.assign(new Error(...), { code: 'EACCES' })` etc.)
+or a deterministic race. **Verified empirically this session, twice, before
+settling on this**: `vi.spyOn` on an imported `node:fs/promises` namespace
+object fails outright (`Cannot redefine property` — its named exports are
+frozen ESM module-namespace bindings); `vi.spyOn`/direct-mutation on
+`node:fs`'s own `.promises` object (this repo's `packages/memory/
+note-store.test.ts` precedent) does NOT reach a *different* file's plain
+`import { stat } from "node:fs/promises"` destructured call sites under this
+repo's actual vitest/esbuild transform (confirmed by a failing test before
+switching to `vi.mock`) — that precedent only works when the *same* file
+that's mocked also does the property-access call (`fsp.lstat(...)`), which
+`fs.ts`/`download.ts` don't. `vi.mock` replacing the whole module for every
+importer in the test file's graph is what actually works here, and is now
+this package's own documented precedent for it.
+
+**`index.test.ts`** (fs.ts's `atomicCopyFile`/`removePathBestEffort`):
+- The `isRoot`-skipped "propagates a non-ENOENT error from the destination
+  existence check" and "reports the failure message when a best-effort
+  removal itself fails" tests were each duplicated as a real, always-run
+  `vi.mock`-based test reaching the identical code path.
+- `fs.ts`'s own private `errorCode`/`errorMessage` helpers had two further
+  gaps *not* caused by the chmod regression (pre-existing, just never
+  flagged because the file was otherwise thin on tests): `errorCode`'s
+  "no `code` property at all" branch and "`code` present but null" branch
+  (real Node fs errors never hit either — a thrown value can lack `.code`
+  entirely, or carry an explicit `null`), and `errorMessage`'s non-`Error`
+  branch. All three closed with `vi.mock`-injected synthetic errors.
+- `fs.ts`: **100/100/100/100**.
+
+**`download.test.ts`** (55 pre-existing branch gaps + the 2 chmod-regression
+ones, all closed):
+- The 2 `isRoot`-skipped tests ("gives up when the download state keeps
+  resetting", "records a warning when a prunable entry cannot be removed")
+  each got a `vi.mock`-based always-run twin.
+- **Found a third, previously-undetected instance of the same root bug**,
+  *not* already marked skip: "propagates a non-lock-contention error while
+  acquiring the download lock" used `chmodSync(locksDir, 0o000)` and asserted
+  only `.rejects.toThrow()` — under root the lock write actually *succeeds*
+  (verified: a direct `fs.writeFileSync(..., {flag:'wx'})` into a `0o000`
+  directory succeeds as root), so the test was passing for the wrong reason
+  entirely (the subsequent fetch to a bogus host throws instead), never
+  exercising `acquireLock`'s non-EEXIST `throw error;` passthrough at all.
+  Renamed the original to `.skipIf(isRoot)` (kept for non-root environments)
+  and added a `vi.mock`-based twin that reaches the real line.
+- Two `noUncheckedIndexedAccess`-driven dead `?? `/re-validation branches
+  removed via real refactors, matching this file's own pre-existing
+  "Strictness-only edits" precedent above: `isPrivateAddress`'s fam-4 octet
+  re-validation (`net.isIP(addr) === 4` already guarantees a valid 4-octet
+  0-255 dotted-quad — empirically fuzz-verified 650k+ candidate strings,
+  zero divergences, across both packages) collapsed to non-null assertions;
+  `downloadCopyAndClear`'s redundant `isAbsolute(outputPath)` check after
+  `resolve()` removed (same "`resolve()` always returns absolute" guarantee
+  `normalizeBasePath` above already documents); `lockBelongsToCurrentProcess`'s
+  `lock.pid !== process.pid` re-check removed (its only caller,
+  `isLockProcessAlive`, already gates the call behind that exact condition);
+  `releaseCopyLease`'s `state == null` guard converted to a non-null
+  assertion with a comment (both `acquireCopyLease`/`releaseCopyLease` are
+  fully synchronous — no `await` inside either — so there is no interleaving
+  window in which the map entry could be missing at release time).
+- `emitExistingProgress`'s `totalBytes: number | undefined` parameter made
+  required (`number`) — its only call site always resolves a definite number
+  through a `??` chain ending in arithmetic, never `undefined` — removing a
+  dead spread branch instead of forcing a synthetic caller.
+- One *new* real bug/gap discovered in `targetFromOptions`'s SSRF-adjacent
+  path-escape guard while investigating whether it was dead code (initial
+  hypothesis, later disproven by a 300k-segment fuzz — see below): it is
+  genuinely reachable. `normalizeSegment` only rejects a segment that is
+  *exactly* `.`/`..`, not one that merely *starts* with `..` (e.g. `"..evil"`
+  is a syntactically ordinary filename); `pathContains`'s own
+  `!rel.startsWith("..")` check (`fs.ts`) is a naive string-prefix test, not
+  path-component-aware, so it (correctly, for its own deliberately paranoid
+  design) flags such a segment. Added a real test (`bucket: "..evil"`) and a
+  corrected inline comment (an earlier draft of this comment wrongly
+  documented this as dead code before the fuzz disproved it).
+- ~45 further real branch-gaps (resume/retry math, `parseContentRange`
+  edge cases, `validatorsFromResponse`/`validatorsConflict` combinations,
+  `contentLength`'s malformed/missing-header cases, lock-file shape/type
+  guards, `loadReusableState`'s artifact-without-manifest / complete-without-
+  file / hash-matches-but-stat-fails races, the post-reset "kept resetting"
+  and "found a result immediately" branches, the post-promotion
+  vanished-file race, `downloadCopyAndClear`'s fresh-copy checksum mismatch
+  and cleanup-failure-warning branches) closed with real tests — either
+  through the real HTTP fixture/injected-`fetch` seam already used
+  throughout this file, or (where no seam reaches a genuine race window)
+  `vi.mock`-based deterministic reproductions of that exact race, matching
+  this file's own pre-existing "vanishing partial" precedent
+  (`fails the download when the freshly-written partial file disappears...`).
+- **One branch confirmed genuinely unreachable** (`acquireLock`'s `for(;;)`
+  loop-tail — V8 instruments the closing brace even though every path out of
+  the loop body is a `return`/`throw`, per the pre-existing code comment
+  right above the loop, now cross-referenced from both places).
+- `download.ts`: **99.87/98.92/100/99.87** (1 branch: the loop-tail above).
+
+**`asset-cache.test.ts`** (the 1 chmod-regression pair — `download.test.ts`
+above — plus ~36 pre-existing branch gaps in this file, all closed):
+- `expandIpv6` exported (previously module-private) for direct unit testing
+  — its only real caller (`isPrivateAddress`) gates every call behind
+  `net.isIP(addr) === 6`, and Node's `isIP` already fully validates IPv6
+  syntax (including embedded-IPv4-tail octet ranges) before returning 6 —
+  empirically re-verified this session by fuzzing ~10k `isIP`-accepted v6
+  literals through `expandIpv6`'s guards with zero hits — so none of its
+  parse-failure guards are reachable through that real path. Exported and
+  directly tested instead, matching this file's own `readBodyCapped`
+  abort-parameter precedent (a real, useful function contract worth testing
+  on its own terms, independent of what today's one caller happens to
+  exercise).
+- A cluster of `noUncheckedIndexedAccess`-driven dead `?? `/regex-capture-
+  group fallbacks inside `expandIpv6`/`isPrivateAddress`/`resolveContentType`
+  collapsed to non-null assertions (all provably safe: `String#split` always
+  returns a non-empty array; a successful regex match's mandatory capture
+  group is always defined; array indices already bounds-checked by the
+  immediately-preceding validation) — same "Strictness-only edits" pattern
+  as above, applied here for the first time to this (Jini-native, not
+  OD-ported) file.
+- `createValidatingLookup`'s 2-arg `dns.lookup` call form (`lookup(hostname,
+  callback)`, `options` position doubling as the callback), the
+  `options===null`/`undefined` `?? {}` fallback, a raw lookup error
+  passthrough, and an `all:true` result whose entries are bare address
+  strings rather than `{address}` objects — all real behavior with no prior
+  test — closed with new tests against the existing `run()` harness.
+- `createAssetCache`'s default (un-injected) `fetchImpl`, a corrupted/
+  non-string on-disk `contentType` sidecar, a response with no
+  `content-type` header at all, a `!value` (falsy, non-empty-array) stream
+  chunk (via a duck-typed fake `body.getReader()`), a non-`Error` fetch
+  rejection, and a genuinely reachable 415 (a URL whose *query string* ends
+  in a recognized extension passes the up-front cacheability check even
+  though its actual pathname extension doesn't) — all closed with new tests.
+- **One branch confirmed genuinely unreachable**: `isPrivateAddress`'s
+  `if (!groups) return true;` fallback for a `expandIpv6(addr)` that returns
+  `null` for an `addr` that `net.isIP` already classified as family 6 — kept
+  as real defense-in-depth (fail-closed against a future divergence between
+  Node's parser and this file's own) rather than asserted away, backed by
+  the same ~10k-literal fuzz above.
+- `asset-cache.ts`: **100/99.43/100/100** (1 branch: the `!groups` fallback
+  above).
+
+**`proxy-env.ts`** (no chmod involvement — 5 purely pre-existing gaps,
+found during the sweep, unrelated to the root regression):
+- `defaultSystemProxyCommandRunner` (the real, un-injected `execFileSync`
+  default) had zero coverage: the one test aimed at it silently no-op'd on
+  any non-darwin host (`if (process.platform !== 'darwin') return;`) instead
+  of using `it.skipIf` — fixed by forcing `platform: 'darwin'` explicitly
+  (the real default runner still executes for real; `scutil` failing on a
+  non-darwin CI host is caught by `tryRun`, which is the behavior under
+  test, not an obstacle to it) and adding a second test for the
+  `options.platform ?? process.platform` fallback itself.
+  `resolveSystemProxyEnv`: was untested past its injected-`runCommand`
+  seam; now genuinely exercises the default.
+- `normalizeProxyUrl`/`normalizeAuthorityProxyUrl`'s own empty-input guards
+  removed (real refactor, not padding): each function's only real call
+  site(s) already guarantee a non-empty, trimmed input before calling them
+  (`normalizeHostPortProxyUrl`'s own `!trimmedHost || !trimmedPort` check;
+  `parseWindowsInternetSettingsProxyOutput`'s `!kind || !value` /
+  `!proxyServer.trim()` checks) — both return types narrowed from
+  `string | null` to `string` accordingly.
+- The "value already has a scheme" side of `normalizeProxyUrl`'s ternary
+  (reachable via a malformed-but-real scutil `HTTPProxy`/`HTTPPort` pair
+  that composes into an already-schemed string) — closed with a new test.
+- **One branch confirmed genuinely unreachable**:
+  `resolveSystemProxyEnv`'s outer `catch`. `tryRun` already swallows every
+  `runCommand` failure, and neither parse function (nor anything either
+  calls) performs any operation that can throw for a string input — no
+  `new URL`, no `JSON.parse`, no untrusted-input `RegExp` construction.
+  Empirically verified this session: 200k fuzzed `stdout`/registry-value
+  strings (control characters, null bytes, huge lengths) through both parse
+  functions via a throwaway `tsx` script, zero throws.
+- `proxy-env.ts`: **99.35/99.3/100/99.35** (2 lines: the outer catch above).
+
+**Package-wide, verified personally this session**: `pnpm --dir
+packages/platform exec tsc --noEmit`: clean. `pnpm --dir packages/platform
+run test:coverage`: **429 tests (424 passed, 5 skipped — the 4
+already-`isRoot`-skipped chmod tests plus the 1 newly-discovered
+false-positive-under-root one described above, each with a real,
+always-run `vi.mock`-based twin providing the actual coverage), genuine
+99.89/99.54/100/99.89 package-wide** — every uncovered branch remaining is
+one of the 3 documented above, each independently, empirically verified
+unreachable this session (not inherited from an earlier claim). `pnpm --dir
+packages/platform run build`: clean. `vitest.config.ts`'s committed
+threshold raised from 98/91/98/98 to 99/99/100/99 (a small margin under the
+real numbers, matching `packages/registry/vitest.config.ts`'s own
+just-under-measured convention, to leave room for the 3 permanently-
+unreachable branches without the threshold silently sliding if a future
+change reduces real coverage elsewhere).

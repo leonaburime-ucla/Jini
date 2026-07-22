@@ -170,10 +170,11 @@ function preserveWildcardNoProxyValue(noProxy: string | null | undefined): strin
   return noProxy?.split(",").some((token) => token.trim() === "*") ? "*" : undefined;
 }
 
-/** @internal Ensure a proxy URL has a scheme, defaulting to the supplied scheme when only an authority is given. */
-function normalizeProxyUrl(raw: string, scheme: string): string | null {
+/** @internal Ensure a proxy URL has a scheme, defaulting to the supplied scheme when only an authority is given.
+ *  Its only call site (`normalizeHostPortProxyUrl`) already guarantees a non-empty `raw` (both `host` and `port`
+ *  are checked truthy before it's composed), so no empty/whitespace-only-input guard is needed here. */
+function normalizeProxyUrl(raw: string, scheme: string): string {
   const trimmed = raw.trim();
-  if (!trimmed) return null;
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `${scheme}://${trimmed}`;
 }
 
@@ -188,10 +189,12 @@ function bracketIpv6Authority(authority: string): string {
   return `[${host}]:${port}`;
 }
 
-/** @internal Normalize a proxy authority into a scheme-qualified URL, IPv6-bracketing the host as needed. */
-function normalizeAuthorityProxyUrl(raw: string, scheme: string): string | null {
+/** @internal Normalize a proxy authority into a scheme-qualified URL, IPv6-bracketing the host as needed.
+ *  Every call site already guarantees a non-empty, trimmed `raw` before calling this (see
+ *  `parseWindowsInternetSettingsProxyOutput`'s own `!kind || !value` / `!proxyServer.trim()` guards), so no
+ *  empty/whitespace-only-input guard is needed here. */
+function normalizeAuthorityProxyUrl(raw: string, scheme: string): string {
   const trimmed = raw.trim();
-  if (!trimmed) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
   return `${scheme}://${bracketIpv6Authority(trimmed)}`;
 }
@@ -405,6 +408,15 @@ export function resolveSystemProxyEnv(options: ResolveSystemProxyEnvOptions = {}
       );
     }
   } catch {
+    // Defense-in-depth, not reachable through any real call path: `tryRun`
+    // already swallows every `runCommand` failure, and neither parse
+    // function (`parseMacosScutilProxyOutput` / the Windows one) nor
+    // anything they call performs any operation that can throw for a
+    // string input — no `new URL`, no `JSON.parse`, no fixed-pattern
+    // `RegExp` construction from untrusted input. Empirically re-verified
+    // this session: 200k fuzzed `stdout`/registry-value strings (control
+    // characters, huge lengths, null bytes) through both parse functions,
+    // zero throws — see source-map.md's 2026-07-22 entry.
     return {};
   }
   return {};

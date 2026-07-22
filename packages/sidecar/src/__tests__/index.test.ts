@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, lstatSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer, createConnection } from "node:net";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -37,8 +38,61 @@ import {
 // net.ts is an internal module shared by port.ts/json-ipc.ts, not re-exported from the barrel
 // (see index.ts's own module doc) — imported directly here, matching the rest of this file's
 // convention of importing everything else through the barrel.
+import { jsonIpcError, prepareIpcPath } from "../json-ipc.js";
 import { closeServer, listenOnPort } from "../net.js";
 import { allocateDynamicPort } from "../port.js";
+
+// root (CAP_DAC_OVERRIDE) always bypasses a directory/file's own permission bits, so `chmod(path,
+// 0o000)` cannot actually block root's own access the way a couple of tests below rely on — a
+// real POSIX invariant (matches the identical, already-established precedent in
+// packages/agent-runtime/src/__tests__/launch.test.ts's `isRoot`-guarded codex test).
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+
+// `node:net`'s named exports are frozen ESM module-namespace bindings
+// `vi.spyOn` cannot redefine, and net.ts calls them as plain destructured
+// imports, so `vi.mock` (which replaces the module for every importer before
+// any of them load — see packages/platform's identical precedent for
+// `node:fs/promises`) is what actually reaches `listenOnPort`'s real
+// `createServer()` call. Defaults to the real implementation for every test
+// that doesn't explicitly override it.
+vi.mock("node:net", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:net")>();
+  return {
+    ...actual,
+    createConnection: vi.fn(actual.createConnection),
+    createServer: vi.fn(actual.createServer),
+  };
+});
+
+/**
+ * A minimal fake `net.Socket` (a real `EventEmitter` plus the handful of
+ * methods json-ipc.ts's `createConnection` call sites actually invoke) that
+ * lets a test fire connection-lifecycle events in an exact, deterministic
+ * order — used to reproduce a genuine double-settle race (two events
+ * legitimately racing on a real socket) without depending on real network
+ * timing to land them in the right order.
+ */
+function makeFakeSocket(): import("node:net").Socket {
+  const emitter = new EventEmitter() as unknown as import("node:net").Socket;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (emitter as any).destroy = vi.fn();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (emitter as any).write = vi.fn(() => true);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (emitter as any).end = vi.fn();
+  return emitter;
+}
+
+// Same reasoning as the `node:net` mock above, for json-ipc.ts's `lstat` call
+// (`staleUnixSocketExists`).
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    lstat: vi.fn(actual.lstat),
+    mkdir: vi.fn(actual.mkdir),
+  };
+});
 
 /**
  * A fake host contract, standing in for a real consumer's product-specific
@@ -397,6 +451,75 @@ describe("@jini/sidecar — port allocation", () => {
     }
   });
 
+  it("falls back to the raw error message when a forced-port bind failure carries no .code (errorCode's null-fallback branch)", async () => {
+    // A real listen() failure (EADDRINUSE, EACCES, ...) always carries a
+    // `.code`; to reach the `errorCode(error) ?? errorMessage(error)`
+    // fallback for real, the underlying `createServer()` is made to emit a
+    // plain, codeless Error instead of actually attempting to bind.
+    const net = await import("node:net");
+    vi.mocked(net.createServer).mockImplementationOnce(() => {
+      const actualNet = net as unknown as { createServer: typeof net.createServer };
+      const server = actualNet.createServer();
+      server.listen = (() => {
+        queueMicrotask(() => server.emit("error", new Error("a bind failure with no .code at all")));
+        return server;
+      }) as typeof server.listen;
+      return server;
+    });
+
+    await expect(allocatePort({ port: 65_432 })).rejects.toThrow(/a bind failure with no \.code at all/);
+  });
+
+  it("falls back to the raw error message when a forced-port bind failure's .code is explicitly null (errorCode's code==null branch)", async () => {
+    const net = await import("node:net");
+    vi.mocked(net.createServer).mockImplementationOnce(() => {
+      const actualNet = net as unknown as { createServer: typeof net.createServer };
+      const server = actualNet.createServer();
+      server.listen = (() => {
+        queueMicrotask(() =>
+          server.emit("error", Object.assign(new Error("a bind failure with a null .code"), { code: null })),
+        );
+        return server;
+      }) as typeof server.listen;
+      return server;
+    });
+
+    await expect(allocatePort({ port: 65_433 })).rejects.toThrow(/a bind failure with a null \.code/);
+  });
+
+  it("stringifies a non-Error bind-failure rejection (errorMessage's non-Error branch)", async () => {
+    const net = await import("node:net");
+    vi.mocked(net.createServer).mockImplementationOnce(() => {
+      const actualNet = net as unknown as { createServer: typeof net.createServer };
+      const server = actualNet.createServer();
+      server.listen = (() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        queueMicrotask(() => (server as any).emit("error", "a plain string bind failure"));
+        return server;
+      }) as typeof server.listen;
+      return server;
+    });
+
+    await expect(allocatePort({ port: 65_434 })).rejects.toThrow(/a plain string bind failure/);
+  });
+
+  it("fails to probe an ephemeral port when the OS-assigned address is unusable (probeEphemeralPort's null/string guard)", async () => {
+    // `server.address()` is `string` only for a Unix domain socket / Windows
+    // named pipe (never for the TCP `host` this always binds to) and `null`
+    // only before listening or after close — neither happens for real on
+    // this call path, so the guard is reached by making the mocked server's
+    // own `.address()` report it.
+    const net = await import("node:net");
+    vi.mocked(net.createServer).mockImplementationOnce(() => {
+      const actualNet = net as unknown as { createServer: typeof net.createServer };
+      const server = actualNet.createServer();
+      server.address = (() => null) as typeof server.address;
+      return server;
+    });
+
+    await expect(allocatePort({})).rejects.toThrow(/failed to probe an ephemeral port/);
+  });
+
   it("exhausts its 20-attempt dynamic-port budget when every probed port is already reserved (CR-R5: deterministic, no real OS allocation)", async () => {
     // Feeds 20 fixed reserved ports through the injected probe seam, one per attempt, in a fixed
     // order known ahead of time — no dependency on the OS's real ephemeral-port allocation
@@ -464,6 +587,22 @@ describe("@jini/sidecar — json-file", () => {
     } finally {
       await rm(dir, { force: true, recursive: true });
     }
+  });
+});
+
+describe("@jini/sidecar — jsonIpcError (direct — its only in-tree caller always passes a codeless SyntaxError)", () => {
+  it("omits the code field for a codeless error (its real, in-tree call path)", () => {
+    expect(jsonIpcError(new SyntaxError("Unexpected token"))).toEqual({ message: "Unexpected token" });
+  });
+
+  it("includes the code field for a Node-style errno error (generic, currently caller-less behavior)", () => {
+    const err = new Error("not found") as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    expect(jsonIpcError(err)).toEqual({ code: "ENOENT", message: "not found" });
+  });
+
+  it("stringifies a non-Error rejection value (errorMessage's non-Error branch)", () => {
+    expect(jsonIpcError("a plain string failure")).toEqual({ message: "a plain string failure" });
   });
 });
 
@@ -612,6 +751,40 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
+  it("summarizes a whole-message payload that is not itself an object (summarizeJsonIpcMessage's message==null||non-object branch)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-summary-nonobj-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: async (message: unknown) => ({ receivedType: typeof message }),
+      socketPath,
+    });
+    try {
+      // The *whole* request payload is a bare string, not `{type, input}` —
+      // summarizeJsonIpcMessage must handle this without throwing.
+      await expect(requestJsonIpc(socketPath, "just a plain string payload")).resolves.toEqual({
+        receivedType: "string",
+      });
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("summarizes an object message whose type field is missing (summarizeJsonIpcMessage's non-string-type branch)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-summary-notype-"));
+    const socketPath = testIpcPath(root);
+    const server = await createJsonIpcServer({
+      handler: async (message: Record<string, unknown>) => ({ keys: Object.keys(message) }),
+      socketPath,
+    });
+    try {
+      await expect(requestJsonIpc(socketPath, { noTypeField: true })).resolves.toEqual({ keys: ["noTypeField"] });
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("SEC-004: a Node-style error code from the handler is redacted the same as any other detail (only the stable HANDLER_ERROR code reaches the client)", async () => {
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-code-"));
     const socketPath = testIpcPath(root);
@@ -646,6 +819,46 @@ describe("@jini/sidecar — JSON IPC", () => {
     } finally {
       await rm(root, { force: true, recursive: true });
     }
+  });
+
+  it("ignores a redundant 'error' event that races an already-settled response (requestJsonIpc's settle double-fire guard)", async () => {
+    // A genuine (if narrow) race on a real socket: the server's response
+    // arrives and is parsed (settling the promise), but the peer then
+    // resets the connection (a trailing 'error') before this side's own
+    // `socket.end()` fully completes the FIN handshake — that trailing
+    // event must not try to reject an already-resolved promise. Reproduced
+    // deterministically via a fake socket.
+    const net = await import("node:net");
+    const fakeSocket = makeFakeSocket();
+    vi.mocked(net.createConnection).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        fakeSocket.emit("connect");
+        fakeSocket.emit("data", Buffer.from(`${JSON.stringify({ ok: true, result: { seen: true } })}\n`));
+        fakeSocket.emit("error", new Error("a trailing error racing the response"));
+      });
+      return fakeSocket;
+    });
+
+    await expect(requestJsonIpc("/fake/socket/path.sock", { type: "X" })).resolves.toEqual({ seen: true });
+  });
+
+  it("falls back to a generic message when the server's error response omits one (response.error?.message ?? fallback)", async () => {
+    // The response is untrusted wire data (JSON parsed from whatever the
+    // peer sent) — a buggy or malicious peer can send `{ok:false}` or
+    // `{ok:false,error:{}}` with no `message` field at all.
+    const net = await import("node:net");
+    const fakeSocket = makeFakeSocket();
+    vi.mocked(net.createConnection).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        fakeSocket.emit("connect");
+        fakeSocket.emit("data", Buffer.from(`${JSON.stringify({ ok: false, error: {} })}\n`));
+      });
+      return fakeSocket;
+    });
+
+    await expect(requestJsonIpc("/fake/socket/path.sock", { type: "X" })).rejects.toMatchObject({
+      message: "IPC request failed",
+    });
   });
 
   it("replies with a parse-failure error when a client sends a non-JSON frame", async () => {
@@ -741,7 +954,18 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
-  it("propagates a non-ENOENT error from the stale-socket lstat check (e.g. an unsearchable parent directory)", async () => {
+  // staleUnixSocketExists' `if (settled) return;` guard (unlike
+  // requestJsonIpc's own, tested above) was investigated for a
+  // double-settle-race test here and found genuinely unreachable — see
+  // json-ipc.ts's own comment on it and source-map.md's 2026-07-22 entry for
+  // the empirical reasoning (both `.once()`'s self-removal-before-invoking
+  // *and* `settle`'s own `removeAllListeners()` independently make a second
+  // invocation of either handler impossible; attempting to force it by
+  // emitting a second event finds zero listeners and crashes the process
+  // instead, which is itself proof this code path cannot be reached the way
+  // requestJsonIpc's analogous one can).
+
+  it.skipIf(isRoot)("propagates a non-ENOENT error from the stale-socket lstat check (e.g. an unsearchable parent directory)", async () => {
     if (process.platform === "win32") return; // chmod-based permission denial doesn't apply
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-lstat-eacces-"));
     const restrictedDir = join(root, "restricted");
@@ -758,7 +982,31 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
-  it("rejects when probing a stale socket fails with something other than ENOENT/ECONNREFUSED (e.g. permission denied)", async () => {
+  it("propagates a non-ENOENT lstat failure deterministically (mocked lstat, root-independent, and errorCode's explicit-null-code branch)", async () => {
+    // Same intent as the chmod-based, isRoot-skipped test above, but reached
+    // without relying on OS permission enforcement — and additionally
+    // exercises errorCode()'s `code == null` branch specifically (a thrown
+    // value whose `.code` is present but explicitly `null`, distinct from a
+    // real fs error, which always carries a real string code).
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-lstat-mocked-"));
+    const socketPath = join(root, "x.sock");
+    const fsPromises = await import("node:fs/promises");
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    vi.mocked(fsPromises.lstat).mockImplementationOnce(async (p, opts) => {
+      if (p === socketPath) throw Object.assign(new Error("lstat failed with an explicit null code"), { code: null });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.lstat as any)(p, opts);
+    });
+    try {
+      await expect(createJsonIpcServer({ handler: async () => "ok", socketPath })).rejects.toThrow(
+        /lstat failed with an explicit null code/,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it.skipIf(isRoot)("rejects when probing a stale socket fails with something other than ENOENT/ECONNREFUSED (e.g. permission denied)", async () => {
     if (process.platform === "win32") return; // chmod-based permission denial doesn't apply
     const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-connect-eacces-"));
     const socketPath = join(root, "locked.sock");
@@ -792,7 +1040,62 @@ describe("@jini/sidecar — JSON IPC", () => {
     }
   });
 
-  it("prepareIpcPath is a no-op for a Windows named-pipe path (no filesystem staging needed)", async () => {
+  it("rejects when probing a stale socket fails with something other than ENOENT/ECONNREFUSED (mocked, root-independent)", async () => {
+    // Same intent as the chmod-based, isRoot-skipped test above, but reached
+    // deterministically via a mocked lstat + a fake socket's 'error' event
+    // instead of a real permission-denied dead socket.
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-connect-eacces-mocked-"));
+    const socketPath = join(root, "locked.sock");
+    const net = await import("node:net");
+    const fsPromises = await import("node:fs/promises");
+    const actualLstat = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).lstat;
+    vi.mocked(fsPromises.lstat).mockImplementationOnce(async () => ({ isSocket: () => true }) as never);
+    const fakeSocket = makeFakeSocket();
+    vi.mocked(net.createConnection).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        fakeSocket.emit("error", Object.assign(new Error("permission denied connecting to socket"), { code: "EACCES" }));
+      });
+      return fakeSocket;
+    });
+
+    try {
+      await expect(createJsonIpcServer({ handler: async () => "ok", socketPath })).rejects.toMatchObject({
+        code: "EACCES",
+      });
+    } finally {
+      vi.mocked(fsPromises.lstat).mockImplementation(actualLstat);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("prepareIpcPath does no filesystem staging at all for a Windows named-pipe path (direct — real end-to-end binding is Windows-only, so this runs on every platform)", async () => {
+    const fsPromises = await import("node:fs/promises");
+    const actualMkdir = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).mkdir;
+    const actualLstat = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).lstat;
+    vi.mocked(fsPromises.mkdir).mockImplementationOnce(async () => {
+      throw new Error("prepareIpcPath must not touch the filesystem for a named-pipe path");
+    });
+    vi.mocked(fsPromises.lstat).mockImplementationOnce(async () => {
+      throw new Error("prepareIpcPath must not touch the filesystem for a named-pipe path");
+    });
+    try {
+      await expect(
+        prepareIpcPath(`\\\\.\\pipe\\jini-sidecar-test-pipe-${process.pid}`),
+      ).resolves.toBeUndefined();
+    } finally {
+      // `mockImplementationOnce` above is only *consumed* if the mocked
+      // function actually gets called — which is exactly what this test
+      // proves does NOT happen, so the queued throwing implementation would
+      // otherwise leak into a later, unrelated test's first real call.
+      // `.mockReset()` clears that queue (unlike `.mockImplementation`,
+      // which only changes the fallback, not the pending queue) before
+      // restoring the real implementation.
+      vi.mocked(fsPromises.mkdir).mockReset().mockImplementation(actualMkdir);
+      vi.mocked(fsPromises.lstat).mockReset().mockImplementation(actualLstat);
+    }
+  });
+
+  it("prepareIpcPath is a no-op for a Windows named-pipe path (no filesystem staging needed), real end-to-end on win32", async () => {
     if (process.platform !== "win32") return; // this path is inert (and untestable end-to-end) off Windows
     const socketPath = `\\\\.\\pipe\\jini-sidecar-test-pipe-${process.pid}`;
     const server = await createJsonIpcServer({ handler: async () => "ok", socketPath });
@@ -886,6 +1189,51 @@ describe("@jini/sidecar — JSON IPC", () => {
       const response = responseChunks.join("");
       expect(response).toContain('"seq":1');
       expect(response).not.toContain('"seq":2');
+    } finally {
+      await server.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("traces (without crashing) a genuine server-side socket error mid-connection", async () => {
+    // A real per-connection socket error (e.g. ECONNRESET from an abruptly
+    // closed peer) — reached by wrapping the real connection listener to
+    // fire a genuine 'error' event on the real server-side socket right
+    // after it connects, deterministically instead of racing a real network
+    // failure.
+    const root = await mkdtemp(join(tmpdir(), "jini-sidecar-ipc-server-error-"));
+    const socketPath = testIpcPath(root);
+    const net = await import("node:net");
+    const actualCreateServer = (await vi.importActual<typeof import("node:net")>("node:net")).createServer;
+    const wrappedCreateServer = (connectionListener?: (socket: import("node:net").Socket) => void) =>
+      actualCreateServer((socket) => {
+        connectionListener?.(socket);
+        queueMicrotask(() => {
+          socket.emit("error", new Error("simulated ECONNRESET"));
+          // A real socket error is always followed by the connection
+          // actually tearing down; emitting the event alone (without a
+          // real underlying failure) doesn't do that by itself, so this
+          // completes the simulation the same way a genuine reset would.
+          socket.destroy();
+        });
+      });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(net.createServer).mockImplementationOnce(wrappedCreateServer as any);
+
+    const server = await createJsonIpcServer({ handler: async () => "ok", socketPath });
+    try {
+      const socket = createConnection(socketPath);
+      await new Promise<void>((resolveClosed, rejectFailed) => {
+        const giveUp = setTimeout(() => rejectFailed(new Error("connection did not close as expected")), 2000);
+        socket.once("close", () => {
+          clearTimeout(giveUp);
+          resolveClosed();
+        });
+        socket.once("error", () => {
+          // The client side may also observe the reset — either outcome is
+          // fine, only the server side not crashing is under test here.
+        });
+      });
     } finally {
       await server.close();
       await rm(root, { force: true, recursive: true });
