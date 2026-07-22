@@ -396,6 +396,127 @@ including every new file (`vendor-adapter.ts`, `vendor-registry.ts`,
 `providers/senseaudio.ts`, `providers/fishaudio.ts`). `tsc --noEmit` and
 `pnpm guard` both clean.
 
+## 2026-07-21 addition (round 4) — the remaining 8 vendors migrated onto the generic dispatch engine (`feat/http-routes-and-cli-commands`)
+
+Round 3 (above) built the generic `VendorAdapter`/`mediaVendorRegistry`
+mechanism and migrated 4 vendors (`openai`, `minimax`, `senseaudio`,
+`fishaudio`) onto it, leaving 8 still dispatched via `engine.ts`'s static
+`ROUTES` table: `aihubmix`, `custom-image`, `elevenlabs`, `grok`,
+`imagerouter`, `nanobanana`, `openrouter`, `volcengine`. This pass migrates
+all 8 — every vendor `engine.ts` currently wires up now runs through
+`mediaVendorRegistry`, and `ROUTES` is empty. Each vendor's own hand-written
+`render*` function body was ported into a `buildRequest`/`parseResponse`
+pair with **zero external-behavior change** — verified by running every
+pre-existing per-vendor test file (`custom-image.test.ts`,
+`imagerouter.test.ts`, `volcengine.test.ts`, `grok.test.ts`,
+`nanobanana.test.ts`, `openrouter.test.ts`, `elevenlabs.test.ts`,
+`aihubmix.test.ts`) and `engine.test.ts`'s existing per-vendor routing
+tests **unmodified** against the refactored adapters (all pass), matching
+round 3's own "proof external behavior didn't regress" convention. Landed
+as 8 small commits, one per vendor, plus this doc update.
+
+| Jini file | What changed | Response-parser reuse |
+|---|---|---|
+| `providers/custom-image.ts` | `renderCustomOpenAIImage` → one `VendorAdapter` (`'custom-image'`/`'image'`). Unlike every other vendor, `apiKey` is optional (a self-hosted gateway may need no auth), so there is no `requireCredential` guard — the two required-field checks (`baseUrl`, resolved `wireModel`) live at the top of `buildRequest`, which can still throw synchronously before any request is built. `customImageOverridesOpenAIModel`/`CUSTOM_IMAGE_MODEL_ID` are unchanged; `renderCustomOpenAIImage` stays a named export since `engine.ts`'s openai-image-override branch calls it directly, not through the registry. | Custom `parseResponse` reusing `openai-compatible.ts`'s `parseOpenAICompatibleJson`/`bytesFromOpenAICompatibleData` directly (its `{ data: [...] }` envelope isn't the "no envelope" shape either `response-parsers.ts` factory covers). |
+| `providers/imagerouter.ts` | `renderImageRouterImage`/`renderImageRouterVideo` → two `VendorAdapter`s on the same `'imagerouter'` provider id (`'image'`/`'video'` routeKeys). | Same as `custom-image.ts` — bespoke `parseResponse` reusing the OpenAI-compatible JSON helpers directly. |
+| `providers/volcengine.ts` | `renderVolcengineImage` → one `VendorAdapter` (`'volcengine'`/`'image'`). Both origin quirks (hardcoded `.png` suggestedExt, `openaiSizeFor` always resolving `1024x1024` for every Volcengine catalog id) preserved exactly, matching the module's existing doc comment. | Same OpenAI-compatible-JSON reuse as above. |
+| `providers/grok.ts` | `renderGrokImage`/`renderXAITTS` → two `VendorAdapter`s on the same `'grok'` provider id (`'image'`/`'audio:speech'`). | Image: bespoke `parseResponse` via the OpenAI-compatible JSON helpers (same shape match the module doc already documented). TTS: raw bytes with no envelope — the same shape `fishaudio.ts`/`openai.ts`'s speech renderer return — now shares `response-parsers.ts`'s `createRawBytesParser` for the first time on this vendor. |
+| `providers/nanobanana.ts` | `renderNanoBananaImage` → one `VendorAdapter` (`'nanobanana'`/`'image'`). | Bespoke `parseResponse` (Gemini `candidates[].content.parts[].inlineData.data` shape) — not shared with `aihubmix.ts`'s own Gemini branch below despite the structural similarity, because the two throw differently-tagged error messages on the same failure (verified by reading both), so forcing them through one factory would silently unify wording that was never unified in the origin. |
+| `providers/openrouter.ts` | `renderOpenRouterImage` → one `VendorAdapter` (`'openrouter'`/`'image'`). | Bespoke `parseResponse` — the three-way image decode (`data:` URI / http(s) download / bare base64) against a chat-completions response shape has no other current consumer. |
+| `providers/elevenlabs.ts` | `renderElevenLabsTTS`/`renderElevenLabsSfx` → two `VendorAdapter`s on the same `'elevenlabs'` provider id (`'audio:speech'`/`'audio:sfx'`). Both prompt-validation checks (non-empty; SFX ≤ 450 chars) now run inside `buildRequest`, which throws synchronously before any request is built — the "abort before the fetch" contract `dispatchVendorRequest` gives every adapter. | Both responses are raw bytes with no envelope, so both now share `createRawBytesParser` (first time this vendor's TTS/SFX pair has shared any plumbing with `fishaudio.ts`/`openai.ts`). |
+| `providers/aihubmix.ts` | `renderAIHubMixImage`/`renderAIHubMixTTS` → two `VendorAdapter`s on the same `'aihubmix'` provider id (`'image'`/`'audio:speech'`). See the dedicated design note below — this is the one vendor in this batch where "port the logic into `buildRequest`/`parseResponse`" wasn't a mechanical relabeling. | TTS: `createRawBytesParser` (first time this vendor's TTS has shared plumbing with `fishaudio.ts`/`openai.ts`). Image: bespoke `parseResponse`, branching on a `meta.kind: 'gemini' \| 'openai'` tag set by `buildRequest`. |
+
+**`aihubmix.ts`'s Gemini-vs-OpenAI branch — a real design decision, not a
+mechanical port.** The origin (and the pre-migration Jini code) picks the
+wire shape *before any network call* — `classifyAIHubMixModel(wireModel)`
+is a pure string check, so `renderAIHubMixImage` branches into either the
+OpenAI-compatible `/images/generations` path or a Gemini-native
+`generateContent` path (via the now-superseded private
+`renderAIHubMixGeminiImage` helper, which called `aihubmix-shared.ts`'s
+`aihubmixGeminiImageBytes`) up front. `dispatchVendorRequest`'s harness is
+`requireCredential -> buildRequest -> ONE fetch -> parseResponse`, so the
+adapter has to make the same up-front decision inside `buildRequest`
+itself (a pure function of `wireModel`, no I/O needed to decide) and
+return the single correct request for whichever endpoint applies — never
+build the OpenAI request when the model is a Gemini model, since AIHubMix
+rejects that combination on its own side (`aihubmix-shared.ts`'s
+`aihubmixGeminiImageBytes` doc comment: "Unknown name prompt/n/size").
+`buildRequest` tags the choice in `meta.kind`; `parseResponse` branches on
+it to decode the one response that comes back.
+
+Deliberately **not** implemented by calling `aihubmixGeminiImageBytes` as
+a black box from `parseResponse`: that helper bundles its own `fetch`
+inside it (`doFetch`), so reusing it as-is would mean either a second,
+wasted real network call (fetch the OpenAI endpoint, discard the response,
+then really fetch the Gemini endpoint) or reimplementing the Gemini
+URL/header/body construction a second time just to satisfy an unused
+`doFetch` parameter — neither is a legitimate use of the harness's
+"exactly one fetch" contract. Instead, `parseResponse`'s Gemini branch
+replicates `aihubmixGeminiImageBytes`'s response-decoding logic directly
+against the harness's already-fetched `Response` — same non-OK error
+message (`aihubmix image (gemini) ${status}: ${text.slice(0, 240)}`,
+including the `.catch(() => '')` fallback when reading the error body
+itself fails), same `candidates[].content.parts[].inlineData.data` /
+`inline_data.data` walk, same "no inline image data" error — verified
+line-for-line against `aihubmix-shared.ts`, not paraphrased. That helper
+(`aihubmixGeminiImageBytes`) stays exported and independently covered by
+`aihubmix-shared.test.ts` (unchanged this pass); it's simply no longer
+`aihubmix.ts`'s own call path. The "Simplified from the origin" dead-code
+note the pre-migration file carried (the origin's
+`renderAIHubMixGeminiImage` re-checking `credentials.apiKey` a second
+time, provably unreachable from its one call site) no longer applies —
+that private function doesn't exist as a separate call site anymore, its
+logic is inlined directly into the adapter.
+
+**Two coverage/staleness fixes needed by having migrated every
+ROUTES-driven vendor in one pass**, not vendor-specific but caused by this
+pass:
+- `vendor-registry.test.ts`'s "does not have a not-yet-migrated vendor
+  registered" test used `grok` as its negative example — now migrated, so
+  repointed at `leonardo` (genuinely unwired — submit-then-poll shaped,
+  deferred per the async-polling bucket above — matching
+  `engine.test.ts`'s own stub-fallback fixture). Its "has every vendor
+  migrated onto the generic engine registered" test was extended to assert
+  all 12 now-migrated `(providerId, routeKey)` pairs, not just the original
+  4.
+- `engine.ts`'s `ROUTES`-table-fallback branch
+  (`routes[providerId]?.[routeKey]`) became structurally unreachable
+  through any current real vendor once `ROUTES` itself went empty — every
+  wired vendor resolves via `mediaVendorRegistry` first. Rather than delete
+  the fallback (a real, documented extensibility point for whichever
+  vendor is wired up next without a registry adapter — e.g. one of the
+  deferred async-polling vendors, if a future pass chooses a hand-written
+  function over building a polling-aware adapter shape) or leave an
+  untested branch, it was extracted into an exported, pure `lookupRoute(routes, providerId, routeKey)`
+  function taking the routes table as a parameter instead of closing over
+  the module-level constant — the same "extract to a directly-testable
+  pure function" pattern `context.ts`'s `buildRenderContext` already
+  established in round 1 for the identical reason (a real code path with
+  no current way to observe it end-to-end). `engine.test.ts` gained a
+  `describe('lookupRoute', ...)` block exercising all three branches
+  (found; provider not found; provider found but routeKey not found)
+  against a small locally-constructed table, independent of the
+  (currently empty) production `ROUTES`.
+
+**Tests**: `aihubmix.test.ts` grew by 6 (two Gemini-branch error paths —
+non-OK response including the read-failure fallback, "no inline image
+data" including a fully-absent-`candidates` case — plus the
+`inline_data`/later-part decode branches, none of which the pre-migration
+single-function implementation needed a *duplicated* test for since it
+delegated that decoding to `aihubmixGeminiImageBytes`, whose own tests in
+`aihubmix-shared.test.ts` covered it once; now that the decode logic is
+inlined into `aihubmix.ts` itself, coverage tracks it as this file's own
+lines). `engine.test.ts` grew by 3 (`lookupRoute`). `vendor-registry.test.ts`
+was edited (not grown) — same 11 tests, extended assertions. No other
+per-vendor test file was modified — all 8 pass unmodified against the
+refactored adapters, proving the port is behavior-preserving.
+
+**Coverage**: 100% statements / 100% branches / 100% functions / 100%
+lines, package-wide (`pnpm --dir packages/media exec vitest run
+--coverage`) — **572 tests across 32 files, up from 563/32** (same file
+count as round 3 — this pass only edited existing files, no new ones).
+`tsc --noEmit` and `pnpm guard` both clean.
+
 ## Not ported / explicitly out of scope (pre-existing, from the original pass)
 
 - **`media/config.ts` in full** (23,414 bytes) — grepped for its exported
