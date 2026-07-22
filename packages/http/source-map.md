@@ -729,3 +729,156 @@ dependency.
 Not wired into a route pack (no `Pack.http` composition calls `registerDaemonDbRoutes` yet), matching
 this file's established precedent for freshly-added, barrel-exported-but-unconsumed route registrars
 (`active-context.ts`, `cancel-owned-runs.ts`).
+
+## 2026-07-21 addition — `host-tools.ts`'s `POST /api/resources/:resourceRef/open-in` (route-pack audit, `feat/http-routes-and-cli-commands`)
+
+Closes the one remaining gap this file's own "GENERIC slice" section (above) named: OD's `POST
+/api/projects/:id/open-in`, not portable at that time because it needed `ctx.projectStore.getProject`/
+`ctx.projectFiles.resolveProjectDir` to resolve a working directory. Now that `workspace-root.ts`
+exists (this same audit's other prerequisite), the route ports as `openResourceInEditorRoute`
+(`src/host-tools.ts`), mounted alongside `hostEditorsRoute` by `registerHostToolsRoutes`, which now
+takes an optional third `HostToolsOpenInDeps` parameter (`{resolveRoot?, probeEnv?, spawnImpl?}`,
+each defaulting the same way the rest of this file's DI already does).
+
+`projectId` generalizes to the `resourceRef` path param this package already uses
+(`active-context.ts`/`cancel-owned-runs.ts`); `getProject`/`resolveProjectDir` generalizes to
+`deps.resolveRoot` (defaulting to `denyAllWorkspaceRoots` — a host that never wires a real resolver
+gets `404 NOT_FOUND` on every call, never a guessed path). OD's `PROJECT_NOT_FOUND` (dropped from
+`ERROR_STATUS_BY_CODE` per this file's own "File map" note — no `@jini/protocol` equivalent) becomes
+generic `NOT_FOUND`; `EDITOR_NOT_AVAILABLE` (OD's 409 for "known catalogue entry, not installed on
+this machine") becomes `CONFLICT`, which already maps to 409. The launch-failure message is returned
+to the caller verbatim, unlike `runs.ts`'s SEC-005 redaction — a documented judgment call: this is a
+same-origin, explicitly-consented, single local action (open the tool the caller named), not an
+internal agent-run exception crossing a trust boundary.
+
+Tests: `src/__tests__/host-tools.test.ts` grew from 47 to 67 tests, now 100/100/100/100 (was already
+100% before this addition). New coverage: every `parse` malformed-input branch; success with/without
+an optional `detail` field; unknown editor id; platform-inapplicable editor; the workspace-root
+auth-denial path (default resolver, proving the operation is denied end to end); an explicit resolver
+denying a specific resource; a non-`WorkspaceRootDeniedError` propagating unmapped rather than being
+swallowed; a known-but-not-installed catalogue entry (409); a launch failure (500, real message);
+same-origin enforcement on the mounted route; and the `deps.spawnImpl` omitted-default branch —
+deliberately exercised against a synthetic, guaranteed-nonexistent absolute path (not a real
+catalogue command) so the real `node:child_process.spawn` fails safely with `ENOENT` instead of
+risking launching a real editor on whatever machine runs this test suite. No new dependency.
+
+## 2026-07-21 addition — `memory.ts` (memory-routes pack, `feat/http-routes-and-cli-commands`)
+
+Ports the generic majority of the routes-classification table's row **#4 `memory.ts` (MIXED)** —
+config, entry CRUD, tree view, index, extraction/verification history, and the SSE change/
+extraction/verify feed — now that both of this audit's prerequisites (`sse.ts`, and, for this file,
+nothing else was blocking) are in place. Read in full against
+`leonaburime-ucla/open-design`'s `refactor/web-memory-slice` branch (`apps/daemon/src/routes/
+memory.ts`, 690 lines) rather than re-trusting the prior table's characterization blind.
+
+**New file:** `src/memory.ts` — `memoryOverviewRoute` (`GET /api/memory`), `memoryTreeRoute` (`GET
+/api/memory/tree`), `memoryUpdateTreeNodeRoute` (`PATCH /api/memory/tree/:id`),
+`memoryWriteIndexRoute` (`PUT /api/memory/index`), `memoryWriteConfigRoute` (`PATCH
+/api/memory/config`), `registerMemoryEventStream` (`GET /api/memory/events`, SSE),
+`memoryListExtractionsRoute`/`memoryClearExtractionsRoute`/`memoryRemoveExtractionRoute` (`GET`/
+`DELETE`/`DELETE :id` on `/api/memory/extractions`), the equivalent three for
+`/api/memory/verifications`, and `memoryCreateEntryRoute`/`memoryReadEntryRoute`/
+`memoryUpdateEntryRoute`/`memoryDeleteEntryRoute` (`POST /api/memory`, `GET`/`PUT`/`DELETE
+/api/memory/:id`). `registerMemoryRoutes` mounts all of them, preserving OD's own static-before-
+`:id`-catch-all registration ordering discipline (Express matches in registration order — a literal
+`config`/`tree`/`extractions` path segment must not be shadowed by the `:id` wildcard).
+
+**Deliberately does not depend on `@jini/memory`, despite that package already existing in this repo
+and its `NoteStore`/`ExtractionLog`/`VerifyLog` interfaces matching every route's needs almost
+exactly.** `@jini/memory`'s `UNLOCKED.md` entry has `"lockedPackagesMayImport": false` and
+`"status": "incubating"`; `@jini/http` is one of `scripts/check-engine-boundaries.ts`'s fourteen
+*locked* packages, so a direct import would fail `pnpm guard`'s R7 check outright — the exact
+constraint `packages/media/src/sqlite-task-store.ts`'s `ADS-memory/reports/proposals/
+PROP-media-durable-tasks-2026-07-21.md` already documents for `@jini/sqlite`/`@jini/media`. Verified
+this would actually trip before writing a line of route code (not assumed). `src/memory.ts` instead
+defines local structural types (`MemoryNoteStore`/`MemoryExtractionLog`/`MemoryVerifyLog`/
+`MemoryChangeEmitter`) that a real `@jini/memory` instance satisfies with zero adapter code — the
+same "host supplies the real collaborator" DI convention `daemon-status.ts`/`host-tools.ts`/
+`db-ops.ts` already established, now additionally load-bearing for a hard boundary rule rather than
+just a dependency-weight preference.
+
+**Ported, mapped onto `@jini/memory`'s real primitives (verified by reading `packages/memory/src/
+note-store.ts`/`extraction-log.ts`/`verify.ts` directly, not guessed):** `readConfig`/`writeConfig`
+(→ `enabled` only, see gap below), `readIndex`/`writeIndex`, `listEntries`, `buildTree`,
+`updateTreeNode` (`'note not found'` → `404`, matching OD's own `'memory not found'` check pattern),
+`upsertEntry`/`readEntry`/`deleteEntry`, and `ExtractionLog`/`VerifyLog`'s `list`/`clear`/`remove` +
+their `events` emitters (`'attempt'`/`'verify'`) relayed onto the SSE feed's `extraction`/`verify`
+channels alongside `NoteStore.events`'s `'change'` channel — reproducing OD's own "one SSE connection
+multiplexing three channels" design via the new `sse.ts` primitive instead of OD's bespoke
+`createSseResponse`.
+
+**Explicitly NOT ported** (see `src/memory.ts`'s own module doc for the full per-route reasoning):
+`POST /api/memory/rules/suggest` (OD's canvas/deck-annotation distillation — OD-PRODUCT, confirmed by
+direct read of the annotation shape: `targetLabel`/`filePath`/`selectionKind`/`htmlHint`), `POST
+/api/memory/connectors/suggest` / `.../connectors/extract` (OD's project-scoped connector-mining
+pipeline — OD-PRODUCT), `POST /api/memory/extract` (the heuristic-regex pre-turn phase and the
+BYOK-chat-provider-passthrough LLM post-turn phase are both OD-specific composition, per this repo's
+root `AGENTS.md`'s pre-existing note that `@jini/memory`'s "heuristic-regex... prompt-composition
+pieces" were "explicitly left un-ported"), and `GET /api/memory/system-prompt` (`composeMemoryBody`
+does not exist anywhere in `@jini/memory` yet — same `AGENTS.md` note). A real, documented
+capability gap rather than a route-level scoping choice: `@jini/memory`'s `NoteStoreOptions` is
+`{enabled: boolean}` only, so `MemoryConfigPatch`'s other four OD booleans
+(`chatExtractionEnabled`/`profileEnabled`/`rewriteEnabled`/`verifyEnabled`) and its whole
+`extraction` (LLM-provider) config sub-object have no home to port into yet.
+
+Tests: `src/__tests__/memory.test.ts` — 100/100/100/100 coverage, 52 tests. Covers every route's
+success path, malformed-input path, and (for mutating routes) the same-origin-denial path; the
+`'note not found'` → 404 vs. any-other-error → 400 split on tree-node update; a non-Error throw
+stringified rather than crashing; Express registration ordering (asserted via index positions, not
+just "it works"); and the SSE multiplexer's three-channel relay plus listener cleanup on client
+disconnect (`res`'s `'close'` event unsubscribing all three `events.on` registrations, proven by
+asserting `listenerCount` drops to zero, not just "no more writes happen"). No new dependency.
+
+## 2026-07-21 — route-pack audit (`feat/http-routes-and-cli-commands`): summary and remaining verdicts
+
+The task brief for this backlog pass named seven route packs to investigate: chat/model proxy,
+artifact delivery, terminal/PTY, memory routes, automation/routines, DB operations, and editor/host
+tools. Per-pack outcome, verified rather than guessed for every one:
+
+- **DB operations** — fully ported and tested this round (`db-ops.ts`, above).
+- **Editor/host tools** — the one remaining gap from the prior partial port closed this round
+  (`open-in`, above); this pack is now complete.
+- **Memory routes** — the generic majority ported and tested this round (`memory.ts`, above); the
+  remainder is a documented, real capability gap in `@jini/memory` itself (not a route-level choice).
+- **Terminal/PTY** — investigated directly (`apps/daemon/src/routes/terminal.ts` +
+  `apps/daemon/src/terminals.ts`, both read in full). Both of this pack's previously-named blockers
+  (SSE, workspace-root resolution) are now resolved, but a real, unresolved authorization-shape
+  question remains: `ToolExecutor`'s call-scoped `execute()` model does not naturally fit a
+  session-scoped interactive shell, where the actual dangerous surface is the *entire session's
+  ongoing existence* (every subsequent `stdin` write), not just its creation instant. `node-pty` is
+  also a new native compiled dependency with no existing precedent in this workspace. See
+  `ADS-memory/reports/proposals/PROP-http-route-packs-terminal-pty-2026-07-21.md`.
+- **Automation/routines** — investigated directly (`apps/daemon/src/routes/automation.ts`,
+  `apps/daemon/src/routes/routine.ts`, `apps/daemon/src/routines.ts`,
+  `apps/daemon/src/automation-{proposals,templates,ingestions}.ts`, all read in full). `automation.ts`'s
+  real blocker is three un-ported backend modules (1,225 lines), not "needs OD's memory store" as
+  previously stated — though the memory-store dependency specifically is now the *same already-solved*
+  shape `memory.ts` handled. `routine.ts`'s CRUD is blocked on a real `RoutineStore` persistence-port
+  design decision (the `routines`/`routine_runs` tables are explicitly out of scope per
+  `packages/sqlite/source-map.md`). Positive finding: the underlying `routines.ts` scheduler (726
+  lines — DST-safe timezone math, race-safe scheduled-slot persistence, already fully
+  dependency-injected via `RoutinePersistence`/`RoutineRunHandler`) is genuinely clean and portable
+  today, but belongs in `@jini/daemon` (no HTTP surface of its own), not this package — flagged as a
+  strong, well-scoped follow-up recommendation. See `ADS-memory/reports/proposals/
+  PROP-http-route-packs-automation-routines-2026-07-21.md`.
+- **Chat/model proxy** — investigated directly (full route inventory confirmed against the actual
+  2267-line file; the OpenRouter `'X-Title': 'Open Design'` product-identity leak confirmed at its
+  exact line; the tool-loop turn-runners' missing duplicate-`end`-event guard confirmed by reading
+  `runTurn`/`runAnthropicToolTurn`/`runGeminiToolTurn` directly — none of the three declares the
+  `ended`-flag guard every non-tool-loop streamer in the same file has). The real blocker is a
+  cross-package architecture question, not effort: `@jini/agent-runtime` already owns multi-provider
+  wire-protocol knowledge in this codebase (`providers/model-catalog.ts`, `claude-stream.ts`/
+  `copilot-stream.ts`/`qoder-stream.ts`, and — concretely — `role-marker-guard.ts`, already the
+  ported/generalized version of the exact contamination-guard mechanism chat.ts's tool-loop runners
+  use), making it a stronger candidate home than `@jini/http`, which has zero provider-specific
+  knowledge anywhere in its existing surface. See `ADS-memory/reports/proposals/
+  PROP-http-route-packs-chat-model-proxy-2026-07-21.md`.
+- **Artifact delivery** — re-confirmed against this file's own pre-existing, already-thorough
+  classification (row #32, `live-artifact.ts`, OD-PRODUCT: "every dependency is OD's project/
+  tool-grant model," a real independent access-control gap noted, no generic sliver found). No new
+  investigation performed beyond re-citing that already-verified row; nothing to port. Not proposal-
+  doc-worthy — this is a clear negative finding, not a genuinely undecided question.
+
+Two new generic prerequisites this pass built and dogfooded: `sse.ts` (§ above; `runs.ts` itself was
+refactored to consume it, proving reusability rather than asserting it) and `workspace-root.ts` (§
+above; consumed by `host-tools.ts`'s `open-in` route this same pass).
