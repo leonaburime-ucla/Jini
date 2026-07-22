@@ -13,6 +13,7 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForToken,
   refreshAccessToken,
+  readCappedText,
   PendingAuthCache,
   beginAuth,
   type AuthorizationServerMetadata,
@@ -129,6 +130,39 @@ describe('discoverProtectedResource', () => {
       resource: 'ok',
     });
     expect(step).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('readCappedText', () => {
+  it('aborts a supplied AbortController the moment the byte cap is exceeded, stopping further upstream reads', async () => {
+    let reads = 0;
+    const fakeBody = {
+      getReader: () => ({
+        read: async () => {
+          reads += 1;
+          // First chunk alone already exceeds a 5-byte cap.
+          return { done: false, value: new TextEncoder().encode('way more than five bytes') };
+        },
+        cancel: async () => {},
+      }),
+    };
+    const fakeResponse = { body: fakeBody } as unknown as Response;
+    const controller = new AbortController();
+    await expect(readCappedText(fakeResponse, 5, controller)).rejects.toThrow(/exceeds 5 byte limit/);
+    expect(controller.signal.aborted).toBe(true);
+    // Only the one read that pushed the total over the cap — the abort stops any further pulls.
+    expect(reads).toBe(1);
+  });
+
+  it('never touches the controller when none is supplied, even past the byte cap', async () => {
+    const fakeBody = {
+      getReader: () => ({
+        read: async () => ({ done: false, value: new TextEncoder().encode('way more than five bytes') }),
+        cancel: async () => {},
+      }),
+    };
+    const fakeResponse = { body: fakeBody } as unknown as Response;
+    await expect(readCappedText(fakeResponse, 5)).rejects.toThrow(/exceeds 5 byte limit/);
   });
 });
 

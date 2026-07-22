@@ -491,3 +491,31 @@ full design. This package's own files needed no code change for that: `serve.ts`
 `JINI_RUN_ID`/`JINI_DAEMON_URL` from its environment exactly as the daemon-side injection now sets
 them, and `createExecuteDelegatedToolTool` already posted to `packages/http/src/delegated-tools.ts`
 exactly as designed — the wiring gap was entirely on the daemon's spawn side, not here.
+
+## 2026-07-22 addition — genuine 100% coverage: oauth.ts:190,240 closed for real (audit fix)
+
+**`oauth.ts:240`** (`SafeOAuthFetchInit.headers?`'s ternary spread in `safeOAuthFetch`): `headers`
+was optional but this is a private, file-internal type (never exported) with exactly three real
+call sites, all of which always supply headers (at minimum an `accept`). Real refactor: `headers`
+is now a required field, removing the dead branch instead of padding a test to reach it — the same
+pattern this task's earlier `packages/http/src/runs.ts` fix used for `RunInternalErrorContext.runId`.
+
+**`oauth.ts:190`** (`readCappedText`'s `controller?.abort()`): `controller` is real, working,
+intentional API surface — passing one lets a caller stop pulling bytes from an oversized upstream
+response the moment the cap is exceeded, not just reject after the fact — but no real call site in
+this file currently has a controller in scope to pass (each of the four call sites receives a
+`Response` after its own `safeOAuthFetch` call already returned and that call's own controller went
+out of scope). Unlike `headers` above, this wasn't narrowed away: it's a genuine, useful capability
+with no current caller, the same category as `@jini/memory`'s `NoteStoreConfigError` `cause`
+parameter (this task's own earlier fix) — narrowing it to chase a coverage number would be a real
+capability reduction. `readCappedText` is now exported (previously module-private) so this real
+behavior is directly unit-testable, matching this repo's established "extract into a directly-
+testable pure function" convention (`createDeferredEndGate`, `actionResultToApiResult`,
+`buildDaemonDbOperations`, `classifyProcessExitFailure` — all from this same task's earlier fixes).
+
+**Verified, personally, this session**: `pnpm --dir packages/mcp exec tsc --noEmit`: clean.
+`pnpm --dir packages/mcp run test:coverage` — **302/302 tests pass** (2 new), **genuine
+100/100/100/100 across every file in this package**. `vitest.config.ts`'s committed threshold
+raised from 100/99.4/100/100 (package-wide) + a separate `src/server/**` 100% override to a single
+flat 100/100/100/100 — the two-tier config existed only because `oauth.ts` couldn't clear 100
+before; no longer needed.

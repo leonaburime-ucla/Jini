@@ -163,8 +163,20 @@ function isRedirectResponse(res: Response): boolean {
  * of a throw, matching the old `safeText`'s forgiving error-path behavior)
  * for response-like test doubles that don't expose a real `ReadableStream`
  * body.
+ *
+ * `controller` is real, intentional API surface — a caller that already has
+ * an in-flight fetch's `AbortController` can pass it so an oversized
+ * response stops being pulled from upstream the moment the cap is exceeded,
+ * not merely rejected after the fact — but no real call site in this file
+ * currently has one in scope to pass (each of the four call sites reads a
+ * `Response` it received after its own `safeOAuthFetch` call already
+ * returned, by which point that call's own `AbortController` is out of
+ * scope). Exported (not just internal) so this real, functioning behavior
+ * is directly unit-testable without inventing an unused call site just to
+ * reach it — matching this repo's established "extract into a directly-
+ * testable pure function" convention.
  */
-async function readCappedText(
+export async function readCappedText(
   res: Response,
   maxBytes: number,
   controller?: AbortController,
@@ -215,7 +227,10 @@ async function safeErrorText(res: Response): Promise<string> {
 
 interface SafeOAuthFetchInit {
   method?: 'GET' | 'POST';
-  headers?: Record<string, string>;
+  // Required, not optional: this is a private, file-internal type (never exported), and all three
+  // real call sites always supply headers (at minimum an `accept`) — an optional field here was a
+  // dead branch no real caller ever exercised.
+  headers: Record<string, string>;
   body?: string;
 }
 
@@ -237,7 +252,7 @@ async function safeOAuthFetch(
   try {
     const reqInit: RequestInit = {
       method: init.method ?? 'GET',
-      ...(init.headers ? { headers: init.headers } : {}),
+      headers: init.headers,
       ...(init.body !== undefined ? { body: init.body } : {}),
       redirect: 'error',
       signal: controller.signal,
