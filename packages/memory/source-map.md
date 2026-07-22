@@ -359,3 +359,42 @@ packages/memory exec tsc --noEmit` clean.
 
 Dependencies: none beyond what `llm-provider.ts`/`extraction-log.ts` already
 require (no new package dependency).
+
+## 2026-07-22 addition — genuine 100% coverage: note-store.ts, and a missing test:coverage script (audit fix)
+
+**Missing `test:coverage` npm script.** This package had a real `vitest.config.ts` coverage
+threshold gate but no `test:coverage` script in `package.json` to actually invoke it as part of
+this repo's standard per-package verification command — added (`vitest run --coverage`, matching
+every other package's convention) plus the `@vitest/coverage-v8` devDependency it needs.
+
+**`note-store.ts:170-171`** (`assertSafeSubdir`'s final guard,
+`path.basename(subdir) !== subdir || path.isAbsolute(subdir)`): re-investigated rather than
+trusted from the prior comment's own "unreachable on this host, verified analytically" claim.
+That claim was *correct* for the platform-bound `path` import specifically — but re-deriving it
+surfaced why: `node:path`'s behavior depends on the host OS, and `path.win32.basename('C:foo')`
+returns `'foo'` (stripping the drive-letter prefix), so a subdir like `"C:foo"` — no `/`/`\`, so
+none of the earlier checks catch it — *would* trip this guard on a real Windows host, just not on
+this (POSIX) CI. Real fix, not a padded test: the check now calls `path.win32.basename`/
+`path.win32.isAbsolute` explicitly, unconditionally, regardless of host OS — `path.win32` is a
+strict superset of `path.posix`'s separator handling (accepts both `/` and `\`), so this doesn't
+weaken anything, it just makes the validation's outcome identical on every platform instead of
+silently depending on which one happens to run it. This also makes the branch directly testable
+on POSIX with a real `"C:foo"` input, no `node:path` mocking required (the prior comment noted
+`vi.spyOn`/`vi.mock` on `node:path` were both rejected as impractical/destabilizing — no longer
+needed).
+
+**`note-store.ts:107`** (`NoteStoreConfigError`'s constructor, `cause !== undefined ? {cause} :
+undefined`): a gap not named in this task's original list but found during this pass's own fresh
+coverage run — this package's two real call sites (`readConfig`'s two `throw new
+NoteStoreConfigError(...)` sites) always pass a `cause`, so the "no cause" branch was untested.
+Unlike `@jini/http`'s analogous `runs.ts:68` fix, `cause` was *not* made mandatory here:
+`NoteStoreConfigError` is a public, barrel-exported class (`index.ts`), and an optional `cause`
+parameter on a public error constructor is normal, idiomatic API surface an external consumer may
+legitimately use without one — narrowing the public API to chase a coverage number would be a real
+capability reduction, not a coverage fix. Two new direct construction tests instead (with and
+without `cause`).
+
+**Verified, personally, this session**: `pnpm --dir packages/memory exec tsc --noEmit`: clean.
+`pnpm --dir packages/memory run test:coverage` — **212/212 tests pass** (7 new), **genuine
+100/100/100/100 across every file in this package**. `vitest.config.ts`'s committed threshold
+raised from 99/99/99/99 to 100/100/100/100 to lock this in.
