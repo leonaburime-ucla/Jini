@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DeployError } from '../types.js';
 import { NetlifyDeployTarget } from '../netlify.js';
+import * as naming from '../naming.js';
 
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -19,6 +20,25 @@ describe('NetlifyDeployTarget.publish', () => {
   it('throws DeployError without making a network call when token is missing', async () => {
     const target = new NetlifyDeployTarget({ token: '' });
     await expect(target.publish({ files: [], projectName: 'demo' })).rejects.toThrow(DeployError);
+  });
+
+  it('throws DeployError without making a network call when a site name cannot be derived', async () => {
+    // `deriveNetlifySiteName`'s own fallback (`|| 'site'`) means no real
+    // `projectName` can reach this guard today — verified by tracing
+    // `safeDnsLabel`/`safeProjectLabel`, which always floor to a non-empty
+    // label. This proves the defensive throw itself still behaves
+    // correctly if that sanitizer's guarantee ever changes, rather than
+    // leaving the branch silently unverified.
+    const spy = vi.spyOn(naming, 'safeDnsLabel').mockReturnValue('');
+    try {
+      const target = new NetlifyDeployTarget({ token: 'tok' });
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      await expect(target.publish({ files: [], projectName: 'demo' })).rejects.toThrow(DeployError);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('finds an existing site, uploads only required files, polls to ready, and returns the reachable URL', async () => {

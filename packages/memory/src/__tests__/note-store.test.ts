@@ -371,6 +371,34 @@ describe('createNoteStore — filesystem safety hardening', () => {
     it('accepts a plain single-segment subdir', () => {
       expect(() => createNoteStore({ ...config, subdir: 'my-notes' })).not.toThrow();
     });
+
+    it('rejects an empty subdir', () => {
+      expect(() => createNoteStore({ ...config, subdir: '' })).toThrow(/non-empty/);
+    });
+
+    it('rejects a subdir longer than 128 characters', () => {
+      expect(() => createNoteStore({ ...config, subdir: 'x'.repeat(129) })).toThrow(/128/);
+    });
+
+    it('rejects a non-string subdir at runtime, for JS callers bypassing the type system', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(() => createNoteStore({ ...config, subdir: 42 as any })).toThrow(/non-empty/);
+    });
+
+    // `path.basename(subdir) !== subdir || path.isAbsolute(subdir)` (the
+    // final guard in assertSafeSubdir) is unreachable on this host: every
+    // input that could trigger either half is already excluded by the
+    // separator/`.`/`..` checks above it (POSIX `isAbsolute` requires a
+    // leading `/`; `basename` only differs from its input when a separator
+    // is present). Verified analytically, not just "not covered" — this is
+    // redundant defense-in-depth, most plausibly for platform differences
+    // (e.g. Windows drive-relative paths) this host can't exercise.
+    // `vi.spyOn` cannot stub it either: `node:path`'s exports are
+    // non-configurable here (`TypeError: Cannot redefine property:
+    // basename`), unlike `fs.promises` above — a module-level `vi.mock`
+    // would work but risks destabilizing every other test in this file that
+    // depends on real `path` behavior, for a branch already proven dead.
+    // Left flagged rather than forced.
   });
 
   describe('symlink containment', () => {
@@ -529,6 +557,17 @@ describe('createNoteStore — filesystem safety hardening', () => {
       await expect(store.readConfig(dataDir)).rejects.toBeInstanceOf(NoteStoreConfigError);
       await expect(store.readConfig(dataDir)).rejects.toMatchObject({ code: 'EPARSE' });
     });
+
+    it('fails closed with ENOTREG rather than reading through when the config path is a directory, not a file', async () => {
+      const fs = await import('node:fs/promises');
+      // A directory at the expected config path exercises readRegularFileStrict's
+      // `!st.isFile()` guard — lstat succeeds (so this isn't the ENOENT path)
+      // but the entry itself must be rejected rather than followed/read.
+      await fs.mkdir(join(store.dir(dataDir), '.config.json'), { recursive: true });
+      const err = await store.readConfig(dataDir).catch((e) => e);
+      expect(err).toBeInstanceOf(NoteStoreConfigError);
+      expect(err).toMatchObject({ code: 'ENOTREG' });
+    });
   });
 
   describe('atomic writes', () => {
@@ -561,6 +600,27 @@ describe('createNoteStore — filesystem safety hardening', () => {
         expect(stat.isSymbolicLink()).toBe(false);
       } finally {
         rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('cleans up the temp file and propagates the original error when the final rename fails', async () => {
+      const fs = await import('node:fs');
+      const originalRename = fs.promises.rename;
+      const spy = vi
+        .spyOn(fs.promises, 'rename')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockImplementation(async (from: any, to: any) => {
+          if (typeof from === 'string' && from.includes('.tmp')) {
+            throw new Error('ENOSPC: no space left on device, rename');
+          }
+          return originalRename(from, to);
+        });
+      try {
+        await expect(store.writeConfig(dataDir, { enabled: false })).rejects.toThrow(/ENOSPC/);
+        const names = await fs.promises.readdir(store.dir(dataDir));
+        expect(names.some((n) => n.endsWith('.tmp'))).toBe(false);
+      } finally {
+        spy.mockRestore();
       }
     });
   });
