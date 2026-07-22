@@ -280,16 +280,28 @@ importers:
       '@jini/http':
         specifier: workspace:*
         version: link:../http
+      '@jini/media':
+        specifier: workspace:*
+        version: link:../media
+      '@jini/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@jini/sidecar':
         specifier: workspace:*
         version: link:../sidecar
       '@jini/sqlite':
         specifier: workspace:*
         version: link:../sqlite
+      better-sqlite3:
+        specifier: ^11.10.0
+        version: 11.10.0
       express:
         specifier: ^4.21.0
         version: 4.22.2
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.11
+        version: 7.6.13
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.25
