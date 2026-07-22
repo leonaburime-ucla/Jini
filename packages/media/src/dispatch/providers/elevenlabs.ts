@@ -23,9 +23,26 @@
  * possible host, so both messages were reworded to describe the
  * constraint without assuming how the caller sets it. The underlying
  * validation (non-empty prompt; SFX prompt <= 450 chars) is unchanged.
+ *
+ * 2026-07-21: migrated onto the generic vendor-adapter dispatch engine
+ * (`vendor-adapter.ts`/`vendor-registry.ts`) — two adapters registered on
+ * the same `elevenlabs` provider id (`audio:speech`/`audio:sfx`). External
+ * behavior is unchanged (verified against `elevenlabs.test.ts`, which
+ * asserts URL/body/header/error-message/providerNote shape and passes
+ * unmodified) — only the internal implementation moved. Both prompt-
+ * validation checks (non-empty; SFX length cap) run inside `buildRequest`,
+ * which throws synchronously before any request is built — the same
+ * "abort before the fetch" effect as `openai.ts`'s explicit no-credential
+ * throw. Both responses are raw bytes with no envelope, the same shape
+ * `fishaudio.ts`/`openai.ts`'s speech renderer return, so both now share
+ * `response-parsers.ts`'s `createRawBytesParser`.
  */
-import { truncate, withRequestInit } from '../openai-compatible.js';
+import { withRequestInit } from '../openai-compatible.js';
+import { createRawBytesParser } from '../response-parsers.js';
 import type { ProviderCredentials, RenderContext, RenderResult } from '../types.js';
+import { dispatchVendorRequest, requireApiKey } from '../vendor-adapter.js';
+import type { VendorAdapter, VendorRequest } from '../vendor-adapter.js';
+import { mediaVendorRegistry } from '../vendor-registry.js';
 
 const ELEVENLABS_DEFAULT_BASE_URL = 'https://api.elevenlabs.io';
 const ELEVENLABS_DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
@@ -70,92 +87,109 @@ function assertElevenLabsSfxPromptLength(text: string): void {
   }
 }
 
-export async function renderElevenLabsTTS(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
-  if (!credentials.apiKey) {
-    throw new Error(NO_CREDENTIAL_MESSAGE);
-  }
-  const baseUrl = (credentials.baseUrl || ELEVENLABS_DEFAULT_BASE_URL).replace(/\/$/, '');
-  const wireModel = ELEVENLABS_TTS_MODEL_MAP[ctx.model] || ctx.model;
-  const text = requireElevenLabsPrompt(ctx.prompt, 'TTS');
-  const voiceId = (ctx.voice && ctx.voice.trim()) || ELEVENLABS_DEFAULT_VOICE_ID;
-  const body = {
-    text,
-    model_id: wireModel,
-    voice_settings: {
-      stability: 1,
-      similarity_boost: 1,
-      style: 0,
-      speed: 1,
-      use_speaker_boost: true,
-    },
-  };
-
-  const resp = await fetch(
-    `${baseUrl}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
-    withRequestInit(ctx, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': credentials.apiKey,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    }),
-  );
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`elevenlabs tts ${resp.status}: ${truncate(errText, 240)}`);
-  }
-  const bytes = Buffer.from(await resp.arrayBuffer());
-  if (bytes.length === 0) {
-    throw new Error('elevenlabs tts returned zero bytes');
-  }
-  return {
-    bytes,
-    providerNote: `elevenlabs/${wireModel} · ${voiceId} · ${bytes.length} bytes`,
-    suggestedExt: '.mp3',
-  };
+interface ElevenLabsTTSMeta {
+  readonly wireModel: string;
+  readonly voiceId: string;
 }
 
-export async function renderElevenLabsSfx(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
-  if (!credentials.apiKey) {
-    throw new Error(NO_CREDENTIAL_MESSAGE);
-  }
-  const baseUrl = (credentials.baseUrl || ELEVENLABS_DEFAULT_BASE_URL).replace(/\/$/, '');
-  const wireModel = ELEVENLABS_SFX_MODEL_MAP[ctx.model] || ctx.model;
-  const text = requireElevenLabsPrompt(ctx.prompt, 'SFX');
-  assertElevenLabsSfxPromptLength(text);
-  const durationSeconds = clampElevenLabsSfxDuration(ctx.duration);
-  const promptInfluence = clampElevenLabsSfxPromptInfluence(ctx.promptInfluence);
-  const body = {
-    text,
-    duration_seconds: durationSeconds,
-    prompt_influence: promptInfluence,
-    ...(ctx.loop ? { loop: true } : {}),
-    model_id: wireModel,
-  };
+const elevenLabsTTSAdapter: VendorAdapter<ElevenLabsTTSMeta> = {
+  requireCredential: requireApiKey(NO_CREDENTIAL_MESSAGE),
 
-  const resp = await fetch(
-    `${baseUrl}/v1/sound-generation?output_format=mp3_44100_128`,
-    withRequestInit(ctx, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': credentials.apiKey,
-        'content-type': 'application/json',
+  buildRequest(ctx: RenderContext, credentials: ProviderCredentials): VendorRequest<ElevenLabsTTSMeta> {
+    const apiKey = credentials.apiKey!; // requireCredential already validated this.
+    const baseUrl = (credentials.baseUrl || ELEVENLABS_DEFAULT_BASE_URL).replace(/\/$/, '');
+    const wireModel = ELEVENLABS_TTS_MODEL_MAP[ctx.model] || ctx.model;
+    const text = requireElevenLabsPrompt(ctx.prompt, 'TTS');
+    const voiceId = (ctx.voice && ctx.voice.trim()) || ELEVENLABS_DEFAULT_VOICE_ID;
+    const body = {
+      text,
+      model_id: wireModel,
+      voice_settings: {
+        stability: 1,
+        similarity_boost: 1,
+        style: 0,
+        speed: 1,
+        use_speaker_boost: true,
       },
-      body: JSON.stringify(body),
-    }),
-  );
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`elevenlabs sfx ${resp.status}: ${truncate(errText, 240)}`);
-  }
-  const bytes = Buffer.from(await resp.arrayBuffer());
-  if (bytes.length === 0) {
-    throw new Error('elevenlabs sfx returned zero bytes');
-  }
-  return {
-    bytes,
-    providerNote: `elevenlabs/${wireModel} · ${durationSeconds}s${ctx.loop ? ' · loop' : ''} · ${bytes.length} bytes`,
+    };
+
+    return {
+      url: `${baseUrl}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
+      init: withRequestInit(ctx, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }),
+      meta: { wireModel, voiceId },
+    };
+  },
+
+  parseResponse: createRawBytesParser<ElevenLabsTTSMeta>({
+    errorTag: 'elevenlabs tts',
+    zeroBytesMessage: 'elevenlabs tts returned zero bytes',
+    note: (bytes, meta) => `elevenlabs/${meta.wireModel} · ${meta.voiceId} · ${bytes.length} bytes`,
     suggestedExt: '.mp3',
-  };
+  }),
+};
+
+mediaVendorRegistry.register('elevenlabs', 'audio:speech', elevenLabsTTSAdapter);
+
+export async function renderElevenLabsTTS(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
+  return dispatchVendorRequest(elevenLabsTTSAdapter, ctx, credentials);
+}
+
+interface ElevenLabsSfxMeta {
+  readonly wireModel: string;
+  readonly durationSeconds: number;
+  readonly loop: boolean;
+}
+
+const elevenLabsSfxAdapter: VendorAdapter<ElevenLabsSfxMeta> = {
+  requireCredential: requireApiKey(NO_CREDENTIAL_MESSAGE),
+
+  buildRequest(ctx: RenderContext, credentials: ProviderCredentials): VendorRequest<ElevenLabsSfxMeta> {
+    const apiKey = credentials.apiKey!; // requireCredential already validated this.
+    const baseUrl = (credentials.baseUrl || ELEVENLABS_DEFAULT_BASE_URL).replace(/\/$/, '');
+    const wireModel = ELEVENLABS_SFX_MODEL_MAP[ctx.model] || ctx.model;
+    const text = requireElevenLabsPrompt(ctx.prompt, 'SFX');
+    assertElevenLabsSfxPromptLength(text);
+    const durationSeconds = clampElevenLabsSfxDuration(ctx.duration);
+    const promptInfluence = clampElevenLabsSfxPromptInfluence(ctx.promptInfluence);
+    const body = {
+      text,
+      duration_seconds: durationSeconds,
+      prompt_influence: promptInfluence,
+      ...(ctx.loop ? { loop: true } : {}),
+      model_id: wireModel,
+    };
+
+    return {
+      url: `${baseUrl}/v1/sound-generation?output_format=mp3_44100_128`,
+      init: withRequestInit(ctx, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }),
+      meta: { wireModel, durationSeconds, loop: ctx.loop },
+    };
+  },
+
+  parseResponse: createRawBytesParser<ElevenLabsSfxMeta>({
+    errorTag: 'elevenlabs sfx',
+    zeroBytesMessage: 'elevenlabs sfx returned zero bytes',
+    note: (bytes, meta) => `elevenlabs/${meta.wireModel} · ${meta.durationSeconds}s${meta.loop ? ' · loop' : ''} · ${bytes.length} bytes`,
+    suggestedExt: '.mp3',
+  }),
+};
+
+mediaVendorRegistry.register('elevenlabs', 'audio:sfx', elevenLabsSfxAdapter);
+
+export async function renderElevenLabsSfx(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
+  return dispatchVendorRequest(elevenLabsSfxAdapter, ctx, credentials);
 }
