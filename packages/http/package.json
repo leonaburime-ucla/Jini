@@ -19,8 +19,7 @@
     "@jini/media": "workspace:*",
     "@jini/platform": "workspace:*",
     "@jini/protocol": "workspace:*",
-    "express": "^4.21.0",
-    "fastify": "^5.10.0"
+    "express": "^4.21.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -17,26 +17,12 @@
  * — once the real bound port is known, and removes it during `stop()`. This is the missing daemon
  * side of `@jini/cli`'s `resolveDaemonUrl({ discover })` injection point (see that package's
  * `local-daemon-discovery.ts` and its own `source-map.md`'s 2026-07-21 investigation, which found
- * no such record existed anywhere a separate CLI process could read). Registry-record writing is
- * transport-independent — it runs identically regardless of which HTTP transport bound the port.
+ * no such record existed anywhere a separate CLI process could read).
  *
- * The HTTP transport itself is switchable — {@link CreateLocalNodeDaemonConfig.transport} picks
- * `'express'` (the default, for drop-in compatibility with every existing caller) or `'fastify'`
- * (a radix-tree router, meaningfully faster than Express's regex-array one). Both branches wire
- * the matching namespace off `@jini/http`'s barrel (`express`/`fastify`) for the route guard,
- * security middleware, and daemon-status routes; `mountPackHttp` is transport-agnostic (it only
- * ever forwards `app` straight through to a pack's own `http(app, services)`). `registerRunRoutes`/
- * `registerAgentRoutes`/`registerHostToolsRoutes` are mounted identically in both branches too —
- * each has a real Fastify-mounting sibling in `@jini/http`'s `fastify` namespace that mounts the
- * exact same `JsonRouteSpec` objects the Express one does, so `transport: 'fastify'` gets the same
- * routes, not a reduced set. Both transports converge on the same raw `node:http` `Server` before
- * `.listen()` resolves (Fastify exposes its own internal one via `app.server`) so the rest of the
- * boot lifecycle — `keepAliveTimeout`/`headersTimeout` tuning, bound-port resolution, and
- * `stop()`'s graceful `closeHttpServer` — stays a single, transport-agnostic implementation
- * instead of being duplicated per transport. `stop()` closes that raw server directly rather than
- * calling Fastify's own `app.close()`, so a Fastify-transport daemon skips Fastify's own
- * `onClose` hook run on shutdown — no caller in this codebase registers one today (see
- * `source-map.md`'s risk log for this known gap).
+ * This preset supported a switchable `transport: 'express' | 'fastify'` HTTP transport from
+ * 2026-07-19 through 2026-07-22; it was removed since nothing ever consumed `transport: 'fastify'`
+ * in practice — see `source-map.md`'s dated entry and the `future/fastify-transport` branch (which
+ * preserves the removed implementation unchanged, with a note on why and how to revive it).
  */
 import Database from 'better-sqlite3';
 import { createRequire } from 'node:module';
@@ -45,7 +31,6 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 
 import express, { type Express } from 'express';
-import Fastify, { type FastifyInstance } from 'fastify';
 import { AGENT_DEFS } from '@jini/agent-runtime';
 import { bindings, createDaemon, createToolRegistry, type Bindings, type Daemon, type Principal } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
@@ -75,19 +60,19 @@ import {
   configuredAllowedOrigins,
   createDaemonDbToolRegistrations,
   denyAllWorkspaceRoots,
-  express as httpExpress,
-  fastify as httpFastify,
+  installRouteRegistrationGuard,
   mountPackHttp,
-  // The six route packs below (registerActiveContextRoutes..registerTerminalRoutes) have no
-  // Fastify mounting sibling yet — imported flat (not via the httpExpress/httpFastify namespaces
-  // registerRunRoutes/registerAgentRoutes/registerHostToolsRoutes use below) and wired Express-only
-  // for now; see this file's own "table Fastify" comment at the wiring site and node-host's
-  // source-map.md merge note.
   registerActiveContextRoutes,
+  registerAgentRoutes,
+  registerApiBearerAuthMiddleware,
+  registerApiOriginGuardMiddleware,
   registerDaemonDbRoutes,
+  registerDaemonStatusRoutes,
+  registerHostToolsRoutes,
   registerMediaRoutes,
   registerMemoryRoutes,
   registerModelProxyRoutes,
+  registerRunRoutes,
   registerTerminalRoutes,
   type DaemonDbOperations,
   type DaemonDbVacuumResult,
@@ -234,8 +219,6 @@ export interface CreateLocalNodeDaemonConfig<
   port?: number;
   /** Host/address to bind to. Defaults to `'127.0.0.1'` (loopback-only). */
   host?: string;
-  /** Which `@jini/http` transport namespace assembles the HTTP app. Defaults to `'express'`. */
-  transport?: 'express' | 'fastify';
   /** Env var names for the optional bearer-token gate. Defaults to `JINI_API_TOKEN` / `JINI_DISABLE_API_AUTH`. */
   apiToken?: { tokenEnvVar?: string; disableEnvVar?: string };
   /** Invoked once the HTTP listener has fully closed, before the durable `EventLog` is closed. Any rejection still lets shutdown finish (see `stop()`'s doc), but propagates to the `stop()` caller. */
@@ -472,24 +455,12 @@ export async function createLocalNodeDaemon(
       : createDefaultRunStartHandler({ agentExecutor, resolveRunInput: config.resolveRunInput }));
   const runRoutesDeps = { lifecycle: runLifecycle, ...(onStarted === undefined ? {} : { onStarted }) };
   // Two more always-on, zero-config-safe generic routes, alongside runs/daemon-status.
-  // `agents`/`host-tools` are safe with pure, harmless defaults and have real Fastify mounting
-  // siblings, so they're wired identically in both transport branches below.
   const agentRoutesDeps = { listAgents: () => AGENT_DEFS.map((def) => ({ id: def.id, name: def.name })) };
   const hostToolsRoutesDeps = { resolveRoot: config.resolveWorkspaceRoot ?? denyAllWorkspaceRoots };
 
   // Six more route packs (memory, terminals, model-proxy, active-context, db-ops, media) turned
   // out to have genuinely safe, zero-config defaults too (audit fix, 2026-07-22 — see this
-  // package's own source-map.md for the per-route-pack reachability analysis). Their non-`app`
-  // state is built here, alongside the deps above, so `stop()`/`failToBind` below can close it on
-  // every path regardless of which transport branch actually mounts the routes onto a real `app`.
-  //
-  // **Table Fastify for now**: none of these six have a Fastify mounting sibling yet (unlike
-  // `runs`/`agents`/`host-tools`, `@jini/http`'s `fastify/` subtree has no `memory`/`terminals`/
-  // `model-proxy`/`active-context`/`db-ops`/`media` equivalent) — per explicit instruction, this
-  // gap is deliberately left open rather than built as part of this merge (matching the Fable
-  // audit's AUD-004 finding). They are therefore wired into the Express branch only, below; a
-  // `transport: 'fastify'` daemon does not serve them today. See this package's source-map.md
-  // merge note for the tracked follow-up.
+  // package's own source-map.md for the per-route-pack reachability analysis).
 
   // `memory.ts`: `NoteStore`'s methods take `dataDir` per call (not bound to one directory at
   // construction — see `@jini/memory`'s `note-store.ts`), so this preset's own `config.dataDir`
@@ -588,12 +559,6 @@ export async function createLocalNodeDaemon(
     return stopPromise;
   }
 
-  // Built once and passed to whichever transport branch below wires them — the deps shapes are
-  // either literally the same type (`DaemonStatusDeps`, since `@jini/http`'s fastify namespace
-  // re-exports it from the express module rather than duplicating it) or structurally identical
-  // ones (`ApiBearerAuthMiddlewareDeps`/`ApiOriginGuardMiddlewareDeps`, deliberately duplicated
-  // per-transport in `@jini/http` but with matching field shapes), so one object literal for each
-  // satisfies both namespaces without a cast.
   const daemonStatusDeps = {
     getVersion: () => packageVersion,
     host,
@@ -615,77 +580,44 @@ export async function createLocalNodeDaemon(
     env,
   };
 
-  // Assembles the concrete HTTP app and wires @jini/http's transport-specific route-registration
-  // guard, `/api` security middleware, and daemon-status routes from the matching namespace off
-  // its barrel — `mountPackHttp` above is already transport-agnostic and is called identically in
-  // both branches. `listen` is the one seam where the two transports' own APIs genuinely diverge
-  // (Express's callback/event-based `.listen()` vs Fastify's promise-based one, which also
-  // internally awaits Fastify's own `.ready()`) — both branches converge back to the same
-  // `() => Promise<Server>` shape so the shared boot-completion logic below (keep-alive tuning,
-  // bound-port resolution, resolving `{url, server, stop}`) never needs to know which transport
-  // produced the server it received.
-  let listen: () => Promise<Server>;
-  if (config.transport === 'fastify') {
-    const app: FastifyInstance = Fastify();
-    httpFastify.installRouteRegistrationGuard(app);
-    // Unlike Express, Fastify parses `application/json` request bodies out of the box — no
-    // equivalent to `app.use(express.json())` is needed here.
-    httpFastify.registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
-    httpFastify.registerApiOriginGuardMiddleware(app, originGuardDeps);
-    httpFastify.registerRunRoutes(app, runRoutesDeps, { resolvedPortRef });
-    httpFastify.registerAgentRoutes(app, agentRoutesDeps, { resolvedPortRef });
-    httpFastify.registerHostToolsRoutes(app, { resolvedPortRef }, hostToolsRoutesDeps);
-    mountPackHttp(app, config.packs, daemon);
-    httpFastify.registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
+  // Assembles the concrete Express app and wires @jini/http's route-registration guard, `/api`
+  // security middleware, and daemon-status routes — `mountPackHttp` above is already
+  // framework-agnostic (it only ever forwards `app` straight through to a pack's own
+  // `http(app, services)`).
+  const app: Express = express();
+  installRouteRegistrationGuard(app);
+  app.use(express.json());
+  registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
+  registerApiOriginGuardMiddleware(app, originGuardDeps);
+  registerRunRoutes(app, runRoutesDeps, { resolvedPortRef });
+  registerAgentRoutes(app, agentRoutesDeps, { resolvedPortRef });
+  registerHostToolsRoutes(app, { resolvedPortRef }, hostToolsRoutesDeps);
+  registerMemoryRoutes(app, memoryRoutesDeps, { resolvedPortRef });
+  registerModelProxyRoutes(app, {}, { resolvedPortRef });
+  registerActiveContextRoutes(app, activeContextRoutesDeps, { resolvedPortRef });
+  registerTerminalRoutes(app, terminalRoutesDeps, { resolvedPortRef });
+  registerDaemonDbRoutes(app, daemonDbRoutesDeps, { resolvedPortRef });
+  registerMediaRoutes(app, mediaRoutesDeps, { resolvedPortRef });
 
-    listen = async () => {
-      await app.listen({ port: requestedPort, host });
-      // Fastify's own `.close()` also runs its `onClose` plugin-lifecycle hooks; `stop()` below
-      // closes this raw server directly (shared with the Express branch) so no caller-registered
-      // Fastify `onClose` hook would fire on shutdown — no caller in this codebase registers one
-      // today (see this module's own top-of-file doc and source-map.md's risk log).
-      return app.server;
-    };
-  } else {
-    const app: Express = express();
-    httpExpress.installRouteRegistrationGuard(app);
-    app.use(express.json());
-    httpExpress.registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
-    httpExpress.registerApiOriginGuardMiddleware(app, originGuardDeps);
-    httpExpress.registerRunRoutes(app, runRoutesDeps, { resolvedPortRef });
-    httpExpress.registerAgentRoutes(app, agentRoutesDeps, { resolvedPortRef });
-    httpExpress.registerHostToolsRoutes(app, { resolvedPortRef }, hostToolsRoutesDeps);
+  mountPackHttp(app, config.packs, daemon);
+  registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
 
-    // Express-only for now (table Fastify — see this file's own comment at each dep's
-    // construction above and node-host/source-map.md's merge note): none of these six route
-    // packs has a Fastify mounting sibling yet.
-    registerMemoryRoutes(app, memoryRoutesDeps, { resolvedPortRef });
-    registerModelProxyRoutes(app, {}, { resolvedPortRef });
-    registerActiveContextRoutes(app, activeContextRoutesDeps, { resolvedPortRef });
-    registerTerminalRoutes(app, terminalRoutesDeps, { resolvedPortRef });
-    registerDaemonDbRoutes(app, daemonDbRoutesDeps, { resolvedPortRef });
-    registerMediaRoutes(app, mediaRoutesDeps, { resolvedPortRef });
-
-    mountPackHttp(app, config.packs, daemon);
-    httpExpress.registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
-
-    listen = () =>
-      new Promise<Server>((resolve, reject) => {
-        let listeningServer: Server;
-        try {
-          listeningServer = app.listen(requestedPort, host);
-        } catch (error) {
-          reject(error);
-          return;
-        }
-        listeningServer.once('listening', () => resolve(listeningServer));
-        // `app.listen` throws synchronously when the port is already in use on some Node
-        // versions, but emits an `error` event on others (and for EACCES/EADDRNOTAVAIL even on
-        // the same Node) — wiring both paths means this promise always settles instead of
-        // hanging forever, matching Fastify's own always-settles `.listen()` promise contract.
-        listeningServer.on('error', (error) => reject(error));
-      });
-  }
+  const listen = (): Promise<Server> =>
+    new Promise<Server>((resolve, reject) => {
+      let listeningServer: Server;
+      try {
+        listeningServer = app.listen(requestedPort, host);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      listeningServer.once('listening', () => resolve(listeningServer));
+      // `app.listen` throws synchronously when the port is already in use on some Node
+      // versions, but emits an `error` event on others (and for EACCES/EADDRNOTAVAIL even on
+      // the same Node) — wiring both paths means this promise always settles instead of
+      // hanging forever.
+      listeningServer.on('error', (error) => reject(error));
+    });
 
   return await new Promise<LocalNodeDaemon>((resolve, reject) => {
     const failToBind = (error: unknown) => {
@@ -719,8 +651,7 @@ export async function createLocalNodeDaemon(
         // resolve — handing the URL back to the caller — until the record a same-machine CLI
         // would read is actually in place, or a caller that immediately shells out to a CLI
         // command right after `await createLocalNodeDaemon(...)` could lose the race against its
-        // own write. Transport-independent — runs identically for both the Express and Fastify
-        // branches above, since both converge on the same raw `server` before this callback runs.
+        // own write.
         void (async () => {
           if (registryPath !== null) {
             try {

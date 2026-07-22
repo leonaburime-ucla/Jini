@@ -123,9 +123,7 @@ export interface SseChannel<E extends SseEvent> {
  *
  * @param res - The response to stream over, typed against the raw `node:http` `ServerResponse`
  * rather than Express's own `Response` — Express's `Response` extends `ServerResponse` directly,
- * so every existing Express caller still satisfies this signature unchanged, and Fastify's
- * `reply.raw` is a real `ServerResponse` too, letting a Fastify caller use this same primitive
- * with no adapter shim. Never read from — only
+ * so every existing Express caller still satisfies this signature unchanged. Never read from — only
  * `write`/`statusCode`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')` are used, all of
  * which exist identically on the raw type (the one genuinely Express-specific call this function
  * used to make, `res.status(200)`, is `res.statusCode = 200` here instead — the same assignment
@@ -246,11 +244,10 @@ export function requestedAfterCursor(req: {
 
 /**
  * Writes an `ApiError`, wrapped in the standard `{ error }` envelope, directly onto a raw
- * `ServerResponse` — for the narrow window before an `SseChannel` has opened (so no framework
- * response wrapper, like Express's `res.json()` or a hijacked Fastify `reply.send()`, is safe to
- * use yet). Every transport's own `sendApiError`/`sendJson` (`response.ts`, `fastify/response.ts`)
- * produces the identical `createApiErrorResponse(error)` envelope shape — this just writes that
- * same shape without going through either framework's response helper.
+ * `ServerResponse` — for the narrow window before an `SseChannel` has opened (so Express's own
+ * `res.json()` response wrapper isn't safe to use yet). Produces the identical
+ * `createApiErrorResponse(error)` envelope shape `response.ts`'s `sendApiError`/`sendJson` do —
+ * this just writes that same shape without going through Express's response helper.
  */
 export function sendRawApiError(res: ServerResponse, status: number, error: ApiError): void {
   res.statusCode = status;

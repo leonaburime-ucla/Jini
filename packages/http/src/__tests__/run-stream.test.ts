@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import type { Server } from 'node:http';
+import express from 'express';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createInMemoryEventLog, createRunLifecycle, type RunLifecycle, type StreamSubscribeResult } from '@jini/daemon';
-import { handleRunStreamRequest } from '../run-stream.js';
+import { handleRunStreamRequest, registerRunStreamRoute } from '../run-stream.js';
 
 function makeReqRes() {
   const req = new EventEmitter();
@@ -115,5 +117,50 @@ describe('handleRunStreamRequest — non-ok StreamSubscribeResult kinds', () => 
 
     expect(writtenEvents(res)).toContainEqual({ error: 'invalid-cursor' });
     expect(res.end).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** Reads from `res`'s SSE body stream until `expectedSubstring` appears (bounded — fails the test via a thrown error rather than hanging forever if it never shows up), then cancels the reader. Guards against the connection's already-replayed 'start' event and the target event landing in separate `read()` calls / chunks. */
+async function readSseUntil(res: Response, expectedSubstring: string): Promise<string> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let accumulated = '';
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    accumulated += decoder.decode(value, { stream: true });
+    if (accumulated.includes(expectedSubstring)) {
+      await reader.cancel();
+      return accumulated;
+    }
+  }
+  await reader.cancel();
+  throw new Error(`expected substring not found within bound: ${expectedSubstring}\ngot: ${accumulated}`);
+}
+
+describe('registerRunStreamRoute — real Express server on a real socket, not fake req/res', () => {
+  let server: Server | undefined;
+
+  afterEach(() => {
+    server?.close();
+    server = undefined;
+  });
+
+  it("streams a run's AG-UI events over a real SSE connection", async () => {
+    const lifecycle = createRunLifecycle({ eventLog: createInMemoryEventLog() });
+    const { run } = await lifecycle.start({ contextRef: 'ctx', runId: 'express-run-1' });
+
+    const app = express();
+    registerRunStreamRoute(app, { lifecycle });
+    server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/runs/${run.id}/agui-stream`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+
+    await lifecycle.emit(run.id, { event: 'agent', data: { type: 'text_delta', delta: 'hello from express' } });
+    const body = await readSseUntil(res, '"text":"hello from express"');
+    expect(body).toContain('"kind":"agent.message"');
   });
 });

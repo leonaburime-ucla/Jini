@@ -3,17 +3,16 @@
  *
  * The AG-UI SSE run-stream route: subscribes to a run via `@jini/daemon`'s `RunLifecycle.stream`,
  * pipes every event through a fresh `@jini/agui` encoder, and writes each non-null AG-UI event to
- * the SSE response opened by `sse.ts`'s `createSseResponse`. This module is the framework-
- * agnostic core — it only ever touches `node:http`'s `IncomingMessage`/`ServerResponse` (via
- * `createSseResponse`), never Express or Fastify. Each transport subtree's own thin route glue
- * (`express/run-stream.ts`/`fastify/run-stream.ts`) resolves `runId` from its own request-params
- * shape and hands the raw `req`/`res` here — see those two files for the only framework-specific
- * slivers this route needs, per the design-change instruction that motivated building the SSE
- * primitive as one shared implementation in the first place.
+ * the SSE response opened by `sse.ts`'s `createSseResponse`. `handleRunStreamRequest` is the core
+ * — it only ever touches `node:http`'s `IncomingMessage`/`ServerResponse` — and
+ * `registerRunStreamRoute` below is Express's own thin mounting glue (Express's `Request`/
+ * `Response` already *are* Node's raw `http.IncomingMessage`/`http.ServerResponse`, so resolving
+ * `req.params.runId` and handing the request/response straight through is the whole job).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createAguiEncoder } from '@jini/agui';
 import type { RunLifecycle } from '@jini/daemon';
+import type { Express, Request, Response } from 'express';
 import { createSseResponse } from './raw-sse.js';
 
 /** Route path both transport subtrees mount this handler on. A plain string constant with no framework coupling at all — shared here rather than duplicated, the same way `pack-http.ts`'s `mountPackHttp` is shared for being genuinely framework-agnostic. */
@@ -71,4 +70,14 @@ export async function handleRunStreamRequest(
   // here is `RunLifecycle`'s own no-op stub for that case) — keeping this assignment unconditional
   // avoids a branch whose two arms would otherwise do the same thing.
   unsubscribe = result.unsubscribe;
+}
+
+/** Mounts the AG-UI SSE run-stream route on `app`. A pack's `http(app, services)` calls this directly. */
+export function registerRunStreamRoute(app: Express, deps: RunStreamDeps): void {
+  app.get(RUN_STREAM_ROUTE_PATH, async (req: Request, res: Response) => {
+    // `:runId` is a required path segment of RUN_STREAM_ROUTE_PATH — this handler is only ever
+    // reached via a URL that already matched it, so the param is always present at runtime even
+    // though @types/express types every param as possibly `undefined` in general.
+    await handleRunStreamRequest(req, res, req.params.runId!, deps);
+  });
 }

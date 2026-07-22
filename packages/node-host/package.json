@@ -28,8 +28,7 @@
     "@jini/sidecar": "workspace:*",
     "@jini/sqlite": "workspace:*",
     "better-sqlite3": "^11.10.0",
-    "express": "^4.21.0",
-    "fastify": "^5.10.0"
+    "express": "^4.21.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

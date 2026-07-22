@@ -221,14 +221,11 @@ function sendStreamFailure(res: ServerResponse, kind: Exclude<Awaited<ReturnType
 }
 
 /**
- * The transport-agnostic core of `GET /api/runs/:runId/events` — canonical events as SSE, with
- * Last-Event-ID reconnect support. Takes `runId`/`afterCursor` already resolved (each transport's
- * own request shape differs enough — Express's `req.params`/`.get()` vs Fastify's `request.params`/
- * `.headers` — that resolving them is cheaper to leave per-transport than to build a third shared
- * abstraction over both). `res` is typed against the raw `node:http` `ServerResponse` rather than
- * either framework's own response type: Express's `Response` extends it directly, and a Fastify
- * caller passes `reply.raw` after `reply.hijack()` (see `fastify/runs.ts`), the same pattern
- * `run-stream.ts`'s AG-UI handler already established for exactly this reason.
+ * The core of `GET /api/runs/:runId/events` — canonical events as SSE, with Last-Event-ID
+ * reconnect support. Takes `runId`/`afterCursor` already resolved by the caller. `res` is typed
+ * against the raw `node:http` `ServerResponse` rather than Express's own `Response` type — Express's
+ * `Response` extends it directly, so this is a no-op widening, the same pattern `run-stream.ts`'s
+ * AG-UI handler already established.
  */
 export async function handleRunEventStreamRequest(
   res: ServerResponse,

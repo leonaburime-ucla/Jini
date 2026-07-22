@@ -1,14 +1,10 @@
 /**
  * @module sse
  *
- * A shared Server-Sent Events primitive, framework-agnostic by construction: unlike the
- * transport-specific route/middleware plumbing in `express/`/`fastify/` (which deliberately
- * duplicates per framework — see `source-map.md`'s "Fastify transport split" section), SSE is a
- * raw-stream concern both frameworks expose identically underneath. Express's `res` object
- * literally extends Node's `http.ServerResponse`; Fastify's `reply.raw`/`request.raw` give you
- * that exact same underlying `http.ServerResponse`/`http.IncomingMessage` pair directly. This
- * module is typed only against `node:http`, so it is built once here and reused by both transport
- * subtrees' own thin route-mounting glue (`express/run-stream.ts`/`fastify/run-stream.ts`).
+ * A Server-Sent Events primitive typed only against `node:http`'s `IncomingMessage`/
+ * `ServerResponse` — Express's `req`/`res` already satisfy these directly (`Response` extends
+ * `http.ServerResponse`), so `run-stream.ts`'s `registerRunStreamRoute` hands them straight
+ * through with no adapter of its own.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -32,8 +28,8 @@ export interface SseConnection {
  * Opens `res` as a Server-Sent Events stream: writes the `text/event-stream` response headers
  * immediately, arms a keepalive interval, and wires client-disconnect detection.
  *
- * @param req - The raw request (Express's `Request`/Fastify's `request.raw` both satisfy this).
- * @param res - The raw response (Express's `Response`/Fastify's `reply.raw` both satisfy this).
+ * @param req - The raw request (Express's `Request` already satisfies this).
+ * @param res - The raw response (Express's `Response` already satisfies this).
  * @returns An `SseConnection` the caller pushes events through and closes when done.
  * @complexity O(1) to open; `send` is O(1) plus `JSON.stringify`'s cost in the payload's size.
  * @overallScore 100/100

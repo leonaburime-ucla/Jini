@@ -1594,3 +1594,44 @@ none padded:
 `vitest.config.ts`'s committed threshold raised from 98/98/98/98 to 100/100/100/100 to lock this in
 (a regression now fails CI instead of silently sliding under a safety margin). Root `pnpm -r run
 build`: clean. Root `pnpm guard`: clean.
+
+## 2026-07-22 addition — Fastify transport removed, parked on `future/fastify-transport`
+
+The switchable `express`/`fastify` transport documented in the two sections above ("2026-07-19 —
+Fastify transport split" and "2026-07-22 — Merging the Fastify transport split into `main`") was
+removed the same day it was fully merged. Reason: nothing in this repo, `examples/minimal-host`, or
+any known downstream consumer ever set `transport: 'fastify'` — the Fastify subtree was fully built
+and 100%-tested but had zero real consumers, and its presence had a real, ongoing cost: every new
+route pack added to this package (six landed the same day — `memory`/`terminals`/`model-proxy`/
+`active-context`/`db-ops`/`media`, see the two entries below this one) implicitly raised "does this
+also need a Fastify mounting sibling, or do we explicitly defer it" (AUD-004 in
+`ADS-memory/reports/audit-fastify-merge-and-six-gap-fixes-2026-07-22.md`), a recurring parity tax
+for an option nobody used.
+
+**What was removed:** `src/fastify/` (the entire Fastify-native subtree — route-registration guard,
+security middleware, daemon-status routes, and mounting siblings for `runs`/`agents`/`host-tools`),
+`src/express-index.ts` (the thin `express` namespace barrel built to mirror `fastify/index.ts`
+symmetrically), and the `export * as express`/`export * as fastify` namespace exports from this
+file's own barrel. `src/express/run-stream.ts` (the one file that subdirectory ever held) was merged
+back into the shared, flat `run-stream.ts` as `registerRunStreamRoute`, now barrel-exported flat
+like every other route pack's registrar — there is no longer an `express/` subdirectory at all.
+
+**What's now flat that wasn't before:** `installRouteRegistrationGuard`/`getRouteRegistrationInventory`/
+`guardedRouteKey` (previously only reachable via the `express`/`fastify` namespaces, needed directly
+by `@jini/node-host` now that there's only one transport) and `registerRunStreamRoute` (previously
+only reachable via `express.registerRunStreamRoute`).
+
+**Preserved, not deleted:** the full removed implementation lives unchanged on the
+`future/fastify-transport` branch — see `FASTIFY-TRANSPORT-PARKED.md` at that branch's repo root for
+the reasoning and exactly how to revive it (which route packs still lack a Fastify sibling, and
+which of those already sit on the shared, transport-agnostic `createSseChannel` primitive vs. still
+need the retype-to-raw-`ServerResponse` treatment `runs.ts` got).
+
+**Verified, personally, this session**: `pnpm --dir packages/http run build`/`exec tsc --noEmit`:
+clean. `pnpm --dir packages/http run test:coverage`: **773/773 tests pass** (down from 937 — the
+deleted `fastify/__tests__/*` and `express/__tests__/run-stream.test.ts` accounted for the
+difference, one test merged into `src/__tests__/run-stream.test.ts`), genuine **100/100/100/100
+across every remaining file**. Root `pnpm guard`: clean. Every other package's own `tsc --noEmit`
+re-run individually clean (root `pnpm -r run build`/`pnpm typecheck` are currently blocked by an
+unrelated, pre-existing, uncommitted `packages/ui` state from a different concurrent session — not
+touched or caused by this change).

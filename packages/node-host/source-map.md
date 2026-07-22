@@ -489,3 +489,21 @@ store-survives-restart durability test), `create-local-node-daemon.ts` **100/100
 dependencies added to `package.json`: `@jini/media`, `@jini/memory`, `better-sqlite3` (+
 `@types/better-sqlite3` dev) — `@jini/sqlite` already depended on the latter two transitively; this
 file now imports `Database` directly for the `daemon.db.*` second connection.
+
+## 2026-07-22 addition — Fastify transport removed, `transport` config option gone
+
+`CreateLocalNodeDaemonConfig.transport?: 'express' | 'fastify'` and the `if (config.transport ===
+'fastify') { ... } else { ... }` branch this file's own 2026-07-19/2026-07-22 sections above
+documented are both gone — this preset now unconditionally assembles a single Express app. See
+`@jini/http`'s own source-map.md "Fastify transport removed" entry for the full reasoning (no real
+consumer ever used `transport: 'fastify'`, and it cost a recurring parity-tracking tax on every new
+route pack). The removed implementation is preserved unchanged on the `future/fastify-transport`
+branch (`FASTIFY-TRANSPORT-PARKED.md` at that branch's root has the revival notes).
+
+`packages/node-host/src/__tests__/create-local-node-daemon.fastify-transport.test.ts` and
+`packages/node-host/scripts/dual-boot-smoke.ts` were deleted (both existed solely to exercise/
+demonstrate the two-transport switch). `fastify` was removed from `package.json`'s dependencies.
+
+**Verified, personally, this session**: `pnpm --dir packages/node-host run build`/`exec tsc
+--noEmit`: clean. `pnpm --dir packages/node-host run test:coverage`: **78/78 tests pass**, genuine
+**100/100/100/100** across every file. Root `pnpm guard`: clean.
