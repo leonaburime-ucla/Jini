@@ -1,7 +1,30 @@
+import { sign } from 'node:crypto';
 import type { RegistryManifest } from '@jini/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { assertValidPublishRequest, StaticRegistryBackend } from '../static-backend.js';
+import { canonicalRegistrySigningPayload, type RegistryTrustRoot } from '../trust.js';
+
+// Self-signed test CA (chains to itself — see `trust.test.ts`'s equivalent
+// fixture note for why this is enough to exercise real `node:crypto`
+// signature-chain verification without a separate leaf cert pair).
+const SELF_SIGNED_CA_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIBkjCCATegAwIBAgIUK0avUXJe13wKID2ScGCeLXHryxswCgYIKoZIzj0EAwIw
+HTEbMBkGA1UEAwwSVGVzdCBUcnVzdCBSb290IENBMCAXDTI2MDcyMjA0MTE0NloY
+DzIxMjYwNjI4MDQxMTQ2WjAdMRswGQYDVQQDDBJUZXN0IFRydXN0IFJvb3QgQ0Ew
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQsZHk8F8ScSaJGOG0tAW7SSkBEEjOm
+q0kh74AkGQuKczmIOU2EndCHzCydqrMjX+DRhQSj7WSEAmMKyV7s594mo1MwUTAd
+BgNVHQ4EFgQU+r4ExVmN9YMomT3H7izT/GPBfUswHwYDVR0jBBgwFoAU+r4ExVmN
+9YMomT3H7izT/GPBfUswDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBG
+AiEAjMZ3lNIJhM1605xWipWZEJVcGrS/yTuMAhfzvypOkA0CIQDpU8fpu6b50Eiz
+34W2FiMqCxQrKGm/+Xe2RnIbqsqw+w==
+-----END CERTIFICATE-----`;
+
+const SELF_SIGNED_CA_KEY_PEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIFwuaGm+4pIT8qwcOOS4YrejKVuubs3Rhl0dZxmZY5ijoAoGCCqGSM49
+AwEHoUQDQgAELGR5PBfEnEmiRjhtLQFu0kpARBIzpqtJIe+AJBkLinM5iDlNhJ3Q
+h8wsnaqzI1/g0YUEo+1khAJjCsle7OfeJg==
+-----END EC PRIVATE KEY-----`;
 
 function manifestOf(entries: RegistryManifest['entries']): RegistryManifest {
   return { specVersion: '1.0.0', name: 'fixture', version: '1.0.0', entries };
@@ -138,6 +161,51 @@ describe('StaticRegistryBackend', () => {
     await expect(backend.resolve('vendor/missing')).resolves.toBeNull();
     await expect(backend.resolve('vendor/example', '^9.0.0')).resolves.toBeNull();
     await expect(backend.manifest('vendor/missing', '1.0.0')).resolves.toBeNull();
+  });
+
+  describe('resolve() signature verification (trustRoot) — additive alongside trust, SEC-RB-005 remainder', () => {
+    it('reports verified: false and no verifiedIssuer/verifiedSubject when no trustRoot is configured (unchanged default)', async () => {
+      const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'official', manifest: manifestOf([exampleEntry]) });
+      const resolved = await backend.resolve('vendor/example');
+      expect(resolved).toMatchObject({ trust: 'official', verified: false });
+      expect(resolved).not.toHaveProperty('verifiedIssuer');
+      expect(resolved).not.toHaveProperty('verifiedSubject');
+    });
+
+    it('reports verified: false when the entry has no signatures even though a trustRoot is configured', async () => {
+      const backend = new StaticRegistryBackend({
+        id: 'fixture',
+        trust: 'restricted',
+        manifest: manifestOf([exampleEntry]),
+        trustRoot: { githubOidc: { caCertificates: [SELF_SIGNED_CA_CERT_PEM] } },
+      });
+      await expect(backend.resolve('vendor/example')).resolves.toMatchObject({ verified: false });
+    });
+
+    it('reports verified: true with verifiedIssuer/verifiedSubject, while `trust` stays exactly what the backend was configured with', async () => {
+      const signedEntry = {
+        ...exampleEntry,
+        signatures: [
+          {
+            kind: 'github-oidc' as const,
+            issuer: 'https://token.actions.githubusercontent.com',
+            subject: 'repo:vendor/example:ref:refs/heads/main',
+            certificate: SELF_SIGNED_CA_CERT_PEM,
+            signedAt: '2026-08-01T00:00:00Z',
+            signature: sign('sha256', Buffer.from(canonicalRegistrySigningPayload(exampleEntry), 'utf8'), SELF_SIGNED_CA_KEY_PEM).toString('base64'),
+          },
+        ],
+      };
+      const trustRoot: RegistryTrustRoot = { githubOidc: { caCertificates: [SELF_SIGNED_CA_CERT_PEM] } };
+      const backend = new StaticRegistryBackend({ id: 'fixture', trust: 'restricted', manifest: manifestOf([signedEntry]), trustRoot });
+      const resolved = await backend.resolve('vendor/example');
+      expect(resolved).toMatchObject({
+        trust: 'restricted',
+        verified: true,
+        verifiedIssuer: 'https://token.actions.githubusercontent.com',
+        verifiedSubject: 'repo:vendor/example:ref:refs/heads/main',
+      });
+    });
   });
 
   it('search matches by name/title/description/tags/capabilities/publisher, filters by tag, and sorts by score then name', async () => {

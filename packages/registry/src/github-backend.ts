@@ -16,6 +16,7 @@ import type {
   RegistryYankOutcome,
 } from '@jini/protocol';
 import { assertValidPublishRequest, StaticRegistryBackend } from './static-backend.js';
+import type { RegistryTrustRoot } from './trust.js';
 
 /** `vendor/name` — deliberately the same shape `RegistryEntrySchema.name` requires. */
 const SAFE_ENTRY_NAME = /^([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)$/;
@@ -91,6 +92,8 @@ export interface GithubRegistryBackendOptions {
    */
   trust?: RegistryTrust;
   client: GithubRegistryClient;
+  /** Optional `github-oidc` signature trust root — see `StaticRegistryBackendOptions.trustRoot`'s doc comment for what configuring (or omitting) this does. */
+  trustRoot?: RegistryTrustRoot | undefined;
 }
 
 const DEFAULT_MANIFEST_PATH = 'registry/index.json';
@@ -110,7 +113,7 @@ export class GithubRegistryBackend extends StaticRegistryBackend {
     manifestPath: string;
     manifest: RegistryManifest;
   }) {
-    super({ id: options.id, kind: 'github', trust: options.trust ?? 'restricted', manifest: options.manifest });
+    super({ id: options.id, kind: 'github', trust: options.trust ?? 'restricted', manifest: options.manifest, trustRoot: options.trustRoot });
     this.owner = options.owner;
     this.repo = options.repo;
     this.ref = options.ref;

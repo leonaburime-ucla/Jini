@@ -4,6 +4,7 @@ import {
   RegistryManifestSchema,
   RegistryPublishOutcomeSchema,
   RegistryYankOutcomeSchema,
+  ResolvedRegistryEntrySchema,
   type RegistryBackend,
 } from '../registry.js';
 
@@ -58,6 +59,7 @@ describe('registry protocol', () => {
           backendId: this.id,
           backendKind: this.kind,
           trust: this.trust,
+          verified: false,
           entry,
           version: { version: entry.version, source: entry.source },
           source: entry.source,
@@ -96,6 +98,38 @@ describe('registry protocol', () => {
       ok: true,
       dryRun: true,
     });
+  });
+
+  it('defaults verified to false without requiring it, and never mutates what trust means (additive verification field)', () => {
+    const withoutVerified = ResolvedRegistryEntrySchema.parse({
+      backendId: 'fixture',
+      backendKind: 'local',
+      trust: 'official',
+      entry,
+      version: { version: entry.version, source: entry.source },
+      source: entry.source,
+    });
+    expect(withoutVerified.verified).toBe(false);
+    expect(withoutVerified.trust).toBe('official');
+    expect(withoutVerified.verifiedIssuer).toBeUndefined();
+    expect(withoutVerified.verifiedSubject).toBeUndefined();
+
+    const verified = ResolvedRegistryEntrySchema.parse({
+      backendId: 'fixture',
+      backendKind: 'github',
+      trust: 'restricted',
+      verified: true,
+      verifiedIssuer: 'https://token.actions.githubusercontent.com',
+      verifiedSubject: 'https://github.com/vendor/example/.github/workflows/build.yml@refs/heads/main',
+      entry,
+      version: { version: entry.version, source: entry.source },
+      source: entry.source,
+    });
+    expect(verified.verified).toBe(true);
+    // `trust` is untouched by verification — still the backend-configured
+    // value, proving this field sits alongside `trust` rather than deriving/narrowing it.
+    expect(verified.trust).toBe('restricted');
+    expect(verified.verifiedIssuer).toBe('https://token.actions.githubusercontent.com');
   });
 
   it('parses a manifest envelope of entries and rejects a missing entries array', () => {

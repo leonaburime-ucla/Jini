@@ -26,12 +26,22 @@ import {
   type ResolvedRegistryEntry,
 } from '@jini/protocol';
 import { parseRegistrySpecifier, resolveRegistryEntryVersion } from './versioning.js';
+import { verifyRegistryEntrySignatures, type RegistryTrustRoot } from './trust.js';
 
 export interface StaticRegistryBackendOptions {
   id: string;
   kind?: RegistryBackendKind;
   trust: RegistryTrust;
   manifest: RegistryManifest;
+  /**
+   * Optional per-entry signature trust root (currently `github-oidc` only —
+   * see `trust.ts`). Omitting this is the pre-existing, unchanged default:
+   * `resolve()` reports `verified: false` for every entry without attempting
+   * any verification. Configuring it turns on real cryptographic
+   * verification of `entry.signatures[]`, additive alongside `trust` (see
+   * `ResolvedRegistryEntrySchema.verified`'s doc comment in `@jini/protocol`).
+   */
+  trustRoot?: RegistryTrustRoot | undefined;
 }
 
 export class StaticRegistryBackend implements RegistryBackend {
@@ -40,12 +50,14 @@ export class StaticRegistryBackend implements RegistryBackend {
   readonly trust: RegistryTrust;
 
   protected readonly manifestData: RegistryManifest;
+  protected readonly trustRoot: RegistryTrustRoot | undefined;
 
   constructor(options: StaticRegistryBackendOptions) {
     this.id = options.id;
     this.kind = options.kind ?? 'http';
     this.trust = options.trust;
     this.manifestData = options.manifest;
+    this.trustRoot = options.trustRoot;
   }
 
   async list(filter?: RegistryListFilter): Promise<RegistryEntry[]> {
@@ -116,10 +128,19 @@ export class StaticRegistryBackend implements RegistryBackend {
     if (!entry) return null;
     const resolvedVersion = resolveRegistryEntryVersion(entry, parsed.range);
     if (!resolvedVersion) return null;
+    // Additive alongside `trust`: never replaces or narrows the
+    // backend-configured trust level above, which is still stamped exactly
+    // as before. A backend with no `trustRoot` configured (the unchanged
+    // default) always resolves `verified: false` here without attempting
+    // any cryptographic work — see `trust.ts`'s `verifyRegistryEntrySignatures`.
+    const verification = verifyRegistryEntrySignatures(entry, this.trustRoot);
     return {
       backendId: this.id,
       backendKind: this.kind,
       trust: this.trust,
+      verified: verification.verified,
+      ...(verification.verified && verification.issuer ? { verifiedIssuer: verification.issuer } : {}),
+      ...(verification.verified && verification.subject ? { verifiedSubject: verification.subject } : {}),
       entry,
       version: {
         version: resolvedVersion.version,

@@ -67,3 +67,62 @@ instruction) and `tsconfig.tests.json` (a second tsconfig the origin needed
 only because its `tests/` directory lives outside `src/`; this port's test
 file sits beside its source file, matching every other file in this package,
 so no second tsconfig is needed).
+
+## Addendum: `ResolvedRegistryEntrySchema.verified`/`verifiedIssuer`/`verifiedSubject` (2026-07-21)
+
+Implements decision 2 of
+`ADS-memory/reports/proposals/PROP-registry-signature-trust-verification-2026-07-21.md`
+(human/architect sign-off already recorded there) as part of `@jini/registry`
+gaining a real `github-oidc` signature verifier (`packages/registry/src/trust.ts`
+— see that package's own source-map.md's 2026-07-21 addendum for the full
+design/research trail). This is a `@jini/registry`-authored change to a
+`@jini/protocol` schema — allowed under this task's explicit scope, since the
+per-entry-verified-trust decision is a protocol-layer question the registry
+package's own boundary can't resolve on its own (per the proposal's own §3
+open question).
+
+`ResolvedRegistryEntrySchema` (`src/registry.ts`) gains three fields,
+inserted alongside the existing `trust: RegistryTrustSchema` field:
+
+```ts
+verified: z.boolean().default(false),
+verifiedIssuer: z.string().optional(),
+verifiedSubject: z.string().optional(),
+```
+
+**Purely additive — `trust`'s own meaning and every existing caller's
+behavior is byte-identical to before this change:** `verified` defaults to
+`false` via zod's `.default()`, so `.parse()`-ing a pre-existing
+`ResolvedRegistryEntry`-shaped object that has never heard of this field
+still succeeds (never throws) and yields `verified: false` — matching
+exactly what every backend already did before this task (no per-entry
+verification existed at all). `trust` is not renamed, narrowed, derived from,
+or otherwise touched by this change; a caller that only reads `.trust` sees
+nothing different. `verifiedIssuer`/`verifiedSubject` are plain optional
+strings (flat siblings of `ref`/`integrity`/`manifestDigest`, matching this
+schema's existing style — no new nested schema type introduced), present
+only when `verified` is `true`.
+
+**TypeScript note:** because `verified` uses zod's `.default()`, the
+*inferred output type* (`z.infer<typeof ResolvedRegistryEntrySchema>`, what
+`ResolvedRegistryEntry` resolves to) requires `verified: boolean` on any
+object literal typed as `ResolvedRegistryEntry` — this is `.default()`'s
+normal zod behavior (the input type makes it optional, the output/parsed
+type does not, since parsing always fills it in) and only affects code that
+*constructs* such an object (every concrete backend's `resolve()`, and this
+package's own `registry.test.ts` mock `RegistryBackend`), not code that only
+*reads* an already-resolved entry's `.trust` field.
+
+**Tests:** `src/__tests__/registry.test.ts` — one new test parses both
+"no `verified` supplied" (asserts default `false`, `trust` unaffected) and
+"`verified: true` with `verifiedIssuer`/`verifiedSubject` supplied" (asserts
+`trust` is still whatever the backend configured, proving the two fields
+don't interact); the pre-existing inline `RegistryBackend` mock's `resolve()`
+was updated to supply `verified: false` to keep compiling under the
+TypeScript note above.
+
+**Verification:** `pnpm --dir packages/protocol build` clean (registry
+depends on this package's dist — built first). `pnpm --dir packages/protocol
+exec vitest run` — 11/11 passing (up from 10/10). No other `@jini/*` package
+currently consumes `ResolvedRegistryEntry` besides `@jini/registry` itself
+(repo-wide grep before this change), so no other package needed updating.
