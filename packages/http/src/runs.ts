@@ -22,7 +22,7 @@ import { err, ok, type Result, type RouteInputContext } from './types.js';
  */
 export interface RunInternalErrorContext {
   readonly source: 'run-start' | 'run-stream';
-  readonly runId?: string;
+  readonly runId: string;
   readonly correlationId: string;
   readonly error: unknown;
 }
@@ -56,16 +56,22 @@ export interface RunHttpDeps {
   readonly onInternalError?: (context: RunInternalErrorContext) => void;
 }
 
-/** Logs the real failure server-side and returns the generic, correlation-id-bearing public error (SEC-005: never the raw exception). */
+/**
+ * Logs the real failure server-side and returns the generic, correlation-id-bearing public error
+ * (SEC-005: never the raw exception). `runId` is mandatory — both real call sites (`run-start`,
+ * after a durably-created run's id is already known; `run-stream`, against an already-parsed path
+ * parameter) always have one in hand, so an optional field with an unreachable "no runId" branch
+ * was speculative flexibility no caller ever exercised.
+ */
 function reportInternalError(
   deps: RunHttpDeps,
   source: RunInternalErrorContext['source'],
   error: unknown,
-  runId?: string,
+  runId: string,
 ): ReturnType<typeof createApiError> {
   const correlationId = randomUUID();
   const sink = deps.onInternalError ?? defaultInternalErrorSink;
-  sink({ source, ...(runId === undefined ? {} : { runId }), correlationId, error });
+  sink({ source, runId, correlationId, error });
   return createApiError('INTERNAL_ERROR', 'an internal error occurred', { requestId: correlationId });
 }
 

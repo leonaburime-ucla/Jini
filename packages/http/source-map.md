@@ -1264,3 +1264,35 @@ id-bearing, exactly like `delegated-tools.ts`'s `reportInternalError`.
 `media.ts` **100/100/100/100**. Package-wide: 100/99.35/100/100 (the two pre-existing, unrelated
 gaps — `runs.ts:68` and `terminals.ts`'s five lines — are addressed separately; see this task's own
 coverage pass).
+
+## 2026-07-22 addition — genuine 100% branch coverage: runs.ts + terminals.ts (audit fix, coverage pass)
+
+**`runs.ts:68`** (`RunInternalErrorContext.runId?`'s ternary spread): both real call sites
+(`run-start` after a durably-created run's id is already known; `run-stream` against an
+already-parsed path parameter) always had a `runId` in hand — the `?`/ternary was speculative
+flexibility no caller ever exercised. Real refactor, not a padded test: `runId` is now a required
+field/parameter throughout `RunInternalErrorContext`/`reportInternalError`, removing the dead
+branch entirely instead of forcing a fake call site to reach it.
+
+**`terminals.ts`** (93.45% → 100% branch): five real gaps, each closed with a real refactor or test,
+none padded:
+- Lines 165-167 (`terminalCreateRoute.handle`'s `cols`/`rows`/`shell` optional-field spreads into
+  `toolInput`): the existing tests only exercised `.parse()` threading these fields, never
+  `.handle()` itself with them set. New test calls `.handle()` directly with all three populated.
+- Line 209 (`actionResultToApiResult`'s `result.session ? ... : {}`): the `null`-session side is a
+  real race (`write`/`resize`/`kill` finding metadata for an id whose session was concurrently
+  killed — see `@jini/daemon`'s `terminal-session.ts` `currentSnapshot`), not a hypothetical.
+  `actionResultToApiResult` is now exported (matching this same file's `createDeferredEndGate`
+  precedent) and directly unit-tested against a synthetic `{status:'ok', session: null}` result
+  rather than forcing the real race through a full `TerminalSessionManager`.
+- Line 215 (`parseStdinInput`'s `!isRecord` guard): no test ever supplied a non-object body: new
+  `terminalStdinRoute.parse({body: 'not-an-object', ...})` test.
+- Lines 237-238 (`parseResizeInput`'s `!parsedId.ok`/`!isRecord` guards): same gap, new tests for a
+  missing `id` param and a non-object body.
+
+**Verified, personally, this session**: `pnpm --dir packages/http exec tsc --noEmit`: clean.
+`pnpm --dir packages/http run test:coverage` — **755/755 tests pass** (8 new), **genuine
+100/100/100/100 across every file in this package** — not a single uncovered line/branch anywhere.
+`vitest.config.ts`'s committed threshold raised from 98/98/98/98 to 100/100/100/100 to lock this in
+(a regression now fails CI instead of silently sliding under a safety margin). Root `pnpm -r run
+build`: clean. Root `pnpm guard`: clean.
