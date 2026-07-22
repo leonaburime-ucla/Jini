@@ -146,6 +146,20 @@ async function readNetlifyJson<T>(resp: Response): Promise<T> {
   }
 }
 
+/**
+ * `fallback || \`Netlify request failed (${status}).\`` (the template
+ * literal half) is unreachable today: every one of this file's 5 call
+ * sites passes a non-empty string literal for `fallback` ('Netlify site
+ * lookup failed.', 'Netlify site creation failed.', 'Netlify deploy
+ * creation failed.', the per-file upload message, 'Netlify deploy status
+ * check failed.') — `fallback` is never derived from network/config input,
+ * so it cannot vary at runtime, and this right-hand operand can never be
+ * selected. Verified by reading every call site, not just "not covered".
+ * Left as-is (not deleted) because `netlifyError` is a general-purpose
+ * formatter, not written solely for today's 5 callers, and this is the
+ * sane-default guard a future caller forgetting to pass `fallback` would
+ * fall through to.
+ */
 function netlifyError(json: JsonObject, status: number, fallback: string): DeployError {
   const message = typeof json?.message === 'string' && json.message ? json.message : fallback || `Netlify request failed (${status}).`;
   return new DeployError(message, status, json);
@@ -270,7 +284,22 @@ async function pollNetlifyDeploy(config: NetlifyDeployConfig, deployId: string):
   return last;
 }
 
-/** Collects candidate public URLs from a deploy/site response, preferring the HTTPS site URL over the deploy-specific one. */
+/**
+ * Collects candidate public URLs from a deploy/site response, preferring the HTTPS site URL over the deploy-specific one.
+ *
+ * `if (!json) continue` is unreachable via this file's one call site,
+ * `netlifyUrlCandidates(finalState, site)` in `publish()`: `finalState`
+ * comes from `pollNetlifyDeploy`, whose 30-iteration loop (`i < 30` with
+ * `i` starting at 0) always runs at least once and unconditionally assigns
+ * `last` before any return, so it can only resolve to a real `JsonObject`
+ * or throw — never resolve to `null`; `site` comes from `ensureNetlifySite`,
+ * which always returns a `JsonObject` (never null/undefined), and `publish()`
+ * additionally guards it with a `!siteId` check right after. The `| null |
+ * undefined` in this function's own parameter type is deliberately wider
+ * than what its only caller can ever supply, so this stays real
+ * defense-in-depth for a general-purpose variadic helper rather than dead
+ * weight worth deleting.
+ */
 function netlifyUrlCandidates(...responses: (JsonObject | null | undefined)[]): string[] {
   const urls: string[] = [];
   for (const json of responses) {

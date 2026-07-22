@@ -337,4 +337,114 @@ describe('NetlifyDeployTarget.publish', () => {
     const result = await target.checkReachability('https://demo.netlify.app');
     expect(result.reachable).toBe(true);
   });
+
+  it('skips the required-uploads loop entirely when the deploy-creation response omits a `required` array', async () => {
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/sites?')) return jsonResponse(200, [{ id: 'site_1', name: 'jini-demo' }]);
+      if (method === 'POST' && url.endsWith('/deploys')) {
+        // No `required` field at all — Netlify's real API always includes
+        // it, but the code treats a non-array value defensively rather
+        // than crashing on `.filter`.
+        return jsonResponse(200, { id: 'deploy_1', state: 'preparing' });
+      }
+      if (method === 'PUT') throw new Error('should never upload when the deploy response has no required array');
+      if (method === 'GET' && url.endsWith('/deploys/deploy_1')) return jsonResponse(200, { id: 'deploy_1', state: 'ready', url: 'demo.netlify.app' });
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [{ file: 'a.txt', data: 'a' }], projectName: 'demo' });
+    expect(result.status).toBe('ready');
+  });
+
+  it('falls back to an empty URL and omits reachableAt when no response provides a candidate deployment URL', async () => {
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/sites?')) return jsonResponse(200, [{ id: 'site_1', name: 'jini-demo' }]);
+      if (method === 'POST' && url.endsWith('/deploys')) return jsonResponse(200, { id: 'deploy_1', state: 'preparing', required: [] });
+      if (method === 'GET' && url.endsWith('/deploys/deploy_1')) return jsonResponse(200, { id: 'deploy_1', state: 'ready' });
+      // Neither the site nor the deploy carried any URL field, so
+      // `waitForReachableDeploymentUrl` should short-circuit on an empty
+      // candidate list without ever probing reachability.
+      throw new Error(`unexpected reachability probe: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [], projectName: 'demo' });
+    expect(result.url).toBe('');
+    expect(result.status).toBe('link-delayed');
+    expect(result).not.toHaveProperty('reachableAt');
+  });
+
+  it('falls back to deploy_ssl_url / deploy_url when neither response carries ssl_url or url', async () => {
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/sites?')) {
+        return jsonResponse(200, [{ id: 'site_1', name: 'jini-demo', deploy_url: 'demo.netlify.app' }]);
+      }
+      if (method === 'POST' && url.endsWith('/deploys')) return jsonResponse(200, { id: 'deploy_1', state: 'preparing', required: [] });
+      if (method === 'GET' && url.endsWith('/deploys/deploy_1')) {
+        return jsonResponse(200, { id: 'deploy_1', state: 'ready', deploy_ssl_url: 'deploy-preview--demo.netlify.app' });
+      }
+      // Reachability probe against whichever candidate URL is tried first.
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [], projectName: 'demo' });
+    // `finalState` (the deploy response, carrying `deploy_ssl_url`) is
+    // scanned before `site` (carrying `deploy_url`), so its candidate wins.
+    expect(result.url).toBe('https://deploy-preview--demo.netlify.app');
+  });
+
+  it('handles a non-object (array) error body from a failed site lookup by falling back to a generic message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(500, ['unexpected', 'array', 'body'])));
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    await expect(target.publish({ files: [], projectName: 'demo' })).rejects.toThrow('Netlify site lookup failed.');
+  });
+
+  it('falls back to HTTP 502 when a non-JSON response carries no HTTP status of its own', async () => {
+    // `Response.error()` is the Fetch spec's own "network error" response:
+    // status 0, ok: false, null body — a real shape a `fetch` mock (or a
+    // browser-hosted caller relying on the opaque-response path) can hand
+    // back, unlike a status manufactured out of thin air (the `Response`
+    // constructor itself rejects any status outside 200-599).
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.error()));
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    const err = (await target.publish({ files: [], projectName: 'demo' }).catch((e: unknown) => e)) as DeployError;
+    expect(err).toBeInstanceOf(DeployError);
+    expect(err.message).toBe('Netlify returned a non-JSON response.');
+    expect(err.status).toBe(502);
+  });
+
+  it('throws DeployError with the message field when deploy creation itself fails', async () => {
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/sites?')) return jsonResponse(200, [{ id: 'site_1', name: 'jini-demo' }]);
+      if (method === 'POST' && url.endsWith('/deploys')) return jsonResponse(422, { code: 422, message: 'Too many files in one deploy' });
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    await expect(target.publish({ files: [], projectName: 'demo' })).rejects.toThrow('Too many files in one deploy');
+  });
+
+  it('throws DeployError when a deploy status check fails mid-poll', async () => {
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/sites?')) return jsonResponse(200, [{ id: 'site_1', name: 'jini-demo' }]);
+      if (method === 'POST' && url.endsWith('/deploys')) return jsonResponse(200, { id: 'deploy_1', state: 'preparing', required: [] });
+      if (method === 'GET' && url.endsWith('/deploys/deploy_1')) return jsonResponse(503, { code: 503, message: 'Service unavailable' });
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const target = new NetlifyDeployTarget({ token: 'tok' });
+    await expect(target.publish({ files: [], projectName: 'demo' })).rejects.toThrow('Service unavailable');
+  });
 });
