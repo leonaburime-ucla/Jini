@@ -1219,3 +1219,18 @@ separate finding for a future pass rather than folded into this one. Package-wid
 remains comfortably above this package's committed threshold (98/98/98/98):
 **100/99.28/100/100** measured this run. `pnpm --dir packages/http exec tsc --noEmit`: clean. Root
 `pnpm guard`: clean (re-run after this change, not assumed still clean from before it).
+
+## 2026-07-22 addition — export `delegated-tools.ts` from the package barrel (audit fix)
+
+**Gap found by independent audit**: `registerDelegatedToolRoutes` (and its supporting types —
+`DelegatedToolExecuteRequest`, `DelegatedToolExecuteResponse`, `DelegatedToolsHttpDeps`,
+`DelegatedToolsInternalErrorContext`, `delegatedToolExecuteRoute`) were implemented and tested
+(see the entry immediately above — 100/100/100/100) but never re-exported from `src/index.ts`.
+Every other route pack in this package (`memory.ts`, `routines.ts`, `terminals.ts`, `db-ops.ts`,
+`model-proxy.ts`, `agents.ts`, ...) is barrel-exported; this one was not, so no real host importing
+only `@jini/http`'s public surface could reach the MCP-callback bridge — the primary continuation
+path for the ~12 of 24 agent defs that round-trip tool calls through an MCP subprocess rather than
+a native tool-call transport. Fixed by adding the same `export type {...} from './delegated-tools.js'`
+/ `export {...} from './delegated-tools.js'` pair every other route pack already has, placed after
+`model-proxy.ts`'s block. No behavior change to the route itself — it was already correct and
+tested, just unreachable from outside the package.

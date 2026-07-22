@@ -251,6 +251,14 @@ export {
 export type { ModelProxyHttpDeps, ModelProxyInternalErrorContext } from './model-proxy.js';
 export { registerModelProxyRoutes } from './model-proxy.js';
 
+export type {
+  DelegatedToolExecuteRequest,
+  DelegatedToolExecuteResponse,
+  DelegatedToolsHttpDeps,
+  DelegatedToolsInternalErrorContext,
+} from './delegated-tools.js';
+export { delegatedToolExecuteRoute, registerDelegatedToolRoutes } from './delegated-tools.js';
+
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
 // `(code, message, init)` — same job, different call-site generation, so it is re-exported here
