@@ -132,16 +132,29 @@ describe('resolveAgentLaunch', () => {
     }
   });
 
-  it('codex: falls back to the wrapper with no diagnostic when the wrapper file cannot be read (permission denied)', () => {
-    const binPath = path.join(dir, 'codex');
-    makeExecutable(binPath, '#!/usr/bin/env node\n// wrapper\n');
-    chmodSync(binPath, 0o111); // execute-only: accessSync(X_OK) still passes, but openSync('r') fails.
-    const def = makeDef({ id: 'codex', bin: 'codex' });
-    const result = resolveAgentLaunch(def, { CODEX_BIN: binPath });
-    expect(result.launchKind).toBe('selected');
-    expect(result.launchPath).toBe(binPath);
-    expect(result.diagnostic).toBeNull();
-  });
+  // Simulates an unreadable-but-executable wrapper via a real chmod (0o111 — execute-only:
+  // accessSync(X_OK) still passes, openSync('r') fails with EACCES for a normal user), so
+  // looksLikeCodexNodeWrapper's own catch{ return false } branch is exercised through the real
+  // filesystem, not a mock. That relies on POSIX DAC (discretionary access control): root is a
+  // documented, provable exception to the read-permission-bit check (CAP_DAC_OVERRIDE — root can
+  // always open a file it can already execute, regardless of the read bit), so this scenario is
+  // unreproducible via chmod alone under uid 0 — not "seems unlikely," a real POSIX invariant.
+  // Skipped (not deleted, not force-passed) only when actually running as root; every other test
+  // in this describe block runs unconditionally.
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  it.skipIf(isRoot)(
+    'codex: falls back to the wrapper with no diagnostic when the wrapper file cannot be read (permission denied)',
+    () => {
+      const binPath = path.join(dir, 'codex');
+      makeExecutable(binPath, '#!/usr/bin/env node\n// wrapper\n');
+      chmodSync(binPath, 0o111); // execute-only: accessSync(X_OK) still passes, but openSync('r') fails.
+      const def = makeDef({ id: 'codex', bin: 'codex' });
+      const result = resolveAgentLaunch(def, { CODEX_BIN: binPath });
+      expect(result.launchKind).toBe('selected');
+      expect(result.launchPath).toBe(binPath);
+      expect(result.diagnostic).toBeNull();
+    },
+  );
 
   it.each([
     { platform: 'darwin', arch: 'arm64', triple: 'aarch64-apple-darwin' },
