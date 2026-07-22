@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 
 import express, { type Express } from 'express';
+import { AGENT_DEFS } from '@jini/agent-runtime';
 import { bindings, createDaemon, type Bindings, type Daemon } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
 import {
@@ -39,13 +40,17 @@ import {
 import { createSqliteEventLog } from '@jini/sqlite';
 import {
   configuredAllowedOrigins,
+  denyAllWorkspaceRoots,
   installRouteRegistrationGuard,
   mountPackHttp,
-  registerRunRoutes,
+  registerAgentRoutes,
   registerApiBearerAuthMiddleware,
   registerApiOriginGuardMiddleware,
   registerDaemonStatusRoutes,
+  registerHostToolsRoutes,
+  registerRunRoutes,
   type RunStartHandler,
+  type WorkspaceRootResolver,
 } from '@jini/http';
 import { removeDaemonRegistryRecordIfCurrent, resolveDaemonRegistryPath, writeDaemonRegistryRecord } from '@jini/sidecar';
 
@@ -144,6 +149,15 @@ export interface CreateLocalNodeDaemonConfig<
    * durably start runs with no driver attached at all (unchanged prior behavior).
    */
   resolveRunInput?: ResolveRunInput;
+  /**
+   * Resolves a `resourceRef` (an opaque, host-defined identifier — this preset has no `Project`/
+   * `Workspace` noun of its own) to a filesystem working directory for `@jini/http`'s
+   * `POST /api/resources/:resourceRef/open-in` route (always mounted — see below). Defaults to
+   * `denyAllWorkspaceRoots`: with no resolver supplied, the route exists and is reachable but
+   * denies every call with `404`, never fabricating or guessing a path. A host that wants the
+   * route to actually do anything supplies this.
+   */
+  resolveWorkspaceRoot?: WorkspaceRootResolver;
   /**
    * Where this daemon's local discovery record (URL/host/port/pid) is written once it starts
    * listening, so a separate CLI process on the same machine can find it via
@@ -332,6 +346,24 @@ export async function createLocalNodeDaemon(
     app,
     { lifecycle: runLifecycle, ...(onStarted === undefined ? {} : { onStarted }) },
     { resolvedPortRef },
+  );
+
+  // Two more always-on, zero-config-safe generic routes, alongside runs/daemon-status above.
+  // Every other route pack this session's work added (terminals, memory, routines, model-proxy,
+  // db-ops, delegated-tools, active-context) needs a host-specific stateful resource this preset
+  // cannot safely default (a TerminalSessionManager, a note store, a RoutineStore, a resolved
+  // Principal, a ToolRegistry with real tool registrations, ...) — see this package's own
+  // source-map.md for why those stay caller-supplied Packs rather than being wired in here.
+  // `agents`/`host-tools` are the two exceptions: both are safe with pure, harmless defaults.
+  registerAgentRoutes(
+    app,
+    { listAgents: () => AGENT_DEFS.map((def) => ({ id: def.id, name: def.name })) },
+    { resolvedPortRef },
+  );
+  registerHostToolsRoutes(
+    app,
+    { resolvedPortRef },
+    { resolveRoot: config.resolveWorkspaceRoot ?? denyAllWorkspaceRoots },
   );
 
   mountPackHttp(app, config.packs, daemon);

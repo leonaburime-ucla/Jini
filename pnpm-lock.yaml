@@ -265,6 +265,9 @@ importers:
 
   packages/node-host:
     dependencies:
+      '@jini/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
       '@jini/core':
         specifier: workspace:*
         version: link:../core

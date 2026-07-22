@@ -1128,6 +1128,13 @@ bridging an MCP tool call to `delegated-tool-bridge.execute()`, and wiring that 
 the spawn cwd before the child launches. Scoped as its own follow-up task rather than rushed alongside
 the stdin-injection half above.
 
+**Update, 2026-07-22 — closed.** All four pieces named above now exist: the `@jini/mcp` bin entry
+(`packages/mcp/src/bin/serve.ts`), the HTTP bridge route (`packages/http/src/delegated-tools.ts`),
+and — the specific piece this note flagged as the real remaining gap — the spawn-time `.mcp.json`
+write itself, in this package's own "gap 3, part 2" dated section further below. This paragraph is
+left in place rather than deleted so the record shows the note was accurate when written and that
+the gap it named was later closed, not silently forgotten.
+
 ## 2026-07-21 addition — `routines/`: the routine scheduler engine + `RoutineStore` CRUD/history port
 
 Implements the two decisions made in response to `ADS-memory/reports/proposals/
