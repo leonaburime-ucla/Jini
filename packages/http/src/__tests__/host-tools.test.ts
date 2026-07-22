@@ -592,6 +592,34 @@ describe('openResourceInEditorRoute.handle', () => {
       error: { code: 'NOT_FOUND', message: 'resource "proj-1" was not found' },
     });
   });
+
+  it('defaults deps.spawnImpl to the real node:child_process spawn when omitted', async () => {
+    // Must not risk spawning a REAL editor on the machine running this test: every candidate path
+    // this fake `access` reports as "found" is a synthetic, guaranteed-nonexistent absolute path
+    // (a directory that cannot exist on any real machine), so the real spawn deterministically
+    // fails with ENOENT instead of accidentally launching a real, actually-installed Zed. This is
+    // the one test in this file that intentionally omits `spawnImpl` — every other launch test
+    // above injects a fake one specifically to avoid this risk.
+    const bogusDir = '/jini-test-bogus-nonexistent-dir-8f3a9c21';
+    const probeEnv: HostToolProbeEnv = {
+      access: async (path) => {
+        if (path === `${bogusDir}/zed`) return;
+        throw new Error('ENOENT: no such file or directory');
+      },
+      env: { PATH: bogusDir },
+      platform: 'linux',
+    };
+    const result = await openResourceInEditorRoute.handle(
+      { resourceRef: 'proj-1', editorId: 'zed' },
+      { resolveRoot: () => '/root', probeEnv }, // spawnImpl intentionally omitted
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('INTERNAL_ERROR');
+      expect(result.error.message).toContain('failed to launch Zed');
+      expect(result.error.message).toMatch(/ENOENT/);
+    }
+  });
 });
 
 describe('registerHostToolsRoutes — POST /api/resources/:resourceRef/open-in, mounted end to end', () => {
