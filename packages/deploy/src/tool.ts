@@ -127,7 +127,7 @@ export function createDeployPublishToolRegistration(
   return {
     descriptor: {
       id: DEPLOY_PUBLISH_TOOL_ID,
-      description: 'Publishes a file set to a bound deploy target (e.g. Vercel, Cloudflare Pages).',
+      description: 'Publishes a file set to a bound deploy target (e.g. Vercel, Cloudflare Pages, Netlify, GitHub Pages).',
       ...(requiresConfirmation !== undefined ? { requiresConfirmation } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     },

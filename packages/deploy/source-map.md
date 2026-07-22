@@ -79,11 +79,9 @@ wraps it rather than replacing it.
 ## Explicitly deferred (not in this task's scope)
 
 - ~~**Real `ToolRegistry`/`ToolExecutor` wiring**~~ — done, see the 2026-07-21 dated section below.
-- **GitHub Pages target** — extraction-plan.md §10's roadmap prose names it alongside Vercel/
-  Cloudflare Pages, but `deploy.ts` never implemented it (only `vercel-self` and
-  `cloudflare-pages` exist in the origin). No `GitHubPagesDeployTarget` is added here; the
-  `DeployTarget` port and `DeployTargetToken` many-token are already shaped so a future
-  `github-pages.ts` adapter can bind in without touching this package's existing files.
+- ~~**GitHub Pages target**~~ — done, see the "`GitHubPagesDeployTarget`" 2026-07-21 dated section
+  further down. `deploy.ts` never implemented it (only `vercel-self` and `cloudflare-pages` exist
+  in the origin) — this is new work, not a port.
 - **Netlify target** — named in extraction-plan.md §2.2's example code (`netlifyTarget`) but,
   like GitHub Pages, has no implementation in the OD origin to port from.
 - **The "flatten an HTML entry into a deploy file set" utility** — see "Dropped entirely" above.
@@ -367,3 +365,138 @@ the gate. `pnpm --dir packages/deploy exec tsc --noEmit` clean.
 (`tokens.ts`'s `publishDeploy`/`DeployTargetToken` and `tool.ts`'s `ToolRegistration` already
 dispatch generically over whatever `DeployTarget[]` a host binds, so `NetlifyDeployTarget` slots in
 with zero changes to either).
+
+## 2026-07-21 addition — `GitHubPagesDeployTarget` (`src/github-pages.ts`), the last of the three roadmap-named deploy targets
+
+Closes the last item in "Explicitly deferred" above. GitHub Pages is structurally different from
+Vercel/Netlify/Cloudflare Pages: none of the other three targets' "digest-deploy" shape (upload a
+content-addressed file manifest, the provider says what's missing, upload just that, finalize) has
+a GitHub Pages equivalent — GitHub Pages content is published either by pushing a tree of files to
+a branch (the classic, provider-agnostic mechanism every non-Actions Pages deploy tool has always
+used) or, newer, via an artifact-based "deployments" API. The task's own brief flagged the
+artifact/tar.gz API as the *likely* better fit (closer in spirit to "upload a bundle, get a
+deployment back," matching this package's other three targets) but explicitly required verifying
+that against GitHub's real contract rather than assuming — doing so reversed that default.
+
+**Research trail (both mechanisms fetched from `docs.github.com`'s live REST reference during this
+task, not recalled from memory — two of this package's own prior entries, Netlify's `state` enum
+and this one, independently hit real doc/memory disagreements worth cross-checking a primary source
+for):**
+
+- `POST /repos/{owner}/{repo}/pages/deployments` (the artifact-based API `actions/deploy-pages`
+  uses): its request body requires an `oidc_token` field, documented as "The OIDC token issued by
+  GitHub Actions certifying the origin of the deployment." This is not a value this package —
+  running outside a GitHub Actions runner, authenticating with a plain PAT — has any way to obtain;
+  OIDC-token minting for this endpoint is an Actions-runner-only mechanism (the identity federation
+  `actions/deploy-pages` itself relies on via `core.getIDToken()`). **Rejected as infeasible for a
+  headless, non-Actions caller**, not merely "less convenient."
+- The Git Data API (`POST .../git/blobs`, `POST .../git/trees`, `POST .../git/commits`,
+  `POST .../git/refs`, `PATCH .../git/refs/{ref}`) plus the Pages config endpoints
+  (`GET`/`POST .../pages`, `GET .../pages/builds/latest`) has no such requirement — any token with
+  repo write access can push a commit and enable/observe Pages against it. **Chosen.**
+- A subtlety independently verified rather than assumed from general REST-API pattern-matching:
+  "Get a reference" (`GET .../git/ref/{ref}`, singular `ref`) 404s on a non-existent ref; the
+  "returns an array for a prefix-ambiguous match" behavior some GitHub API knowledge attributes to
+  this endpoint is actually documented only for the *different* "List matching references" endpoint
+  — confirmed via a direct doc fetch before writing the corresponding code, so `getGitHubRefSha`
+  does not carry a defensive array-handling branch that would have been dead code against the real
+  endpoint it actually calls.
+- The create/update-ref path split (`GET .../git/ref/{ref}` singular vs. `POST .../git/refs` /
+  `PATCH .../git/refs/{ref}` plural) is a real, easy-to-get-wrong-from-memory GitHub API quirk,
+  confirmed field-for-field via direct doc fetches before implementation, not guessed.
+
+**Design decisions:**
+
+- **Sequencing: push the branch first, enable Pages second — not the other way round.**
+  `POST /repos/{owner}/{repo}/pages` requires `source.branch` to already exist in the repository;
+  enabling Pages against a not-yet-existing branch fails. `publish()` therefore always runs the full
+  Git Data API flow (blob → tree → commit → create-or-update ref) before calling
+  `ensureGitHubPagesSite`, so by the time Pages is (maybe) being enabled for the first time, the
+  target branch is guaranteed to exist.
+- **No project/site-name derivation from `input.projectName`, unlike every other target in this
+  package.** A GitHub Pages "site" is intrinsically the caller's `{owner, repo}` — there is no
+  "create a new site by name" concept the way Vercel/Netlify/Cloudflare Pages each have. Site
+  identity is caller-supplied config (`GitHubPagesDeployConfig.owner`/`.repo`), not derived; `naming.ts`
+  is unused by this file for that reason (not an oversight — `input.projectName` is used only as a
+  human label in the generated commit message, with a `'site'` fallback when blank/whitespace).
+- **Full-tree replace, no `base_tree`.** `DeployPublishInput.files` is, per every other target's own
+  contract, "the file set to publish" — not "files to overlay onto whatever's already on the
+  branch." Omitting `base_tree` on tree creation builds a tree from only the given entries, matching
+  that full-replace semantic and avoiding an extra lookup call to resolve the prior tree's sha.
+- **Blobs, not the tree endpoint's inline `content` shortcut.** GitHub's create-tree API accepts
+  either a pre-created blob `sha` or an inline `content` string per entry — but inline `content` is
+  written as-is (effectively UTF-8 text), which is not safe for a static site's binary assets
+  (images, fonts). Every file gets an explicit blob (base64-encoded), deduped by a local sha256 key
+  (a plain in-memory dedup key, not a wire-protocol requirement — unlike Netlify's SHA1 manifest —
+  so any stable digest works; sha256 via `node:crypto` matches `cloudflare-pages.ts`'s own
+  no-new-dependency choice for the same class of problem).
+- **`force: true` on the branch-ref update**, even though the pushed commit is always a genuine
+  fast-forward child of the looked-up tip (documented in `updateGitHubRef`'s own comment): trades a
+  narrow lookup-then-update race for the same "last publish wins" semantics this package's other
+  targets already have implicitly (a second concurrent `publish()` also just overwrites the first).
+- **Never mutates an already-enabled Pages site's config.** If `GET .../pages` finds an existing
+  site, `ensureGitHubPagesSite` leaves it exactly as configured — it does not force the site's
+  `source.branch` to match `config.branch` even if they differ. Surfaced instead as
+  `providerMetadata.sourceBranchMismatch: true` (only present when true) so a caller can see and act
+  on a real misconfiguration rather than this package silently overriding infrastructure state the
+  caller may have set up deliberately.
+- **Polls `GET .../pages/builds/latest`, not the simpler, cleaner-documented `GET .../pages`
+  site-level `status` field**, despite the latter's enum (`built | building | errored | null`) being
+  the one this file fully cross-validated via docs. Reason: the site-level `status` is shared/reused
+  across every publish to the same site, so immediately after a push it can still reflect the
+  *previous* publish's terminal state for a moment — a false-positive "already built" race with no
+  way to disambiguate. `builds/latest`'s `commit` field lets `pollGitHubPagesBuild` confirm it is
+  actually observing *this* publish's build (`commit === commitSha`) before trusting `status` at
+  all, closing that race. Trade-off, stated directly in the code comment: `builds/latest`'s own
+  `status` enum did not render cleanly from a direct docs-page fetch during this task's research
+  pass, so only the two terminal values (`'built'`/`'errored'`) are committed to — cross-validated
+  against the sibling `GET .../pages` endpoint's confirmed clean enum, which documents the same
+  underlying concept ("the status of the most recent build") — rather than trusting the full,
+  imperfectly-confirmed enum. A 404 (no build registered yet — undocumented for this exact scenario,
+  but consistent with GitHub REST's general not-yet-existing-resource convention) and a
+  non-matching `commit` are both treated as "keep polling," not a failure. Same fixed 30-attempt/
+  1s-then-2s poll budget as `pollVercelDeployment`/`pollNetlifyDeploy`, for consistency.
+- **No custom-domain/CNAME automation**, unlike Cloudflare Pages' full DNS/custom-domain flow
+  (`cloudflare-pages.ts`, ~300 lines). GitHub Pages custom domains have a real analog (a `cname`
+  field on `PUT .../pages`, or a `CNAME` file committed alongside site content) but wiring that up
+  is a materially larger scope (DNS verification, HTTPS certificate provisioning wait) the task
+  brief did not ask for and this addition does not invent — flagged here as an explicit, considered
+  deferral rather than a silent gap, same posture `netlify.ts`'s own "no protected-response
+  detection" deferral already established for this package.
+- **Cancellation is out of scope, matching the existing posture, not a new gap.** Same as
+  Vercel/Netlify/Cloudflare: `publish`/`checkReachability` take no `AbortSignal`; a `ToolExecutor`
+  timeout still correctly marks the *call* timed-out but cannot stop an in-flight GitHub API request.
+  Covered by the same `PROP-deploy-cancellation-contract-2026-07-21.md` proposal already gating this
+  across the whole package, not re-litigated here.
+
+**Tests:** `src/__tests__/github-pages.test.ts`, 30 tests: token/owner/repo-missing short-circuits
+with no network call; the full brand-new-site happy path (no existing branch, no existing Pages
+config — asserting the exact tree-entry/commit/ref-create/pages-create request bodies, and that two
+files sharing identical content dedupe into exactly one blob call); publishing to an already-existing
+branch (asserting a fast-forward `PATCH` with `parents: [oldTipSha]`, never a `POST` create-ref, and
+never a redundant Pages site re-creation); the `sourceBranchMismatch` surfacing case; a
+caller-supplied non-default branch; terminal `'errored'` build state surfacing `error.message`, and
+the generic-fallback-message case when it's absent; the build-poll's 30-attempt budget exhaustion via
+fake timers (mirroring `vercel.test.ts`/`netlify.test.ts`'s own exhaustion tests) proceeding into the
+reachability wait rather than throwing; every blob/tree/commit/ref/pages-site/build-poll HTTP-failure
+and missing-required-field guard (mirroring `netlify.test.ts`'s per-endpoint coverage depth); non-JSON
+and zero-status (`Response.error()`) response handling; the `html_url`-absent/`url`-present URL
+fallback and the no-URL-at-all `link-delayed` case; the malformed-ref-response
+(`200 OK` with no `object.sha`) defensive branch; a builds/latest entry with a missing `commit` or
+`status` field being defensively skipped rather than crashing; blank/whitespace `projectName` falling
+back to `'site'` in the commit message; and `checkReachability`. `github-pages.ts` itself:
+100%/99.13%/100%/100% (statements/branches/functions/lines) — the one uncovered branch is the same
+accepted-and-documented `fallback || generic-message` construct `netlify.ts`'s own `netlifyError`
+already carries (unreachable via every one of this file's 8 real call sites, all of which pass a
+non-empty fallback literal; kept as the sane default for a hypothetical future caller that omits it,
+not deleted for coverage's sake). Package-wide `pnpm --dir packages/deploy test:coverage`:
+172/172 tests pass, aggregate 99.78/85.41/100/99.78 — above the package's configured 98/78/98/98
+ratchet-baseline gate (`packages/deploy/vitest.config.ts`) and a further improvement on branches over
+the pre-existing baseline this addition found in place. `pnpm --dir packages/deploy typecheck` clean;
+`pnpm guard` from repo root clean.
+
+**Barrel:** `src/index.ts` gained `export * from './github-pages.js';`. `src/tool.ts`'s
+`deploy.publish` descriptor description was updated to name Netlify and GitHub Pages alongside
+Vercel/Cloudflare Pages (cosmetic only — the handler/policy logic already dispatched generically
+over whatever `DeployTarget[]` a host binds, so no behavioral change was needed for
+`GitHubPagesDeployTarget` to become reachable through the existing `deploy.publish` tool).
