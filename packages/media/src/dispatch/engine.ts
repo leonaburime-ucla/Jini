@@ -30,7 +30,7 @@ import './providers/imagerouter.js';
 import './providers/minimax.js';
 import './providers/nanobanana.js';
 import './providers/openai.js';
-import { renderOpenRouterImage } from './providers/openrouter.js';
+import './providers/openrouter.js';
 import './providers/senseaudio.js';
 import './providers/volcengine.js';
 import { renderStub } from './stub.js';
@@ -102,9 +102,6 @@ type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promis
  * vendor's own module for its `mediaVendorRegistry.register(...)` call).
  */
 const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
-  openrouter: {
-    image: renderOpenRouterImage,
-  },
   elevenlabs: {
     'audio:speech': renderElevenLabsTTS,
     'audio:sfx': renderElevenLabsSfx,
