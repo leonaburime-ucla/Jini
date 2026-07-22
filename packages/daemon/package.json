@@ -15,7 +15,8 @@
     "@jini/agent-runtime": "workspace:*",
     "@jini/core": "workspace:*",
     "@jini/platform": "workspace:*",
-    "@jini/protocol": "workspace:*"
+    "@jini/protocol": "workspace:*",
+    "node-pty": "^1.1.0"
   },
   "devDependencies": { "@vitest/coverage-v8": "^2.1.9" }
 }
