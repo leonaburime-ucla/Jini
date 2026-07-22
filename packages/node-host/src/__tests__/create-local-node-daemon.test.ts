@@ -605,12 +605,18 @@ describe('createLocalNodeDaemon', () => {
       const dataDir = makeTempDataDir();
       const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      // Gap 1's byte-journal (`journal.db`) is the second `createSqliteEventLog` call this
+      // function makes — `stop()` must close it too, not just the main `events.db` log (a
+      // resource leak fixed 2026-07-22; see create-local-node-daemon.ts's `stop()` doc).
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created).toBeDefined();
+      expect(createdJournal).toBeDefined();
 
       await Promise.all([daemon.stop(), daemon.stop()]);
       await daemon.stop();
 
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -663,9 +669,11 @@ describe('createLocalNodeDaemon', () => {
         },
       });
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
 
       await expect(daemon.stop()).rejects.toThrow('onShutdown failed');
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -729,7 +737,11 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow('corrupt durable history');
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      // The journal is constructed before `rehydrate()` runs, so it's already open and must be
+      // closed on this failure path too.
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -759,7 +771,9 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()], port: 70_000 })).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -797,7 +811,9 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
       addressSpy.mockRestore();
@@ -824,7 +840,9 @@ describe('createLocalNodeDaemon', () => {
       ).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }

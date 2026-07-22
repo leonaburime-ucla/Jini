@@ -387,13 +387,15 @@ export async function createLocalNodeDaemon(
             // Intentionally swallowed — see the try's own comment.
           }
         }
-        // A caller-supplied `onShutdown` failing must never leak the durable EventLog's open
-        // sqlite file handle — `finally` guarantees the close still runs, then the original
-        // rejection (if any) propagates to whoever is awaiting `stop()`.
+        // A caller-supplied `onShutdown` failing must never leak either durable EventLog's open
+        // sqlite file handle (the main `eventLog` and gap 1's separate `journalEventLog` — see
+        // this file's own doc on why they're two distinct sqlite files) — `finally` guarantees
+        // both closes still run, then the original rejection (if any) propagates to whoever is
+        // awaiting `stop()`.
         try {
           await config.onShutdown?.();
         } finally {
-          await eventLog.close();
+          await Promise.all([eventLog.close(), journalEventLog.close()]);
         }
       })();
     }
@@ -417,9 +419,9 @@ export async function createLocalNodeDaemon(
 
   return await new Promise<LocalNodeDaemon>((resolve, reject) => {
     const failToBind = (error: unknown) => {
-      // Best-effort: a failed boot must not leave the sqlite file handle this call already opened
-      // dangling open.
-      void eventLog.close().finally(() => reject(error));
+      // Best-effort: a failed boot must not leave either sqlite file handle this call already
+      // opened (`eventLog` and `journalEventLog`) dangling open.
+      void Promise.all([eventLog.close(), journalEventLog.close()]).finally(() => reject(error));
     };
 
     try {

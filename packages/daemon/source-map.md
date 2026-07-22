@@ -958,7 +958,10 @@ when supplied and `onRunStarted` is not, a default `RunStartHandler` is built vi
 `createDefaultRunStartHandler` and wired as `RunHttpDeps.onStarted`. `onRunStarted` always wins when
 both are supplied (a host that wants full control shouldn't have to fight the default). Neither supplied
 preserves prior behavior exactly (no driver attached). `journalEventLog` is closed alongside `eventLog`
-on every existing cleanup path (rehydrate failure, bind failure, `stop()`).
+on the rehydrate-failure path from day one; the other two cleanup paths (`stop()`, bind failure) were
+audited 2026-07-22 and found to close only `eventLog`, leaking `journalEventLog`'s open sqlite handle —
+fixed the same day in `packages/node-host/src/create-local-node-daemon.ts`'s `stop()` and `failToBind`
+to close both, so the claim in this paragraph is now actually true on every cleanup path.
 
 Tests: `packages/daemon/src/continuation/__tests__/journal.test.ts` (4 tests, pure unit),
 `run-start-handler.test.ts` (4 tests, pure unit, fake `AgentExecutor`), a new "gap 1 byte-journal"
