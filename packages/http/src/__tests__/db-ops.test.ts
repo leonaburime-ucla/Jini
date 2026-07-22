@@ -85,7 +85,7 @@ function makeExecutor(
   return { executor: createToolExecutor({ registry }), registry };
 }
 
-function makeDeps(overrides: Partial<DaemonDbHttpDeps> & { operations?: DaemonDbOperations; policy?: ToolPolicy } = {}): {
+function makeDeps(overrides: Partial<DaemonDbHttpDeps> & { operations?: DaemonDbOperations; policy?: ToolPolicy | undefined } = {}): {
   deps: DaemonDbHttpDeps;
   operations: DaemonDbOperations;
 } {
