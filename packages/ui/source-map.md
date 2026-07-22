@@ -3606,6 +3606,84 @@ DOM-pinned comment overlay (its geometry helpers already shipped as
 `utils/polygon-selection.ts`; the overlay itself has not), `InspectPanel`,
 the deploy-modal shell, and the export-menu shell. Each still has the same
 real, defensible generic shape the classification described — none
+
+## Section: `react/components/EditorIcon.tsx` — flat atom (2026-07-18)
+
+Source: `apps/web/src/components/EditorIcon.tsx` (168 lines, real clone at
+`leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`),
+per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps"
+list ("Icon-by-key renderer, twice") and this task's own brief. That doc's
+row flags an unresolved question — whether `EditorIcon` should become a data
+config registered under `Icon.tsx`'s existing lookup rather than its own
+component — but this task's brief explicitly directs shipping it as its own
+file matching the sibling atoms' conventions, so that question is left open
+for a future consolidation pass rather than re-litigated here.
+
+**Read first (per the path-convention check):** `packages/ui/src/components/`
+still exists on this branch's base (the `refactor/ui-flat-components-under-
+react` rename has not merged) — so per this task's own instruction, the new
+atom was placed under `packages/ui/src/react/components/EditorIcon.tsx`
+(a new folder, this is its first file) rather than the old flat
+`src/components/`, and `index.ts`'s barrel export line points at
+`./react/components/EditorIcon.js`. Every existing barrel entry as of this
+task is still `./components/*.js` form (0 pre-existing `./react/components/`
+entries) — the new line is simply the correct real path for where the file
+now lives, per the task's own instruction to route new atoms there
+regardless of prevalence once the rename hasn't landed.
+
+**Template read:** `AgentIcon.tsx`/`RemixIcon.tsx`/`Icon.tsx` (all three, per
+the task brief) — `EditorIcon` is closest in shape to `Icon.tsx` (an inline-
+SVG lookup keyed by a string, `aria-hidden` on every glyph) but with
+`AgentIcon.tsx`'s two-tier structure (a `Record<string, Visual>` lookup +
+graceful fallback tile) layered on top, since each editor needs its own
+bg/fg color pair alongside its glyph, not just a shared `currentColor` stroke.
+
+**What shipped:** `EditorIcon({ editorId, size })` — a `Record<string,
+EditorVisual>` lookup (`vscode`/`cursor`/`windsurf`/`zed`/`qoder`/
+`antigravity`/`webstorm`/`idea`/`xcode`/`finder`/`explorer`/`file-manager`/
+`terminal`/`warp`) mapping a string key to `{ bg, fg, glyph }`, where `glyph`
+is a `(size: number) => ReactElement` closure — each brand's inline SVG path
+data ported byte-for-byte (this is presentational brand-mark data, not
+logic, so nothing needed genericizing there). Unregistered ids fall back to
+a neutral gray folder-tile glyph, matching the origin exactly.
+
+**Genericized:** the origin's `editorId: HostEditorId | string` (an OD
+contracts-package type) becomes a plain `editorId: string` — the only OD
+coupling the origin had, per the task brief. No other product-identity
+coupling found.
+
+**i18n:** none needed — every glyph is an `aria-hidden` inline SVG with no
+visible text and no `aria-label`/`title` prop, so there is no user-facing
+string to route through `useT()`. Noted explicitly per the i18n policy
+rather than silently skipped.
+
+**Minor accessibility fix (disclosed, not silent):** the origin's fallback-
+tile inner `<svg>` omitted `aria-hidden="true"` (every other glyph function
+in the same file sets it) — added here for consistency with the rest of the
+lookup table and with `Icon.tsx`'s own convention of `aria-hidden` on every
+glyph; a decorative-icon accessibility improvement, not a behavior change a
+consumer could observe.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/react/components/EditorIcon.tsx`(+test): **clean, zero
+matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors (required
+  building `@jini/chat-core` then `@jini/renderers-react` first — their
+  `dist/` output didn't exist yet in this checkout and `@jini/ui`'s
+  `features/html-viewer/` imports `@jini/renderers-react`; pre-existing
+  build-order dependency, not something this task's own files introduced).
+- New atom's own test (`npx vitest run src/react/components/EditorIcon.test.tsx
+  --coverage`): **9 tests, 1 file, all green**, **100% statements/branches/
+  functions/lines** on `EditorIcon.tsx` — every named glyph function
+  (`vscodeLogo`, `finderLogo`, `terminalLogo`, `folderLogo`, `qoderLogo`,
+  `antigravityLogo`) and the shared `simplePath` closure invoked at least
+  once, plus the fallback-tile branch and a custom-size branch. No
+  `/* v8 ignore */` used.
 attempted this session; genuinely out of scope, not silently dropped.
 
 ## 2026-07-22 addition — genuine 99.98/99.88/100/99.98 coverage across the whole package (audit fix, coverage pass)
@@ -4745,6 +4823,126 @@ than silently skipping it, not because the i18n policy was overlooked.
 Not applicable — no cluster in this feature makes a network request or
 holds async state (Lexical's own internal update scheduling is not a
 network boundary). Recorded explicitly per the same policy.
+## Section: `features/iframe-pool/` — iframe keep-alive/LRU pool (2026-07-18)
+
+Source: `apps/web/src/components/IframeKeepAlivePool.tsx` (403 lines, real
+clone at `leonaburime-ucla/open-design` commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34`), per this task's own brief: "cap
+N mounted iframes, LRU-evict inactive ones, park the rest off-DOM," confirmed
+by `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map to
+recur 3 times across OD's own codebase (`FileWorkspace.tsx`'s inline
+browser-webview cache is the still-open third occurrence, explicitly
+deferred there until this canonical implementation existed) — this task is
+that canonical implementation.
+
+**Layout:** `features/iframe-pool/{types.ts,constants.ts,rules.ts,index.ts}`
+at the top level (zero React import in any of them — verified), everything
+importing React under `react/` per this repo's React-layout policy:
+`react/pool-context.ts` (the `createContext` call — not itself a hook or a
+component, so it sits directly under `react/` rather than in `hooks/` or
+`components/`), `react/dom-sync.ts` (the imperative iframe-attribute/style
+diffing helpers — these import `CSSProperties` from `react` as a type, so
+they live under `react/` too, per the same policy), `react/hooks/
+useIframeKeepAlivePool.ts`, `react/components/{IframeKeepAliveProvider,
+PooledIframe}.tsx`. No `ports.ts`/`dependencies.ts` — this feature has no
+transport/network dependency (it only manages DOM iframe elements), matching
+the "no ports" precedent already established for `schedule-picker`.
+
+**Genericized key ("a generic key type instead of projectId/fileName," per
+the task brief):** the origin's `PoolEntry` carried `projectId`+`fileName`
+as separate fields, with `previewIframeKeepAliveKey`/`parseKeepAliveKey`
+composing/decomposing them into a `projectId\0fileName` string, and an
+`evictProject(projectId, options)` method built specifically around that
+shape. This task replaces all of it with one opaque `key: string` per entry
+(the host composes whatever string shape it needs, e.g. still
+`${projectId}:${fileName}` if that's their domain) and drops
+`evictProject`/`previewIframeKeepAliveKey`/`parseKeepAliveKey` entirely in
+favor of the strictly more general `evictMatching(predicate, options)` (a
+host wanting "evict everything for project X" passes
+`(entry) => entry.key.startsWith('X:')` against whatever key scheme it
+chose). `rules.ts`'s `selectLruEvictions`/`selectMatchingEvictions` are
+still real TypeScript generics over `TKey` (independently reusable/testable
+outside the iframe-specific runtime), even though the Provider/hook/
+component layer settles on a concrete `string` key — threading a true
+generic `TKey` all the way through a React Context (which can't itself carry
+a type parameter without an `any`-cast escape hatch) would have bought
+nothing a host couldn't already get by encoding structure into a string key,
+so this task deliberately stopped short of that. Flagged explicitly here
+per the "don't design for hypothetical future requirements" instinct, not
+silently narrower than a literal reading of "generic key type" might imply.
+
+**Also genericized/de-branded:** `maxEntries` → `maxMounted` (matching the
+task brief's "max-mounted-count" language); the parking attribute
+`data-od-active` → `data-pool-active`; `OD_PREVIEW_KEEP_ALIVE` (an exported
+`process.env.OD_PREVIEW_KEEP_ALIVE`-driven toggle used by OD's own test
+infra to force-disable keep-alive) — **dropped entirely**, not ported under
+a new name. It read a bundler-injected env var by a hardcoded product-
+specific name, which doesn't translate to "host-configurable" in a package
+with no bundler/env assumptions of its own; a host that wants the pool
+disabled can simply not mount `IframeKeepAliveProvider` (every `PooledIframe`
+still works standalone via the per-instance fallback pool, just without the
+cross-remount keep-alive benefit).
+
+**Two real, disclosed bugs found and fixed while porting (not silently
+carried over), matching this package's established "fix and disclose,
+don't silently port" precedent (see the `mention-autocomplete` section
+above):**
+
+1. **`syncStyle` never appended a unit to numeric style values.** A normal
+   React element auto-appends `px` to unitless numbers for style properties
+   that need a length (`style={{ width: 10 }}` → `width: 10px`) via React's
+   own inline-style patcher — but this component bypasses that patcher
+   entirely (`frame.style.setProperty(cssKey, String(value))`), so
+   `style={{ width: 10 }}` on the origin silently produced the CSS-invalid
+   `width: 10` and the browser dropped it, leaving the iframe unsized. Caught
+   by this task's own tests failing against jsdom's real `CSSStyleDeclaration`
+   (which enforces the same length-value validity rules a real browser does)
+   rather than assumed from reading the source. Fixed with a small
+   `UNITLESS_NUMBER_PROPERTIES` allowlist mirroring React's own
+   (`opacity`/`zIndex`/`lineHeight`/etc. stay bare; everything else numeric
+   gets `px`), in `react/dom-sync.ts`'s new `styleValueToString`.
+2. **Reattaching a parked (previously-released) entry never undid
+   `parkIframeElement`'s markers.** `release()` sets
+   `aria-hidden="true"`/`tabindex="-1"`/`data-pool-active="false"` on the
+   iframe before parking it off-DOM — correct while parked — but the origin's
+   `attach()` never reversed this on reuse, so a keep-alive iframe coming
+   back into active use stayed hidden from assistive tech and out of tab
+   order forever after its first release, defeating the point of "keep
+   alive" (the whole reason to reuse the element is so it looks and behaves
+   like it never went away). Caught the same way: a test asserting the
+   reused element loses `aria-hidden` on reattachment failed until fixed.
+   Fixed with a new `unparkIframeElement` (in `react/dom-sync.ts`), called
+   from the Provider's `attach()` exactly when reusing an existing,
+   currently-inactive entry.
+
+**What ships:** `IframeKeepAliveProvider` (context + refs-based pool: attach/
+release/evict/evictMatching, LRU-evicts parked entries once over
+`maxMounted`, never evicts an active entry, parks released elements into a
+hidden `<div>` instead of destroying them), `useIframeKeepAlivePool` (reads
+the nearest Provider, or falls back to a local single-entry pool with no
+LRU/limit so a standalone `PooledIframe` still works without a Provider
+mounted), `PooledIframe`/`ClientPooledIframe` (an `<iframe>` that renders
+plainly during SSR — real node-environment test via `renderToStaticMarkup`,
+not just an assumption — and otherwise manually diffs/syncs its props onto
+the pool-owned element every render instead of letting React manage it,
+since remounting the real DOM node would defeat the entire keep-alive
+point).
+
+### i18n
+
+None needed — every user-facing string surface in this feature is zero: no
+rendered text, no `aria-label`/`title` default values on any exported
+component (`PooledIframe`'s props pass through arbitrary iframe attributes
+a *host* supplies, including any `title`/`aria-label` the host chooses, but
+this feature itself introduces none). Noted explicitly per the i18n policy
+rather than silently skipped.
+
+### Phase 9.6 (async/network test-category gate)
+
+Exempt, stated explicitly rather than skipped silently: this feature has no
+network requests and no async state of its own (iframe `src`/`onLoad` are
+host-supplied passthrough props, not something this feature awaits or
+parses a response from).
 
 ### Purity grep
 
@@ -4803,3 +5001,397 @@ omissions are the OD-specific brand-color computation itself (replaced by
 the host-injected `resolveMentionColor` seam, per the task brief) and the
 origin's hardcoded `'chat-composer'` Lexical namespace string (now a
 `namespace` prop, defaulting to `'rich-text-input'`).
+`packages/ui/src/features/iframe-pool/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/iframe-pool
+  --coverage`): **7 test files, 50 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`constants.ts`, `rules.ts`,
+  `index.ts`, `react/pool-context.ts`, `react/dom-sync.ts`, both components,
+  the hook — `types.ts` excluded per the documented zero-executable-
+  statement carve-out, verified via the standard grep and added to
+  `vitest.config.ts`'s exclude list alongside the existing
+  `list-detail-panel`/`settings-dialog`/`html-viewer` carve-outs). Reached
+  via the Phase 9.5 classify-then-fix loop: two branches
+  (`PooledIframe.tsx`'s `if (!host)`/`if (!frame)` guards) were refactored
+  away as genuinely dead (both refs are populated synchronously during the
+  same commit, before either effect can run, by the same argument already
+  established for `IframeKeepAliveProvider`'s `parkedHostRef` — see the
+  non-null-assertion comments at each site) rather than tested around; every
+  other gap was a real reachable path (an unattached-key no-op for
+  `release`/`evict`, `evictMatching`'s `includeActive` true/false split, the
+  LRU-vs-never-evict-active interaction) that got a real test. No
+  `/* v8 ignore */` used anywhere.
+
+## Section: `features/command-palette/` (`CommandPalette`, from `QuickSwitcher.tsx`) (2026-07-18)
+
+Source: `apps/web/src/components/QuickSwitcher.tsx` (330 lines) +
+`apps/web/src/quickSwitcherRecents.ts` (33 lines), real clone at
+`leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`.
+A full-screen Cmd/Ctrl+P file-and-tab palette: substring+prefix fuzzy scoring,
+arrow-key cursor navigation with wraparound, IME-composition-aware key
+handling, recents-first empty-query ordering.
+
+**Not re-litigated, per the task brief:** `docs/jini-port/god-components-
+extraction-plan.md`'s "5 more overlaps" list names `QuickSwitcher.tsx` as
+one of three "type a trigger character, get a filtered picker" shapes,
+alongside `MentionAutocomplete` (already shipped) and the Lexical `@mention`
+system. `packages/ui/source-map.md`'s `mention-autocomplete` section (search
+"QuickSwitcher" — the "3-way overlap" note) already did the side-by-side
+read and concluded `QuickSwitcher` is a distinct shape (an already-open,
+single-purpose fuzzy-match palette with keyboard-cursor selection — no
+inline-textarea trigger detection, no tabbed multi-category grouping, no
+removable-chips multi-select) and should get its own extraction. This task
+is that extraction, built as its own primitive rather than folded into
+`mention-autocomplete/` — the prior conclusion held up on a second read of
+the actual source and was not revisited.
+
+**Genericized:** the origin's `QuickSwitcherResult` discriminated union
+(`{ kind: 'tab', context: WorkspaceContextItem }` vs.
+`{ kind: 'file', file: ProjectFile }`, each with its own path/title/kind-
+label derivation) collapses into one flat `CommandPaletteItem` (`id`, `name`,
+`kind: string`, optional `mtime`/`path`/`title`/`keywords`) — the task
+brief's own target shape. This is a real simplification, not just a rename:
+the origin derived a row's subtitle/tooltip/kind-label differently per kind
+(a `workspaceContextKindLabel` switch mapping 9 OD-specific kind strings to
+English labels for tabs; `baseName`/`dirName` path-splitting for files); the
+generic version instead expects the **host** to resolve `name`/`path`/`title`
+into their final display strings before handing items to the palette, and
+just displays `kind.toUpperCase()` as a plain badge. The origin's
+`quickSwitcherRecents.ts` (`od:qs-recents:<projectId>` keys) becomes a real
+`CommandPaletteRecentsPort` (`ports.ts`) + a real `localStorage`-backed
+implementation (`dependencies.ts`, namespace `jini:command-palette:recents`,
+matching `features/browser-chrome`'s history-storage precedent of shipping
+a real implementation rather than a fake, since it only touches generic
+browser APIs) — recents are now keyed by an opaque host-supplied `scopeKey`
+(replacing `projectId`) and by `item.id` (replacing file `name`).
+
+**Scoring, disclosed simplification:** the origin ran two different scoring
+functions — `scoreMatch` (basename/full-name tiers for files) and
+`scoreWorkspaceContextMatch` (a 5-field string-concatenation search plus an
+exact-kind-match tier, for tabs). With one unified item shape, this task
+ships one `scoreItemMatch` scoring `item.name` (exact/prefix/substring tiers)
+plus a lower-tier substring match against an optional `keywords` field
+(replacing the tab-specific multi-field concatenation with a host-supplied,
+generic "extra searchable text" slot). The origin's separate "kind exactly
+matches the query" tier (used only for tabs) is dropped — a minor, disclosed
+behavior narrowing in service of one scoring function instead of two
+kind-specific ones.
+
+**Dropped:** the `motion/react` (framer-motion) entrance/exit animation
+(`modalOverlay`/`scaleIn` variants) — this package has no existing
+framer-motion dependency, and no other feature here uses one for an overlay/
+popover (`mention-autocomplete`, `schedule-picker`, `settings-dialog` all use
+plain CSS). Adding a net-new animation-library dependency for a decorative
+concern this component's own genericization doesn't require felt like scope
+creep; the overlay/palette `<div>`s keep the same class-name structure so a
+host can layer its own CSS transitions on top if it wants them.
+
+**What shipped:** `types.ts` (`CommandPaletteItem`, `CommandPaletteResult`),
+`constants.ts`, `rules.ts` (`scoreItemMatch`, `rankItems` — the origin's
+`matches` useMemo logic as a pure function, `nextCursor` ported verbatim,
+`parseRecentIds`/`pushRecentId` — the origin's recents JSON parsing/pushing,
+extracted to pure functions for direct testing rather than living inline in
+the localStorage adapter), `ports.ts` + `dependencies.ts`
+(`CommandPaletteRecentsPort` + `createLocalStorageRecents`),
+`react/hooks/useCommandPalette.ts` (+ `useWiredCommandPalette` production
+wirer, mirroring `useBrowserHistory`/`useWiredBrowserHistory`'s pattern) —
+owns query/cursor state, ranking, recents tracking, and the IME-aware
+keyboard handler — `react/components/{CommandPaletteRow,CommandPalette}.tsx`,
+`index.ts` barrel.
+
+### i18n
+
+Every user-facing string (`Search…` placeholder default, `No matches`/
+`No items` empty states, `Navigate`/`Select`/`Close` footer hints) routes
+through `useT()`, English string as key per this package's i18n policy (the
+origin's namespaced `quickSwitcher.*` keys are not carried over — the
+convention here is the English string itself as the key). `rules.ts` stays
+hook-free by design; it doesn't produce any user-facing text itself. A real
+test mounts `CommandPalette` under `I18nProvider` with a French dictionary
+and asserts the translated placeholder and all three footer hints render
+(not just that `t()` compiles).
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/command-palette/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/command-palette
+  --coverage`): **6 test files, 60 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`types.ts`/`ports.ts` excluded
+  per the documented zero-executable-statement carve-out, verified via the
+  standard grep and added to `vitest.config.ts`'s exclude list). Real tests
+  cover the required fuzzy-scoring/cursor-wraparound edge cases explicitly:
+  empty query, no matches, a single match, and wraparound in both directions
+  (`nextCursor` at index 0 going backward and at the last index going
+  forward), plus a zero-/negative-total guard and a single-item-list case.
+  One jsdom gap needed a small polyfill (`Element.prototype.scrollIntoView`,
+  unimplemented in jsdom — same gap already polyfilled elsewhere in this
+  package's `useResizableSplitPane.test.tsx`), not a source change.
+
+## Section: `features/tab-launcher-menu/` (`TabLauncherMenu`) (2026-07-18)
+
+Source: `apps/web/src/components/workspace/TabLauncherMenu.tsx` (461 lines) +
+`apps/web/src/components/workspace/tab-launcher.ts` (137 lines), real clone
+at `leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`.
+An anchored, portal-rendered command-palette dropdown for a tab strip's "+"
+button: viewport-clamped fixed positioning off an anchor element, outside-
+click/Escape dismiss, text search + kind-filter over file results, a
+separate always-searchable-unless-filtered tab-result list, and a "create
+new" action list, all folded into one flat keyboard-navigable selection.
+
+**`features/tab-strip/` does not exist on this branch — a documented
+discrepancy, not silently assumed away.** The task brief for this item said
+to "read [`features/tab-strip/`] first to confirm this is a distinct
+concern" before building this feature, on the premise that it was already
+shipped from `WorkspaceTabsBar.tsx`/`FileWorkspace.tsx` per the
+Consolidation map's `features/tab-strip/` row. Checked directly: `ls
+packages/ui/src/features/` on this branch (`feature/jini-ui-small-atoms-
+batch`, based on `origin/main`) lists `asset-grid, asset-tree-browser,
+browser-chrome, connectors, html-viewer, i18n, list-detail-panel, memory,
+mention-autocomplete, observability, progress-card, schedule-picker,
+settings-dialog, sketch-editor, version-manager, viewer-shell` — no
+`tab-strip` and no other `tab-*` feature. This mirrors the exact shape of
+the already-recorded `features/progress-card/` discrepancy earlier in this
+file (a plan doc claiming something shipped that isn't actually present in
+this checkout) — flagged here per that same precedent rather than either
+blocking on it or silently proceeding as if the comparison had happened.
+Since there was nothing to compare against, this task built
+`TabLauncherMenu` as its own self-contained primitive per the task brief's
+own fallback description ("the anchored launcher dropdown, not the tab strip
+itself" — a real, distinct interaction regardless of whether `tab-strip`
+exists yet: an anchored positioned dropdown+search+actions widget is not a
+horizontal tab-strip-with-drag-reorder widget under any reading). A future
+task landing `features/tab-strip/` should re-check this pairing once both
+exist side by side.
+
+**Genericized:** the origin's `Props` (`files: ProjectFile[]`,
+`workspaceContexts?: WorkspaceContextItem[]`, `actions: LauncherAction[]`,
+`launcherContext: LauncherContext`, `onTrack?: (input:
+TabLauncherTrackInput) => void` off the OD analytics contract
+`TabLauncherClickProps`) collapses into: one generic `TabLauncherResultItem`
+(`id`, `name`, `kind: string`, optional `meta`/`isOpen`/`iconName`) shared by
+both the file list and the tab list — the host pre-formats `meta` (the
+origin's separate `formatBytes`/`formatRelativeTime`/`kindLabel`/
+`workspaceContextKindLabel`/`workspaceContextMeta` helpers are all dropped;
+none of that OD-specific formatting logic is generic); `TabLauncherAction
+<TActionCtx>` generic over whatever context a host's actions need to run
+against (replacing the OD-specific `LauncherContext`'s `projectId`/
+`createTerminal`/`createBrowser`/`createSketch`/`createDocument`/
+`uploadDesignFiles` fields — a host now supplies its own `TActionCtx` shape
+and an `actionContext` value, and the action's `run(ctx)` receives it
+structurally, no baked-in "what a tab kind is" vocabulary); a generic
+`TabLauncherTrackEvent` discriminated union (`open`/`filter`/`select-file`/
+`select-tab`/`run-action`) replacing the OD-specific `TabLauncherClickProps`
+analytics contract (`@open-design/contracts/analytics`) — same "fire an
+event, host fills in its own product/page context" mechanism, generic event
+shape. Icons: rather than depending on this package's own `Icon` component's
+fixed `IconName` union (which doesn't have a natural mapping for arbitrary
+host-defined `kind`/action `iconName` strings), rows accept an optional
+`renderIcon?: (iconName: string | undefined) => ReactNode` slot — a host
+using `@jini/ui`'s `Icon` can trivially wire `renderIcon={(name) => <Icon
+name={name as IconName} />}`, but the feature itself stays icon-set-agnostic.
+
+**Kind-filter chips, disclosed simplification:** the origin's
+`kindLabel(kind, t)` maps each `ProjectFileKind` to a translated English
+label for its chip ("Images", "Code", …). With `kind` now a plain host-
+defined string (no fixed enum), chips just display the raw `kind` value —
+a host that wants a nicer label formats it into the value it passes as
+`kind` itself, or (a real future option, not attempted here) wraps
+`TabLauncherMenu` with its own label-mapping layer.
+
+**What shipped:** `types.ts` (`TabLauncherResultItem`, `TabLauncherAction
+<TCtx>`, `TabLauncherTrackEvent`, `TabLauncherPosition`,
+`TabLauncherAnchorRect`, `TabLauncherSelection`), `constants.ts`, `rules.ts`
+(`clampAnchoredPosition` — the origin's inline anchor-rect positioning math,
+extracted pure; `presentKinds`, `filterFiles`, `filterTabs` — the origin's
+`results`/`tabResults`/`presentKinds` `useMemo`s as pure functions;
+`clampSelection`, `nextSelected` — the origin's inline selection-clamp
+effect and modulo-wraparound arrow-key math, extracted pure;
+`resolveSelection` — the origin's inline `results[selected] ?? …` / `selected
+- results.length` split, extracted pure), `react/hooks/
+useTabLauncherMenu.ts` (owns anchored positioning recalculated on scroll/
+resize, outside-click/Escape dismissal via the shared `useDismissOnOutsideOrEscape`
+hook from `packages/ui/src/browser/` — checked for an existing equivalent
+before hand-rolling a second listener pair, per this task's own "check for
+overlap" instruction, matching the precedent already noted in this file's
+`schedule-picker` section — search/kind-filter state, and the flat
+file+tab+action keyboard-navigation handler), `react/components/
+{TabLauncherResultRow,TabLauncherActionRow,TabLauncherMenu}.tsx` (the
+orchestrator is a generic `TabLauncherMenu<TActionCtx>`, portal-rendered to
+`document.body`), `index.ts` barrel.
+
+### i18n
+
+Every user-facing string (`Search files…` placeholder default, `All files`
+chip, `Create new`/`Open file`/`Open tabs` section headers, `Open` badge,
+`No files match` empty state, the `New tab` dialog `aria-label`) routes
+through `useT()`, English string as key per this package's i18n policy —
+the origin's namespaced `workspace.*` keys are not carried over. `rules.ts`
+stays hook-free by design. A real test mounts `TabLauncherMenu` under
+`I18nProvider` with a French dictionary and asserts the translated
+placeholder and section headers render.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/tab-launcher-menu/`: **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- New feature's own test run (`npx vitest run src/features/tab-launcher-menu
+  --coverage`): **6 test files, 63 tests, all green**, **100% statements/
+  branches/functions/lines on every file** (`types.ts` excluded per the
+  documented zero-executable-statement carve-out, verified via the standard
+  grep and added to `vitest.config.ts`'s exclude list). One real hook bug
+  caught by the test suite itself before it shipped: an early draft of
+  `useTabLauncherMenu.test.ts` created a fresh anchor element *inside* the
+  `renderHook` callback for several cases — since that callback re-runs on
+  every render, a fresh anchor each time changed the positioning effect's
+  `[anchor]` dependency every render, causing "Maximum update depth
+  exceeded" (an infinite `setPosition` loop). Not a source bug — the hook's
+  own `[anchor]`-keyed effect is correct — but recorded here since it's
+  exactly the kind of test-authoring mistake that would otherwise ship a
+  false "the component itself is unstable" signal; fixed by hoisting the anchor
+  element outside the `renderHook` callback in every affected case.
+
+## Section: `DesignSystemFlow.tsx`'s remaining pieces — `features/revision-review/` + flat `TokenChip`/`ValueChip`/`ComponentKitPreview` (2026-07-18)
+
+Source: `apps/web/src/components/DesignSystemFlow.tsx` (5,439 lines), real
+clone at `leonaburime-ucla/open-design` commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34` — already partially mined for
+`features/progress-card/` (`WorkspaceActivityCard`/`GenerationStatusCard`)
+and `utils/color-math.ts` (hex/RGB/luminance/mix primitives). This task
+mines its two remaining pieces named in the task brief.
+
+### 1. `features/revision-review/` (`RevisionDiffCard` + `RevisionHistoryList`)
+
+A generic "proposed change review" widget: a diff/proposed-body preview with
+accept/reject actions, plus a status-badged revision history list. Per
+`docs/jini-port/god-components-extraction-plan.md`'s `features/progress-
+card/` row, r6 flagged these as "conceptually related" to the progress-card
+family ("status-badged... progress bar + status icon") but "not confirmed
+identical, still worth evaluating together before extracting either" — this
+task read both shapes side by side (`ProgressCard`'s status-icon-plus-
+progress-bar-plus-step-list vs. this widget's feedback-plus-diff-plus-
+accept/reject-plus-history-list) and confirmed they're genuinely distinct:
+`ProgressCard` renders an in-flight run's step-by-step state with a
+determinate/indeterminate progress bar; this widget renders a completed
+proposal awaiting a binary accept/reject decision, with no progress bar or
+step list at all. Built as its own feature per the task brief's own
+instruction, not folded into `progress-card`.
+
+**Genericized:** the origin's `DesignSystemRevision` (from
+`@open-design/contracts`) becomes `RevisionReviewItem<TMeta = unknown>` —
+every field the widget actually reads (`status`/`feedback`/`baseBody`/
+`proposedBody`/`createdAt`/`updatedAt`/`sectionTitle`/`fileChanges`) is
+generic already; `TMeta` is the type-parameter escape hatch the task brief
+asked for, letting a host attach whatever extra identity it needs
+(`designSystemId`/`jobId` in the origin) without this feature reading or
+caring about it.
+
+**A real, disclosed duplication caught and unified:** the origin has two
+functions, `revisionAddedText` (diffing `revision.baseBody`/`proposedBody`)
+and `revisionFileAddedText` (diffing a file change's `baseContent`/
+`proposedContent`) — byte-for-byte identical bodies (longest-common-line-
+prefix, then the proposed side's remaining lines, trimmed), just applied to
+two different field pairs. Unified into one `diffAddedLines(baseText,
+proposedText)` in `rules.ts`, called from both call sites in
+`RevisionDiffCard`, rather than porting the duplication forward.
+
+**What shipped:** `types.ts` (`RevisionReviewStatus`, `RevisionReviewFileChange`,
+`RevisionReviewItem<TMeta>`), `rules.ts` (`diffAddedLines`,
+`formatRevisionTimestamp` — the origin's `formatDateTime`, a thin
+`Intl`/`Date` wrapper with no i18n-key text so it stays a plain util rather
+than routing through `useT()`), `react/components/{RevisionDiffCard,
+RevisionHistoryList}.tsx` — both fully controlled/presentational (accept/
+reject/history are host-driven via props; neither the origin nor this port
+holds any internal state), `index.ts` barrel. No `ports.ts`/`dependencies.ts`
+— no transport dependency, matching the `schedule-picker`/`iframe-pool`
+"no ports" precedent already established in this file.
+
+### 2. Flat `react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+
+`DesignMdTokenChip`/`DesignMdValueChip`/`DesignMdComponentKitPreview` — a
+color-swatch chip, a plain-value chip, and the theme-toggle-driven style-
+guide preview panel that renders both. Renamed to drop the origin's
+`DesignMd`-prefixed internal naming (OD's own "design.md" spec-format
+jargon) per this task's naming-discipline instruction — `TokenChip`/
+`ValueChip`/`ComponentKitPreview` describe what they render, not OD's
+internal vocabulary for it.
+
+**Token source genericized to host-injected data, per the task brief:** the
+origin took a raw `markdown: string` prop and parsed it internally via
+`buildDesignMdPreviewModel` → `parseDesignMd` (OD's own "design.md" spec-
+format parser) into the token model the preview actually renders.
+`ComponentKitPreview` instead takes that already-resolved
+`ComponentKitPreviewTokens` model directly as a prop — the markdown-parsing
+pipeline is OD product-specific logic and is not ported, matching the
+call already made and documented in this file's color-math section ("what
+was deliberately left behind: the OD-specific color-selection heuristic
+that consumes the math, not the math itself"). `buildDesignMdPreviewModel`'s
+internal heuristic (`findPreviewColor`/`firstNonNeutralColor` role-matching
+by keyword against color labels) is exactly that heuristic, so it stays
+behind for the same already-established reason, not re-litigated here.
+
+**A duplicate-primitive check that paid off:** before writing any color
+math for this component, checked `packages/ui/src/utils/color-math.ts`
+(this task's own required step, per the "check for an existing equivalent"
+audit lesson) — it already ports `normalizeHex`/`hexToRgb`/`luminance`/
+`mixHex`/`toHexByte`/`readableTextColor`, which are exactly
+`buildDesignMdPreviewModel`'s local `normalizePreviewHex`/`previewRgb`/
+`previewLuminance`/`mixPreviewHex`/`toHexByte`/`readableTextColor` under
+different names (same origin file, ported in an earlier task). Every real
+color-math need `ComponentKitPreview` has (deriving `primaryText` via
+`readableTextColor`) is met by importing the existing util — nothing was
+re-derived.
+
+**What shipped:** `TokenChip`/`ValueChip` (flat, zero-prop-surface color/
+value chip atoms) and `ComponentKitPreview` (the light/dark-switchable
+preview stage + button/type-scale specimen + the token-chip row underneath)
+in `packages/ui/src/react/components/` — this branch's base still has the
+old flat `src/components/` (rename not yet merged), and these three are new
+atoms alongside `EditorIcon` already added there this session, so they land
+in `react/components/` too per this task's own path-convention instruction.
+
+### i18n
+
+Every user-facing string in all five new components (`RevisionDiffCard`,
+`RevisionHistoryList`, `ComponentKitPreview`) routes through `useT()`,
+English string as key. `TokenChip`/`ValueChip` have no user-facing text of
+their own beyond a caller-supplied `label`/`value`/`hex`, so nothing to
+wrap there. `rules.ts` stays hook-free by design in both new areas. Every
+component with real translatable text has a test mounting it under
+`I18nProvider` with a translated dictionary and asserting the translated
+text renders.
+
+### Purity grep
+
+`grep -rniE 'open.?design|\bOD_|--od-stamp|/tmp/open-design'` across
+`packages/ui/src/features/revision-review/` and
+`packages/ui/src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+(+ tests): **clean, zero matches.**
+
+### Test / typecheck / coverage results
+
+- `pnpm --filter @jini/ui run typecheck`: green, zero errors, full package.
+- `revision-review`'s own test run (`npx vitest run src/features/revision-
+  review --coverage`): **4 test files, 22 tests, all green**, **100%
+  statements/branches/functions/lines on every file** (`types.ts` excluded
+  per the documented zero-executable-statement carve-out, added to
+  `vitest.config.ts`'s exclude list).
+- The three flat atoms' own test run (`npx vitest run
+  src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.test.tsx
+  --coverage`): **3 test files, 9 tests, all green**, **100% on all 4
+  metrics** for all three files.
+- Full `@jini/ui` package (`npx vitest run`): **275 test files, 2791 tests,
+  all green** — no regression in any pre-existing test.
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — no boundary violations introduced.

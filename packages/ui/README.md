@@ -178,6 +178,55 @@ Real content has landed in several parallel passes — see
   times; see `packages/ui/source-map.md` for the full comparison (read that
   section before extracting either of those two).
 
+- `src/react/components/EditorIcon.tsx` (2026-07-18) — a flat icon-by-key
+  atom ported from `EditorIcon.tsx`, same lookup-table shape as `Icon.tsx`/
+  `AgentIcon.tsx`/`RemixIcon.tsx`. First file under the new
+  `src/react/components/` path (the `refactor/ui-flat-components-under-react`
+  rename hadn't landed on this branch's base yet, so this is a new folder
+  alongside the still-present flat `src/components/`). See
+  `packages/ui/source-map.md`.
+- `src/features/iframe-pool/` — a generic, host-configurable "cap N mounted
+  iframes, LRU-evict inactive ones, park the rest off-DOM" pool (2026-07-18),
+  ported from `IframeKeepAlivePool.tsx` per
+  `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map (the
+  pattern recurs 3 times in OD's own codebase; this is the canonical
+  implementation). Genericizes the origin's `projectId`/`fileName` key pair
+  into one opaque string key and drops the OD-specific
+  `OD_PREVIEW_KEEP_ALIVE` env-var toggle. Fixed two real bugs found while
+  porting (a missing `px`-unit append on numeric style values, and a reused
+  parked iframe never having its hidden/inert markers undone) — see
+  `packages/ui/source-map.md`.
+- `src/features/command-palette/` — `CommandPalette`, a generic Cmd/Ctrl+P
+  fuzzy file-and-item palette (2026-07-18), ported from `QuickSwitcher.tsx`.
+  Collapses the origin's file/tab discriminated union into one
+  `CommandPaletteItem` shape; recents persist via a real
+  `localStorage`-backed `CommandPaletteRecentsPort`. Confirmed distinct from
+  `features/mention-autocomplete/` (already checked in that feature's
+  source-map section) rather than re-litigated. See
+  `packages/ui/source-map.md`.
+- `src/features/tab-launcher-menu/` — `TabLauncherMenu`, an anchored,
+  portal-rendered "+"-button command-palette dropdown (2026-07-18), ported
+  from `TabLauncherMenu.tsx`. Generic `TabLauncherResultItem` shared by both
+  the file list and the tab list; `TabLauncherAction<TActionCtx>` generic
+  over whatever context a host's actions run against, replacing the origin's
+  OD-specific `LauncherContext`. `features/tab-strip/` does not exist on
+  this branch despite the extraction plan describing it as already shipped
+  — documented as a discrepancy, matching the same pattern already recorded
+  for `features/progress-card/`. See `packages/ui/source-map.md`.
+- `src/features/revision-review/` — `RevisionDiffCard`/`RevisionHistoryList`,
+  a generic "proposed change review" widget (2026-07-18), ported from
+  `DesignSystemFlow.tsx`'s remaining pieces. Genericizes `DesignSystemRevision`
+  to `RevisionReviewItem<TMeta>`; unifies the origin's two duplicate diff
+  functions into one `diffAddedLines`. Confirmed distinct from
+  `features/progress-card/` rather than folded in. See
+  `packages/ui/source-map.md`.
+- `src/react/components/{TokenChip,ValueChip,ComponentKitPreview}.tsx`
+  (2026-07-18) — the rest of `DesignSystemFlow.tsx`'s remaining pieces: a
+  color-swatch chip, a plain-value chip, and the theme-toggle-driven
+  style-guide preview panel that renders both, with the token source
+  genericized to host-injected data (the origin's markdown-parsing pipeline
+  is not ported). Reuses the already-shipped `utils/color-math.ts` rather
+  than re-deriving its math a second time. See `packages/ui/source-map.md`.
 - `src/utils/scroll-tabs-with-wheel.ts` and `src/utils/color-math.ts`
   (2026-07-18) — two flat bucket-A atoms from
   `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §C:

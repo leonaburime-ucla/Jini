@@ -102,6 +102,19 @@ export default defineConfig({
         // rich-text-input/types.ts is pure `interface`/`type` declarations,
         // zero runtime statements (same verification check).
         'src/features/rich-text-input/types.ts',
+        // iframe-pool/types.ts is likewise pure `interface` declarations,
+        // zero runtime statements (same verification grep).
+        'src/features/iframe-pool/types.ts',
+        // command-palette/{types,ports}.ts are likewise pure `interface`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/command-palette/types.ts',
+        'src/features/command-palette/ports.ts',
+        // tab-launcher-menu/types.ts is likewise pure `interface`/`type`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/tab-launcher-menu/types.ts',
+        // revision-review/types.ts is likewise pure `interface`/`type`
+        // declarations, zero runtime statements (same verification grep).
+        'src/features/revision-review/types.ts',
       ],
       // Measured 2026-07-22 (audit fix — coverage-hardening pass): 99.98%
       // statements / ~99.86-99.88% branches / 100% functions / 99.98% lines
