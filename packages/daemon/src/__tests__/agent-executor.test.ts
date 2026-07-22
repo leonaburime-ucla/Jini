@@ -21,7 +21,9 @@ import type { ToolExecutionResult, ToolExecutor } from '../tool-executor.js';
 import {
   AgentExecutorError,
   buildMcpJsonServerEntry,
+  classifyProcessExitFailure,
   createAgentExecutor,
+  defaultClassifyFailure,
   isSupportedStreamFormat,
   mergeMcpJsonContent,
   translateAgentRuntimeEvent,
@@ -2608,6 +2610,73 @@ describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions
     expect(classifyFailure).not.toHaveBeenCalled();
     const events = await collectEvents(lifecycle, run.id);
     expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+});
+
+describe('classifyProcessExitFailure (audit fix: gap 4 real default classifier)', () => {
+  it('classifies a SIGPIPE kill as a retryable upstream network error', () => {
+    expect(classifyProcessExitFailure(null, 'SIGPIPE')).toEqual({
+      failure_category: 'upstream_unavailable',
+      failure_detail: 'network_error',
+      retryable: true,
+    });
+  });
+
+  it('classifies any other signal-based kill as a non-retryable process_exit', () => {
+    expect(classifyProcessExitFailure(null, 'SIGKILL')).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'signal_killed',
+      retryable: false,
+    });
+    expect(classifyProcessExitFailure(null, 'SIGTERM')).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'signal_killed',
+      retryable: false,
+    });
+  });
+
+  it('classifies a plain nonzero exit code (no signal) as a non-retryable process_exit', () => {
+    expect(classifyProcessExitFailure(1, null)).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'exit_nonzero',
+      retryable: false,
+    });
+  });
+
+  it('returns undefined when there is no signal to classify', () => {
+    expect(classifyProcessExitFailure(null, null)).toBeUndefined();
+    expect(classifyProcessExitFailure(0, null)).toBeUndefined();
+  });
+});
+
+describe('defaultClassifyFailure (audit fix: createLocalNodeDaemon zero-config wiring)', () => {
+  it('returns true for a SIGPIPE-killed run — decideSafeRunRetry genuinely says retry', () => {
+    expect(defaultClassifyFailure({ runId: 'r1', agentId: 'a1', code: null, signal: 'SIGPIPE' })).toBe(true);
+  });
+
+  it('returns false for a non-SIGPIPE signal kill', () => {
+    expect(defaultClassifyFailure({ runId: 'r1', agentId: 'a1', code: null, signal: 'SIGKILL' })).toBe(false);
+  });
+
+  it('returns false for a plain nonzero exit code', () => {
+    expect(defaultClassifyFailure({ runId: 'r1', agentId: 'a1', code: 1, signal: null })).toBe(false);
+  });
+
+  it('returns false when no signal is classifiable at all', () => {
+    expect(defaultClassifyFailure({ runId: 'r1', agentId: 'a1', code: null, signal: null })).toBe(false);
+  });
+
+  it('wired end-to-end via createAgentExecutor: a SIGPIPE-killed child-driven run really ends resumable:true', async () => {
+    const { lifecycle, executor, child } = createHarness({ classifyFailure: defaultClassifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', null, 'SIGPIPE');
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
   });
 });
 

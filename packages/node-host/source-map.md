@@ -261,8 +261,10 @@ never meant to be auto-wired). Every one of these needs a caller-supplied statef
 security-authority decision a zero-config preset cannot safely default (unlike `agents`/
 `host-tools`, whose defaults are provably harmless: an empty-but-real read, and a deny-everything
 gate). This matches the *established* pattern already on this interface — `continuation`/
-`classifyFailure`/`mcpJsonInjection` in `@jini/daemon`'s `agent-executor.ts` are opt-in for the
-identical reason (see that package's own source-map.md). The honest fix for each of these dozen-
+`mcpJsonInjection` in `@jini/daemon`'s `agent-executor.ts` are opt-in for the identical reason (see
+that package's own source-map.md). `classifyFailure` was the same story until 2026-07-22 — see this
+file's own dated entry below, `defaultClassifyFailure` is now this preset's zero-config default,
+the same way `agents`/`host-tools` already are. The honest fix for each of these dozen-
 minus-two is a new optional `CreateLocalNodeDaemonConfig` field mirroring that same pattern (a
 caller-supplied `TerminalSessionManager`, note-store, `RoutineStore`, etc.) — real, scoped,
 individually-testable follow-up tasks, not one that can be safely rushed alongside an already-large
@@ -275,3 +277,28 @@ the rest of it later" note.
 `POST /api/resources/:resourceRef/open-in` end-to-end against a real booted daemon on a real
 socket, matching this file's own established "real integration test, not a mock" convention), all
 3 touched/added files **100/100/100/100**. Root `pnpm typecheck` and root `pnpm guard`: both clean.
+
+## 2026-07-22 addition — wire `defaultClassifyFailure` as the zero-config retry-classifier default (audit fix)
+
+**Gap found by independent audit**: `createLocalNodeDaemon`'s `createAgentExecutor({lifecycle,
+journal})` call never supplied a `classifyFailure` — `@jini/daemon`'s gap 4 port was fully built and
+tested, and `decideSafeRunRetry` (`run/core/retry.ts`) was fully built and tested, but nothing in
+the codebase ever connected them, so every real daemon booted by this preset hardcoded
+`resumable: false` on every failed run regardless of cause.
+
+**The fix**: `@jini/daemon` gained a real, honestly-scoped default classifier this same day —
+`defaultClassifyFailure` (see `packages/daemon/source-map.md`'s own dated entry for the full
+derivation of what it can and cannot classify from `{code, signal}` alone, and why). This file's
+`createAgentExecutor` call now reads `createAgentExecutor({lifecycle, journal, classifyFailure:
+defaultClassifyFailure})` — a third zero-config-safe default alongside `agents`/`host-tools`
+(the comment immediately above that call site is updated to reflect this). Unlike
+`ToolExecutorToken`/the six route packs this file documents as caller-supplied-only, this default
+carries no security-authority decision and no host-specific stateful resource — it is a pure
+function of the process-exit signal every close handler already has in hand, so it is safe to wire
+unconditionally the same way the `AgentExecutor` construction itself already is.
+
+**Verified, personally, this session**: `pnpm --dir packages/node-host exec tsc --noEmit`: clean.
+`pnpm --dir packages/node-host run test:coverage`: **65/65 tests pass**, `create-local-node-daemon.ts`
+**100/100/100/100** (unchanged — the wiring is a one-line call-site addition with no new branch of
+its own; `defaultClassifyFailure`'s own branches are covered directly in `@jini/daemon`'s test
+suite, not re-tested here).

@@ -33,6 +33,7 @@ import {
   createDefaultRunStartHandler,
   createRunByteJournal,
   createRunLifecycle,
+  defaultClassifyFailure,
   EventLogToken,
   RunLifecycleToken,
   type ResolveRunInput,
@@ -288,7 +289,17 @@ export async function createLocalNodeDaemon(
   // wiring. ACP agents intentionally still require a host-injected permission
   // policy before any native tool request can proceed; that fail-closed
   // authority decision has no safe zero-config default.
-  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle, journal });
+  //
+  // `classifyFailure: defaultClassifyFailure` (audit fix, 2026-07-22): gap 4's
+  // retry classifier port (`@jini/daemon`'s `decideSafeRunRetry`) had zero
+  // producers anywhere in this codebase until now — every real run got a
+  // hardcoded `resumable: false` even though the classifier port itself was
+  // fully built and unit-tested. `defaultClassifyFailure` is a real,
+  // non-fabricated `code`/`signal` → `decideSafeRunRetry` classifier (see its
+  // own doc in `agent-executor.ts` for exactly which signals it can honestly
+  // detect); wiring it here makes retry evaluation genuinely on by default
+  // instead of merely technically pluggable.
+  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle, journal, classifyFailure: defaultClassifyFailure });
 
   const kernelBindings = bindings()
     .bind(EventLogToken, eventLog)

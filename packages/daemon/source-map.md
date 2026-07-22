@@ -1514,3 +1514,56 @@ as an executable check instead of documentation. Rejected alternatives: vendorin
 burden for a native addon this package doesn't own) and pinning an older `node-pty` version that
 might ship a Linux prebuild (checked — no version in this package's supported range ships one;
 Linux users of `node-pty` upstream are documented to be expected to build from source).
+
+## 2026-07-22 addition — a real default for gap 4's `classifyFailure` port (audit fix)
+
+**Gap found by independent audit**: gap 4's `classifyFailure` port (see the dated entry above) was
+built and fully unit-tested as an injectable port, and `run/core/retry.ts`'s `decideSafeRunRetry`
+(the real retry-decision policy the port exists to feed) was itself built and 100%-tested — but the
+two were never connected to each other, and `@jini/node-host`'s `createLocalNodeDaemon` never
+supplied any `classifyFailure` at all to its `createAgentExecutor({lifecycle, journal})` call. Every
+real run consulted `classifyFailure !== undefined ? ... : false` and always hit the `false` branch —
+`decideSafeRunRetry` had zero producers/consumers anywhere in the repo despite being fully built.
+Retry classification was technically pluggable but not actually on for any real host.
+
+**The fix — `classifyProcessExitFailure` + `defaultClassifyFailure`, both new exports in
+`agent-executor.ts`, wired as `createLocalNodeDaemon`'s zero-config default.** Honest scope
+constraint (re-derived from scratch, not assumed): `decideSafeRunRetry`'s taxonomy has exactly one
+real signal `FailureClassificationContext`'s `{code, signal}` can honestly classify without new
+stdout/stderr buffering — `signal === 'SIGPIPE'` (the child's own write to an already-closed
+pipe/socket, mechanically indicating an interrupted upstream connection) maps to
+`upstream_unavailable`/`network_error`, one of `decideSafeRunRetry`'s real retryable branches. Every
+other process-exit-only signal (any other signal-based kill, or a plain nonzero exit code) maps to
+`process_exit`/`signal_killed` or `process_exit`/`exit_nonzero`, neither of which
+`transientSuppressedReason` treats as retryable — `process_exit`'s only retryable details
+(`agent_protocol_error`, `qoder_stop_sequence`, `session_resume_expired`, `stream_error`,
+`fatal_rpc_error`) are all content/protocol-level classifications this module still deliberately
+does not buffer output to make (unchanged from the gap-4 entry above's own scope decision). This
+means the wired-in default genuinely calls `decideSafeRunRetry` for every real failed run — the
+mechanism is real, not a stub — even though most real process-exit-only inputs still correctly
+resolve to "not retryable" today; the one case that isn't (`SIGPIPE`) is real and reachable, not
+fabricated for coverage. Confirmed by reading every `terminateChildTreeBestEffort` call site that
+this module's own SIGTERM→SIGKILL escalation only ever runs on the cancellation path (all three
+call sites pass `'cancel'`), and `classifyRunCloseStatus` already routes a cancelled run to
+`'cancelled'` before `classifyFailure` is ever consulted — so any signal reaching
+`defaultClassifyFailure` under a genuine `'failed'` status always originated outside this process
+(an OS/container OOM killer, an operator's own `kill`, a real crash signal), never from this
+module's own cleanup.
+
+`@jini/node-host`'s `createLocalNodeDaemon` now passes `classifyFailure: defaultClassifyFailure` to
+its `createAgentExecutor` call — see that package's own source-map.md for the wiring-site note. A
+caller that wants byte-identical pre-gap-4 behavior can still call `createAgentExecutor` directly
+with no `classifyFailure` (unchanged opt-in-only default at that layer).
+
+**Verified, personally, this session**: `pnpm --dir packages/daemon exec tsc --noEmit` clean;
+`pnpm --dir packages/daemon run test:coverage` — 500/500 tests pass (12 new: 4
+`classifyProcessExitFailure` unit cases, 4 `defaultClassifyFailure` unit cases, 1 end-to-end
+SIGPIPE-driven `createAgentExecutor({classifyFailure: defaultClassifyFailure})` integration test —
+plus 3 pre-existing gap-4 tests unmodified), `agent-executor.ts` **100/100/100/100** (up from
+98.12/100/95.34/98.12 immediately after the two new functions were added with no tests yet).
+Package-wide: 100/99.92/100/100 (the one pre-existing, unrelated branch gap —
+`routines/schedule.ts:219` — is addressed separately; see this task's own coverage pass.
+`run/core/failure-taxonomy.ts` and `routines/types.ts` report 0/0/0/0 because both are pure
+`export type`/`export interface` files with no runtime statements to instrument — not a coverage
+gap). `pnpm --dir packages/node-host run test:coverage`: 65/65 tests pass, still 100/100/100/100
+after the wiring-site change.

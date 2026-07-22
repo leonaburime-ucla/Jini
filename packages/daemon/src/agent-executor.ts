@@ -55,16 +55,28 @@
  * ## Invariant
  *
  * `RunLifecycle.start()` already transitions a run to `'running'` before
- * `run()` is ever called. Every failure path in `run()` — unknown
+ * `run()` is ever called. Every *pre-spawn* failure path in `run()` — unknown
  * `agentId`, an unsupported `streamFormat`/prompt-delivery shape, an
  * unresolvable binary, or a spawn error — calls `lifecycle.finish({status:
  * 'failed', resumable: false, code: null, signal: null})` itself before
  * rejecting, so a run can never get stuck `'running'` with no watchdog.
- * `resumable` is always `false` in v1: no `RunRetryFailureSignal` producer
- * exists anywhere in this codebase (OD's ~20-vendor-CLI text-matching
- * failure classifier was deliberately never ported — see
- * `run/core/failure-taxonomy.ts`'s own doc and `source-map.md`), so a
- * blanket "not retryable" default is the only honest answer available.
+ * `resumable` is unconditionally `false` on these paths — there is no spawned
+ * child, hence nothing a classifier could examine (see
+ * `FailureClassificationContext`'s own doc).
+ *
+ * For a run that *did* spawn and then failed, `resumable` is decided by
+ * `classifyFailure` (gap 4 — see `ClassifyFailure`'s own doc), an injectable
+ * port with no default of its own here (`undefined` stays byte-identical to
+ * pre-gap-4 behavior — every `'failed'` outcome resumable:false). Until
+ * 2026-07-22 this port had zero real producers anywhere in the codebase (OD's
+ * ~20-vendor-CLI text-matching failure classifier was deliberately never
+ * ported — see `run/core/failure-taxonomy.ts`'s own doc and `source-map.md`),
+ * so every real caller still got a hardcoded `resumable: false` despite the
+ * port being fully wired and tested — an audit finding fixed the same day:
+ * `defaultClassifyFailure` (this module, below) is a real, honestly-scoped
+ * `code`/`signal` → `decideSafeRunRetry` classifier, and `@jini/node-host`'s
+ * `createLocalNodeDaemon` now wires it in as the zero-config default (see
+ * that package's own source-map.md).
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
@@ -106,6 +118,7 @@ import { classifyRunCloseStatus } from './close-status.js';
 import { resolveContinuationTransport } from './continuation/continuation-transport.js';
 import type { RunByteJournal } from './continuation/journal.js';
 import { resultContent } from './delegated-tool-bridge.js';
+import { decideSafeRunRetry, type RunRetryFailureSignal } from './run/core/index.js';
 import type { ToolExecutor } from './tool-executor.js';
 import type { RunLifecycle } from './run-lifecycle.js';
 
@@ -746,6 +759,83 @@ export interface FailureClassificationContext {
  * nothing a classifier could meaningfully examine.
  */
 export type ClassifyFailure = (context: FailureClassificationContext) => boolean | Promise<boolean>;
+
+/**
+ * Maps a child's raw exit `code`/`signal` — the only two failure signals
+ * `FailureClassificationContext` carries — onto `decideSafeRunRetry`'s
+ * `RunRetryFailureSignal` taxonomy (`run/core/failure-taxonomy.ts`/`retry.ts`).
+ * Exported standalone (not inlined into `defaultClassifyFailure` below) so
+ * every branch is directly unit-testable against the full input space a
+ * `(code: number | null, signal: string | null)` contract implies, not just
+ * the subset `classifyRunCloseStatus`'s real call sites happen to produce.
+ *
+ * **Honest scope** (see this module's own top-of-file "Invariant" section and
+ * `FailureClassificationContext`'s doc): every retryable branch
+ * `decideSafeRunRetry`'s taxonomy defines beyond what's handled here — 429s,
+ * 5xx upstream errors, agent-protocol errors, empty-output/first-token-wait
+ * timeouts — is a *content*-level classification (reading stdout/stderr) this
+ * module deliberately does not buffer output to make (no new buffering
+ * machinery — see `FailureClassificationContext`'s own doc). Two signals
+ * genuinely are derivable from `code`/`signal` alone with no buffering:
+ *
+ * - `signal === 'SIGPIPE'`: the child's own write to an already-closed
+ *   pipe/socket killed it — mechanically indicates an interrupted upstream
+ *   connection (`upstream_unavailable`/`network_error`, one of
+ *   `decideSafeRunRetry`'s real retryable branches), not a bug in the CLI
+ *   itself. The one case classified as genuinely retryable here.
+ * - Any other signal-based kill (`SIGKILL`, `SIGTERM`, `SIGSEGV`, ...): real
+ *   information (`terminateChildTreeBestEffort`'s own SIGTERM→SIGKILL
+ *   escalation only ever runs on the cancellation path — every call site
+ *   passes `'cancel'` — and `classifyRunCloseStatus` already routes a
+ *   cancelled run to `'cancelled'` before this classifier is ever consulted,
+ *   confirmed by reading every `terminateChildTreeBestEffort` call site — so
+ *   a signal reaching here always came from outside this process: an
+ *   OS/container OOM killer, an operator's own `kill`, or a genuine crash
+ *   signal), but not one `process_exit`'s taxonomy entry treats as safely
+ *   retryable (its only retryable details are agent-protocol-level, not
+ *   signal-level). Classified `process_exit`/`signal_killed`, not retryable.
+ * - A plain nonzero exit code with no signal: the CLI's own deterministic
+ *   exit path — most likely a real, reproducible failure (bad args, auth,
+ *   ...), not a transient one. Classified `process_exit`/`exit_nonzero`, not
+ *   retryable.
+ *
+ * `code === null && signal === null` (or `code === 0`, `'succeeded'` in
+ * practice) can't occur through any real `classifyRunCloseStatus`-derived
+ * `'failed'` call site — `undefined` here just means "no signal to classify,"
+ * which `defaultClassifyFailure` below treats as not retryable.
+ */
+export function classifyProcessExitFailure(code: number | null, signal: string | null): RunRetryFailureSignal | undefined {
+  if (signal === 'SIGPIPE') {
+    return { failure_category: 'upstream_unavailable', failure_detail: 'network_error', retryable: true };
+  }
+  if (signal !== null) {
+    return { failure_category: 'process_exit', failure_detail: 'signal_killed', retryable: false };
+  }
+  if (code !== null && code !== 0) {
+    return { failure_category: 'process_exit', failure_detail: 'exit_nonzero', retryable: false };
+  }
+  return undefined;
+}
+
+/**
+ * Gap 4's real zero-config default, wired into `createLocalNodeDaemon`'s
+ * `createAgentExecutor({ lifecycle, journal, classifyFailure:
+ * defaultClassifyFailure })` call so every real run genuinely consults
+ * `decideSafeRunRetry` instead of the prior hardcoded `resumable: false` (no
+ * `classifyFailure` supplied at all — see `CreateAgentExecutorOptions`'s own
+ * doc for the opt-out-by-omission default this still preserves for any
+ * caller that wants byte-identical pre-gap-4 behavior). `attemptCount: 0` —
+ * `AgentExecutor` has no cross-run attempt counter of its own; `resumable`
+ * is a single boolean signal about *this* run's failure, not a scheduler
+ * decision, so a first-attempt evaluation is the only honest input available
+ * at this layer. See `classifyProcessExitFailure`'s own doc for exactly
+ * which real signals this can and cannot detect.
+ */
+export const defaultClassifyFailure: ClassifyFailure = ({ code, signal }) => {
+  const failure = classifyProcessExitFailure(code, signal);
+  if (failure === undefined) return false;
+  return decideSafeRunRetry({ result: 'failed', failure, attemptCount: 0 }).shouldRetry;
+};
 
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
