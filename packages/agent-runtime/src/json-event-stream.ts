@@ -53,13 +53,37 @@ function stringifyContent(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
+    // Genuinely unreachable through this module's real call graph, not just
+    // unobserved: every one of this function's 8 call sites passes either
+    // `obj` itself or a field/subfield of `obj` (e.g. `statePart.output`,
+    // `obj.content`, `item.aggregated_output`), and `obj` is only ever
+    // produced one way in this file — `handleLine`'s `obj = JSON.parse(line)`
+    // (this module's sole exported entry point, `createJsonEventStreamHandler`,
+    // routes every event through it). A value that came out of `JSON.parse`
+    // can only be `null`/a string/a plain finite number/a boolean/an array/a
+    // plain object — the JSON grammar has no circular-reference or BigInt
+    // production — so `JSON.stringify` can never throw on it or on any of
+    // its nested fields. Kept (not deleted) as protection against a future
+    // caller that feeds this module data from somewhere other than
+    // `JSON.parse`, the same "keep the defensive branch, document it, don't
+    // force a test around impossible data" call `@jini/cli`'s
+    // `defaultReadFile`'s `finish()` guard made on 2026-07-22 — see
+    // `source-map.md`'s 2026-07-22 entry for the full re-derivation.
     return String(value);
   }
 }
 
 function parseJsonObjectsFromContent(value: string): JsonObject[] {
+  // No `!trimmed` early-return: this function's only real call site
+  // (`connectorToolSelectionErrorMessage`, below) has already checked
+  // `content.includes('CONNECTOR_TOOL_NOT_FOUND')` before calling in, so
+  // `value` can never trim down to empty here. The guard was dead code for
+  // every real caller; removed rather than padded with a test, since the
+  // fallback path below already produces the same `[]` result for an empty
+  // string on its own (safeParseJson('') throws -> null -> not a record;
+  // ''.split(/\r?\n/u) yields [''] -> same outcome), so nothing changes
+  // for a hypothetical future caller either.
   const trimmed = value.trim();
-  if (!trimmed) return [];
   const direct = safeParseJson(trimmed);
   if (isRecord(direct)) return [direct];
   const objects: JsonObject[] = [];
@@ -441,8 +465,13 @@ function normalizeTodoStatus(value: unknown): string {
   return 'pending';
 }
 
-function todoWriteInputFromItems(items: unknown): JsonObject | null {
-  if (!Array.isArray(items)) return null;
+// Takes `unknown[]`, not `unknown`: every real call site
+// (`todoWriteInputFromParsedValue`'s three call sites and
+// `codexTodoListInput`) already runs `Array.isArray(...)` before calling in,
+// so a runtime `!Array.isArray` guard here was dead code for every real
+// caller. Narrowed the parameter type to remove the branch instead of
+// padding a test around unreachable data.
+function todoWriteInputFromItems(items: unknown[]): JsonObject | null {
   const todos = items
     .map((raw): JsonObject | null => {
       if (!isRecord(raw)) return null;
@@ -580,7 +609,12 @@ function emitCursorTextDelta(text: string, onEvent: StreamEventHandler, state: P
   // equality checks would silently drop them. Duplicate suppression and
   // dropped-chunk recovery belong to the buffered terminal replay paths
   // (`model_call_id` and no-timestamp events) via reconcileCursorTurnReplay.
-  if (!text) return;
+  //
+  // No `!text` guard: this function's only real call site
+  // (`handleCursorEvent`, below) already returns early on `if (!text) return
+  // false;` before ever calling in, so `text` is always non-empty here. The
+  // guard was dead code for the one real caller; removed rather than padded
+  // with a test.
   state.cursorTextSoFar += text;
   onEvent({ type: 'text_delta', delta: text });
 }

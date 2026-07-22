@@ -73,7 +73,7 @@ async function fetchModels(
   try {
     const { stdout } = await execAgentFile(resolvedBin, def.listModels.args, {
       env,
-      timeout: def.listModels.timeoutMs ?? 5000,
+      timeout: def.listModels.timeoutMs,
       // Models lists from popular CLIs (e.g. opencode) easily exceed the
       // default 1MB buffer once you include every openrouter model. Bump
       // it so we don't truncate the listing.

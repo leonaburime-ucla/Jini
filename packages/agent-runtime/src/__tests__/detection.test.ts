@@ -318,6 +318,17 @@ describe('detectAgents / detectAgentsStream — full probe pipeline (via the rea
     expect(amr.models).toEqual([]);
   });
 
+  it('a def with neither listModels nor fetchModels (aider) always reports fallbackModels', async () => {
+    const bin = path.join(dir, 'aider');
+    makeExecutable(bin);
+    mockState.responses.set(JSON.stringify(['--version']), { stdout: '0.60.0\n' });
+    const results = await detectAgents({ aider: { AIDER_BIN: bin } });
+    const aider = results.find((a) => a.id === 'aider')!;
+    expect(aider.available).toBe(true);
+    expect(aider.modelsSource).toBe('fallback');
+    expect(aider.models.some((m) => m.id === 'sonnet')).toBe(true);
+  });
+
   it('safeProbe isolates a fault thrown by an injected amrProfileResolver and reports the agent unavailable', async () => {
     const bin = path.join(dir, 'vela');
     makeExecutable(bin);

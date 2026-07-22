@@ -71,7 +71,13 @@ export type RuntimeCapabilityMap = Record<string, boolean>;
 
 export type RuntimeListModels = {
   args: string[];
-  timeoutMs?: number;
+  // Required, not optional: every real def that declares `listModels`
+  // (codex, cursor-agent, grok-build, opencode) sets this explicitly, so an
+  // `?? 5000` fallback in `detection.ts#fetchModels` was dead code for every
+  // real caller. Making the field mandatory removes that branch instead of
+  // padding a test around data that never occurs (see
+  // `detection.ts`'s 2026-07-22 source-map.md entry).
+  timeoutMs: number;
   parse: (stdout: string) => RuntimeModelOption[] | null;
 };
 

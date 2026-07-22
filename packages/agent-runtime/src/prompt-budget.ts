@@ -179,8 +179,15 @@ export function checkWindowsCmdShimCommandLineBudget(
 // `C:\…\foo.exe` path through the same math the daemon would run on
 // Windows, while still skipping POSIX-shaped paths (which never go
 // through CreateProcess).
-function looksLikeWindowsPath(p: unknown): boolean {
-  if (typeof p !== 'string' || p.length === 0) return false;
+//
+// Takes `p: string`, not `unknown`: this function's only real call site
+// (`checkWindowsDirectExeCommandLineBudget`, below) already runs
+// `if (typeof resolvedBin !== 'string' || resolvedBin.length === 0) return
+// null;` before ever calling in, so `p` is always a non-empty string here —
+// a runtime `typeof`/`.length` guard was dead code for the one real caller.
+// Narrowed the parameter type to remove the branch instead of padding a
+// test around unreachable data.
+function looksLikeWindowsPath(p: string): boolean {
   // Drive-letter (`C:\…`, `C:/…`) or UNC (`\\server\share\…`).
   return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\');
 }

@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawnEnvForAgent } from '../env.js';
+
+function makeExecutable(filePath: string): void {
+  writeFileSync(filePath, '#!/bin/sh\necho stub\n', 'utf8');
+  chmodSync(filePath, 0o755);
+}
 
 describe('spawnEnvForAgent', () => {
   it('merges base env with configured overrides without touching an unrelated agent', () => {
@@ -36,6 +44,44 @@ describe('spawnEnvForAgent', () => {
   it('leaves an already-set VELA_OPENCODE_BIN value untouched for the amr branch', () => {
     const env = spawnEnvForAgent('amr', { HOME: '/h', VELA_OPENCODE_BIN: '/already/set/opencode' }, {}, {});
     expect(env.VELA_OPENCODE_BIN).toBe('/already/set/opencode');
+  });
+
+  describe('amr: VELA_OPENCODE_BIN backfill (resolveAmrOpenCodeExecutable)', () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(path.join(tmpdir(), 'agent-runtime-env-amr-opencode-test-'));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('backfills VELA_OPENCODE_BIN from the bundled companion tree when unset and resolvable', () => {
+      const resourceRoot = path.join(dir, 'resources');
+      const companionDir = path.join(resourceRoot, 'bin', 'libexec', 'opencode');
+      mkdirSync(companionDir, { recursive: true });
+      const companionBin = path.join(companionDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
+      makeExecutable(companionBin);
+      const env = spawnEnvForAgent('amr', { HOME: '/h', AGENT_RUNTIME_RESOURCE_ROOT: resourceRoot }, {}, {});
+      expect(env.VELA_OPENCODE_BIN).toBe(companionBin);
+    });
+
+    it('leaves VELA_OPENCODE_BIN unset when nothing resolves anywhere', () => {
+      const originalPath = process.env.PATH;
+      // Scope both PATH and the toolchain-bin-dir search to an isolated
+      // empty fake home so this assertion doesn't depend on whether
+      // opencode/opencode-cli happens to be installed on this dev machine.
+      process.env.AGENT_RUNTIME_HOME = dir;
+      process.env.PATH = dir;
+      try {
+        const env = spawnEnvForAgent('amr', { HOME: '/h' }, {}, {});
+        expect(env.VELA_OPENCODE_BIN).toBeUndefined();
+      } finally {
+        process.env.PATH = originalPath;
+        delete process.env.AGENT_RUNTIME_HOME;
+      }
+    });
   });
 
   it('strips OpenCode server-identity env keys case-insensitively', () => {
