@@ -12,6 +12,18 @@
 
 import { useEffect, useRef } from 'react';
 
+// Resolves which global to attach the listener to. Exported (previously
+// inlined in the effect below) so the "target unavailable" (SSR) branch has
+// a direct unit test — driving it through a real `renderHook` mount hits
+// React DOM internals that themselves dereference `window` well before this
+// hook's own effect ever runs, making that branch unreachable via a
+// rendered test (see packages/ui/source-map.md's 2026-07-22 dated entry;
+// same "extract into a directly-testable pure function" precedent as
+// `@jini/mcp`'s `oauth.ts` readCappedText).
+export function resolveGlobalKeydownTarget(target: 'window' | 'document'): EventTarget | undefined {
+  return target === 'document' ? globalThis.document : globalThis.window;
+}
+
 export interface UseGlobalKeydownOptions {
   /** Skip attaching the listener while `false` (e.g. only while a surface is active/mounted-and-open). Defaults to `true`. */
   enabled?: boolean;
@@ -41,7 +53,17 @@ export function useGlobalKeydown(
 
   useEffect(() => {
     if (!enabled) return;
-    const eventTarget = target === 'document' ? globalThis.document : globalThis.window;
+    const eventTarget = resolveGlobalKeydownTarget(target);
+    // `resolveGlobalKeydownTarget` itself has a direct, real test proving
+    // it CAN return `undefined` (see this file's own test). This call
+    // site's guard against that, though, is empirically and structurally
+    // unreachable through any real mount: `useEffect` bodies only ever run
+    // client-side, after React has already committed real DOM nodes via
+    // `ReactDOM` — which itself requires `window` (and, for a 'document'
+    // target, `document`) to already exist. There is no real browser
+    // session in which this hook's effect runs at all while its own
+    // resolved target has vanished. See packages/ui/source-map.md's
+    // 2026-07-22 dated entry.
     if (typeof eventTarget === 'undefined') return;
 
     function onKeyDown(event: KeyboardEvent) {

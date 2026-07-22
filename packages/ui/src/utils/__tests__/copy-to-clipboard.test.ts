@@ -82,5 +82,62 @@ describe('copyToClipboard', () => {
       // Cleanup still runs even when execCommand throws.
       expect(removeChild).toHaveBeenCalledTimes(1);
     });
+
+    it('skips focus restoration when there was no prior active element', async () => {
+      const appendChild = vi.fn();
+      const removeChild = vi.fn();
+      const execCommand = vi.fn(() => true);
+      vi.stubGlobal('HTMLElement', FakeElement);
+      vi.stubGlobal('document', {
+        activeElement: null,
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild, removeChild },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+      expect(removeChild).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips focus restoration when the prior active element is no longer connected', async () => {
+      const appendChild = vi.fn();
+      const removeChild = vi.fn();
+      const execCommand = vi.fn(() => true);
+      const disconnectedElement = new FakeElement();
+      const focusSpy = vi.spyOn(disconnectedElement, 'focus');
+      vi.spyOn(disconnectedElement, 'isConnected', 'get').mockReturnValue(false);
+      vi.stubGlobal('HTMLElement', FakeElement);
+      vi.stubGlobal('document', {
+        activeElement: disconnectedElement,
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild, removeChild },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+      expect(focusSpy).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a plain focus() call when focus({ preventScroll }) throws', async () => {
+      const appendChild = vi.fn();
+      const removeChild = vi.fn();
+      const execCommand = vi.fn(() => true);
+      const priorFocusElement = new FakeElement();
+      const focusCalls: Array<{ preventScroll?: boolean } | undefined> = [];
+      priorFocusElement.focus = (options?: { preventScroll?: boolean }) => {
+        focusCalls.push(options);
+        if (options) throw new Error('preventScroll unsupported');
+      };
+      vi.stubGlobal('HTMLElement', FakeElement);
+      vi.stubGlobal('document', {
+        activeElement: priorFocusElement,
+        createElement: () => new FakeElement(),
+        execCommand,
+        body: { appendChild, removeChild },
+      });
+
+      await expect(copyToClipboard('x')).resolves.toBe(true);
+      expect(focusCalls).toEqual([{ preventScroll: true }, undefined]);
+    });
   });
 });

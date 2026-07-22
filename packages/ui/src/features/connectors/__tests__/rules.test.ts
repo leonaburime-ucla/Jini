@@ -7,6 +7,7 @@ import {
   clearConnectorAuthorizationPending,
   connectorAuthSnapshotChanged,
   connectorPanelAlerts,
+  defaultCategoryLabel,
   fallbackLogoInitials,
   fallbackLogoPaletteIndex,
   findStaleAuthorizations,
@@ -26,6 +27,7 @@ import {
   sortConnectorsForDisplay,
   sortConnectorsForSearch,
   statusLabel,
+  toolsBadgeTranslation,
   updateConnectorAuthorizationPendingFromConnectResponse,
   updateConnectorAuthorizationPendingFromStatuses,
 } from '../rules.js';
@@ -95,6 +97,15 @@ describe('mergeConnectorToolPreview', () => {
     expect(merged.toolsNextCursor).toBeUndefined();
   });
 
+  it('carries forward featuredToolNames when next omits it, and takes next when provided', () => {
+    const withFeatured = { ...base, featuredToolNames: ['a'] };
+    const nextWithout = makeConnector({ tools: [] });
+    expect(mergeConnectorToolPreview(withFeatured, nextWithout, true).featuredToolNames).toEqual(['a']);
+
+    const nextWith = makeConnector({ tools: [], featuredToolNames: ['b'] });
+    expect(mergeConnectorToolPreview(withFeatured, nextWith, true).featuredToolNames).toEqual(['b']);
+  });
+
   it('keeps toolsNextCursor when the next page provides one', () => {
     const next = makeConnector({ tools: [], toolsNextCursor: 'cursor-2' });
     const merged = mergeConnectorToolPreview(base, next, true);
@@ -109,6 +120,29 @@ describe('mergeConnectorActionResult', () => {
     const merged = mergeConnectorActionResult(current, next);
     expect(merged.status).toBe('connected');
     expect(merged.tools).toHaveLength(1);
+  });
+
+  it('takes next tools when next has some', () => {
+    const current = makeConnector({ tools: [{ name: 'a', safety: { sideEffect: 'no_side_effect' } }] });
+    const next = makeConnector({ tools: [{ name: 'b', safety: { sideEffect: 'no_side_effect' } }] });
+    const merged = mergeConnectorActionResult(current, next);
+    expect(merged.tools.map((t) => t.name)).toEqual(['b']);
+  });
+
+  it('carries forward toolCount and featuredToolNames when next omits them', () => {
+    const current = makeConnector({ toolCount: 5, featuredToolNames: ['a'] });
+    const next = makeConnector({});
+    const merged = mergeConnectorActionResult(current, next);
+    expect(merged.toolCount).toBe(5);
+    expect(merged.featuredToolNames).toEqual(['a']);
+  });
+
+  it('takes next toolCount/featuredToolNames when provided', () => {
+    const current = makeConnector({ toolCount: 5, featuredToolNames: ['a'] });
+    const next = makeConnector({ toolCount: 9, featuredToolNames: ['b'] });
+    const merged = mergeConnectorActionResult(current, next);
+    expect(merged.toolCount).toBe(9);
+    expect(merged.featuredToolNames).toEqual(['b']);
   });
 });
 
@@ -142,6 +176,23 @@ describe('parseConnectorAuthorizationPendingState', () => {
   it('ignores non-string expiresAt/redirectUrl fields', () => {
     const raw = JSON.stringify({ a: { expiresAt: 123, redirectUrl: null } });
     expect(parseConnectorAuthorizationPendingState(raw)).toEqual({ a: {} });
+  });
+
+  it('keeps a valid redirectUrl string', () => {
+    const raw = JSON.stringify({ a: { redirectUrl: 'https://example.test/authorize' } });
+    expect(parseConnectorAuthorizationPendingState(raw)).toEqual({
+      a: { redirectUrl: 'https://example.test/authorize' },
+    });
+  });
+
+  it('treats a non-object state value as an empty pending entry', () => {
+    const raw = JSON.stringify({ a: 'not-an-object', b: 42, c: null });
+    expect(parseConnectorAuthorizationPendingState(raw)).toEqual({ a: {}, b: {}, c: {} });
+  });
+
+  it('skips an entry with a blank connector id key', () => {
+    const raw = JSON.stringify({ '': { expiresAt: '2099-01-01T00:00:00Z' }, kept: {} });
+    expect(parseConnectorAuthorizationPendingState(raw)).toEqual({ kept: {} });
   });
 });
 
@@ -245,6 +296,16 @@ describe('connectorAuthSnapshotChanged / hasConnectorStatusChanges', () => {
 
   it('detects no change', () => {
     expect(connectorAuthSnapshotChanged({ status: 'available' }, { status: 'available' })).toBe(false);
+  });
+
+  it('reports no change when both sides are null/undefined', () => {
+    expect(connectorAuthSnapshotChanged(null, undefined)).toBe(false);
+    expect(connectorAuthSnapshotChanged(undefined, null)).toBe(false);
+  });
+
+  it('reports a change when exactly one side is null/undefined', () => {
+    expect(connectorAuthSnapshotChanged(null, { status: 'connected' })).toBe(true);
+    expect(connectorAuthSnapshotChanged({ status: 'connected' }, null)).toBe(true);
   });
 
   it('hasConnectorStatusChanges is true when any connector changed', () => {
@@ -358,6 +419,71 @@ describe('search scoring + sorting', () => {
     const results = sortConnectorsForSearch(connectors, 'zendesk');
     expect(results.map((c) => c.id)).toEqual(['a', 'c']);
   });
+
+  it('returns 0 for an empty (post-trim) query rather than scanning fields', () => {
+    expect(getConnectorSearchScore(connectors[0]!, '   ')).toBe(0);
+  });
+
+  it('matches against tool title/name/description too', () => {
+    const withTools = makeConnector({
+      id: 'd',
+      name: 'Other',
+      tools: [
+        {
+          name: 'send_ticket',
+          title: 'Send Zendesk Ticket',
+          description: 'files a zendesk-style ticket',
+          safety: { sideEffect: 'no_side_effect' },
+        },
+      ],
+    });
+    expect(getConnectorSearchScore(withTools, 'zendesk')).not.toBeNull();
+
+    const nameOnly = makeConnector({
+      id: 'e',
+      name: 'Other2',
+      tools: [{ name: 'zendesk_tool', safety: { sideEffect: 'no_side_effect' } }],
+    });
+    expect(getConnectorSearchScore(nameOnly, 'zendesk')).not.toBeNull();
+  });
+
+  it('sortConnectorsForDisplay breaks a same-name tie by id', () => {
+    const tied = [
+      makeConnector({ id: 'z', name: 'Same' }),
+      makeConnector({ id: 'a', name: 'Same' }),
+    ];
+    expect(sortConnectorsForDisplay(tied).map((c) => c.id)).toEqual(['a', 'z']);
+  });
+
+  it('sortConnectorsForSearch breaks an equal-score tie by connected status, in either input order', () => {
+    const availableFirst = [
+      makeConnector({ id: 'z', name: 'Match', status: 'available' }),
+      makeConnector({ id: 'a', name: 'Match', status: 'connected' }),
+    ];
+    expect(sortConnectorsForSearch(availableFirst, 'match').map((c) => c.id)).toEqual(['a', 'z']);
+
+    const connectedFirst = [
+      makeConnector({ id: 'a', name: 'Match', status: 'connected' }),
+      makeConnector({ id: 'z', name: 'Match', status: 'available' }),
+    ];
+    expect(sortConnectorsForSearch(connectedFirst, 'match').map((c) => c.id)).toEqual(['a', 'z']);
+  });
+
+  it('sortConnectorsForSearch breaks an equal-score, equal-status tie by name then id', () => {
+    const tied = [
+      makeConnector({ id: 'z', name: 'Match Two', status: 'available' }),
+      makeConnector({ id: 'a', name: 'Match One', status: 'available' }),
+    ];
+    expect(sortConnectorsForSearch(tied, 'match').map((c) => c.id)).toEqual(['a', 'z']);
+  });
+
+  it('sortConnectorsForSearch breaks an equal-score, equal-status, equal-name tie by id alone', () => {
+    const tied = [
+      makeConnector({ id: 'z', name: 'Match', status: 'available' }),
+      makeConnector({ id: 'a', name: 'Match', status: 'available' }),
+    ];
+    expect(sortConnectorsForSearch(tied, 'match').map((c) => c.id)).toEqual(['a', 'z']);
+  });
 });
 
 describe('isTrustedConnectorCallbackOrigin', () => {
@@ -427,6 +553,22 @@ describe('formatToolsBadge / statusLabel', () => {
   });
 });
 
+describe('toolsBadgeTranslation', () => {
+  it.each([
+    [0, { key: 'No tools' }],
+    [1, { key: '1 tool' }],
+    [4, { key: '{count} tools', vars: { count: 4 } }],
+  ])('translates %i tools', (count, expected) => {
+    expect(toolsBadgeTranslation(count)).toEqual(expected);
+  });
+});
+
+describe('defaultCategoryLabel', () => {
+  it('passes the category straight through (host translates by key)', () => {
+    expect(defaultCategoryLabel('communication')).toBe('communication');
+  });
+});
+
 describe('fallback logo helpers', () => {
   it('builds initials from a single-word name', () => {
     expect(fallbackLogoInitials('Slack')).toBe('Sl');
@@ -438,6 +580,14 @@ describe('fallback logo helpers', () => {
 
   it('falls back to ? for an empty name', () => {
     expect(fallbackLogoInitials('   ')).toBe('?');
+  });
+
+  it('handles a single-character name (no second letter to lowercase)', () => {
+    expect(fallbackLogoInitials('X')).toBe('X');
+  });
+
+  it('handles a two-character single-word name', () => {
+    expect(fallbackLogoInitials('Hi')).toBe('Hi');
   });
 
   it('is stable for the same seed', () => {

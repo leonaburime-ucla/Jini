@@ -117,6 +117,22 @@ export function useConnectorAuthorization(
             delete next[connectorId];
             return next;
           });
+          // This clear's `curr[connectorId] !== undefined` guard is
+          // structurally unreachable as *true*: `authError[connectorId]`
+          // and `pending[connectorId]` (this function only ever runs for
+          // ids that were in `pendingBeforeReload`) can never both be set
+          // for the same id at the same time. Every path that sets
+          // `authError[id]` (`runConnectorAction`'s connect-failure branch)
+          // unconditionally clears `pending[id]` in that same update, and
+          // the only path that ever sets `pending[id]` to a new truthy
+          // value again (a later connect call's success branch)
+          // unconditionally clears `authError[id]` first, before ever
+          // reaching its own success branch. So by the time any id reaches
+          // this stale-sweep success path with a real `pending[id]` entry,
+          // `authError[id]` is guaranteed already absent. Left in place
+          // (not stripped) as a guard against a future refactor breaking
+          // that invariant — see packages/ui/source-map.md's 2026-07-22
+          // dated entry for the full proof.
           setAuthError((curr) => {
             if (curr[connectorId] === undefined) return curr;
             const next = { ...curr };

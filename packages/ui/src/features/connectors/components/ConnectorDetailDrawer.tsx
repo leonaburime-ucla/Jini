@@ -83,8 +83,14 @@ export function ConnectorDetailDrawer({
 
   function continueAuthorization(event: SyntheticEvent) {
     event.stopPropagation();
-    if (!authorizationPending?.redirectUrl) return;
-    onOpenExternalUrl?.(authorizationPending.redirectUrl);
+    // `continueAuthorization`'s only call site (the "continue in browser"
+    // button below) only ever renders while `authorizationPending &&
+    // authorizationPending.redirectUrl` already holds in that same render,
+    // and React re-binds this closure fresh on every render — so a
+    // re-check here was dead code for every real click, removed rather
+    // than tested around (same pattern as this package's `ConnectorCard.tsx`
+    // precedent; see packages/ui/source-map.md's 2026-07-22 dated entry).
+    onOpenExternalUrl?.(authorizationPending!.redirectUrl!);
   }
 
   useEffect(() => {
@@ -264,7 +270,15 @@ export function ConnectorDetailDrawer({
                     disabled={toolsPreviewLoading}
                     onClick={() => onLoadMoreTools(connector.id, connector.toolsNextCursor!)}
                   >
-                    {toolsPreviewLoading ? <Icon name="spinner" size={12} /> : null}
+                    {/* This button only ever renders while `!isLoadingTools`
+                        (`isLoadingTools = toolsPreviewLoading || !toolsLoaded`),
+                        which requires `toolsPreviewLoading` to already be
+                        `false` in this same render — a load-more-in-flight
+                        spinner here was structurally dead code (the whole
+                        section instead swaps to the "Loading tools…" message
+                        above the moment `toolsPreviewLoading` flips true), so
+                        it was removed rather than tested around. See
+                        packages/ui/source-map.md's 2026-07-22 dated entry. */}
                     <span>{t('Load more tools')}</span>
                   </button>
                 ) : null}

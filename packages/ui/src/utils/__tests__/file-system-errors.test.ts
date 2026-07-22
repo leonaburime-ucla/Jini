@@ -26,6 +26,19 @@ describe('createFileSystemReadError / isFileSystemReadError', () => {
     expect(wrapped.message).toBe('reading file: Error: oops');
   });
 
+  it('falls back to a stringified summary when the object message is not a string', () => {
+    const cause = { name: 'AbortError', message: 42 };
+    const wrapped = createFileSystemReadError('reading file', cause);
+    expect(wrapped.message).toBe(`reading file: AbortError: ${String(cause)}`);
+  });
+
+  it('falls back to a stringified summary for an Error with a blank name and message', () => {
+    const cause = new Error('');
+    cause.name = '';
+    const wrapped = createFileSystemReadError('reading file', cause);
+    expect(wrapped.message).toBe(`reading file: Error: ${String(cause)}`);
+  });
+
   it('isFileSystemReadError distinguishes wrapped errors from ordinary ones', () => {
     const wrapped = createFileSystemReadError('reading file', new Error('x'));
     expect(isFileSystemReadError(wrapped)).toBe(true);

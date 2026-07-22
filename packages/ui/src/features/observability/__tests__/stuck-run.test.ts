@@ -93,4 +93,36 @@ describe('stuck-run watchdog', () => {
   it('terminal on an untracked runId is a no-op', () => {
     expect(() => trackRunTerminal('never-started', 'failed')).not.toThrow();
   });
+
+  it('trackRunStart is a no-op when window is unavailable (SSR-style)', () => {
+    vi.stubGlobal('window', undefined);
+    try {
+      expect(() => trackRunStart('run-ssr', {})).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('defaults reporter and context when none are supplied, without throwing', () => {
+    expect(() => trackRunStart('run-defaults')).not.toThrow();
+  });
+
+  it('reports client_run_stuck after the default 5-minute window when stuckAfterMs is omitted', () => {
+    const reporter = vi.fn();
+    trackRunStart('run-default-duration', { reporter });
+    vi.advanceTimersByTime(5 * 60 * 1000);
+
+    expect(reporter).toHaveBeenCalledWith('client_run_stuck', expect.objectContaining({ run_id: 'run-default-duration' }));
+  });
+
+  it('progress on an already-stuck run is a no-op (does not re-schedule or throw)', () => {
+    const reporter = vi.fn();
+    trackRunStart('run-7', { reporter, stuckAfterMs: 1000 });
+    vi.advanceTimersByTime(1000); // reports stuck once
+    expect(reporter).toHaveBeenCalledTimes(1);
+
+    expect(() => trackRunProgress('run-7')).not.toThrow();
+    vi.advanceTimersByTime(5000);
+    expect(reporter).toHaveBeenCalledTimes(1);
+  });
 });

@@ -279,6 +279,378 @@ describe('useConnectorAuthorization', () => {
     expect(result.current.cancelFailed.slack).toBe(true);
   });
 
+  it('cancelStaleAuthorizations clears a pre-existing cancelFailed flag on a successful stale cancel', async () => {
+    // (authError specifically cannot coexist with a pending entry for the
+    // same connector — see this file's own doc comment on
+    // `cancelStaleAuthorizations` for the proof — so only cancelFailed is
+    // exercisable here.)
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    port.fetchConnectorStatuses = vi.fn(async () => ({ slack: { status: 'available' as const } }));
+    // A pending entry that outlives the manual cancel attempt below but
+    // expires before the stale sweep fires.
+    const storage = makeMemoryStorage({ slack: { expiresAt: new Date(Date.now() + 40).toISOString() } });
+    const { bridge, fireRefocus } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+    expect(result.current.pending.slack).toBeDefined();
+
+    // 1) A manual cancel attempt fails, seeding cancelFailed without
+    // touching the still-pending entry.
+    port.cancelConnectorAuthorization = vi.fn(async () => null);
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+    expect(result.current.cancelFailed.slack).toBe(true);
+    expect(result.current.pending.slack).toBeDefined();
+
+    // 2) The pending entry goes stale; the refocus sweep's own cancel call
+    // now succeeds, clearing the cancelFailed flag seeded above.
+    port.cancelConnectorAuthorization = vi.fn(async () => makeConnector({ status: 'available' }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await act(async () => {
+      fireRefocus();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.cancelFailed.slack).toBeUndefined());
+  });
+
+  it('cancelStaleAuthorizations marks cancelFailed when the port cancel call throws', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    port.cancelConnectorAuthorization = vi.fn(async () => {
+      throw new Error('network error');
+    });
+    const storage = makeMemoryStorage({ slack: { expiresAt: new Date(Date.now() + 20).toISOString() } });
+    const { bridge, fireRefocus } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await act(async () => {
+      fireRefocus();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.cancelFailed.slack).toBe(true));
+  });
+
+  it('runConnectorAction(connect) clears pre-existing cancelFailed/authError flags before attempting', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.cancelConnectorAuthorization = vi.fn(async () => null);
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    // Seed cancelFailed via the public API (its fallback path), and
+    // authError via a first failed connect attempt.
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+    expect(result.current.cancelFailed.slack).toBe(true);
+
+    port.connectConnector = vi.fn(async () => ({ connector: null, error: 'seed-error' }));
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+    expect(result.current.authError.slack).toBe('seed-error');
+
+    port.connectConnector = vi.fn(async () => ({ connector: makeConnector(), auth: { kind: 'connected' as const } }));
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+    expect(result.current.cancelFailed.slack).toBeUndefined();
+    expect(result.current.authError.slack).toBeUndefined();
+  });
+
+  it('runConnectorAction(connect) reports failed and rethrows when the port call itself throws', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.connectConnector = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors, onAuthResult });
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.runConnectorAction('slack', 'connect');
+      }),
+    ).rejects.toThrow('network down');
+
+    expect(onAuthResult).toHaveBeenCalledWith({
+      connectorId: 'slack',
+      action: 'connect',
+      result: 'failed',
+      errorCode: 'network down',
+    });
+    // The `finally` still clears pendingConnectorAction even though it threw.
+    expect(result.current.pendingConnectorAction).toBeNull();
+  });
+
+  it('a failed connect with no connector and no error message omits errorCode from onAuthResult', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.connectConnector = vi.fn(async () => ({ connector: null }));
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors, onAuthResult });
+    });
+
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+
+    expect(onAuthResult).toHaveBeenCalledWith({ connectorId: 'slack', action: 'connect', result: 'failed' });
+    expect(result.current.authError.slack).toBeUndefined();
+  });
+
+  it('a successful connect that lands the connector as already-connected notifies onConnectorsChanged', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.connectConnector = vi.fn(async () => ({
+      connector: makeConnector({ status: 'connected' }),
+      auth: { kind: 'connected' as const },
+    }));
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onConnectorsChanged = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, {
+        connectors: [makeConnector()],
+        setConnectors,
+        onConnectorsChanged,
+      });
+    });
+
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+    expect(onConnectorsChanged).toHaveBeenCalled();
+  });
+
+  it('runConnectorAction(disconnect) succeeds, clears a pre-existing authError, and notifies onConnectorsChanged/onAuthResult', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    port.connectConnector = vi.fn(async () => ({ connector: null, error: 'seed-error' }));
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onConnectorsChanged = vi.fn();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, {
+        connectors: [makeConnector()],
+        setConnectors,
+        onConnectorsChanged,
+        onAuthResult,
+      });
+    });
+
+    // Seed an authError first so the disconnect path's own clear-branch has
+    // something real to remove.
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+    expect(result.current.authError.slack).toBe('seed-error');
+
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'disconnect');
+    });
+
+    expect(result.current.authError.slack).toBeUndefined();
+    expect(onConnectorsChanged).toHaveBeenCalled();
+    expect(onAuthResult).toHaveBeenCalledWith({ connectorId: 'slack', action: 'disconnect', result: 'success' });
+  });
+
+  it('runConnectorAction(disconnect) reports failed and rethrows when the port call throws', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    port.disconnectConnector = vi.fn(async () => {
+      throw new Error('disconnect failed');
+    });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors, onAuthResult });
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.runConnectorAction('slack', 'disconnect');
+      }),
+    ).rejects.toThrow('disconnect failed');
+
+    expect(onAuthResult).toHaveBeenCalledWith({
+      connectorId: 'slack',
+      action: 'disconnect',
+      result: 'failed',
+      errorCode: 'disconnect failed',
+    });
+  });
+
+  it('cancelAuthorization on success clears pre-existing cancelFailed/authError flags', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    port.connectConnector = vi.fn(async () => ({ connector: null, error: 'seed-error' }));
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    // Seed an authError, and separately force a cancel-failure to seed
+    // cancelFailed, before the real successful cancel below.
+    await act(async () => {
+      await result.current.runConnectorAction('slack', 'connect');
+    });
+    expect(result.current.authError.slack).toBe('seed-error');
+
+    port.cancelConnectorAuthorization = vi.fn(async () => null);
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+    expect(result.current.cancelFailed.slack).toBe(true);
+
+    port.cancelConnectorAuthorization = vi.fn(async () => makeConnector({ status: 'available' }));
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+
+    expect(result.current.cancelFailed.slack).toBeUndefined();
+    expect(result.current.authError.slack).toBeUndefined();
+  });
+
+  it('cancelAuthorization returns quietly without marking cancelFailed when the status refresh shows the connector already connected', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    port.cancelConnectorAuthorization = vi.fn(async () => null);
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+    expect(result.current.cancelFailed.slack).toBeUndefined();
+  });
+
+  it('cancelAuthorization still marks cancelFailed when the fallback status refresh itself throws', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'available' })] });
+    port.cancelConnectorAuthorization = vi.fn(async () => null);
+    port.fetchConnectorStatuses = vi.fn(async () => {
+      throw new Error('status fetch failed');
+    });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors });
+    });
+
+    await act(async () => {
+      await result.current.cancelAuthorization('slack');
+    });
+    expect(result.current.cancelFailed.slack).toBe(true);
+  });
+
+  it('reloadStatuses calls onConnectorsChanged when a real status change is detected', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onConnectorsChanged = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, {
+        connectors: [makeConnector({ status: 'available' })], // differs from the port's real status
+        setConnectors,
+        onConnectorsChanged,
+      });
+    });
+
+    await act(async () => {
+      await result.current.reloadStatuses();
+    });
+    expect(onConnectorsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('runConnectorAction(connect) stringifies a non-Error throw for errorCode', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
+    port.connectConnector = vi.fn(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-throw-literal
+      throw 'a plain string failure';
+    });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors, onAuthResult });
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.runConnectorAction('slack', 'connect');
+      }),
+    ).rejects.toBe('a plain string failure');
+
+    expect(onAuthResult).toHaveBeenCalledWith({
+      connectorId: 'slack',
+      action: 'connect',
+      result: 'failed',
+      errorCode: 'a plain string failure',
+    });
+  });
+
+  it('runConnectorAction(disconnect) stringifies a non-Error throw for errorCode, and clears a no-op authError cleanly', async () => {
+    const port = createFakeConnectorsPort({ connectors: [makeConnector({ status: 'connected' })] });
+    port.disconnectConnector = vi.fn(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-throw-literal
+      throw 'plain disconnect failure';
+    });
+    const storage = makeMemoryStorage();
+    const { bridge } = makeControllableBridge();
+    const onAuthResult = vi.fn();
+    const { result } = renderHook(() => {
+      const setConnectors = vi.fn();
+      return useConnectorAuthorization(port, storage, bridge, { connectors: [makeConnector()], setConnectors, onAuthResult });
+    });
+
+    // authError.slack is undefined here — this also exercises the
+    // disconnect path's authError-clear updater's "nothing to clear"
+    // branch (returns the same reference) before the port call throws.
+    await expect(
+      act(async () => {
+        await result.current.runConnectorAction('slack', 'disconnect');
+      }),
+    ).rejects.toBe('plain disconnect failure');
+
+    expect(onAuthResult).toHaveBeenCalledWith({
+      connectorId: 'slack',
+      action: 'disconnect',
+      result: 'failed',
+      errorCode: 'plain disconnect failure',
+    });
+  });
+
   it('persists pending state to the storage port whenever it changes', async () => {
     const port = createFakeConnectorsPort({ connectors: [makeConnector()] });
     port.connectConnector = vi.fn(async () => ({

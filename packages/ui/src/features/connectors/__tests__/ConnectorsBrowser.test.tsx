@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n/index.js';
@@ -88,6 +88,199 @@ describe('ConnectorsBrowser', () => {
 
     await userEvent.click(screen.getByTestId('connector-drawer-close'));
     expect(screen.queryByTestId('connector-drawer')).toBeNull();
+  });
+
+  it('falls back to its own fake dependencies when none are supplied', async () => {
+    render(<ConnectorsBrowser unlocked />);
+    // The default fake dependencies seed an empty catalog — proves the
+    // component mounted and loaded without a `dependencies` prop at all,
+    // rather than throwing.
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  });
+
+  it('notifies onConnectorsChanged when a status refresh detects a real change', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    const onConnectorsChanged = vi.fn();
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} onConnectorsChanged={onConnectorsChanged} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(onConnectorsChanged).toHaveBeenCalled());
+  });
+
+  it('disconnects a connector from the grid card action', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector({ status: 'connected' })] });
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy());
+  });
+
+  it('clears the search filter via the empty-state action', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.type(screen.getByTestId('connectors-search-input'), 'zzz-no-match');
+    await waitFor(() => expect(screen.getByTestId('connectors-empty')).toBeTruthy());
+
+    const emptyState = screen.getByTestId('connectors-empty');
+    await userEvent.click(within(emptyState).getByRole('button', { name: 'Clear search' }));
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+    expect((screen.getByTestId('connectors-search-input') as HTMLInputElement).value).toBe('');
+  });
+
+  it('passes getCategoryLabel through to the grid cards and the detail drawer', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector({ category: 'crm' })] });
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} getCategoryLabel={(c) => c.toUpperCase()} />);
+    await waitFor(() => expect(screen.getByText('CRM')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Slack' }));
+    await waitFor(() => expect(screen.getByTestId('connector-drawer')).toBeTruthy());
+    expect(within(screen.getByTestId('connector-drawer')).getAllByText('CRM').length).toBeGreaterThan(0);
+  });
+
+  it('defaults selectedProvider using DEFAULT_PROVIDER_TAB_ID when providerTabs is empty', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} providerTabs={[]} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+  });
+
+  it('cancels a pending authorization from the grid card directly (not via the drawer)', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    dependencies.data.connectConnector = vi.fn(async () => ({
+      connector: makeConnector(),
+      auth: { kind: 'redirect_required' as const, redirectUrl: 'https://oauth.example.com', expiresAt: '2099-01-01T00:00:00Z' },
+    }));
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel authorization' })).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel authorization' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel authorization' })).toBeNull());
+  });
+
+  it('fires onProviderTabClick and the gate onClick when the gate CTA is clicked', async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    const onProviderTabClick = vi.fn();
+    const gateOnClick = vi.fn();
+    render(
+      <ConnectorsBrowser
+        unlocked={false}
+        dependencies={dependencies}
+        onProviderTabClick={onProviderTabClick}
+        gate={{ title: 'Add a key', body: 'body', ctaLabel: 'Get key', ctaHref: 'https://example.com', onClick: gateOnClick }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('connector-gate')).toBeTruthy());
+
+    await userEvent.click(screen.getByText('Get key'));
+    expect(onProviderTabClick).toHaveBeenCalledWith('gate_card');
+    expect(gateOnClick).toHaveBeenCalled();
+  });
+
+  it('passes getDisplayableAccountLabel through to the detail drawer', async () => {
+    const dependencies = createFakeConnectorsDependencies({
+      connectors: [makeConnector({ status: 'connected', accountLabel: 'me@x.com' })],
+    });
+    render(
+      <ConnectorsBrowser
+        unlocked
+        dependencies={dependencies}
+        getDisplayableAccountLabel={() => 'custom-label@x.com'}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Slack' }));
+    await waitFor(() => expect(screen.getByText('custom-label@x.com')).toBeTruthy());
+  });
+
+  it('supports the full detail-drawer action set: disconnect, cancel authorization, load more tools, and open external url', async () => {
+    const dependencies = createFakeConnectorsDependencies({
+      connectors: [
+        makeConnector({
+          status: 'connected',
+          toolCount: 2,
+          tools: [{ name: 'a', safety: { sideEffect: 'no_side_effect' } }],
+          toolsNextCursor: 'cursor-2',
+        }),
+      ],
+    });
+    const fetchDetailSpy = vi.spyOn(dependencies.data, 'fetchConnectorDetail');
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Slack' }));
+    await waitFor(() => expect(screen.getByTestId('connector-drawer')).toBeTruthy());
+    const drawer = screen.getByTestId('connector-drawer');
+
+    // load more tools — reaches the port with the right cursor.
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Load more tools' }));
+    await waitFor(() =>
+      expect(fetchDetailSpy).toHaveBeenCalledWith('slack', expect.objectContaining({ toolsCursor: 'cursor-2' })),
+    );
+
+    // disconnect from within the drawer
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Connect' }).length).toBeGreaterThan(0));
+  });
+
+  it('cancels a pending authorization from both the grid card and the detail drawer, and opens the OAuth link externally', async () => {
+    const dependencies = createFakeConnectorsDependencies({
+      connectors: [makeConnector({ description: 'A great connector.' })],
+    });
+    dependencies.data.connectConnector = vi.fn(async () => ({
+      connector: makeConnector({ description: 'A great connector.' }),
+      auth: { kind: 'redirect_required' as const, redirectUrl: 'https://oauth.example.com', expiresAt: '2099-01-01T00:00:00Z' },
+    }));
+    const openExternalUrlSpy = vi.spyOn(dependencies.data, 'openExternalUrl');
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    const grid = screen.getByTestId('connector-grid-wrap');
+    await userEvent.click(within(grid).getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(within(grid).getByRole('button', { name: 'Cancel authorization' })).toBeTruthy());
+
+    // Continue in browser from the card (grid-level onOpenExternalUrl).
+    await userEvent.click(within(grid).getByRole('button', { name: 'Continue in browser' }));
+    expect(openExternalUrlSpy).toHaveBeenCalledWith('https://oauth.example.com');
+
+    // Open the drawer and continue from there too (drawer-level onOpenExternalUrl).
+    await userEvent.click(within(grid).getByRole('button', { name: 'Open details for Slack' }));
+    await waitFor(() => expect(screen.getByTestId('connector-drawer')).toBeTruthy());
+    const drawer = screen.getByTestId('connector-drawer');
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Continue in browser' }));
+    expect(openExternalUrlSpy).toHaveBeenCalledTimes(2);
+
+    // Cancel from the drawer.
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Cancel authorization' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel authorization' })).toBeNull());
+  });
+
+  it("reflects a pending connect action in the open detail drawer's own busy state", async () => {
+    const dependencies = createFakeConnectorsDependencies({ connectors: [makeConnector()] });
+    let resolveConnect: (value: import('../types.js').ConnectorActionResult) => void = () => {};
+    dependencies.data.connectConnector = vi.fn(
+      () => new Promise<import('../types.js').ConnectorActionResult>((resolve) => (resolveConnect = resolve)),
+    );
+    render(<ConnectorsBrowser unlocked dependencies={dependencies} />);
+    await waitFor(() => expect(screen.getByText('Slack')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open details for Slack' }));
+    await waitFor(() => expect(screen.getByTestId('connector-drawer')).toBeTruthy());
+    const drawer = screen.getByTestId('connector-drawer');
+
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Connect' }));
+    await waitFor(() => {
+      const busyButtons = screen.getAllByRole('button', { name: 'Connect' }).filter((b) => b.getAttribute('aria-busy') === 'true');
+      expect(busyButtons.length).toBeGreaterThan(0);
+    });
+
+    resolveConnect({ connector: makeConnector({ status: 'connected' }), auth: { kind: 'connected' } });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Disconnect' }).length).toBeGreaterThan(0));
   });
 
   it('renders translated copy when mounted under an I18nProvider with a matching dictionary', async () => {

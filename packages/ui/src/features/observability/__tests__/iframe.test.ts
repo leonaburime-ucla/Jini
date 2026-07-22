@@ -66,6 +66,23 @@ describe('trackIframeLoad', () => {
     expect(reporter).toHaveBeenCalledTimes(1);
   });
 
+  it('only settles once even across two settle-triggering events (error then timeout)', () => {
+    const reporter = vi.fn();
+    trackIframeLoad({ iframe, surface: 'preview', reporter, timeoutMs: 1000 });
+
+    iframe.dispatchEvent(new Event('error'));
+    iframe.dispatchEvent(new Event('error'));
+    vi.advanceTimersByTime(1000);
+
+    expect(reporter).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the no-op reporter and the default timeout when neither is supplied', () => {
+    expect(() => trackIframeLoad({ iframe, surface: 'preview' })).not.toThrow();
+    // Default timeout is 15000ms — well short of that should report nothing.
+    vi.advanceTimersByTime(14999);
+  });
+
   it('stops listening and clears the timer once torn down', () => {
     const reporter = vi.fn();
     const teardown = trackIframeLoad({ iframe, surface: 'preview', reporter, timeoutMs: 1000 });

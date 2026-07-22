@@ -1,6 +1,27 @@
-import { describe, expect, it, vi } from 'vitest';
-import { detectInitialLocale, resolveSystemLocale } from '../locale.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { defaultDetectSystemLocale, detectInitialLocale, resolveSystemLocale } from '../locale.js';
 import type { LocalePersistencePort } from '../locale.js';
+
+describe('defaultDetectSystemLocale', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves against navigator.languages when present', () => {
+    vi.stubGlobal('navigator', { languages: ['fr-FR', 'en'], language: 'en' });
+    expect(defaultDetectSystemLocale(['en', 'fr'])).toBe('fr');
+  });
+
+  it('falls back to navigator.language when navigator.languages is empty', () => {
+    vi.stubGlobal('navigator', { languages: [], language: 'fr' });
+    expect(defaultDetectSystemLocale(['en', 'fr'])).toBe('fr');
+  });
+
+  it('returns null when navigator is entirely unavailable (SSR-style)', () => {
+    vi.stubGlobal('navigator', undefined);
+    expect(defaultDetectSystemLocale(['en', 'fr'])).toBeNull();
+  });
+});
 
 describe('resolveSystemLocale', () => {
   const supported = ['en', 'fr', 'zh-CN', 'zh-TW', 'pt-BR'];
@@ -90,6 +111,16 @@ describe('detectInitialLocale', () => {
       detectSystemLocale: () => 'de',
     });
     expect(result).toBe('en');
+  });
+
+  it('uses defaultDetectSystemLocale when detectSystemLocale is omitted', () => {
+    vi.stubGlobal('navigator', { languages: ['fr-FR'], language: 'fr' });
+    try {
+      const result = detectInitialLocale({ supportedLocales, fallbackLocale: 'en' });
+      expect(result).toBe('fr');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('returns fallbackLocale outside a window context (SSR)', () => {

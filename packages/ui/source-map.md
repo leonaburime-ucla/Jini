@@ -3607,3 +3607,242 @@ DOM-pinned comment overlay (its geometry helpers already shipped as
 the deploy-modal shell, and the export-menu shell. Each still has the same
 real, defensible generic shape the classification described — none
 attempted this session; genuinely out of scope, not silently dropped.
+
+## 2026-07-22 addition — genuine 99.98/99.88/100/99.98 coverage across the whole package (audit fix, coverage pass)
+
+This package was not in this task's originally-named package list — it was found via the
+standing rule ("check every other package with a source-map.md for coverage gaps beyond the named
+list"). Baseline (`rm -rf coverage && pnpm --dir packages/ui run test:coverage`, then
+`coverage/coverage-final.json` read directly with a small Python script per this task's own
+method — the text table truncates once a package has this many files): **93.35% statements /
+91.28% branches / 92.88% functions / 93.35% lines** package-wide, with `src/utils` the worst single
+directory and `src/features/connectors/**` (the whole feature: `rules.ts`, `dependencies.ts`, all
+3 hooks, all 5 components, plus `ConnectorsBrowser.tsx` itself) the largest concentration of real
+gaps. Reached **99.98% statements / 99.88% branches / 100% functions / 99.98% lines**
+(17723/17726 statements, 6865/6873 branches, 1193/1193 functions, 17723/17726 lines) via the
+classify-then-fix loop — every gap was either a real reachable branch that got a real test, a
+provably-dead branch removed via a real refactor, or (a small residual set) a provably-unreachable
+branch documented in place rather than forced. Zero `/* v8 ignore */` anywhere in this task's
+changes, matching this repo's zero-precedent policy.
+
+### 0/0/0/0 files verified as genuinely type-only (not a real gap)
+
+20 more `ports.ts`/`types.ts` files package-wide showed `0/0/0/0` in the coverage report. Each was
+independently re-verified (not assumed from the pattern already documented above for
+`settings-dialog`/`tab-strip`/`html-viewer`/`list-detail-panel`) via
+`grep -nE '^(export )?(const|function|class|let|var) '` finding zero runtime declarations, plus a
+broader `enum|default` sweep for the same files — confirmed pure `export type`/`export interface`
+declarations that fully erase at compile time. Added to `vitest.config.ts`'s `coverage.exclude`
+list: `features/{asset-grid,asset-tree-browser,connectors,memory,sketch-editor,version-manager,
+viewer-shell}/{ports,types}.ts`, `features/browser-chrome/{ports,types}.ts`,
+`features/i18n/types.ts`, `features/mention-autocomplete/types.ts`,
+`features/progress-card/types.ts`, `features/schedule-picker/types.ts`.
+
+### Real refactors — dead branches removed rather than tested around
+
+Every one of these follows this task's own established standard (`packages/http/source-map.md`'s
+`runs.ts`/`terminals.ts` entry): a branch that no real call site (or, for JSX conditionals, no real
+*render* path) can ever take, given the code's actual internal call graph — not "hard to trigger",
+structurally impossible.
+
+- **`utils/notifications.ts`**: `ToneSpec.gain` was optional with a `?? 0.18` default; `playTones`'
+  only caller (`SOUND_PLAYERS`, all 7 entries) always supplies `gain` explicitly — made required,
+  dropped the default. `showViaConstructor`'s own `typeof Notification === 'undefined'` /
+  `Notification.permission !== 'granted'` re-checks were dead: its only caller
+  (`showCompletionNotification`) already performs both checks before ever calling it — removed.
+- **`utils/auto-open-file.ts`**: `basenameOf`'s `?? p` fallback — `String.split` never returns a
+  holey/empty array, so `.pop()` can never be `undefined` for a real string — removed.
+- **`utils/markdown-scroll-sync.ts`**: `escapeMirrorText(lines[i] ?? '')` — `text.split('\n')` is
+  always dense, so `lines[i]` is always defined — removed the fallback. `hasVerticalProgression`'s
+  `offsets[0] ?? 0` — its only callers always build a dense `offsets` array — removed.
+  `mapScrollPosition`'s `span > 0 ? (value - sourceLow) / span : 0` — proved (not just tested)
+  `span` is *always* > 0 for any input array (monotonic or not), via this function's own binary-
+  search invariant (`sourceLow <= value < sourceHigh` holds at every possible exit, guaranteed by
+  the early clamp checks plus the loop's own low/high update rule) — removed the dead ternary,
+  replaced with a direct division. The `typeof document === 'undefined'` half of
+  `measureEditorBlockOffsets`'s guard is real, intentional SSR-safety API contract per its own
+  JSDoc, but empirically unreachable through this repo's actual call graph today (its only caller
+  always supplies an already browser-mounted ref) — left in place with a comment explaining why a
+  real test isn't attempted here (would require either reintroducing this package's own documented
+  jsdom/node coverage-merge bug — see `features/html-viewer/dependencies`'s entry above — or
+  hand-faking this function's full DOM surface under plain Node).
+- **`utils/smooth-scroll-to-top.ts`**: `unitBezier`'s Newton-iteration `Math.abs(d) < 1e-6 break`
+  guard — sampled `sampleDX(t)` at 1,000,001 evenly-spaced points across the full `t ∈ [0,1]` domain
+  for this file's one and only curve (`EASE_OUT = unitBezier(0.23, 1, 0.32, 1)`, the sole call site
+  with fixed constants) — minimum observed derivative ≈0.6095, nowhere near the guard. Documented
+  in place (not removed — a defensive guard worth keeping against a future curve-constant change),
+  proof recorded in a code comment at the call site.
+- **`features/connectors/rules.ts`**: `fallbackLogoInitials`'s `single[0] ?? ''` — `single` is
+  always non-empty (proved via the `parts.length === 1` guard plus the earlier `!cleaned` check on
+  an already-`.trim()`-ed string) — removed; `single[1] ?? ''` stayed (a real single-character-name
+  case).
+- **`features/connectors/components/ConnectorCard.tsx`** and **`ConnectorDetailDrawer.tsx`**:
+  both had a `continueAuthorization` handler re-checking `authorizationPending?.redirectUrl` before
+  using it — in both files the *only* call site (the "continue in browser" button) only ever
+  renders while that same condition already holds in that render, and React re-binds the closure
+  fresh every render — removed both re-checks.
+- **`features/connectors/components/ConnectorDetailDrawer.tsx`**: the "Load more tools" button's
+  `toolsPreviewLoading ? <Icon spinner/> : null` was dead — proved via the section's own
+  `isLoadingTools = toolsPreviewLoading || !toolsLoaded` gate: the button (and everything inside
+  it) only renders while `!isLoadingTools`, which requires `toolsPreviewLoading` to already be
+  `false` in that same render — so inside the button it can never be `true`. Removed the spinner;
+  added a test instead documenting the real behavior (a load-more-in-flight fetch swaps the whole
+  section to the "Loading tools…" message, not a button-local spinner).
+
+### Provably-unreachable branches documented in place (not forced, not silently left uncovered)
+
+Each below has a code comment with the proof at the call site, plus this entry as the durable
+record — matching `packages/registry/source-map.md`'s `trust.ts:337-338` standard (re-derive, don't
+assume; go further than "couldn't hit it in a test" when a structural argument is available).
+
+- **`browser/useGlobalKeydown.ts:66-76`** (`if (typeof eventTarget === 'undefined') return;` inside
+  the listener effect): the extracted `resolveGlobalKeydownTarget` helper (exported for direct
+  testing, matching `@jini/mcp`'s `oauth.ts` `readCappedText` precedent) *does* have a real,
+  passing test proving it returns `undefined`. This call site's guard against that is unreachable
+  through any real mount: `useEffect` bodies only ever run client-side, after React has already
+  committed real DOM via `ReactDOM` — which itself requires `window` (and, for a `'document'`
+  target, `document`) to already exist. There is no real browser session where this effect runs at
+  all while its own resolved target has vanished.
+- **`features/connectors/hooks/useConnectorAuthorization.ts:120-141`**
+  (`cancelStaleAuthorizations`'s `setAuthError` clear, the `curr[connectorId] !== undefined` guard):
+  proved `authError[id]` and `pending[id]` can never both be set for the same `id` at the same
+  time, via this hook's own state-transition rules — every path that sets `authError[id]`
+  (`runConnectorAction`'s connect-failure branch) unconditionally clears `pending[id]` in that same
+  update, and the only path that ever sets `pending[id]` to a new truthy value again (a later
+  connect call's success branch) unconditionally clears `authError[id]` *first*, before reaching
+  its own success branch. So by the time any id reaches this stale-sweep success path with a real
+  `pending[id]` entry, `authError[id]` is guaranteed already absent.
+- **`features/observability/stuck-run.ts:103-121`** (`emitStuck`'s `!entry || entry.emitted`
+  guard): `emitStuck` only ever runs as a `setTimeout` callback created by `scheduleEmit`; every
+  path that could remove or re-flag an entry (`trackRunStart`'s `cancelRun`, `trackRunTerminal`)
+  always `clearTimeout`s that exact timer first, and in this single-threaded runtime a cleared
+  timer's callback can never still fire — so by the time this callback runs, its entry is
+  guaranteed to both exist and have `emitted === false`.
+- **`features/observability/white-screen.ts`**: three related guards, all proved via the same
+  clearTimeout/disconnect-is-synchronous argument as `stuck-run.ts` above — (1)/(2) the timer
+  callback's and the `monitorMount` completion callback's `if (cancelled) return;` checks (both set
+  `cancelled = true` alongside a synchronous `clearTimeout`/`stopMonitor()` call, so a cleared timer
+  callback can never observe `cancelled` already `true`), and (3) the raw `MutationObserver`
+  callback's own `if (stopped) return;` — empirically re-verified directly against this repo's real
+  jsdom (not just reasoned about): two synchronous body mutations followed by two microtask flushes
+  produced exactly one callback invocation with `stopped` still `false` at its start, and a further
+  post-`disconnect()` mutation produced zero more calls (`disconnect()` also discards pending
+  mutation records per spec, confirmed empirically here too).
+
+### Real tests added — by area
+
+- **`src/utils`**: `notifications.ts` (the ~15-line uncovered block: AudioContext construction
+  failure, resume()-rejects, every `SOUND_PLAYERS` entry including the lowpass-filter branch, the
+  service-worker success/failure/no-showNotification/ready-rejects paths, the full `onclick`
+  handler including `window.focus()` throwing and `note.close()` throwing) — rewritten under
+  `// @vitest-environment node` (matching this package's own documented workaround for the jsdom/
+  node coverage-merge bug) with hand-built `window`/`navigator`/`Notification` doubles rather than
+  switching environments per case. `visual-stability.ts` (same node-env + hand-built
+  `localStorage` double treatment). `copy-to-clipboard.ts` (no-prior-focus, disconnected prior
+  focus, `focus({preventScroll})` throwing → plain `focus()` fallback). `dom-subscriptions.ts`
+  (the untested cleanup path of `subscribeVisibleFocusOrVisibilityChange`).
+  `auto-open-file.ts` (basename-fallback branch actually reached — the original test's "unique
+  basename match" case was accidentally short-circuited by the *exact-path* match one step earlier
+  in the same function — plus the filter-internal `f.path ?? f.name`/`rel ? … : false` branches,
+  distinct from the identical-looking expression earlier in the function; `selectAutoOpenProducedArtifact`'s
+  full depth/mtime tie-break matrix). `markdown-scroll-sync.ts` (the parser-throws catch path via
+  `vi.doMock('micromark', …)` rather than hunting for a real malformed-markdown input against a
+  deliberately permissive parser; `measureEditorBlockOffsets`/`measurePreviewBlockOffsets` — both
+  previously *completely untested* despite being exported — via `HTMLElement.prototype.offsetTop`/
+  `Element.prototype.getBoundingClientRect` prototype overrides, matching this package's own
+  `defineLayout`-style layout-faking convention elsewhere; `buildScrollAnchors`/`mapScrollPosition`'s
+  full sparse-array/out-of-order-input edge matrix). `smooth-scroll-to-top.ts`,
+  `file-system-errors.ts` (blank-name/blank-message Error fallback paths).
+- **`src/browser/useGlobalKeydown.ts`**: the resolver extraction described above, plus its own
+  direct unit tests for both `'window'`/`'document'` targets, present and absent.
+- **`src/hooks/useInView.ts`**: the never-attached-ref no-op path, and a custom `root` container
+  actually reaching `IntersectionObserver`'s own `options.root`.
+- **`src/features/observability/*`**: `install.ts`, `visibility.ts`, `boot-timing.ts` (default
+  reporter/timeout, `requestIdleCallback`-present scheduling, legacy `performance.timing` fallback,
+  a genuine two-listener `captured`-guard race reproduced by installing twice before `'load'`
+  fires), `iframe.ts`, `long-task.ts` (buffered-observe throws → plain-observe fallback → both throw
+  → clean give-up; unparseable `containerSrc`), `resource-error.ts` (every `readSrc` typed-element
+  branch, the bare-attribute fallback via a prototype-swapped element, async/defer/crossorigin
+  flags), `stuck-run.ts`, `white-screen.ts` (custom `rootElementId` found/not-found, `document.body`
+  null, `innerText`-present branch, loading-shell-only root) — every one of these SSR/idempotency/
+  teardown guards, previously either entirely untested or tested for statement coverage only
+  without the paired closure/teardown actually being *invoked*.
+- **`src/features/i18n`**: `locale.ts`'s `defaultDetectSystemLocale`/`browserPreferredLanguages`
+  (previously entirely untested) and the `detectSystemLocale`-omitted default-wiring branch;
+  `context.tsx`'s passthrough `setLocale` no-op and the missing-interpolation-var branch.
+- **`src/features/progress-card/reference-adapters.ts`**: the `description`/`label`/`text` content-
+  field fallback chain, a non-object `todos` entry, `mergeFileOpStatus`'s `'running'` and `'done'`
+  merge outcomes, `dedupeToolUsesById`'s empty-input and rebuild-then-keep-later-event paths,
+  `basename`'s all-separators edge case, a `'stopped'` todo status, the in-progress-bonus-absent
+  progress calculation, and both `fileOpStatusToProgressStatus` outcomes via `secondaryItems`.
+- **`src/features/connectors/rules.ts`**: the full `parseConnectorAuthorizationPendingState` field
+  matrix (blank id, non-object state, valid `redirectUrl`), `connectorAuthSnapshotChanged`'s
+  null/undefined matrix, `mergeConnectorToolPreview`/`mergeConnectorActionResult`'s
+  `toolCount`/`featuredToolNames` carry-forward-vs-override branches, tool-level search-score
+  matches, every sort tie-break level (connected-status → name → id) in both directions,
+  `toolsBadgeTranslation`, `defaultCategoryLabel` (previously uncalled by anything, tests or
+  otherwise), and the two-character-name initials case.
+- **`src/features/connectors/dependencies.ts`**: `cancelConnectorAuthorization`,
+  `openExternalUrl`, `fetchConnectorEnrichment`, `fetchConnectorDetail`'s found case,
+  `createFakeConnectorsDependencies` (previously entirely untested), and every SSR-guard/
+  try-catch pair in the two browser-adapter factories — the `sessionStorage.getItem`/`setItem`
+  failure tests needed `vi.stubGlobal('sessionStorage', …)` rather than `vi.spyOn`, since
+  `vi.spyOn(window.sessionStorage, 'getItem')` does not reliably intercept calls through jsdom's
+  `Storage` implementation (verified: the installed spy was provably not what ended up being
+  called).
+- **`src/features/connectors/hooks/useConnectorCatalog.ts`**: both effects' unmount-before-fetch-
+  resolves cancellation paths, and the port-has-no-`fetchConnectorEnrichment`-at-all case.
+- **`src/features/connectors/hooks/useConnectorDetail.ts`**: the not-found detail-connector
+  fallback, direct `loadMoreTools` calls while locked or while already loading, a retry that
+  clears a prior failure, the underlying port call throwing, `openDetails` clearing a stale
+  failure, and the "leaves sibling connectors in the catalog untouched" merge-map branch.
+- **`src/features/connectors/hooks/useConnectorAuthorization.ts`**: the full
+  `cancelStaleAuthorizations` matrix (throw vs. null-without-throw, clearing pre-existing
+  `cancelFailed`), `runConnectorAction`'s pre-clear-before-connect, non-`Error` throws on both
+  connect and disconnect (stringified via `String(err)`), the omitted-`errorCode` case, the
+  already-connected-on-success `onConnectorsChanged` call, a full standalone `disconnect` success
+  path (previously *only* reachable via an ignored, never-executed second call in one existing
+  test), `reloadStatuses`'s own `onConnectorsChanged` call, and `cancelAuthorization`'s success-
+  path clears plus its already-connected-so-don't-mark-failed and status-refresh-itself-throws
+  fallback branches.
+- **`src/features/connectors/components/*`**: `ConnectorLogo.tsx` (`onLoad`, synchronous
+  already-`complete`-on-mount in both outcomes, empty-`connectorId` palette fallback, `size="lg"`).
+  `ConnectorGrid.tsx` (pending-action-only-on-the-matching-card, custom empty-state copy,
+  locked-hides-empty-state, locked-without-a-gate-prop, `getCategoryLabel`/`onOpenExternalUrl`
+  pass-through). `ConnectorCard.tsx` (busy states for both actions, real disconnect click,
+  disabled-card click/Space/stray-key/bubbled-from-a-non-propagation-stopping-child keyboard
+  paths, the tools-badge-present case). `ConnectorDetailDrawer.tsx` (backdrop vs.
+  in-drawer mousedown, the authorization-pending header pill + tools-badge-in-header, the
+  in-progress-authorization block with and without a redirect link, the cancelFailed alert, a real
+  inline disconnect click, account-label/last-error rows, the genuinely-empty-tools message, a
+  tool's own description and title-falls-back-to-name, the connect+cancel-authorization footer
+  actions).
+- **`src/features/connectors/ConnectorsBrowser.tsx`** (25% function coverage → 100%): default
+  (no `dependencies` prop) construction, `onConnectorsChanged` wiring, grid-level disconnect, the
+  empty-state clear-search action, `getCategoryLabel`/`getDisplayableAccountLabel` reaching both
+  the grid *and* the open drawer, the full detail-drawer action set (disconnect, load-more,
+  cancel-authorization, open-external-url — both the grid-card and drawer instances of each
+  wiring closure are distinct closures at different call sites and needed independent coverage),
+  a pending action reflected in the drawer's own busy state, an empty `providerTabs` array's
+  `DEFAULT_PROVIDER_TAB_ID` fallback, and the gate CTA's `onProviderTabClick('gate_card')` +
+  `gate.onClick()` wiring. Needed `within(...)` scoping throughout once the grid and the drawer
+  are open simultaneously and render controls with identical accessible names.
+
+### A real test-flakiness bug found and fixed in passing
+
+One new `useConnectorDetail` test asserted `toolsLoaded` immediately after `waitFor(() =>
+expect(port.fetchConnectorDetail).toHaveBeenCalledTimes(1))` — the fetch call and the state update
+that follows its promise resolving are two separate ticks, so the assertion could run before the
+state actually landed. Failed intermittently in isolation once caught. Fixed by waiting on the
+actual state condition (`toolsLoaded === true`) instead of the call count as a proxy for it;
+verified stable across 5 consecutive full-package `test:coverage` runs afterward.
+
+### Verified, personally, this session
+
+- `pnpm --dir packages/ui exec tsc --noEmit`: clean.
+- `pnpm --dir packages/ui run build`: clean.
+- `pnpm --dir packages/ui run test:coverage`: 255 test files, 3143 tests, all green, stable across
+  3 consecutive full runs. Aggregate 99.98% statements / 99.88% branches / 100% functions / 99.98%
+  lines — matches `vitest.config.ts`'s newly-added committed threshold exactly (no test added or
+  removed since; the threshold is the real number, not a margin below it).
+- `pnpm guard` (repo root): `[guard] ok` — clean, no boundary violations introduced.

@@ -6,11 +6,13 @@ import { useInView } from '../useInView.js';
 class FakeIntersectionObserver {
   static instances: FakeIntersectionObserver[] = [];
   callback: IntersectionObserverCallback;
+  options: IntersectionObserverInit | undefined;
   observed: Element[] = [];
   disconnected = false;
 
-  constructor(callback: IntersectionObserverCallback) {
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
     this.callback = callback;
+    this.options = options;
     FakeIntersectionObserver.instances.push(this);
   }
 
@@ -85,6 +87,25 @@ describe('useInView', () => {
     expect(observer.disconnected).toBe(false);
     act(() => observer.trigger(false));
     expect(result.current.inView).toBe(false);
+  });
+
+  it('does not observe (or throw) when the ref never gets attached to a node', () => {
+    const { result } = renderHook(() => useInView<HTMLDivElement>());
+    expect(result.current.inView).toBe(false);
+    expect(FakeIntersectionObserver.instances).toHaveLength(0);
+  });
+
+  it('observes against a supplied root container instead of the viewport', () => {
+    const rootNode = document.createElement('div');
+    const rootRef = { current: rootNode as HTMLDivElement | null };
+    const node = document.createElement('div');
+    renderHook(() => {
+      const view = useInView<HTMLDivElement>({ root: rootRef });
+      if (!view.ref.current) view.ref.current = node;
+      return view;
+    });
+    const observer = FakeIntersectionObserver.instances.at(-1)!;
+    expect(observer.options?.root).toBe(rootNode);
   });
 
   it('falls back to inView=true when IntersectionObserver is unavailable', () => {

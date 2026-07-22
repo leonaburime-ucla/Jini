@@ -59,6 +59,55 @@ describe('decideAutoOpenAfterWrite', () => {
       decideAutoOpenAfterWrite('src/App.jsx', files, { moduleFileNames: new Set(['App.jsx']) }),
     ).toEqual({ shouldOpen: false, fileName: null });
   });
+
+  it('reaches the basename fallback when filePath is a bare basename that is not itself a full rel path', () => {
+    // 'App.jsx' has no slash, doesn't equal 'src/App.jsx' exactly, and is
+    // shorter than it (so the suffix check can't match either) — the only
+    // path that actually resolves this is the basename fallback.
+    expect(decideAutoOpenAfterWrite('App.jsx', files)).toEqual({
+      shouldOpen: true,
+      fileName: 'App.jsx',
+    });
+  });
+
+  it('declines a basename fallback with more than one match', () => {
+    const dup = [
+      { name: 'a', path: 'src/App.jsx' },
+      { name: 'b', path: 'lib/App.jsx' },
+    ];
+    expect(decideAutoOpenAfterWrite('App.jsx', dup)).toEqual({ shouldOpen: false, fileName: null });
+  });
+
+  it('resolves a candidate using name instead of path when path is absent', () => {
+    const nameOnly = [{ name: 'App.jsx' }];
+    expect(decideAutoOpenAfterWrite('App.jsx', nameOnly)).toEqual({
+      shouldOpen: true,
+      fileName: 'App.jsx',
+    });
+  });
+
+  it('skips a candidate whose path and name are both falsy', () => {
+    const blank = [{ name: '', path: '' }, { name: 'App.jsx', path: 'src/App.jsx' }];
+    expect(decideAutoOpenAfterWrite('src/App.jsx', blank)).toEqual({
+      shouldOpen: true,
+      fileName: 'App.jsx',
+    });
+  });
+
+  it('the basename fallback filter itself resolves rel via name when path is absent, and skips a blank rel', () => {
+    // Neither candidate matches filePath at all (by exact, suffix, or
+    // basename) — this exercises the basename-fallback filter's own
+    // `f.path ?? f.name` and `rel ? ... : false` branches directly, distinct
+    // from the identical-looking expression in the earlier suffix-match
+    // loop (a name-only candidate that DOES match always resolves in the
+    // suffix loop first, so it alone can't reach this filter's own branches
+    // with a true condition).
+    const candidates = [{ name: '', path: '' }, { name: 'Other.jsx' }];
+    expect(decideAutoOpenAfterWrite('App.jsx', candidates)).toEqual({
+      shouldOpen: false,
+      fileName: null,
+    });
+  });
 });
 
 describe('selectAutoOpenProducedArtifact', () => {
@@ -95,5 +144,55 @@ describe('selectAutoOpenProducedArtifact', () => {
   it('preferSiteEntry falls back to standard rank/mtime when no index.html exists', () => {
     const files = [{ name: 'page.html', mtime: 1 }];
     expect(selectAutoOpenProducedArtifact(files, { preferSiteEntry: true })).toBe('page.html');
+  });
+
+  it('preferSiteEntry keeps the shallower entry when a deeper index.html has a newer mtime', () => {
+    const files = [
+      { name: 'root', path: 'index.html', mtime: 1 },
+      { name: 'sub', path: 'zh/index.html', mtime: 99 },
+    ];
+    expect(selectAutoOpenProducedArtifact(files, { preferSiteEntry: true })).toBe('root');
+  });
+
+  it('preferSiteEntry breaks ties at the same depth by newest mtime, treating a missing/non-finite mtime as 0', () => {
+    const files = [
+      { name: 'first', path: 'index.html', mtime: Number.NaN },
+      { name: 'second', path: 'index.html' },
+    ];
+    // Both normalize to mtime 0; the later one wins ties (>=).
+    expect(selectAutoOpenProducedArtifact(files, { preferSiteEntry: true })).toBe('second');
+  });
+
+  it('preferSiteEntry breaks a same-depth tie using two genuinely finite mtimes', () => {
+    const files = [
+      { name: 'first', path: 'index.html', mtime: 1 },
+      { name: 'second', path: 'index.html', mtime: 5 },
+    ];
+    expect(selectAutoOpenProducedArtifact(files, { preferSiteEntry: true })).toBe('second');
+  });
+
+  it('preferSiteEntry ignores non-HTML and non-index files entirely', () => {
+    const files = [
+      { name: 'notes', path: 'notes.md', mtime: 5 },
+      { name: 'root', path: 'index.html', mtime: 1 },
+    ];
+    expect(selectAutoOpenProducedArtifact(files, { preferSiteEntry: true })).toBe('root');
+  });
+
+  it('treats a missing/non-finite mtime as 0 for the standard rank/mtime tie-break', () => {
+    const files = [
+      { name: 'a.html', mtime: Number.POSITIVE_INFINITY },
+      { name: 'b.html' },
+    ];
+    // a.html's non-finite mtime normalizes to 0, so the tie goes to b.html.
+    expect(selectAutoOpenProducedArtifact(files)).toBe('b.html');
+  });
+
+  it('keeps the higher-ranked selection over a later same-or-lower-rank file', () => {
+    const files = [
+      { name: 'index.html', mtime: 1 },
+      { name: 'README.md', mtime: 99 },
+    ];
+    expect(selectAutoOpenProducedArtifact(files)).toBe('index.html');
   });
 });

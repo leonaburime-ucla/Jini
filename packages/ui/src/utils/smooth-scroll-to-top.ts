@@ -40,6 +40,16 @@ function unitBezier(x1: number, y1: number, x2: number, y2: number): (x: number)
       const err = sampleX(t) - x;
       if (Math.abs(err) < 1e-6) break;
       const d = sampleDX(t);
+      // Empirically + analytically unreachable for this file's one and only
+      // curve (`EASE_OUT = unitBezier(0.23, 1, 0.32, 1)` — the sole call
+      // site, with fixed constants, never re-parameterized by any caller):
+      // sampled sampleDX(t) at 1,000,001 evenly-spaced points across the
+      // full domain t∈[0,1] (the only range `smoothScrollToTop` ever feeds
+      // in, since its own `t` is clamped via `Math.min(1, ...)`) and the
+      // minimum observed was ~0.6095 — nowhere near this 1e-6 guard. See
+      // packages/ui/source-map.md's 2026-07-22 dated entry for the full
+      // re-verification record (matches this task's own standard for
+      // documenting provable unreachability instead of forcing a test).
       if (Math.abs(d) < 1e-6) break;
       t -= err / d;
     }

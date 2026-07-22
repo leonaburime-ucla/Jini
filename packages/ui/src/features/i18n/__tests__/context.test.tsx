@@ -39,6 +39,23 @@ describe('useI18n / useT without a provider', () => {
     render(<OnlyT />);
     expect(screen.getByTestId('t').textContent).toBe('greeting');
   });
+
+  it('the passthrough setLocale is a real callable no-op (no provider to hold state)', () => {
+    function Probe2() {
+      const { locale, setLocale } = useI18n();
+      return (
+        <div>
+          <span data-testid="locale">{locale}</span>
+          <button onClick={() => setLocale('fr')}>switch</button>
+        </div>
+      );
+    }
+    render(<Probe2 />);
+    expect(() => screen.getByText('switch').click()).not.toThrow();
+    // No provider is mounted, so there is no state to have changed.
+    expect(screen.getByTestId('locale').textContent).toBe('en');
+  });
+
 });
 
 describe('I18nProvider', () => {
@@ -59,6 +76,19 @@ describe('I18nProvider', () => {
       </I18nProvider>,
     );
     expect(screen.getByTestId('withVar').textContent).toBe('Hello Ada');
+  });
+
+  it('leaves an unresolved {var} placeholder untouched when vars is supplied but lacks that name', () => {
+    function ProbeMissingVar() {
+      const t = useT();
+      return <span data-testid="withVar">{t('withVar', { other: 'x' })}</span>;
+    }
+    render(
+      <I18nProvider initialLocale="en" dictionaries={{ en: EN, fr: FR }}>
+        <ProbeMissingVar />
+      </I18nProvider>,
+    );
+    expect(screen.getByTestId('withVar').textContent).toBe('Hello {name}');
   });
 
   it('falls back to the raw key when it is missing from every dictionary', () => {

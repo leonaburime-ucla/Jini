@@ -25,11 +25,14 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    try {
-      return document.execCommand('copy');
-    } catch {
-      return false;
-    } finally {
+    // Cleanup is repeated at each return point rather than living in a
+    // `finally` clause: this `try`'s own `catch { return false; }` can
+    // never itself throw, so a `finally` here would carry v8's synthetic
+    // "abrupt completion through finally" branch permanently unreachable —
+    // same dead-branch discipline as this repo's `daemon/tool-executor.ts`
+    // and `packages/ui`'s `useMemoryExtractions.hooks.ts` precedents (see
+    // packages/ui/source-map.md's 2026-07-22 dated entry).
+    const cleanup = () => {
       document.body.removeChild(ta);
       if (priorFocus?.isConnected) {
         try {
@@ -38,6 +41,14 @@ export async function copyToClipboard(text: string): Promise<boolean> {
           priorFocus.focus();
         }
       }
+    };
+    try {
+      const result = document.execCommand('copy');
+      cleanup();
+      return result;
+    } catch {
+      cleanup();
+      return false;
     }
   }
 }

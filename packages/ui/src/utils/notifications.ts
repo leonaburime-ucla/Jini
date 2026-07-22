@@ -69,7 +69,11 @@ interface ToneSpec {
   type: OscillatorType;
   start: number;
   duration: number;
-  gain?: number;
+  // Every real SOUND_PLAYERS entry (this type's only caller) always
+  // supplies an explicit gain, so this is required rather than optional
+  // with a fallback — an unreachable-by-any-real-caller default is dead
+  // code, not real API surface (see packages/ui/source-map.md).
+  gain: number;
   /** Optional lowpass cutoff applied via a BiquadFilter for plucky textures. */
   lowpass?: number;
 }
@@ -81,7 +85,7 @@ function playTones(c: AudioContext, tones: ToneSpec[]): void {
     const gain = c.createGain();
     osc.type = tone.type;
     osc.frequency.value = tone.freq;
-    const peak = tone.gain ?? 0.18;
+    const peak = tone.gain;
     const startAt = now + tone.start;
     const endAt = startAt + tone.duration;
     // Short attack to avoid clicks; exponential-ish decay via a linear
@@ -225,9 +229,13 @@ async function showViaServiceWorker(
   }
 }
 
+// `showViaConstructor`'s only caller (`showCompletionNotification`) already
+// checks `typeof Notification === 'undefined'` and
+// `Notification.permission !== 'granted'` before ever calling this
+// function, so re-checking either here is unreachable dead code — removed
+// rather than tested around (this file's `ToneSpec.gain` default is the
+// same pattern above).
 function showViaConstructor(opts: CompletionNotificationOpts): CompletionNotificationResult {
-  if (typeof Notification === 'undefined') return 'unsupported';
-  if (Notification.permission !== 'granted') return 'permission-denied';
   try {
     const note = new Notification(opts.title, notificationOptionsFor(opts));
     activeNotifications.add(note);

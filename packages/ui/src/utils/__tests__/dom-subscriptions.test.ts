@@ -202,5 +202,21 @@ describe('with window/document stubbed', () => {
       docState.fire('visibilitychange');
       expect(onVisible).toHaveBeenCalledTimes(1);
     });
+
+    it('cleanup removes both the focus and visibilitychange listeners', () => {
+      const win = createListenerTarget();
+      const doc = createListenerTarget();
+      vi.stubGlobal('window', win);
+      vi.stubGlobal('document', { ...doc, visibilityState: 'visible' });
+      const cleanup = subscribeVisibleFocusOrVisibilityChange(vi.fn());
+
+      expect(win.has('focus')).toBe(true);
+      expect(doc.has('visibilitychange')).toBe(true);
+
+      cleanup();
+
+      expect(win.removeEventListener).toHaveBeenCalledWith('focus', expect.any(Function));
+      expect(doc.removeEventListener).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    });
   });
 });

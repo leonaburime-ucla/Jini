@@ -47,12 +47,13 @@ describe('installWebObservability', () => {
     expect(installWhiteScreenDetector).toHaveBeenCalledWith({ reporter });
   });
 
-  it('is idempotent: a second call installs nothing further', async () => {
+  it('is idempotent: a second call installs nothing further and returns a callable no-op teardown', async () => {
     const { installWebObservability } = await freshModule();
     installWebObservability();
-    installWebObservability();
+    const secondTeardown = installWebObservability();
 
     expect(installLongTaskObserver).toHaveBeenCalledTimes(1);
+    expect(() => secondTeardown()).not.toThrow();
   });
 
   it('tears down every observer even when one teardown throws', async () => {
@@ -74,5 +75,17 @@ describe('installWebObservability', () => {
     installWebObservability();
 
     expect(installLongTaskObserver).toHaveBeenCalledTimes(2);
+  });
+
+  it('installs nothing and returns a no-op teardown when window is unavailable (SSR-style)', async () => {
+    vi.stubGlobal('window', undefined);
+    try {
+      const { installWebObservability } = await freshModule();
+      const teardown = installWebObservability();
+      expect(() => teardown()).not.toThrow();
+      expect(installLongTaskObserver).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

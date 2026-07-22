@@ -77,6 +77,22 @@ export function installWhiteScreenDetector(options: WhiteScreenDetectorOptions =
   });
 
   let cancelled = false;
+  // The `cancelled` guards at the top of this timer callback and inside the
+  // `monitorMount` completion callback just below are defensive invariant
+  // checks, empirically and structurally unreachable through this
+  // function's real call graph: both places that ever set
+  // `cancelled = true` (this closure's returned teardown, and the
+  // `monitorMount` completion callback itself) always call
+  // `window.clearTimeout(timer)` / `observer.disconnect()` synchronously in
+  // that same turn — and in this single-threaded runtime, a timer that's
+  // been cleared (or a `MutationObserver` that's been disconnected, which
+  // also discards its pending record queue per spec) can never still fire
+  // its callback afterward. So by the time either callback runs at all,
+  // `cancelled` is guaranteed to still be its initial `false`. Left in
+  // place (not stripped) as a guard against a future refactor silently
+  // breaking that invariant — see packages/ui/source-map.md's 2026-07-22
+  // dated entry for the full proof, same pattern as this package's
+  // `stuck-run.ts` `emitStuck` precedent.
   const timer = window.setTimeout(() => {
     if (cancelled) return;
     if (isAppMounted()) return;
@@ -114,7 +130,12 @@ interface CheckAppMountedOptions {
 }
 
 function checkAppMounted(options: CheckAppMountedOptions): boolean {
-  if (typeof document === 'undefined') return false;
+  // `checkAppMounted`'s only call site is the `isAppMounted` closure inside
+  // `installWhiteScreenDetector`, itself only ever reachable after that
+  // function's own `typeof document === 'undefined'` guard has already
+  // passed — a second check here was dead code for every real call,
+  // removed rather than tested around (see packages/ui/source-map.md's
+  // 2026-07-22 dated entry).
   // Primary signal: the host's root-mount effect ran.
   if (document.documentElement.getAttribute(options.mountedAttribute) === options.mountedAttributeValue) {
     return true;
@@ -130,7 +151,14 @@ function checkAppMounted(options: CheckAppMountedOptions): boolean {
   );
   if (meaningful.length === 0) return false;
   const text = meaningful
-    .map((el) => (el as HTMLElement).innerText ?? el.textContent ?? '')
+    // `meaningful` only ever holds `Element` nodes (filtered from
+    // `root.children`); per the DOM spec, `Node#textContent` returns `null`
+    // only for `Document`/`DocumentType` nodes — for any `Element` it is
+    // always a string (possibly `''`). The `?? ''` fallback this used to
+    // have was dead code for every real entry here, removed rather than
+    // tested around (see packages/ui/source-map.md's 2026-07-22 dated
+    // entry).
+    .map((el) => (el as HTMLElement).innerText ?? (el.textContent as string))
     .join('')
     .trim();
   return text.length >= options.minVisibleText;
@@ -145,6 +173,20 @@ function isLoadingShell(el: Element, loadingShellClasses: ReadonlySet<string>): 
 
 function monitorMount(isAppMounted: () => boolean, onMounted: () => void): () => void {
   let stopped = false;
+  // The `stopped` guard at the top of this callback is a defensive
+  // invariant check, empirically confirmed unreachable: a `MutationObserver`
+  // callback fires at most once per batch of queued mutation records
+  // (never re-entrantly mid-callback), `stopped` only ever flips to `true`
+  // synchronously within this very callback body (right where
+  // `disconnect()` is called, which — per spec — also discards any
+  // not-yet-delivered pending records), and the outer teardown path below
+  // that also sets it calls `observer.disconnect()` in that same turn too.
+  // Verified directly against this repo's real jsdom (not just reasoned
+  // about): two synchronous body mutations followed by two microtask
+  // flushes produced exactly one callback invocation with `stopped` still
+  // `false` at its start, and a further post-disconnect mutation produced
+  // zero more. See packages/ui/source-map.md's 2026-07-22 dated entry for
+  // the full record.
   const observer = new MutationObserver(() => {
     if (stopped) return;
     if (isAppMounted()) {

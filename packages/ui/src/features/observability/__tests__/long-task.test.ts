@@ -122,4 +122,79 @@ describe('installLongTaskObserver', () => {
       instance!.emit([{ duration: 999, startTime: 0 }]);
     }).not.toThrow();
   });
+
+  it('no-ops without reporting when PerformanceObserver is entirely unavailable', async () => {
+    vi.unstubAllGlobals();
+    const original = globalThis.PerformanceObserver;
+    // @ts-expect-error -- simulate an environment without PerformanceObserver
+    delete globalThis.PerformanceObserver;
+    try {
+      const { installLongTaskObserver } = await freshModule();
+      const teardown = installLongTaskObserver();
+      expect(() => teardown()).not.toThrow();
+    } finally {
+      globalThis.PerformanceObserver = original;
+    }
+  });
+
+  it('a second install call reuses the existing observer and its teardown disconnects it', async () => {
+    const { installLongTaskObserver } = await freshModule();
+    const firstTeardown = installLongTaskObserver();
+    const secondTeardown = installLongTaskObserver();
+    expect(FakePerformanceObserver.instances).toHaveLength(1);
+
+    secondTeardown();
+    expect(FakePerformanceObserver.instances[0]!.disconnected).toBe(true);
+    firstTeardown();
+  });
+
+  it('falls back to observing without buffered when the buffered observe() call throws', async () => {
+    class ThrowsOnBufferedObserver extends FakePerformanceObserver {
+      override observe(options: { buffered?: boolean }): void {
+        if (options?.buffered) throw new Error('buffered unsupported');
+        super.observe(options);
+      }
+    }
+    vi.stubGlobal('PerformanceObserver', ThrowsOnBufferedObserver as unknown as typeof PerformanceObserver);
+    const { installLongTaskObserver } = await freshModule();
+    expect(() => installLongTaskObserver()).not.toThrow();
+    expect(FakePerformanceObserver.instances[0]!.observed).toEqual([{ type: 'longtask' }]);
+  });
+
+  it('gives up cleanly (no-op teardown) when both the buffered and plain observe() calls throw', async () => {
+    class AlwaysThrowsObserver extends FakePerformanceObserver {
+      override observe(): void {
+        throw new Error('longtask unsupported at all');
+      }
+    }
+    vi.stubGlobal('PerformanceObserver', AlwaysThrowsObserver as unknown as typeof PerformanceObserver);
+    const { installLongTaskObserver } = await freshModule();
+    const teardown = installLongTaskObserver();
+    expect(() => teardown()).not.toThrow();
+
+    // A subsequent install call must not think an observer is already
+    // installed (it was reset to null on the double failure above).
+    const secondTeardown = installLongTaskObserver();
+    expect(() => secondTeardown()).not.toThrow();
+  });
+
+  it('keeps an unparseable containerSrc as-is instead of throwing', async () => {
+    const { installLongTaskObserver } = await freshModule();
+    const reporter = vi.fn();
+    installLongTaskObserver({ reporter });
+
+    const [instance] = FakePerformanceObserver.instances;
+    instance!.emit([
+      {
+        duration: 200,
+        startTime: 5,
+        attribution: [{ containerSrc: 'not a valid url::::' }],
+      },
+    ]);
+
+    expect(reporter).toHaveBeenCalledWith(
+      'client_long_task',
+      expect.objectContaining({ container_src_origin: 'not a valid url::::' }),
+    );
+  });
 });

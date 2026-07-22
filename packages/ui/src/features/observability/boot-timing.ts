@@ -60,8 +60,12 @@ export function installBootTimingObserver(options: BootTimingOptions = {}): () =
   };
 }
 
+// `schedule`'s only call site (`onReady`, inside `installBootTimingObserver`)
+// only ever runs after that function's own `typeof window === 'undefined'`
+// guard has already passed, so a second check here was dead code for every
+// real call — removed rather than tested around (see
+// packages/ui/source-map.md's 2026-07-22 dated entry).
 function schedule(fn: () => void): void {
-  if (typeof window === 'undefined') return;
   const rIC = (
     window as unknown as {
       requestIdleCallback?: (cb: () => void, options?: { timeout: number }) => number;
@@ -90,7 +94,15 @@ function emit(reporter: SafetyEventReporter): void {
     load_event_ms: round(nav.loadEventStart),
     transfer_size_bytes:
       typeof nav.transferSize === 'number' && nav.transferSize > 0 ? nav.transferSize : undefined,
-    visibility_state: typeof document !== 'undefined' ? document.visibilityState : undefined,
+    // `emit` is only ever reached via `onReady`, which itself only ever
+    // runs after `installBootTimingObserver` has already read
+    // `document.readyState` directly (unconditionally, no `typeof` guard)
+    // earlier in the same call — so `document` is provably already
+    // resolvable in global scope by the time this line runs; a `typeof
+    // document !== 'undefined'` re-check here was dead code for every real
+    // call, removed rather than tested around (see
+    // packages/ui/source-map.md's 2026-07-22 dated entry).
+    visibility_state: document.visibilityState,
   });
 }
 

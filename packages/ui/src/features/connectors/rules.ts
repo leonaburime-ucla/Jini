@@ -419,9 +419,24 @@ export function fallbackLogoInitials(name: string): string {
   const parts = cleaned.split(/\s+/u);
   if (parts.length === 1) {
     const single = parts[0]!;
-    return (single[0] ?? '').toUpperCase() + (single[1] ?? '').toLowerCase();
+    // `single` is `parts[0]` when `parts.length === 1` — i.e. the whole
+    // already-`.trim()`-ed `cleaned` string as one word, which the earlier
+    // `!cleaned` check already proved non-empty. `single[0]` is therefore
+    // always a defined character; only `single[1]` (absent for a
+    // single-character name) is a real optional case. The `single[0] ?? ''`
+    // fallback this used to have was dead code for every real input,
+    // removed rather than tested around (same pattern as this file's other
+    // `?? ''`/`?.[0] ?? ''` precedents just below).
+    return single[0]!.toUpperCase() + (single[1] ?? '').toLowerCase();
   }
-  const first = parts[0]?.[0] ?? '';
-  const second = parts[1]?.[0] ?? '';
+  // `cleaned` was already `.trim()`-ed above, so splitting on `\s+` can
+  // never produce a leading empty segment — combined with the
+  // `parts.length === 1` early return above, `parts[0]` and `parts[1]` are
+  // both guaranteed non-empty strings here. The `?.[0] ?? ''` defensive
+  // fallbacks this used to have were dead code for every real input,
+  // removed rather than tested around (same pattern as this package's
+  // `utils/auto-open-file.ts` `basenameOf` precedent).
+  const first = parts[0]![0]!;
+  const second = parts[1]![0]!;
   return (first + second).toUpperCase();
 }

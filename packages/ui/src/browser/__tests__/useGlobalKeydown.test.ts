@@ -1,7 +1,35 @@
 // @vitest-environment jsdom
 import { renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useGlobalKeydown } from '../useGlobalKeydown.js';
+import { resolveGlobalKeydownTarget, useGlobalKeydown } from '../useGlobalKeydown.js';
+
+describe('resolveGlobalKeydownTarget', () => {
+  it('resolves "window" to globalThis.window and "document" to globalThis.document when present', () => {
+    expect(resolveGlobalKeydownTarget('window')).toBe(window);
+    expect(resolveGlobalKeydownTarget('document')).toBe(document);
+  });
+
+  it('resolves to undefined when the requested global is absent (SSR-style)', () => {
+    // Driving this through a rendered `useGlobalKeydown` hook is not
+    // possible: React DOM's own render/commit machinery dereferences
+    // `window` before this hook's effect ever runs, so stubbing `window`
+    // away breaks the render itself rather than reaching this branch. This
+    // directly unit-tests the extracted resolver instead — see its own
+    // doc comment in useGlobalKeydown.ts.
+    vi.stubGlobal('window', undefined);
+    try {
+      expect(resolveGlobalKeydownTarget('window')).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    vi.stubGlobal('document', undefined);
+    try {
+      expect(resolveGlobalKeydownTarget('document')).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe('useGlobalKeydown', () => {
   it('invokes the handler for a window keydown by default', () => {

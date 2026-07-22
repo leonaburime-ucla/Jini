@@ -73,4 +73,42 @@ describe('installVisibilityObserver', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     expect(reporter).not.toHaveBeenCalled();
   });
+
+  it('is idempotent: a second install call returns a no-op teardown and does not double-report', async () => {
+    const { installVisibilityObserver } = await freshModule();
+    const reporter = vi.fn();
+    installVisibilityObserver({ reporter });
+    const secondReporter = vi.fn();
+    const secondTeardown = installVisibilityObserver({ reporter: secondReporter });
+
+    expect(() => secondTeardown()).not.toThrow();
+
+    vi.advanceTimersByTime(100);
+    visibilityState = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(reporter).toHaveBeenCalledTimes(1);
+    expect(secondReporter).not.toHaveBeenCalled();
+  });
+
+  it('returns a no-op teardown and installs nothing when document is unavailable (SSR-style)', async () => {
+    vi.stubGlobal('document', undefined);
+    try {
+      const { installVisibilityObserver } = await freshModule();
+      const reporter = vi.fn();
+      expect(() => installVisibilityObserver({ reporter })()).not.toThrow();
+      expect(reporter).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back to the no-op reporter when none is supplied', async () => {
+    const { installVisibilityObserver } = await freshModule();
+    expect(() => installVisibilityObserver()).not.toThrow();
+
+    vi.advanceTimersByTime(100);
+    visibilityState = 'hidden';
+    expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
+  });
 });

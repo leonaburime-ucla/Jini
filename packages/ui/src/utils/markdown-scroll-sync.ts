@@ -49,7 +49,14 @@ const MIRROR_COPIED_STYLES = [
 
 function hasVerticalProgression(offsets: number[]): boolean {
   if (offsets.length <= 1) return true;
-  const first = offsets[0] ?? 0;
+  // `offsets` is a module-private function's only argument, always built
+  // internally (by `measureEditorBlockOffsets`/`measurePreviewBlockOffsets`
+  // via `new Array(...).fill(0)` or `.map()`) as a dense array — `offsets[0]`
+  // is always defined once the `length <= 1` guard above has passed, so the
+  // `?? 0` fallback this used to have was dead code for every real caller
+  // (same pattern as this file's `basenameOf`-style precedents elsewhere in
+  // this package).
+  const first = offsets[0] as number;
   return offsets.some((offset, index) => index > 0 && offset > first + 0.5);
 }
 
@@ -108,6 +115,19 @@ export function measureEditorBlockOffsets(
   blockLines: number[],
   text: string,
 ): number[] | null {
+  // The `typeof document === 'undefined'` half of this guard is real,
+  // intentional SSR-safety API contract (documented in this function's own
+  // JSDoc), but is empirically unreachable through this repo's actual call
+  // graph today: its only caller (`useMarkdownScrollSync`) only ever
+  // invokes it with an already browser-mounted `HTMLTextAreaElement` ref,
+  // which cannot exist without `document` already existing. A real test
+  // would require either reintroducing this package's own documented
+  // `@vitest/coverage-v8` jsdom/node branch-merge bug (see
+  // `features/html-viewer/dependencies`'s precedent in
+  // packages/ui/source-map.md) or hand-faking this function's full
+  // `innerHTML`/`querySelectorAll`/`getComputedStyle` surface under plain
+  // Node — disproportionate to a defensive guard with no reachable path.
+  // See packages/ui/source-map.md's 2026-07-22 dated entry.
   if (blockLines.length === 0 || typeof document === 'undefined') return null;
   const computed = window.getComputedStyle(textarea);
   const mirror = document.createElement('div');
@@ -144,7 +164,12 @@ export function measureEditorBlockOffsets(
     if (markers) {
       for (const blockIndex of markers) buffer += `<span data-md-block="${blockIndex}"></span>`;
     }
-    buffer += escapeMirrorText(lines[i] ?? '');
+    // `text.split('\n')` always yields a dense array (never a hole), so
+    // `lines[i]` for `i` in `[0, lines.length)` is always a defined string
+    // (possibly `''`) — the `?? ''` fallback this used to have was dead
+    // code for every real string input, removed rather than tested around
+    // (same pattern as `utils/auto-open-file.ts`'s `basenameOf`).
+    buffer += escapeMirrorText(lines[i] as string);
     if (i < lines.length - 1) buffer += '\n';
   }
   mirror.innerHTML = buffer;
@@ -235,7 +260,18 @@ export function mapScrollPosition(value: number, source: number[], target: numbe
   const sourceHigh = source[high] ?? 0;
   const targetLow = target[low] ?? 0;
   const targetHigh = target[high] ?? 0;
+  // `span` is provably > 0 here, for *any* input array (not just a
+  // monotonic one): the early clamp checks above guarantee
+  // `source[0] <= value < source[count - 1]` before the search loop ever
+  // runs, and the loop's own invariant — `low` only ever advances when
+  // `source[mid] <= value`, `high` only ever advances when
+  // `source[mid] > value` — means `sourceLow <= value < sourceHigh` holds
+  // at every exit, loop-iteration count included. So `sourceHigh >
+  // sourceLow` always, and a `span > 0 ? ... : 0` guard against
+  // division-by-zero was dead code for every possible call, not a real
+  // defensive branch — removed rather than tested around (see
+  // packages/ui/source-map.md's 2026-07-22 dated entry for the full proof).
   const span = sourceHigh - sourceLow;
-  const fraction = span > 0 ? (value - sourceLow) / span : 0;
+  const fraction = (value - sourceLow) / span;
   return targetLow + fraction * (targetHigh - targetLow);
 }

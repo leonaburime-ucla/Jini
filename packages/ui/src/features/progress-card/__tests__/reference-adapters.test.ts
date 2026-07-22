@@ -53,6 +53,23 @@ describe('parseTodoWriteInput', () => {
     expect(parseTodoWriteInput('nope')).toEqual([]);
     expect(parseTodoWriteInput({})).toEqual([]);
   });
+
+  it('skips a non-object entry in the todos array rather than throwing', () => {
+    const todos = parseTodoWriteInput({ todos: [null, 'not an object', { content: 'kept', status: 'pending' }] });
+    expect(todos).toEqual([{ content: 'kept', status: 'pending' }]);
+  });
+
+  it('falls back through description/label/text content fields in priority order', () => {
+    expect(parseTodoWriteInput({ todos: [{ description: 'from description' }] })).toEqual([
+      { content: 'from description', status: 'pending' },
+    ]);
+    expect(parseTodoWriteInput({ todos: [{ label: 'from label' }] })).toEqual([
+      { content: 'from label', status: 'pending' },
+    ]);
+    expect(parseTodoWriteInput({ todos: [{ text: 'from text' }] })).toEqual([
+      { content: 'from text', status: 'pending' },
+    ]);
+  });
 });
 
 describe('latestTodosFromAgentEvents', () => {
@@ -103,6 +120,20 @@ describe('dedupeToolUsesById', () => {
     const events: AgentEventLike[] = [{ kind: 'tool_use', id: 'a', name: 'Read', input: {} }];
     expect(dedupeToolUsesById(events)).toEqual(events);
   });
+
+  it('returns an empty array for an empty (not undefined) events list', () => {
+    expect(dedupeToolUsesById([])).toEqual([]);
+  });
+
+  it('keeps a later, non-duplicate event once a duplicate has triggered rebuilding the array', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: 'a', name: 'Read', input: {} },
+      { kind: 'tool_use', id: 'a', name: 'Read', input: {} }, // duplicate id -> triggers rebuild
+      { kind: 'tool_use', id: 'b', name: 'Write', input: {} }, // must still be kept afterward
+    ];
+    const deduped = dedupeToolUsesById(events);
+    expect(deduped.map((event) => (event as { id?: string }).id)).toEqual(['a', 'b']);
+  });
 });
 
 describe('deriveFileOpsFromAgentEvents', () => {
@@ -143,6 +174,48 @@ describe('deriveFileOpsFromAgentEvents', () => {
   it('ignores unrelated tool names', () => {
     const events: AgentEventLike[] = [{ kind: 'tool_use', id: '1', name: 'Bash', input: { command: 'rm a.ts' } }];
     expect(deriveFileOpsFromAgentEvents(events)).toEqual([]);
+  });
+
+  it('ignores a tool call whose input is not an object at all', () => {
+    const events: AgentEventLike[] = [{ kind: 'tool_use', id: '1', name: 'Read', input: null }];
+    expect(deriveFileOpsFromAgentEvents(events)).toEqual([]);
+  });
+
+  it('resolves the file path from filename/target_path/targetPath fallback fields too', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: '1', name: 'Read', input: { filename: 'a.ts' } },
+      { kind: 'tool_use', id: '2', name: 'Read', input: { target_path: 'b.ts' } },
+      { kind: 'tool_use', id: '3', name: 'Read', input: { targetPath: 'c.ts' } },
+    ];
+    expect(deriveFileOpsFromAgentEvents(events).map((op) => op.fullPath).sort()).toEqual(['a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('falls back to the full path when it has no non-separator segments', () => {
+    const events: AgentEventLike[] = [{ kind: 'tool_use', id: '1', name: 'Read', input: { file_path: '///' } }];
+    expect(deriveFileOpsFromAgentEvents(events)[0]?.path).toBe('///');
+  });
+
+  it('merges two completed ops on the same path to "done"', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: '1', name: 'Read', input: { file_path: 'src/a.ts' } },
+      { kind: 'tool_result', toolUseId: '1', isError: false },
+      { kind: 'tool_use', id: '2', name: 'Edit', input: { file_path: 'src/a.ts' } },
+      { kind: 'tool_result', toolUseId: '2', isError: false },
+    ];
+    const ops = deriveFileOpsFromAgentEvents(events);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.status).toBe('done');
+  });
+
+  it('merges to "running" (not "done") when either merged op is still running and neither errored', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: '1', name: 'Read', input: { file_path: 'src/a.ts' } },
+      { kind: 'tool_result', toolUseId: '1', isError: false },
+      { kind: 'tool_use', id: '2', name: 'Edit', input: { file_path: 'src/a.ts' } }, // no matching result -> running
+    ];
+    const ops = deriveFileOpsFromAgentEvents(events);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.status).toBe('running');
   });
 });
 
@@ -216,6 +289,46 @@ describe('chatActivityToProgressCard', () => {
     expect(card?.steps.map((step) => step.id)).toEqual(['read-current-state', 'update-files', 'finalize']);
   });
 
+  it('marks the "update-files" fallback step running when a mutation file op is still in flight', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: '1', name: 'Edit', input: { file_path: 'a.ts' } }, // no result -> running
+    ];
+    const card = chatActivityToProgressCard({ events, runStatus: 'running' }, { id: 'x', active: true });
+    expect(card?.steps.find((step) => step.id === 'update-files')?.status).toBe('running');
+  });
+
+  it('maps a stopped todo status to a failed step', () => {
+    const events: AgentEventLike[] = [
+      {
+        kind: 'tool_use',
+        id: '1',
+        name: 'TodoWrite',
+        input: { todos: [{ content: 'abandoned', status: 'cancelled' }] },
+      },
+    ];
+    const card = chatActivityToProgressCard({ events, runStatus: 'failed' }, { id: 'x', active: false });
+    expect(card?.steps).toEqual([{ id: 'abandoned-0', label: 'abandoned', status: 'failed' }]);
+  });
+
+  it('does not count the in-progress bonus when no todo is in_progress', () => {
+    const events: AgentEventLike[] = [
+      {
+        kind: 'tool_use',
+        id: '1',
+        name: 'TodoWrite',
+        input: {
+          todos: [
+            { content: 'first', status: 'completed' },
+            { content: 'second', status: 'pending' },
+          ],
+        },
+      },
+    ];
+    const card = chatActivityToProgressCard({ events, runStatus: 'running' }, { id: 'x', active: true });
+    // 1 of 2 completed, no in-progress bonus: round(1/2 * 100) = 50.
+    expect(card?.progress).toBe(50);
+  });
+
   it('surfaces derived file ops as secondaryItems', () => {
     const events: AgentEventLike[] = [
       { kind: 'tool_use', id: '1', name: 'Edit', input: { file_path: 'src/a.ts' } },
@@ -223,6 +336,15 @@ describe('chatActivityToProgressCard', () => {
     ];
     const card = chatActivityToProgressCard({ events, runStatus: 'running' }, { id: 'x', active: true });
     expect(card?.secondaryItems).toEqual([{ id: 'src/a.ts', label: 'a.ts', status: 'succeeded' }]);
+  });
+
+  it('maps an errored file op to a failed secondaryItem', () => {
+    const events: AgentEventLike[] = [
+      { kind: 'tool_use', id: '1', name: 'Edit', input: { file_path: 'src/a.ts' } },
+      { kind: 'tool_result', toolUseId: '1', isError: true },
+    ];
+    const card = chatActivityToProgressCard({ events, runStatus: 'failed' }, { id: 'x', active: false });
+    expect(card?.secondaryItems).toEqual([{ id: 'src/a.ts', label: 'a.ts', status: 'failed' }]);
   });
 
   it('is active with a status event even when nothing else is going on', () => {

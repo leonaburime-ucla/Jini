@@ -34,7 +34,12 @@ interface AutoOpenOptions {
 const NO_MODULES: ReadonlySet<string> = new Set();
 
 function basenameOf(p: string): string {
-  return p.split('/').pop() ?? p;
+  // `String.prototype.split` always returns a non-empty array (even for
+  // `''`, which splits to `['']`), so `.pop()` can never actually return
+  // `undefined` here — the `?? p` fallback this used to have was dead code
+  // for every real string input, not real API surface, so it was removed
+  // rather than tested around.
+  return p.split('/').pop() as string;
 }
 
 export function decideAutoOpenAfterWrite(

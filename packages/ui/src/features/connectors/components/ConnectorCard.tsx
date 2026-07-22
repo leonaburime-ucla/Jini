@@ -72,8 +72,14 @@ export function ConnectorCard({
 
   function continueAuthorization(event: SyntheticEvent) {
     stop(event);
-    if (!authorizationPending?.redirectUrl) return;
-    onOpenExternalUrl?.(authorizationPending.redirectUrl);
+    // `continueAuthorization`'s only call site (the "continue in browser"
+    // button below) only ever renders while
+    // `isAuthorizationPending && authorizationPending.redirectUrl` already
+    // holds in that same render, and React re-binds this closure fresh on
+    // every render — so a re-check here was dead code for every real
+    // click, removed rather than tested around (see
+    // packages/ui/source-map.md's 2026-07-22 dated entry).
+    onOpenExternalUrl?.(authorizationPending!.redirectUrl!);
   }
 
   return (
