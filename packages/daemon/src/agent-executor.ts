@@ -68,6 +68,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { redactSecrets } from '@jini/core';
+import type { Principal, RunRef } from '@jini/core';
 import type { JournalEntry, RunAgentPayload, RunErrorPayload } from '@jini/protocol';
 import {
   applyAgentLaunchEnv,
@@ -100,7 +101,10 @@ import {
   type StopProcessesResult,
 } from '@jini/platform';
 import { classifyRunCloseStatus } from './close-status.js';
+import { resolveContinuationTransport } from './continuation/continuation-transport.js';
 import type { RunByteJournal } from './continuation/journal.js';
+import { resultContent } from './delegated-tool-bridge.js';
+import type { ToolExecutor } from './tool-executor.js';
 import type { RunLifecycle } from './run-lifecycle.js';
 
 /**
@@ -201,11 +205,23 @@ function createStreamHandlerForDef(
  * here lets a lifecycle-wiring function capture it into a local variable and
  * thread it into its own terminal `finish()` call, without widening the
  * public wire protocol just to carry a value that only this module reads.
+ *
+ * `'turn-end'`'s optional `stopReason` (gap 3, capability-routed
+ * continuation transport) is the same kind of internal side channel: the
+ * claude-stream parser deliberately emits `stopReason` *after* every
+ * `tool_use` block in the same assistant message has already been
+ * translated (so a caller can decide whether to keep stdin open before
+ * closing it), but v1 (pre-gap-3) discarded it and closed stdin
+ * unconditionally on any `turn-end` — see `packages/daemon/source-map.md`'s
+ * "Design decision 2" note. `wireChildLifecycle` now reads it to decide
+ * whether `stop_reason: 'tool_use'` means "inject a tool result and keep
+ * going" (gap 3, gated — see `ContinuationOptions`) or "close stdin as
+ * before" (the unconditional default when no continuation is configured).
  */
 export type AgentRuntimeEventTranslation =
   | { readonly kind: 'agent'; readonly payload: RunAgentPayload; readonly sessionId?: string }
   | { readonly kind: 'error'; readonly payload: RunErrorPayload }
-  | { readonly kind: 'turn-end' }
+  | { readonly kind: 'turn-end'; readonly stopReason?: string }
   | { readonly kind: 'ignored' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -352,11 +368,14 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
         payload: { message, ...(code !== undefined ? { error: { code, message } } : {}) },
       };
     }
-    case 'turn_end':
+    case 'turn_end': {
       // Claude-specific per-turn boundary. Not forwarded as an 'agent'
       // event (no RunAgentPayload variant represents it) — run() reacts to
-      // it directly to close stdin. See module doc.
-      return { kind: 'turn-end' };
+      // it directly to close stdin (or, for gap 3, decide whether to inject
+      // a tool result and keep it open instead). See module doc.
+      const stopReason = asOptionalString(rawEvent.stopReason);
+      return { kind: 'turn-end', ...(stopReason !== undefined ? { stopReason } : {}) };
+    }
     default:
       return { kind: 'ignored' };
   }
@@ -537,6 +556,37 @@ function receivedJournalEntry(channel: 'stdout' | 'stderr', content: string): Jo
   return { content, provenance: { source: 'agent', channel }, trust: 'untrusted' };
 }
 
+/**
+ * Gap 3 (capability-routed continuation transport) — host-owned config for the
+ * `'stdin-injection'` transport (claude/codebuddy only; see
+ * `resolveContinuationTransport`'s doc). **Absent by default, and absent means
+ * zero behavior change**: with no `ContinuationOptions`, every `turn_end`
+ * closes stdin exactly as it always has (v1 behavior, unconditionally).
+ *
+ * `autonomousToolNames` is this task's answer to the debate's Unresolved
+ * Delta (how does the loop distinguish "the agent is continuing
+ * autonomously" from "the agent is waiting on a human"): rather than
+ * inferring intent from the stream, the *host* pre-declares which tool
+ * names are safe to auto-resolve and re-inject without a human in the loop.
+ * A `tool_use` whose name is not in this set is left exactly as it was
+ * before gap 3 — stdin closes, the run proceeds to its normal terminal
+ * state — even though a `stopReason: 'tool_use'` was observed. This sidesteps
+ * building unproven intent-detection: nothing auto-continues unless a host
+ * has explicitly vetted that specific tool as autonomous-safe. A
+ * human-facing "ask the user a question" tool is simply never added to this
+ * set; `packages/chat-core/src/question-form.ts`'s existing text-tag
+ * mechanism (a new `Run` per turn, not mid-turn injection) already covers
+ * that case without needing this transport at all.
+ */
+export interface ContinuationOptions {
+  /** Injected tool results are authorized through this — the same deny-by-default gate every other tool execution path in this codebase uses. No parallel authorization path. */
+  readonly toolExecutor: ToolExecutor;
+  /** The principal an injected tool call is authorized as. */
+  readonly principal: Principal;
+  /** Tool names this host has pre-classified as safe to auto-resolve without human involvement. See this interface's own doc for why this — not stream-inferred intent — is gap 3's answer to the human-in-the-loop pause question. */
+  readonly autonomousToolNames: ReadonlySet<string>;
+}
+
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
   readonly def: RuntimeAgentDef;
@@ -548,6 +598,8 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). `undefined` when a caller configured none — every journal call site below is then a no-op. */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 3's stdin-tool-result injection config. `undefined` means every `turn_end` closes stdin unconditionally — see `ContinuationOptions`'s own doc. */
+  readonly continuation: ContinuationOptions | undefined;
 }
 
 /**
@@ -590,7 +642,7 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
  * @overallScore 100/100
  */
 function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
-  const { runId, def, streamFormat, child, lifecycle, journal } = ctx;
+  const { runId, def, streamFormat, child, lifecycle, journal, continuation } = ctx;
   let stdinClosed = false;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
@@ -598,6 +650,10 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
   // finish()'s sessionRef below. `streamFormat === 'plain'` defs have no structured parser and
   // therefore never populate this — an honest scope limit, not an oversight.
   let capturedSessionId: string | undefined;
+  // Gap 3 (stdin-tool-result injection) — the most recently reported tool_use, cleared once
+  // consumed by a turn-end injection decision. See `ContinuationOptions`'s doc for why this is
+  // only ever acted on when a host has explicitly allowlisted the tool's name.
+  let pendingToolUse: { id: string; name: string; input: unknown } | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -617,6 +673,63 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
     child.stdin?.end();
   }
 
+  /**
+   * Writes a structured (never string-concatenated — see `ContinuationOptions`'s doc on the
+   * prompt-injection stakes here) tool_result JSONL line, mirroring the shape
+   * `claude-stream.ts`'s own inbound parser already expects on the opposite direction of this
+   * exact wire format. Journals the sent content the same way `writePromptToStdin`'s
+   * `recordSentBytes` does.
+   */
+  function injectToolResultLine(toolUseId: string, content: string, isError: boolean): void {
+    const stdin = child.stdin;
+    if (!stdin) return;
+    const line = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, ...(isError ? { is_error: true } : {}) }] },
+    });
+    stdin.write(`${line}\n`, 'utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, sentJournalEntry(content)));
+  }
+
+  /**
+   * Decides, per `turn_end`, whether to auto-resolve a pending tool_use through the injected
+   * `ToolExecutor` and keep stdin open (gap 3), or close stdin exactly as every version of this
+   * function has always done (the default, and the only behavior when `continuation` is
+   * unconfigured or the pending tool isn't allowlisted).
+   */
+  function handleTurnEnd(stopReason: string | undefined): void {
+    const toolUse = pendingToolUse;
+    const shouldInject =
+      stopReason === 'tool_use' &&
+      toolUse !== undefined &&
+      continuation !== undefined &&
+      resolveContinuationTransport(def) === 'stdin-injection' &&
+      continuation.autonomousToolNames.has(toolUse.name);
+    if (!shouldInject) {
+      closeStdinOnce();
+      return;
+    }
+    pendingToolUse = undefined;
+    enqueueEmit(async () => {
+      const run: RunRef = { id: runId };
+      let content: string;
+      let isError: boolean;
+      try {
+        const result = await continuation.toolExecutor.execute(continuation.principal, run, toolUse.name, toolUse.input);
+        content = resultContent(result);
+        isError = result.status !== 'completed';
+      } catch (error) {
+        content = errorMessage(error);
+        isError = true;
+      }
+      await lifecycle.emit(runId, {
+        event: 'agent',
+        data: { type: 'tool_result', toolUseId: toolUse.id, content, ...(isError ? { isError: true } : {}) },
+      });
+      injectToolResultLine(toolUse.id, content, isError);
+    });
+  }
+
   const streamHandler: StreamHandler | null =
     streamFormat === 'plain'
       ? null
@@ -624,11 +737,14 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
           const translation = translateAgentRuntimeEvent(rawEvent);
           if (translation.kind === 'agent') {
             if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
+            if (translation.payload.type === 'tool_use') {
+              pendingToolUse = { id: translation.payload.id, name: translation.payload.name, input: translation.payload.input };
+            }
             enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
           } else if (translation.kind === 'error') {
             enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
           } else if (translation.kind === 'turn-end') {
-            closeStdinOnce();
+            handleTurnEnd(translation.stopReason);
           }
         });
 
@@ -1019,6 +1135,15 @@ export interface CreateAgentExecutorOptions {
    * storage this package can default to without a caller-supplied `EventLog` instance.
    */
   readonly journal?: RunByteJournal;
+  /**
+   * Gap 3's stdin-tool-result injection config — see `ContinuationOptions`'s own doc, especially
+   * on why `autonomousToolNames` (not stream-inferred intent) is this task's answer to the
+   * human-in-the-loop pause question.
+   * @default undefined — every `turn_end` closes stdin unconditionally, byte-identical to
+   * pre-gap-3 behavior. Opt-in only, like `journal`: there is no safe default allowlist of
+   * "tools okay to auto-continue without a human" this package can supply on a caller's behalf.
+   */
+  readonly continuation?: ContinuationOptions;
 }
 
 /**
@@ -1051,6 +1176,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
   const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
   const journal = options.journal;
+  const continuation = options.continuation;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -1212,6 +1338,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
             onCleanupFailure: onCleanupFailureFn,
             cleanupPromptFile,
             journal,
+            continuation,
           });
 
     try {

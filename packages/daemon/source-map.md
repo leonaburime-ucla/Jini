@@ -1039,3 +1039,91 @@ events). One pre-existing test's title/assertion updated (`translates status car
 (dropped...)` → now asserts it's captured, not dropped — the old title described exactly the behavior
 this task intentionally changed). 319/319 tests in the package, 100% on all 4 coverage metrics for
 every file this task touched (`agent-executor.ts`, `run-lifecycle.ts`). `pnpm guard`: clean.
+
+## 2026-07-22 addition — run/chat orchestration gap 3, part 1: transport resolution + stdin-tool-result injection
+
+Implements the stdin-injection half of gap 3's Final Recommendation ("per-definition
+`continuationTransport: 'mcp-callback' | 'stdin-injection' | 'none'`... Add `stdin-tool-result` only
+for the confirmed stream-json defs (Claude, CodeBuddy), using structured/JSON-escaped framing
+exclusively — never raw string concatenation... every injected byte routes through the existing
+`ToolExecutor` deny-by-default gate"). **The MCP-callback half (the single-definition spike) is a
+separate, not-yet-built follow-up** — see the "Not yet built" note at the end of this section for why
+it's genuinely a different-sized task, not deferred out of laziness.
+
+**`continuation/continuation-transport.ts`** (new) — `resolveContinuationTransport(def):
+'mcp-callback' | 'stdin-injection' | 'none'`, a pure function over `RuntimeAgentDef`'s own declared
+capability fields. Resolution order (derived from reading all 24 registered defs directly, not
+assumed): `externalMcpInjection` set → `'mcp-callback'` (12 defs); else `promptInputFormat ===
+'stream-json' && promptViaStdin` → `'stdin-injection'` (claude/codebuddy only, but both also declare
+`externalMcpInjection`, so they resolve to `'mcp-callback'` as primary under this ordering — v1's
+actual stdin-injection driver, described next, doesn't consult this function directly and is
+independently gated); else `'none'`. Deliberately keyed off `promptInputFormat`/`externalMcpInjection`,
+never `streamFormat` — `amp.ts` reuses `streamFormat: 'claude-stream-json'` (the output parser only)
+but declares neither input-continuation field; a `streamFormat`-keyed resolver would misroute it.
+
+**`agent-executor.ts`**: three changes.
+1. `AgentRuntimeEventTranslation`'s `'turn-end'` kind now carries an optional `stopReason`, threaded
+   from the raw parser event. Previously discarded entirely — confirmed by direct reading that
+   `claude-stream.ts`'s own parser deliberately emits `stop_reason` *after* every `tool_use` block in
+   the same assistant message has already been translated (its own comment: so a caller "sees the
+   final `stop_reason` before deciding whether to close... stdin"), i.e. the parser always anticipated
+   a caller that would eventually branch on it. v1 (pre-this-task) closed stdin unconditionally on any
+   `turn_end` regardless of `stopReason` — a documented scope limit, not an oversight (see this file's
+   own "Design decision 2" note, now partially closed).
+2. New `ContinuationOptions` (`{toolExecutor, principal, autonomousToolNames}`) on
+   `CreateAgentExecutorOptions`, opt-in only like `journal` — absent means every `turn_end` closes
+   stdin exactly as before, byte-identical to pre-gap-3 behavior.
+3. `wireChildLifecycle` tracks the most recently seen `tool_use` (`pendingToolUse`) and, on
+   `turn_end`, only injects instead of closing stdin when *all* of: `stopReason === 'tool_use'`, a
+   `continuation` was configured, `resolveContinuationTransport(def) === 'stdin-injection'`, and the
+   pending tool's *name* is in `continuation.autonomousToolNames`. On injection: calls
+   `continuation.toolExecutor.execute(principal, {id: runId}, toolUse.name, toolUse.input)` — the same
+   deny-by-default gate every other tool-execution path in this codebase already uses, no parallel
+   authorization path — emits a `tool_result` agent event (reusing `delegated-tool-bridge.ts`'s newly-
+   exported `resultContent()` status→string mapping, not a duplicated one), then writes a structured
+   (`JSON.stringify`, never string-concatenated) tool_result JSONL line mirroring the exact shape
+   `claude-stream.ts`'s own inbound parser already expects on the opposite direction of this wire
+   format (`{type:'user', message:{role:'user', content:[{type:'tool_result', tool_use_id, content,
+   is_error?}]}}`) — inferred from that parser's own inbound-parsing symmetry, since Anthropic's
+   outbound stream-json injection format isn't independently documented anywhere in this repo. The
+   injected content is journaled via the same `sentJournalEntry`/`trust:'trusted'` path gap 1 already
+   established for `writePromptToStdin`, so gap 1's observability floor covers this new write path too.
+
+**The human-in-the-loop pause question (debate's Unresolved Delta), resolved for this transport**: an
+explicit host-supplied `autonomousToolNames` allowlist, not stream-inferred intent. A `tool_use` whose
+name isn't allowlisted is left exactly as v1 always treated it — stdin closes, the run proceeds to its
+normal terminal state — even though `stopReason: 'tool_use'` was observed. Nothing auto-continues
+unless a host has explicitly pre-vetted that specific tool name as autonomous-safe; this sidesteps
+building unproven stream-based intent-detection entirely. A human-facing "ask the user a question"
+tool is simply never added to the set — `packages/chat-core/src/question-form.ts`'s existing inline
+`<question-form>` text-tag mechanism (which starts a fresh `Run` per turn with the answer baked into
+the next prompt, matching DP5's "`Run` = one operation" semantics) already covers that case without
+needing mid-turn injection at all.
+
+Tests: `continuation/__tests__/continuation-transport.test.ts` (6 tests, including an exhaustive
+assertion against all 24 real registered `AGENT_DEFS` — not a hand-picked subset — confirming the
+resolution table matches direct research, plus the `amp.ts` misrouting-guard case). A new "gap 3
+capability-routed continuation" describe block in `agent-executor.test.ts` (9 tests): default-unchanged
+behavior with no `continuation` configured, not-allowlisted tool still closes stdin, non-`tool_use`
+`stopReason` still closes stdin even when the tool would have been allowlisted, successful injection
+(ToolExecutor called with the right args, stdin stays open, correct JSONL line, correct `tool_result`
+event), `denied`-status injection produces `is_error: true`, a thrown `ToolExecutor.execute()` produces
+`is_error: true`, the injected write is journaled as trusted, and the `child.stdin` unexpectedly-absent
+defensive guard. Two pre-existing tests updated to assert `stopReason` is now carried through rather
+than dropped (matching the same "test described exactly the old, intentionally-changed behavior"
+pattern as gap 5's fix above). 467/467 tests in the package, 100% coverage on all 4 metrics for every
+file this task touched. `pnpm guard`: clean.
+
+**Not yet built**: the MCP-callback transport itself (primary for the 12 `externalMcpInjection` defs,
+including claude/codebuddy under this resolver's own ordering). Confirmed by direct research that this
+is a genuinely different-sized task, not a smaller "just wire it up": `@jini/mcp`'s `createMcpToolServer`
+has no executable entry point anywhere in this repo (`packages/mcp/package.json` has no `bin` field);
+none of the three `externalMcpInjection` config builders in `packages/mcp/src/core/config.ts`
+(`buildClaudeMcpJson`/`buildAcpMcpServers`/`buildOpenCodeMcpConfigContent`) have any real caller —
+`agent-executor.ts` never reads `def.externalMcpInjection` at all; and `delegated-tool-bridge.ts` (which
+*does* already fully satisfy the "routes through `ToolExecutor`'s deny-by-default gate" requirement, no
+changes needed there) has zero real callers anywhere outside its own test file. The spike the Final
+Recommendation calls for needs, at minimum: a real `@jini/mcp` bin entry point, a new daemon HTTP route
+bridging an MCP tool call to `delegated-tool-bridge.execute()`, and wiring that writes `.mcp.json` into
+the spawn cwd before the child launches. Scoped as its own follow-up task rather than rushed alongside
+the stdin-injection half above.

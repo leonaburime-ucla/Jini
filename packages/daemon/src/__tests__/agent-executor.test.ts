@@ -12,17 +12,47 @@ import {
   type PiRpcSession,
   type RuntimeAgentDef,
 } from '@jini/agent-runtime';
+import type { Principal, RunRef } from '@jini/core';
 import type { JournalEntry } from '@jini/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
 import { createRunLifecycle, type RunLifecycle } from '../run-lifecycle.js';
 import { createRunByteJournal, type RunByteJournal } from '../continuation/journal.js';
+import type { ToolExecutionResult, ToolExecutor } from '../tool-executor.js';
 import {
   AgentExecutorError,
   createAgentExecutor,
   isSupportedStreamFormat,
   translateAgentRuntimeEvent,
   type AgentExecutor,
+  type ContinuationOptions,
 } from '../agent-executor.js';
+
+const TEST_PRINCIPAL: Principal = { id: 'test-principal' };
+
+/** A fake `ToolExecutor` whose `execute` is fully caller-controlled — no real tool registry needed for gap 3's injection tests. */
+function createFakeToolExecutor(
+  executeImpl: (toolId: string, input: unknown) => Promise<ToolExecutionResult> | ToolExecutionResult,
+): { toolExecutor: ToolExecutor; calls: Array<{ principal: Principal; run: RunRef; toolId: string; input: unknown }> } {
+  const calls: Array<{ principal: Principal; run: RunRef; toolId: string; input: unknown }> = [];
+  return {
+    calls,
+    toolExecutor: {
+      async execute(principal: Principal, run: RunRef, toolId: string, input: unknown) {
+        calls.push({ principal, run, toolId, input });
+        return executeImpl(toolId, input);
+      },
+      async resumeConfirmation() {
+        throw new Error('not used in these tests');
+      },
+      async cancel() {
+        throw new Error('not used in these tests');
+      },
+      getAuditRecord() {
+        return undefined;
+      },
+    } as unknown as ToolExecutor,
+  };
+}
 
 /** Records every `record()` call in order, alongside a real `createRunByteJournal` so read-back is also exercised. */
 function createSpyJournal(): { journal: RunByteJournal; calls: Array<{ runId: string; entry: JournalEntry }> } {
@@ -139,6 +169,8 @@ interface HarnessOptions {
   preparePromptFileForAgent?: typeof preparePromptFileForAgent;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 3's stdin-tool-result injection config — omitted by default, matching `CreateAgentExecutorOptions.continuation`'s own opt-in default. */
+  continuation?: ContinuationOptions;
 }
 
 interface Harness {
@@ -212,6 +244,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.continuation !== undefined ? { continuation: options.continuation } : {}),
   });
 
   return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
@@ -990,8 +1023,15 @@ describe('translateAgentRuntimeEvent', () => {
     });
   });
 
-  it('routes turn_end to the turn-end kind with no payload', () => {
-    expect(translateAgentRuntimeEvent({ type: 'turn_end', stopReason: 'end_turn' })).toEqual({ kind: 'turn-end' });
+  it('routes turn_end to the turn-end kind, carrying stopReason through (gap 3 — capability-routed continuation transport)', () => {
+    expect(translateAgentRuntimeEvent({ type: 'turn_end', stopReason: 'end_turn' })).toEqual({
+      kind: 'turn-end',
+      stopReason: 'end_turn',
+    });
+  });
+
+  it('routes turn_end to the turn-end kind with no stopReason when the raw event carries none', () => {
+    expect(translateAgentRuntimeEvent({ type: 'turn_end' })).toEqual({ kind: 'turn-end' });
   });
 });
 
@@ -2177,5 +2217,205 @@ describe('AgentExecutor — gap 5 session resume (RunEndPayload.sessionRef)', ()
     const events = await collectEvents(lifecycle, run.id);
     const endEvent = events.find((e) => e.kind === 'end');
     expect(endEvent?.payload).toMatchObject({ sessionRef: 'thread-second' });
+  });
+});
+
+describe('AgentExecutor — gap 3 capability-routed continuation (stdin-tool-result injection)', () => {
+  function streamJsonDef(overrides: Partial<RuntimeAgentDef> = {}): RuntimeAgentDef {
+    return createFakeDef({ streamFormat: 'claude-stream-json', promptInputFormat: 'stream-json', ...overrides });
+  }
+
+  function toolUseTurnEnd(toolUseId: string, name: string, input: unknown, stopReason: string): string {
+    return `${JSON.stringify({
+      type: 'assistant',
+      message: { id: 'm1', content: [{ type: 'tool_use', id: toolUseId, name, input }], stop_reason: stopReason },
+    })}\n`;
+  }
+
+  it('closes stdin on a tool_use turn_end exactly as before when no continuation is configured (default, unchanged behavior)', async () => {
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef() });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('closes stdin on a tool_use turn_end when continuation is configured but the tool name is not allowlisted', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['other_tool']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('closes stdin on a non-tool_use turn_end even when continuation is configured and the tool would have been allowlisted', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } })}\n`,
+    );
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('auto-resolves an allowlisted tool_use through the injected ToolExecutor, keeps stdin open, and injects a structured tool_result JSONL line', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor((toolId, input) => {
+      expect(toolId).toBe('Bash');
+      expect(input).toEqual({ command: 'ls' });
+      return { executionId: 'exec-1', status: 'completed', output: 'file1.txt\nfile2.txt' };
+    });
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(calls).toEqual([{ principal: TEST_PRINCIPAL, run: { id: run.id }, toolId: 'Bash', input: { command: 'ls' } }]);
+    expect(child.stdin!.end).not.toHaveBeenCalled();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file1.txt\nfile2.txt' }] },
+    });
+
+    const events = await collectEvents(lifecycle, run.id);
+    const toolResultEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'tool_result');
+    expect(toolResultEvent?.payload).toMatchObject({ type: 'tool_result', toolUseId: 'tu-1', content: 'file1.txt\nfile2.txt' });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('injects an isError tool_result JSONL line when the injected tool execution is denied by policy', async () => {
+    const { toolExecutor } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'denied' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'rm -rf /' }, 'tool_use'));
+    await flushAsync();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'Tool execution denied by policy.', is_error: true }],
+      },
+    });
+
+    const events = await collectEvents(lifecycle, run.id);
+    const toolResultEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'tool_result');
+    expect(toolResultEvent?.payload).toMatchObject({ type: 'tool_result', toolUseId: 'tu-1', isError: true });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('injects an isError tool_result JSONL line when the injected ToolExecutor.execute() itself throws', async () => {
+    const { toolExecutor } = createFakeToolExecutor(() => {
+      throw new Error('registry lookup failed');
+    });
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'registry lookup failed', is_error: true }] },
+    });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('journals the injected tool_result content as trusted, host-sent stdin bytes (gap 1 coverage of the new write path)', async () => {
+    const { journal, calls: journalCalls } = createSpyJournal();
+    const { toolExecutor } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), journal, continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    const sentCalls = journalCalls.filter((call) => call.entry.provenance.source === 'host');
+    expect(sentCalls.at(-1)?.entry).toEqual({ content: 'ok', provenance: { source: 'host', channel: 'stdin' }, trust: 'trusted' });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('still resolves the injected tool through ToolExecutor but no-ops the stdin write when child.stdin is unexpectedly absent', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), omitStdin: true, continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(calls).toHaveLength(1);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('does not inject through the mcp-callback-primary transport (claude/codebuddy resolve to mcp-callback, not stdin-injection) even when a def is otherwise eligible', () => {
+    // resolveContinuationTransport itself is exhaustively tested in continuation-transport.test.ts;
+    // this just documents, at the agent-executor integration level, that createFakeDef's
+    // synthetic def (no externalMcpInjection) is what makes 'stdin-injection' reachable in these
+    // tests at all — a real claude/codebuddy def would resolve to 'mcp-callback' instead, and gap
+    // 3's MCP-callback spike (not this stdin path) is what drives those in production.
+    const def = streamJsonDef();
+    expect(def.externalMcpInjection).toBeUndefined();
   });
 });
