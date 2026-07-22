@@ -259,6 +259,22 @@ export type {
 } from './delegated-tools.js';
 export { delegatedToolExecuteRoute, registerDelegatedToolRoutes } from './delegated-tools.js';
 
+export type {
+  MediaGenerateResponse,
+  MediaHttpDeps,
+  MediaInternalErrorContext,
+  MediaTaskDeleteResponse,
+  MediaTaskListResponse,
+  MediaTaskResponse,
+} from './media.js';
+export {
+  mediaGenerateRoute,
+  mediaTaskDeleteRoute,
+  mediaTaskGetRoute,
+  mediaTaskListRoute,
+  registerMediaRoutes,
+} from './media.js';
+
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
 // `(code, message, init)` — same job, different call-site generation, so it is re-exported here

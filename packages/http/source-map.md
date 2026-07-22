@@ -1234,3 +1234,33 @@ a native tool-call transport. Fixed by adding the same `export type {...} from '
 / `export {...} from './delegated-tools.js'` pair every other route pack already has, placed after
 `model-proxy.ts`'s block. No behavior change to the route itself — it was already correct and
 tested, just unreachable from outside the package.
+
+## 2026-07-22 addition — `media.ts`: a real HTTP caller for `@jini/media`'s dispatch engine (audit fix)
+
+**Gap found by independent audit**: `@jini/media`'s `createMediaDispatchEngine`/
+`createSqliteMediaTaskStore` were real and 100%-tested but had zero callers anywhere outside their
+own package. This package gained `@jini/media` as a new dependency and a new route pack —
+`src/media.ts` — to give them one, following the exact route-pack conventions `memory.ts`/
+`routines.ts` already established (`defineJsonRoute`/`mountJsonRoute`, a `RouteInputContext` parser
+per route, `registerMediaRoutes` mounting all of them).
+
+**Routes**: `POST /api/media/generate` (`requireSameOrigin: true`, `202`), `GET
+/api/media/tasks/:id`, `GET /api/media/tasks?ownerRef=...`, `DELETE /api/media/tasks/:id`
+(`requireSameOrigin: true`). See `media.ts`'s own module doc for the full "request-now, poll-later"
+design and the where-do-bytes-land decision (a base64 `data:` URL stored on `MediaTask.file`, no new
+persistence port invented).
+
+**SEC-005 redaction, matching `delegated-tools.ts`'s established pattern exactly**: a raw error from
+`MediaDispatchEngine.generate()` (which can carry vendor-SDK/network internals, API keys in a
+response body, ...) never reaches an HTTP caller verbatim. Two redaction sites: `POST
+/api/media/generate` itself (a `taskStore.create()` failure, source `media-generate-validate`) and
+the background generation failure path (source `media-generate-dispatch`, recorded onto the task's
+own `error` field with the same redacted `{message, code}` shape a caller would see from the sync
+path). Both call the same injectable `onInternalError` sink (default `console.error`), correlation-
+id-bearing, exactly like `delegated-tools.ts`'s `reportInternalError`.
+
+**Verified, personally, this session**: `pnpm --dir packages/http exec tsc --noEmit`: clean.
+`pnpm --dir packages/http run test:coverage` — **748/748 tests pass** (49 new in `media.test.ts`),
+`media.ts` **100/100/100/100**. Package-wide: 100/99.35/100/100 (the two pre-existing, unrelated
+gaps — `runs.ts:68` and `terminals.ts`'s five lines — are addressed separately; see this task's own
+coverage pass).

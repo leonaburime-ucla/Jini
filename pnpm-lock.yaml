@@ -207,6 +207,9 @@ importers:
       '@jini/daemon':
         specifier: workspace:*
         version: link:../daemon
+      '@jini/media':
+        specifier: workspace:*
+        version: link:../media
       '@jini/platform':
         specifier: workspace:*
         version: link:../platform
