@@ -99,6 +99,9 @@ export default defineConfig({
         // verified with the same grep before excluding.
         'src/features/resource-dashboard/types.ts',
         'src/features/resource-dashboard/ports.ts',
+        // rich-text-input/types.ts is pure `interface`/`type` declarations,
+        // zero runtime statements (same verification check).
+        'src/features/rich-text-input/types.ts',
       ],
       // Measured 2026-07-22 (audit fix — coverage-hardening pass): 99.98%
       // statements / ~99.86-99.88% branches / 100% functions / 99.98% lines
