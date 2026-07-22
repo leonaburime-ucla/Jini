@@ -83,14 +83,16 @@ export function resolveModelForAgent(
     const raw = env[def.defaultModelEnvVar];
     if (typeof raw === 'string' && raw.trim()) return raw.trim();
   }
-  const fallbacks = Array.isArray(def.fallbackModels) ? def.fallbackModels : [];
+  // `def.fallbackModels` is typed `RuntimeModelOption[]` (never optional/non-array) and every
+  // entry is a well-formed object — no defensive Array.isArray/truthy-entry guard needed for a
+  // state the type system already excludes (CR-R7).
+  const fallbacks = def.fallbackModels;
   if (fallbacks.some((m) => m.id === 'default')) return resolved;
   const liveModels = liveModelOrder.get(liveModelCacheKey(def.id, liveModelScope)) ?? [];
   const firstLive = liveModels[0];
   if (firstLive) return firstLive;
   if (fallbacks.length === 0) return resolved;
-  const firstFallback = fallbacks[0];
-  return firstFallback ? firstFallback.id : resolved;
+  return fallbacks[0]!.id;
 }
 
 // Permit user-typed model ids that didn't appear in either the live

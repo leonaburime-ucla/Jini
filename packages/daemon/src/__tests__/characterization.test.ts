@@ -39,7 +39,7 @@
  * ordering contract.
  */
 import { describe, expect, it } from 'vitest';
-import type { RunProtocolEvent } from '@jini/protocol';
+import { RUN_PROTOCOL_VERSION, type RunProtocolEvent } from '@jini/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
 import { createRunLifecycle } from '../run-lifecycle.js';
 
@@ -117,11 +117,17 @@ describe('characterization — ordered event sequence parity with OD\'s document
     // Only two 'end' events total across the whole two-segment lifecycle —
     // the idempotency-guarded duplicate finish() call between segments
     // contributed nothing (invariant 3 above).
-    const asProtocolEvents: RunProtocolEvent[] = sequence.map((_, i) => ({
-      id: replay.entries[i]!.id,
-      event: replay.entries[i]!.event,
-      data: replay.entries[i]!.data,
+    const asProtocolEvents: RunProtocolEvent[] = replay.entries.map((entry) => ({
+      runId: run.id,
+      eventId: `${run.id}:${entry.id}`,
+      opaqueCursor: entry.id,
+      protocolVersion: RUN_PROTOCOL_VERSION,
+      ts: entry.recordedAt,
+      kind: entry.event,
+      payload: entry.data,
+      durability: 'durable',
     })) as RunProtocolEvent[];
     expect(asProtocolEvents).toHaveLength(11);
+    expect(asProtocolEvents.every((e) => e.runId === run.id && e.protocolVersion === RUN_PROTOCOL_VERSION)).toBe(true);
   });
 });

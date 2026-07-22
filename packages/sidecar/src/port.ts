@@ -60,20 +60,38 @@ async function allocateForcedPort(port: number, label: string, host: string, res
 }
 
 /**
- * @internal Probe ephemeral ports until a non-reserved one is found, then
- * reserve it.
+ * @internal Probes one ephemeral port via a real bind(0)-listen-then-close cycle — the OS
+ * hands back whatever port it currently considers free.
  */
-async function allocateDynamicPort(label: string, host: string, reserved: Set<number>): Promise<PortAllocation> {
+async function probeEphemeralPort(host: string): Promise<number> {
+  const server = await listenOnPort(0, host);
+  const address = server.address();
+  await closeServer(server);
+  if (address == null || typeof address === "string") {
+    throw new Error("failed to probe an ephemeral port");
+  }
+  return address.port;
+}
+
+/**
+ * @internal Probe ephemeral ports until a non-reserved one is found, then reserve it.
+ *
+ * `probe` is an injectable seam (CR-R5): the 20-attempt retry budget is exercised by tests with
+ * a deterministic fake instead of real OS port allocation, whose ordering/spacing is
+ * platform-specific and not something a test should depend on for a hard-coded 20-reserved-port
+ * scenario. `allocatePort` always calls this with the real {@link probeEphemeralPort}.
+ */
+export async function allocateDynamicPort(
+  label: string,
+  host: string,
+  reserved: Set<number>,
+  probe: (host: string) => Promise<number> = probeEphemeralPort,
+): Promise<PortAllocation> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const server = await listenOnPort(0, host);
-    const address = server.address();
-    await closeServer(server);
-    if (address == null || typeof address === "string") {
-      throw new Error(`failed to allocate dynamic ${label} port`);
-    }
-    if (!reserved.has(address.port)) {
-      reserved.add(address.port);
-      return { port: address.port, source: "dynamic" };
+    const port = await probe(host);
+    if (!reserved.has(port)) {
+      reserved.add(port);
+      return { port, source: "dynamic" };
     }
   }
   throw new Error(`failed to allocate dynamic ${label} port without conflict`);

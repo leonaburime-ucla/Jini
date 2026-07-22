@@ -29,7 +29,7 @@ describe('@jini/media barrel completeness', () => {
 
   it('re-exports the policy port', () => {
     expect(barrel.createAllowlistMediaPolicy).toBeTypeOf('function');
-    expect(barrel.DEFAULT_MEDIA_EXECUTION_POLICY).toEqual({ mode: 'enabled' });
+    expect(barrel.DEFAULT_MEDIA_EXECUTION_POLICY).toEqual({ mode: 'disabled' });
   });
 
   it('re-exports the staging port', () => {
@@ -40,5 +40,12 @@ describe('@jini/media barrel completeness', () => {
     expect(barrel.CapabilityRegistryToken.id).toBe('jini.media.capabilityRegistry');
     expect(barrel.MediaTaskStoreToken.id).toBe('jini.media.taskStore');
     expect(barrel.MediaPolicyToken.id).toBe('jini.media.policy');
+  });
+
+  it('re-exports the dispatch engine', () => {
+    expect(barrel.createMediaDispatchEngine).toBeTypeOf('function');
+    expect(barrel.resolveProviderCredentialsFromEnv).toBeTypeOf('function');
+    expect(barrel.renderStub).toBeTypeOf('function');
+    expect(barrel.buildRenderContext).toBeTypeOf('function');
   });
 });

@@ -27,9 +27,13 @@
 // Token persistence lives in `tokens.ts`. This file is the protocol
 // layer; storage is somebody else's job.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
+import type { LookupFunction } from 'node:net';
 import path from 'node:path';
+import { Agent } from 'undici';
+import { assertSafePublicUrl, createValidatingLookup } from '@jini/platform';
+import { writeSecretFileAtomic } from './secure-write.js';
 
 // ───────────────────────────────────────────────────────────────────────
 // Types — narrow subsets of the relevant RFC payloads.
@@ -89,6 +93,182 @@ export interface PendingAuthState {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// Outbound-fetch safety (SEC-RB-001 / CR-005).
+// ───────────────────────────────────────────────────────────────────────
+//
+// Every network hop below — protected-resource discovery, authorization-
+// server discovery, dynamic client registration, and the token endpoint —
+// fetches a URL that is ultimately caller- or metadata-controlled (a
+// user-supplied MCP server URL, or an endpoint a remote server's own
+// discovery document names). A hostile or compromised server can point any
+// of these at an internal service, a cloud-metadata endpoint, or an
+// attacker-controlled host that redirects or replies with an oversized /
+// slow response. `safeOAuthFetch` is the single choke point all of that
+// traffic goes through:
+//   - HTTPS-only (no plaintext downgrade).
+//   - `@jini/platform`'s `assertSafePublicUrl` rejects embedded credentials,
+//     localhost, and literal private/link-local IPs before any socket opens.
+//   - A `createValidatingLookup`-wrapped dispatcher re-validates the
+//     *actual* resolved address at connection time, closing the
+//     DNS-rebinding / TOCTOU gap a one-time pre-check would leave open —
+//     mirrors `packages/deploy/src/reachability.ts` and
+//     `packages/platform/src/asset-cache.ts`, the two existing SSRF-safe
+//     fetch call sites in this repo.
+//   - Redirects are refused (`redirect: 'error'` plus an explicit
+//     status/type check, so a test double that bypasses real fetch
+//     semantics is still caught) rather than followed.
+//   - Every response is read through a byte-capped reader and every
+//     request carries an `AbortSignal`-based timeout.
+const OAUTH_FETCH_TIMEOUT_MS = 10_000;
+const OAUTH_FETCH_MAX_BYTES = 1_000_000; // 1 MB — generous for OAuth metadata/token JSON
+
+// Not exported: only used to type the optional `lookupImpl` test seam
+// threaded through this file's public functions (mirrors
+// `packages/deploy/src/reachability.ts`'s `ReachabilityOptions.lookupImpl`).
+type DnsLookupCb = Parameters<typeof createValidatingLookup>[0];
+
+function assertSafeOAuthUrl(raw: string): URL {
+  const url = assertSafePublicUrl(raw);
+  if (url.protocol !== 'https:') {
+    // OAuth authorization servers always serve discovery/DCR/token endpoints
+    // over TLS; a plaintext candidate is never legitimate and downgrading a
+    // request that may carry client secrets or tokens to http is its own risk.
+    throw new Error(`OAuth endpoint must use https: ${raw}`);
+  }
+  return url;
+}
+
+// A fresh Agent per call would needlessly discard connection pooling; the
+// common (no test override) case shares one lazily-created dispatcher. A
+// caller-supplied `lookupImpl` (tests only) always gets its own dispatcher
+// instead of touching the shared one — mirrors reachability.ts's own
+// `resolveDispatcher`.
+let defaultOAuthDispatcher: Agent | null = null;
+function resolveOAuthDispatcher(lookupImpl?: DnsLookupCb): Agent {
+  if (lookupImpl) {
+    return new Agent({ connect: { lookup: createValidatingLookup(lookupImpl) as unknown as LookupFunction } });
+  }
+  defaultOAuthDispatcher ??= new Agent({ connect: { lookup: createValidatingLookup() as unknown as LookupFunction } });
+  return defaultOAuthDispatcher;
+}
+
+function isRedirectResponse(res: Response): boolean {
+  return (res.status >= 300 && res.status < 400) || res.type === 'opaqueredirect';
+}
+
+/**
+ * Read a response body up to `maxBytes`, aborting `controller` (when given)
+ * and throwing the moment the cap is exceeded rather than buffering an
+ * unbounded body first. Falls back to a single `res.text()` call (tolerant
+ * of a throw, matching the old `safeText`'s forgiving error-path behavior)
+ * for response-like test doubles that don't expose a real `ReadableStream`
+ * body.
+ */
+async function readCappedText(
+  res: Response,
+  maxBytes: number,
+  controller?: AbortController,
+): Promise<string> {
+  const body = (res as { body?: ReadableStream<Uint8Array> | null }).body;
+  if (!body || typeof body.getReader !== 'function') {
+    try {
+      return await res.text();
+    } catch {
+      return '';
+    }
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        controller?.abort(); // stop pulling more bytes from upstream
+        throw new Error(`response body exceeds ${maxBytes} byte limit`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // reader already closed/errored — nothing to release
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Best-effort, size-capped extraction of an error response's body text for
+ *  inclusion in a thrown error message. Never throws. */
+async function safeErrorText(res: Response): Promise<string> {
+  try {
+    const text = await readCappedText(res, OAUTH_FETCH_MAX_BYTES);
+    return text.slice(0, 500);
+  } catch {
+    return '';
+  }
+}
+
+interface SafeOAuthFetchInit {
+  method?: 'GET' | 'POST';
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/**
+ * The single outbound-fetch choke point for this file. Validates the URL,
+ * attaches the connection-time SSRF guard, refuses redirects, and enforces a
+ * request timeout. Callers still own reading/bounding the response body via
+ * `readCappedText`.
+ */
+async function safeOAuthFetch(
+  rawUrl: string,
+  init: SafeOAuthFetchInit,
+  fetchImpl: typeof fetch,
+  lookupImpl?: DnsLookupCb,
+): Promise<Response> {
+  const url = assertSafeOAuthUrl(rawUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OAUTH_FETCH_TIMEOUT_MS);
+  try {
+    const reqInit: RequestInit = {
+      method: init.method ?? 'GET',
+      ...(init.headers ? { headers: init.headers } : {}),
+      ...(init.body !== undefined ? { body: init.body } : {}),
+      redirect: 'error',
+      signal: controller.signal,
+    };
+    // `dispatcher` is an undici extension of RequestInit; attach it at
+    // runtime (see asset-cache.ts / reachability.ts for the same pattern) to
+    // avoid the undici-types (bundled with @types/node) vs undici@7
+    // Dispatcher version skew a typed field would trip over.
+    (reqInit as { dispatcher?: unknown }).dispatcher = resolveOAuthDispatcher(lookupImpl);
+    let res: Response;
+    try {
+      res = await fetchImpl(url.toString(), reqInit);
+    } catch (err) {
+      throw new Error(`request to ${url.origin} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (isRedirectResponse(res)) {
+      // Never follow a redirect: the destination has not been validated,
+      // and a hostile or rebound server could point it at an internal
+      // address. `redirect: 'error'` already makes a *real* fetch reject
+      // before returning a Response; this explicit check is defense in
+      // depth for response-like test doubles that don't implement real
+      // HTTP redirect semantics.
+      throw new Error(`refusing to follow a redirect response from ${url.origin}`);
+    }
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────
 // PKCE + state helpers.
 // ───────────────────────────────────────────────────────────────────────
 
@@ -141,10 +321,14 @@ export function generateState(): string {
  * `/.well-known/oauth-protected-resource[<path>]`. We try both the
  * path-suffixed form and the bare `/.well-known/...` so servers that
  * only publish at the root still work.
+ *
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  */
 export async function discoverProtectedResource(
   resourceUrl: string,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<ProtectedResourceMetadata | null> {
   let parsed: URL;
   try {
@@ -160,7 +344,7 @@ export async function discoverProtectedResource(
     new URL('/.well-known/oauth-protected-resource', `${parsed.protocol}//${parsed.host}`).toString(),
   ];
   for (const url of candidates) {
-    const json = await fetchJson<ProtectedResourceMetadata>(url, fetchImpl);
+    const json = await fetchJson<ProtectedResourceMetadata>(url, fetchImpl, lookupImpl);
     if (json) return json;
   }
   return null;
@@ -170,19 +354,32 @@ export async function discoverProtectedResource(
  * Fetch the authorization-server metadata for an issuer URL. Tries both
  * the OAuth (RFC 8414) and OIDC layouts (`/.well-known/oauth-authorization-server`
  * and `/.well-known/openid-configuration`); some providers only publish one.
+ *
+ * Per RFC 8414 §3.3, a discovery document's `issuer` — when present — MUST
+ * match the issuer used to construct the request; a mismatched document is
+ * rejected rather than trusted (SEC-RB-001 / CR-005). Every endpoint the
+ * document names (`authorization_endpoint`, `token_endpoint`,
+ * `registration_endpoint`) is additionally required to be an absolute
+ * `https:` URL sharing the queried issuer's own origin, so a compromised or
+ * hostile document can't redirect DCR or token exchange at an unrelated
+ * origin.
+ *
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  */
 export async function discoverAuthServer(
   issuer: string,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<AuthorizationServerMetadata | null> {
-  let parsed: URL;
+  let parsedIssuer: URL;
   try {
-    parsed = new URL(issuer);
+    parsedIssuer = new URL(issuer);
   } catch {
     return null;
   }
-  const trimmed = parsed.pathname.replace(/\/+$/u, '');
-  const base = `${parsed.protocol}//${parsed.host}`;
+  const trimmed = parsedIssuer.pathname.replace(/\/+$/u, '');
+  const base = `${parsedIssuer.protocol}//${parsedIssuer.host}`;
   const candidates = [
     `${base}/.well-known/oauth-authorization-server${trimmed}`,
     `${base}/.well-known/openid-configuration${trimmed}`,
@@ -190,8 +387,10 @@ export async function discoverAuthServer(
     `${base}/.well-known/openid-configuration`,
   ];
   for (const url of candidates) {
-    const json = await fetchJson<AuthorizationServerMetadata>(url, fetchImpl);
+    const json = await fetchJson<AuthorizationServerMetadata>(url, fetchImpl, lookupImpl);
     if (json && typeof json.authorization_endpoint === 'string' && typeof json.token_endpoint === 'string') {
+      if (typeof json.issuer === 'string' && json.issuer !== issuer) continue; // RFC 8414 §3.3 issuer mismatch
+      if (!endpointsShareIssuerOrigin(parsedIssuer, json)) continue;
       // Spread first so the explicit issuer wins (otherwise duplicate-key
       // assignments under exactOptionalPropertyTypes complain).
       return { ...json, issuer: json.issuer ?? issuer };
@@ -200,16 +399,32 @@ export async function discoverAuthServer(
   return null;
 }
 
+function endpointsShareIssuerOrigin(issuerUrl: URL, meta: AuthorizationServerMetadata): boolean {
+  const endpoints = [meta.authorization_endpoint, meta.token_endpoint, meta.registration_endpoint].filter(
+    (v): v is string => typeof v === 'string',
+  );
+  for (const endpoint of endpoints) {
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== 'https:' || parsed.origin !== issuerUrl.origin) return false;
+  }
+  return true;
+}
+
 async function fetchJson<T>(
   url: string,
   fetchImpl: typeof fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<T | null> {
   try {
-    const res = await fetchImpl(url, {
-      headers: { accept: 'application/json' },
-    });
+    const res = await safeOAuthFetch(url, { headers: { accept: 'application/json' } }, fetchImpl, lookupImpl);
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    const text = await readCappedText(res, OAUTH_FETCH_MAX_BYTES);
+    return JSON.parse(text) as T;
   } catch {
     return null;
   }
@@ -250,26 +465,32 @@ function isRegisteredClient(v: unknown): v is RegisteredClient {
   );
 }
 
+/**
+ * Persist the client cache to `<dataDir>/mcp-oauth-clients.json`. May
+ * contain a confidential client's `clientSecret` (CR-006 / SEC-RB-002), so
+ * the file is created with owner-only (0600) permissions from the very
+ * first byte via `writeSecretFileAtomic` rather than a post-rename chmod —
+ * see that module for why.
+ */
 async function writeClientCache(
   dataDir: string,
   next: ClientCacheFile,
 ): Promise<void> {
-  const file = clientsFile(dataDir);
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';
-  await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
-  await rename(tmp, file);
+  await writeSecretFileAtomic(clientsFile(dataDir), JSON.stringify(next, null, 2));
 }
 
 /**
  * POST to the auth server's `registration_endpoint` per RFC 7591. Returns
  * a freshly issued client_id (and optional client_secret). Caller is
  * responsible for caching the result.
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  */
 export async function registerClient(
   registrationEndpoint: string,
   redirectUri: string,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<{ clientId: string; clientSecret?: string }> {
   const body = {
     redirect_uris: [redirectUri],
@@ -279,21 +500,29 @@ export async function registerClient(
     client_name: 'Jini',
     application_type: 'web',
   };
-  const res = await fetchImpl(registrationEndpoint, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json',
+  const res = await safeOAuthFetch(
+    registrationEndpoint,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    fetchImpl,
+    lookupImpl,
+  );
   if (!res.ok) {
-    const txt = await safeText(res);
+    const txt = await safeErrorText(res);
     throw new Error(
       `dynamic client registration failed: HTTP ${res.status} ${res.statusText} ${txt}`,
     );
   }
-  const json = (await res.json()) as { client_id?: string; client_secret?: string };
+  const json = JSON.parse(await readCappedText(res, OAUTH_FETCH_MAX_BYTES)) as {
+    client_id?: string;
+    client_secret?: string;
+  };
   if (!json.client_id) {
     throw new Error('dynamic client registration response missing client_id');
   }
@@ -306,12 +535,15 @@ export async function registerClient(
  * Cached version of `registerClient`. Looks up `(authServerIssuer, redirectUri)`
  * in the cache file and re-uses the existing client; falls back to a fresh
  * DCR call when nothing is cached.
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  */
 export async function getOrRegisterClient(
   dataDir: string,
   authServer: AuthorizationServerMetadata,
   redirectUri: string,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<RegisteredClient> {
   const cache = await readClientCache(dataDir);
   const cached = cache.clients.find(
@@ -327,6 +559,7 @@ export async function getOrRegisterClient(
     authServer.registration_endpoint,
     redirectUri,
     fetchImpl,
+    lookupImpl,
   );
   const next: RegisteredClient = {
     authServerIssuer: authServer.issuer,
@@ -401,11 +634,14 @@ export interface ExchangeCodeInput {
  * indicator. Throws when the token endpoint returns a non-2xx status.
  * @param input The code-exchange parameters.
  * @param fetchImpl Injectable fetch, defaults to the global `fetch`.
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  * @returns The token endpoint response containing at least an `access_token`.
  */
 export async function exchangeCodeForToken(
   input: ExchangeCodeInput,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<OAuthTokenResponse> {
   const form = new URLSearchParams();
   form.set('grant_type', 'authorization_code');
@@ -414,7 +650,7 @@ export async function exchangeCodeForToken(
   form.set('client_id', input.clientId);
   form.set('code_verifier', input.codeVerifier);
   if (input.resource) form.set('resource', input.resource);
-  return tokenRequest(input.tokenEndpoint, form, input.clientSecret, fetchImpl);
+  return tokenRequest(input.tokenEndpoint, form, input.clientSecret, fetchImpl, lookupImpl);
 }
 
 /** Inputs for the refresh-token → new-access-token exchange (RFC 6749 §6). */
@@ -434,11 +670,14 @@ export interface RefreshTokenInput {
  * Throws when the token endpoint returns a non-2xx status.
  * @param input The refresh parameters.
  * @param fetchImpl Injectable fetch, defaults to the global `fetch`.
+ * @param lookupImpl Injectable `dns.lookup` for the connection-time SSRF
+ *   guard (tests only — see `safeOAuthFetch`).
  * @returns A fresh `OAuthTokenResponse`; the server may issue a new refresh token.
  */
 export async function refreshAccessToken(
   input: RefreshTokenInput,
   fetchImpl: typeof fetch = fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<OAuthTokenResponse> {
   const form = new URLSearchParams();
   form.set('grant_type', 'refresh_token');
@@ -446,7 +685,7 @@ export async function refreshAccessToken(
   form.set('client_id', input.clientId);
   if (input.scope) form.set('scope', input.scope);
   if (input.resource) form.set('resource', input.resource);
-  return tokenRequest(input.tokenEndpoint, form, input.clientSecret, fetchImpl);
+  return tokenRequest(input.tokenEndpoint, form, input.clientSecret, fetchImpl, lookupImpl);
 }
 
 async function tokenRequest(
@@ -454,6 +693,7 @@ async function tokenRequest(
   form: URLSearchParams,
   clientSecret: string | undefined,
   fetchImpl: typeof fetch,
+  lookupImpl?: DnsLookupCb,
 ): Promise<OAuthTokenResponse> {
   const headers: Record<string, string> = {
     'content-type': 'application/x-www-form-urlencoded',
@@ -466,31 +706,23 @@ async function tokenRequest(
     const basic = Buffer.from(`${form.get('client_id')}:${clientSecret}`).toString('base64');
     headers['authorization'] = `Basic ${basic}`;
   }
-  const res = await fetchImpl(tokenEndpoint, {
-    method: 'POST',
-    headers,
-    body: form.toString(),
-  });
+  const res = await safeOAuthFetch(
+    tokenEndpoint,
+    { method: 'POST', headers, body: form.toString() },
+    fetchImpl,
+    lookupImpl,
+  );
   if (!res.ok) {
-    const txt = await safeText(res);
+    const txt = await safeErrorText(res);
     throw new Error(
       `token endpoint rejected request: HTTP ${res.status} ${res.statusText} ${txt}`,
     );
   }
-  const json = (await res.json()) as OAuthTokenResponse;
+  const json = JSON.parse(await readCappedText(res, OAUTH_FETCH_MAX_BYTES)) as OAuthTokenResponse;
   if (!json.access_token) {
     throw new Error('token endpoint response missing access_token');
   }
   return json;
-}
-
-async function safeText(res: Response): Promise<string> {
-  try {
-    const t = await res.text();
-    return t.slice(0, 500);
-  } catch {
-    return '';
-  }
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -582,6 +814,8 @@ export interface BeginAuthInput {
   scope?: string;
   /** Injectable fetch implementation; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Injectable `dns.lookup` for the connection-time SSRF guard (tests only). */
+  lookupImpl?: DnsLookupCb;
 }
 
 /** Result of `beginAuth`: everything needed to redirect the browser and later complete the flow. */
@@ -605,17 +839,18 @@ export async function beginAuth(
   input: BeginAuthInput,
 ): Promise<BeginAuthResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
+  const lookupImpl = input.lookupImpl;
 
   // Step 1: ask the MCP server who its auth server is. If the server
   // doesn't publish protected-resource metadata, fall back to assuming
   // the resource origin IS the auth server — most "stand-alone" MCP
   // providers host both at the same host.
-  const prm = await discoverProtectedResource(input.serverUrl, fetchImpl);
+  const prm = await discoverProtectedResource(input.serverUrl, fetchImpl, lookupImpl);
   const issuerHint = prm?.authorization_servers?.[0];
   const issuer = issuerHint ?? new URL(input.serverUrl).origin;
 
   // Step 2: discovery on the auth server.
-  const authServer = await discoverAuthServer(issuer, fetchImpl);
+  const authServer = await discoverAuthServer(issuer, fetchImpl, lookupImpl);
   if (!authServer) {
     throw new Error(`could not discover OAuth metadata for ${issuer}`);
   }
@@ -626,6 +861,7 @@ export async function beginAuth(
     authServer,
     input.redirectUri,
     fetchImpl,
+    lookupImpl,
   );
 
   // Step 4: PKCE + state.

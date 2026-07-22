@@ -8,17 +8,29 @@ export default defineConfig({
       // json-summary/json are what a coverage-driven pass should actually
       // read (see docs/jini-port's Phase 6.5 method).
       reporter: ['text', 'json-summary', 'json'],
-      // Scoped to this task's new file (Part 3 of the
-      // agent-protocol/ToolExecutor/daemon-core port) rather than the whole
-      // package — run-lifecycle.ts/event-log.ts/close-status.ts predate this
-      // coverage gate (their own port task made no coverage-threshold
-      // commitment) and are out of this task's scope.
-      include: ['src/tool-executor.ts'],
+      // CR-R4: widened to the whole package (matching packages/core and
+      // packages/agent-runtime's package-wide convention) — the prior config
+      // measured only tool-executor.ts, silently excluding the newly
+      // expanded run-lifecycle/event-log/agent-executor/delegated-tool-bridge
+      // coverage (see
+      // ADS-memory/reports/code-review/CR-backend-coverage-push-2026-07-20.md, R4).
+      // `src/run/core/failure-taxonomy.ts` is a genuinely zero-executable-
+      // statement file (`export type`/`export interface` only, verified via
+      // `grep -nE '^(export )?(const|function|class|let|var) '` finding no
+      // runtime declarations) — left in `include` rather than excluded so a
+      // future non-type addition to that file is still gated, same
+      // reasoning as packages/core/vitest.config.ts's principal.ts carve-out.
+      include: ['src/**'],
+      exclude: ['src/**/*.test.ts'],
       thresholds: {
-        statements: 99,
-        branches: 99,
+        // Measured 2026-07-21 package-wide honest coverage is ~99.8/99.3/
+        // 100/99.8 (statements/branches/functions/lines) — comfortably above
+        // the 98% unit-profile target. Set with a small safety margin below
+        // the measured numbers rather than pinned exactly to them.
+        statements: 98,
+        branches: 98,
         functions: 99,
-        lines: 99,
+        lines: 98,
       },
     },
   },

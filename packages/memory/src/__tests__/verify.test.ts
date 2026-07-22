@@ -132,6 +132,97 @@ describe('enforceVerify', () => {
     });
     expect('scorecardStatus' in result).toBe(false);
   });
+
+  // CR-011 / SEC-RB-007: an unknown/malformed row status must never count as a pass.
+  describe('unknown/malformed row status (fail-closed)', () => {
+    it.each(['error', 'unknown', 'FAIL', 'Pass', '', 'skipped', null, undefined, 123])(
+      'treats status %j as a failure rather than silently passing',
+      (badStatus) => {
+        const result = enforceVerify({
+          assistantOutput: 'output',
+          activeRules: [{ name: 'Rule A' }],
+          hadArtifact: true,
+          verifyEnabled: true,
+          extractScorecard: extractorFor({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            rows: [{ rule: 'Rule A', status: badStatus as any }],
+          }),
+        });
+        expect(result.status).toBe('fail');
+        expect(result.rowsFailed).toBe(1);
+      },
+    );
+
+    it('still passes when every row is exactly "pass" and every rule is covered', () => {
+      const result = enforceVerify({
+        assistantOutput: 'output',
+        activeRules: [{ name: 'Rule A' }],
+        hadArtifact: true,
+        verifyEnabled: true,
+        extractScorecard: extractorFor({ rows: [{ rule: 'Rule A', status: 'pass' }] }),
+      });
+      expect(result.status).toBe('pass');
+      expect(result.rowsFailed).toBe(0);
+    });
+
+    it('treats a non-array `rows` field as a missing scorecard instead of throwing', () => {
+      const result = enforceVerify({
+        assistantOutput: 'output',
+        activeRules: [{ name: 'Rule A' }],
+        hadArtifact: true,
+        verifyEnabled: true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        extractScorecard: extractorFor({ rows: 'not-an-array' as any }),
+      });
+      expect(result.status).toBe('missing');
+      expect(result.uncoveredRules).toEqual(['Rule A']);
+    });
+  });
+
+  // SEC-RB-007: document the current fuzzy-matching heuristic's residual limits.
+  describe('rule-to-evidence mapping (SEC-RB-007)', () => {
+    it('no longer lets a single vague row satisfy two distinct rules at once (unique row consumption)', () => {
+      // Both rules share enough significant words with the SAME single row
+      // to independently match it via the fuzzy word-overlap heuristic.
+      const result = enforceVerify({
+        assistantOutput: 'output',
+        activeRules: [
+          { name: 'Density limit', check: 'layout density stays below threshold value' },
+          { name: 'Contrast rule', check: 'layout density and contrast both meet threshold value' },
+        ],
+        hadArtifact: true,
+        verifyEnabled: true,
+        extractScorecard: extractorFor({
+          rows: [{ rule: 'Checked layout density against threshold value', status: 'pass' }],
+        }),
+      });
+      // Exactly one of the two rules can claim this row; the other must be
+      // reported uncovered rather than both being silently satisfied.
+      expect(result.rulesCovered).toBe(1);
+      expect(result.uncoveredRules).toHaveLength(1);
+      expect(result.status).toBe('fail');
+    });
+
+    it('flags residual risk: the per-pair coverage test itself is still a fuzzy substring/word-overlap heuristic, not an explicit rule-ID mapping', () => {
+      // A row whose text is generic enough to overlap on significant words
+      // with a rule it does not actually address still counts as covering
+      // it — unique consumption prevents double-counting across rules, but
+      // does not make an individual match "true"/verified. This is a known,
+      // reported limitation (SEC-RB-007): a full fix requires stable rule
+      // IDs and explicit evidence references rather than prose matching,
+      // which is out of scope for this hardening pass.
+      const result = enforceVerify({
+        assistantOutput: 'output',
+        activeRules: [{ name: 'Accessible contrast guideline', check: 'text meets accessible contrast threshold everywhere' }],
+        hadArtifact: true,
+        verifyEnabled: true,
+        extractScorecard: extractorFor({
+          rows: [{ rule: 'Confirmed accessible contrast threshold met everywhere in the design', status: 'pass' }],
+        }),
+      });
+      expect(result.status).toBe('pass');
+    });
+  });
 });
 
 describe('createVerifyLog', () => {

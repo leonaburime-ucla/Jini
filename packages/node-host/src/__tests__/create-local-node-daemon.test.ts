@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
 import { AgentExecutorToken } from '@jini/daemon';
-import type { DaemonStatusResponse } from '@jini/http';
+import type { DaemonStatusResponse, RunStartContext } from '@jini/http';
+import { readLiveDaemonRegistryRecord, resolveDaemonRegistryPath } from '@jini/sidecar';
+import * as SidecarModule from '@jini/sidecar';
 import * as SqliteModule from '@jini/sqlite';
 import {
   createLocalNodeDaemon,
@@ -77,6 +79,24 @@ function makePingPack() {
       );
     },
   });
+}
+
+function parseSseEvents(body: string): Array<{ id: string; event: string; data: Record<string, unknown> }> {
+  return body
+    .trim()
+    .split('\n\n')
+    .filter((frame) => frame.length > 0)
+    .map((frame) => {
+      const fields = Object.fromEntries(
+        frame
+          .split('\n')
+          .map((line) => {
+            const separator = line.indexOf(': ');
+            return separator < 0 ? [line, ''] : [line.slice(0, separator), line.slice(separator + 2)];
+          }),
+      );
+      return { id: fields.id!, event: fields.event!, data: JSON.parse(fields.data!) as Record<string, unknown> };
+    });
 }
 
 /** The first routable, non-loopback IPv4 address this machine has, or `null` if none — used only
@@ -160,6 +180,89 @@ describe('createLocalNodeDaemon', () => {
     expect(typeof body.version).toBe('string');
     expect(body.port).toBe(Number(new URL(daemon.url).port));
     expect(typeof body.pid).toBe('number');
+  });
+
+  it('serves the complete HTTP run vertical slice: create, SSE replay/reconnect, cancel, and durable replay after restart', async () => {
+    const dataDir = makeTempDataDir();
+    let completedRunId = '';
+    const activeRunLifecycles = new Map<string, RunStartContext['lifecycle']>();
+    const onRunStarted = async ({ request, run, lifecycle }: RunStartContext) => {
+      if (request.agentId === 'complete') {
+        await lifecycle.emit(run.id, { event: 'agent', data: { type: 'text_delta', delta: 'hello from driver' } });
+        await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+        return;
+      }
+      activeRunLifecycles.set(run.id, lifecycle);
+      lifecycle.onCancelRequested(run.id, () => {
+        void lifecycle.finish({ runId: run.id, status: 'cancelled', code: null, signal: 'SIGTERM', resumable: false });
+      });
+    };
+
+    const first = await createLocalNodeDaemon({ dataDir, packs: [], onRunStarted });
+    try {
+      const createdResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-restart-context', idempotencyKey: 'completed-request', agentId: 'complete' }),
+      });
+      expect(createdResponse.status).toBe(201);
+      const created = (await createdResponse.json()) as { run: { id: string; state: string }; started: boolean };
+      expect(created).toMatchObject({ started: true, run: { state: 'succeeded' } });
+      completedRunId = created.run.id;
+
+      const eventResponse = await fetch(`${first.url}/api/runs/${created.run.id}/events`);
+      expect(eventResponse.headers.get('content-type')).toContain('text/event-stream');
+      const events = parseSseEvents(await eventResponse.text());
+      expect(events.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
+      expect(events[1]?.data.payload).toMatchObject({ type: 'text_delta', delta: 'hello from driver' });
+
+      const reconnect = await fetch(`${first.url}/api/runs/${created.run.id}/events`, {
+        headers: { 'Last-Event-ID': events[events.length - 1]!.id },
+      });
+      const reconnectEvents = parseSseEvents(await reconnect.text());
+      expect(reconnectEvents.map((event) => event.event)).toEqual(['end']);
+
+      const duplicateResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-restart-context', idempotencyKey: 'completed-request', agentId: 'complete' }),
+      });
+      expect(await duplicateResponse.json()).toMatchObject({ started: false, run: { id: created.run.id } });
+
+      const cancellableResponse = await fetch(`${first.url}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contextRef: 'http-cancel-context', agentId: 'wait' }),
+      });
+      const cancellable = (await cancellableResponse.json()) as { run: { id: string } };
+      // This request stays open until the driver emits/finishes below. It
+      // verifies that the HTTP route is not merely replaying terminal history:
+      // a client which was already subscribed receives a live event.
+      const liveEventResponse = await fetch(`${first.url}/api/runs/${cancellable.run.id}/events`);
+      expect(liveEventResponse.headers.get('content-type')).toContain('text/event-stream');
+      await activeRunLifecycles.get(cancellable.run.id)!.emit(cancellable.run.id, {
+        event: 'agent',
+        data: { type: 'status', label: 'waiting for cancellation' },
+      });
+      const cancelled = await fetch(`${first.url}/api/runs/${cancellable.run.id}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'test cancellation' }),
+      });
+      expect(cancelled.status).toBe(200);
+      const liveEvents = parseSseEvents(await liveEventResponse.text());
+      expect(liveEvents.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
+      expect(liveEvents[1]?.data.payload).toMatchObject({ type: 'status', label: 'waiting for cancellation' });
+      expect(await (await fetch(`${first.url}/api/runs/${cancellable.run.id}`)).json()).toMatchObject({ run: { state: 'cancelled' } });
+    } finally {
+      await first.stop();
+    }
+
+    const restarted = await createLocalNodeDaemon({ dataDir, packs: [] });
+    daemonsToStop.push(restarted);
+    expect(await (await fetch(`${restarted.url}/api/runs/${completedRunId}`)).json()).toMatchObject({ run: { id: completedRunId, state: 'succeeded' } });
+    const replayed = parseSseEvents(await (await fetch(`${restarted.url}/api/runs/${completedRunId}/events`)).text());
+    expect(replayed.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
   });
 
   it("mounts a caller pack's own route (proves mountPackHttp ordering)", async () => {
@@ -484,6 +587,37 @@ describe('createLocalNodeDaemon', () => {
     ).rejects.toThrow();
   });
 
+  it('closes the durable EventLog and propagates the error when rehydrate() fails on a corrupt/unreadable durable history', async () => {
+    // Rehydration happens before the HTTP server exists at all, so it has
+    // its own dedicated cleanup path (create-local-node-daemon.ts's own
+    // comment) distinct from the later bind-failure `failToBind` path
+    // exercised by the tests below. `listRunIds()` is rehydrate()'s very
+    // first call into the EventLog, so failing it deterministically forces
+    // that path without needing an actually-corrupt sqlite file on disk.
+    const original = SqliteModule.createSqliteEventLog;
+    const spy = vi
+      .spyOn(SqliteModule, 'createSqliteEventLog')
+      .mockImplementation((...args: Parameters<typeof original>) => {
+        const real = original(...args);
+        return {
+          ...real,
+          listRunIds: vi.fn(async () => {
+            throw new Error('corrupt durable history');
+          }),
+          close: vi.fn(real.close),
+        };
+      });
+    try {
+      const dataDir = makeTempDataDir();
+      await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow('corrupt durable history');
+
+      const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      expect(created.close).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('propagates a synchronous throw from app.listen() (e.g. an out-of-range port) as a rejection', async () => {
     const dataDir = makeTempDataDir();
     // http.Server#listen validates the port range synchronously and throws before ever emitting
@@ -577,5 +711,111 @@ describe('createLocalNodeDaemon', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  describe('local daemon-registry discovery record', () => {
+    it('writes <dataDir>/daemon.json by default once listening, matching the real bound url/host/port/pid', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      daemonsToStop.push(daemon);
+
+      const registryPath = resolveDaemonRegistryPath(dataDir);
+      const record = await readLiveDaemonRegistryRecord(registryPath);
+      expect(record).toEqual({
+        url: daemon.url,
+        host: '127.0.0.1',
+        port: Number(new URL(daemon.url).port),
+        pid: process.pid,
+        startedAt: expect.any(String),
+      });
+    });
+
+    it('the record is written (and readable) before createLocalNodeDaemon resolves — no race for an immediate CLI discovery read', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      daemonsToStop.push(daemon);
+
+      // No `await` / retry / `vi.waitFor` here on purpose: the whole point of writing the record
+      // before resolving `createLocalNodeDaemon`'s own promise is that it's already there by now.
+      const record = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDir));
+      expect(record?.url).toBe(daemon.url);
+    });
+
+    it("stop() removes the discovery record — a caller that finished shouldn't be discoverable anymore", async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+      const registryPath = resolveDaemonRegistryPath(dataDir);
+      expect(existsSync(registryPath)).toBe(true);
+
+      await daemon.stop();
+
+      expect(existsSync(registryPath)).toBe(false);
+    });
+
+    it('honors a custom discoveryFile path instead of the dataDir-derived default', async () => {
+      const dataDir = makeTempDataDir();
+      const customDir = makeTempDataDir();
+      const customPath = join(customDir, 'custom-daemon-record.json');
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile: customPath });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(resolveDaemonRegistryPath(dataDir))).toBe(false);
+      const record = await readLiveDaemonRegistryRecord(customPath);
+      expect(record?.url).toBe(daemon.url);
+    });
+
+    it('discoveryFile: false disables writing a discovery record entirely', async () => {
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile: false });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(resolveDaemonRegistryPath(dataDir))).toBe(false);
+    });
+
+    it('two daemons on one machine (two different dataDirs) each get their own, non-colliding discovery record — the multi-daemon-per-machine case', async () => {
+      const dataDirA = makeTempDataDir();
+      const dataDirB = makeTempDataDir();
+      const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()] });
+      daemonsToStop.push(daemonA);
+      const daemonB = await createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()] });
+      daemonsToStop.push(daemonB);
+
+      const recordA = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDirA));
+      const recordB = await readLiveDaemonRegistryRecord(resolveDaemonRegistryPath(dataDirB));
+      expect(recordA?.url).toBe(daemonA.url);
+      expect(recordB?.url).toBe(daemonB.url);
+      expect(recordA?.url).not.toBe(recordB?.url);
+    });
+
+    it('a discovery-record write failure (e.g. an unwritable dataDir) does not fail daemon boot — best-effort by design', async () => {
+      const dataDir = makeTempDataDir();
+      // `writeJsonFile`'s `mkdir(dirname(filePath), { recursive: true })` throws ENOTDIR when an
+      // ancestor path segment is a regular file rather than a directory — a deterministic,
+      // privilege-independent way to force the write to fail (unlike a chmod-based permission
+      // test, which does not actually deny access when tests run as root).
+      const blockerFile = join(dataDir, 'blocker');
+      writeFileSync(blockerFile, 'not a directory');
+      const discoveryFile = join(blockerFile, 'daemon.json');
+
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], discoveryFile });
+      daemonsToStop.push(daemon);
+
+      expect(existsSync(discoveryFile)).toBe(false);
+      const res = await fetch(`${daemon.url}/api/ping`);
+      expect(res.status).toBe(200);
+    });
+
+    it('a discovery-record removal failure during stop() does not fail shutdown — best-effort by design', async () => {
+      const removeSpy = vi.spyOn(SidecarModule, 'removeDaemonRegistryRecordIfCurrent').mockRejectedValue(new Error('boom'));
+      try {
+        const dataDir = makeTempDataDir();
+        const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+
+        await expect(daemon.stop()).resolves.toBeUndefined();
+        expect(removeSpy).toHaveBeenCalledWith(resolveDaemonRegistryPath(dataDir), process.pid);
+      } finally {
+        removeSpy.mockRestore();
+      }
+    });
   });
 });

@@ -76,6 +76,71 @@ describe('createMcpIdleExitController', () => {
     vi.advanceTimersByTime(5000);
     expect(onIdle).not.toHaveBeenCalled();
   });
+
+  describe('idleMs validation (SEC-RB-011)', () => {
+    it.each([-1, 0, NaN, Infinity, -Infinity, 1.5, 0.5])(
+      'rejects an invalid idleMs (%p)',
+      (bad) => {
+        expect(() => createMcpIdleExitController({ idleMs: bad, onIdle: () => {} })).toThrow(RangeError);
+      },
+    );
+
+    it('rejects a non-number idleMs', () => {
+      expect(() =>
+        createMcpIdleExitController({ idleMs: 'nope' as unknown as number, onIdle: () => {} }),
+      ).toThrow(RangeError);
+      expect(() =>
+        createMcpIdleExitController({ idleMs: null as unknown as number, onIdle: () => {} }),
+      ).toThrow(RangeError);
+    });
+
+    it('accepts the minimum valid idleMs (1ms)', () => {
+      vi.useFakeTimers();
+      const onIdle = vi.fn();
+      const c = createMcpIdleExitController({ idleMs: 1, onIdle });
+      vi.advanceTimersByTime(1);
+      expect(onIdle).toHaveBeenCalledTimes(1);
+      c.dispose();
+    });
+
+    it('clamps an excessively large idleMs to the 24h ceiling instead of scheduling an effectively-infinite timer', () => {
+      vi.useFakeTimers();
+      const onIdle = vi.fn();
+      const c = createMcpIdleExitController({ idleMs: Number.MAX_SAFE_INTEGER, onIdle });
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      expect(onIdle).toHaveBeenCalledTimes(1);
+      c.dispose();
+    });
+  });
+
+  describe('trackRequest does not needlessly reschedule the idle timer (SEC-RB-011)', () => {
+    it('does not call setTimeout when a request starts; only completion reschedules', async () => {
+      vi.useFakeTimers();
+      const onIdle = vi.fn();
+      const c = createMcpIdleExitController({ idleMs: 1000, onIdle });
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+      setTimeoutSpy.mockClear();
+      let resolveFn!: (v: string) => void;
+      const p = c.trackRequest(() => new Promise<string>((r) => { resolveFn = r; }));
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
+      resolveFn('done');
+      await expect(p).resolves.toBe('done');
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1); // only the completion-triggered reschedule
+      c.dispose();
+    });
+
+    it('still defers idle correctly while in flight even without the start-of-request reschedule', () => {
+      vi.useFakeTimers();
+      const onIdle = vi.fn();
+      const c = createMcpIdleExitController({ idleMs: 1000, onIdle });
+      let resolveFn!: (v: string) => void;
+      void c.trackRequest(() => new Promise<string>((r) => { resolveFn = r; }));
+      vi.advanceTimersByTime(1000);
+      expect(onIdle).not.toHaveBeenCalled(); // deferred: inFlight > 0 re-arms on fire
+      resolveFn('done');
+      c.dispose();
+    });
+  });
 });
 
 describe('isTextualMime', () => {

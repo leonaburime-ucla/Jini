@@ -121,6 +121,15 @@ export type FormSegment =
 // case-insensitive so `<Question-Form>` / `<ASK-QUESTION>` still parse.
 const OPEN_RE = /<(question-form|ask-question)\b([^>]*)>/i;
 
+// Group 1 is a mandatory (non-optional) alternation and group 2 is an
+// unconditional `*`-quantified capture, so both always participate whenever
+// `m` itself is non-null — `noUncheckedIndexedAccess` just can't see that
+// from the regex alone. Centralized here so the six call sites below don't
+// each repeat the same assertion and reasoning.
+function matchedTagAndAttrs(m: RegExpExecArray): { tagName: string; rawAttrs: string } {
+  return { tagName: m[1]!.toLowerCase(), rawAttrs: m[2]! };
+}
+
 /**
  * Split `input` into ordered prose/form segments. Scans repeatedly for
  * `question-form`/`ask-question` opens; for each, locates the matching close
@@ -140,7 +149,7 @@ export function splitOnQuestionForms(input: string): FormSegment[] {
       out.push({ kind: 'text', text: slice });
       break;
     }
-    const tagName = (m[1] ?? 'question-form').toLowerCase();
+    const { tagName, rawAttrs } = matchedTagAndAttrs(m);
     const closeTag = `</${tagName}>`;
     const openStart = cursor + m.index;
     const openEnd = openStart + m[0].length;
@@ -154,7 +163,7 @@ export function splitOnQuestionForms(input: string): FormSegment[] {
       out.push({ kind: 'text', text: input.slice(cursor, openStart) });
     }
     const body = input.slice(openEnd, closeIdx);
-    const attrs = parseAttrs(m[2] ?? '');
+    const attrs = parseAttrs(rawAttrs);
     const form = tryParseForm(body, attrs);
     const blockEnd = closeIdx + closeTag.length;
     if (form) {
@@ -199,7 +208,7 @@ export function stripTrailingOpenQuestionForm(input: string): { text: string; ha
     const slice = input.slice(cursor);
     const m = OPEN_RE.exec(slice);
     if (!m) break;
-    const tagName = (m[1] ?? 'question-form').toLowerCase();
+    const { tagName } = matchedTagAndAttrs(m);
     const closeTag = `</${tagName}>`;
     const openStart = cursor + m.index;
     const openEnd = openStart + m[0].length;
@@ -234,7 +243,11 @@ function parseAttrs(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   let m: RegExpExecArray | null = re.exec(raw);
   while (m !== null) {
-    out[m[1] as string] = (m[2] ?? m[3] ?? '') as string;
+    // The pattern's quote alternation means exactly one of group 2 (double-
+    // quoted) / group 3 (single-quoted) participates in any successful match
+    // — never both, never neither — so `m[2] ?? m[3]` is always defined; the
+    // cast just satisfies `noUncheckedIndexedAccess`.
+    out[m[1] as string] = (m[2] ?? m[3]) as string;
     m = re.exec(raw);
   }
   return out;
@@ -340,10 +353,10 @@ function mapRawQuestion(q: unknown, index: number): FormQuestion | null {
 export function parsePartialQuestionForm(input: string): QuestionForm | null {
   const m = OPEN_RE.exec(input);
   if (!m) return null;
-  const tagName = (m[1] ?? 'question-form').toLowerCase();
+  const { tagName, rawAttrs } = matchedTagAndAttrs(m);
   const closeTag = `</${tagName}>`;
   const openEnd = m.index + m[0].length;
-  const attrs = parseAttrs(m[2] ?? '');
+  const attrs = parseAttrs(rawAttrs);
   const closeIdx = findCloseTag(input, openEnd, closeTag);
   const rawBody = closeIdx === -1 ? input.slice(openEnd) : input.slice(openEnd, closeIdx);
   // Strip the fenced ```json wrapper some models emit. The opening fence is

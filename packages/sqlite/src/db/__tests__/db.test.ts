@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import { MessageConversationMismatchError } from '../messages/messages.js';
 import {
   openDatabase,
   closeDatabase,
@@ -545,6 +547,92 @@ describe('messages CRUD', () => {
     upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'x' });
     deleteMessage(db, 'm1');
     expect(listMessages(db, 'c1')).toHaveLength(0);
+  });
+
+  describe('cross-conversation ownership (CR-002)', () => {
+    it('throws MessageConversationMismatchError when a message id already exists under a different conversation, without corrupting either conversation', () => {
+      const db = freshDb();
+      insertConversation(db, { id: 'A', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      insertConversation(db, { id: 'B', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+
+      upsertMessage(db, 'A', { id: 'shared-id', role: 'user', content: 'original in A' });
+      const aUpdatedBefore = getConversation(db, 'A')!.updatedAt;
+      const bUpdatedBefore = getConversation(db, 'B')!.updatedAt;
+
+      expect(() =>
+        upsertMessage(db, 'B', {
+          id: 'shared-id',
+          role: 'user',
+          content: 'attempted overwrite from B',
+        }),
+      ).toThrow(MessageConversationMismatchError);
+
+      // A's row is untouched by the rejected call presenting its id under conversation B.
+      expect(listMessages(db, 'A')).toMatchObject([{ id: 'shared-id', content: 'original in A' }]);
+      // B never received the row.
+      expect(listMessages(db, 'B')).toHaveLength(0);
+      // Neither conversation's activity timestamp was bumped by the rejected call (the whole
+      // operation — including the `conversations.updated_at` bump — is one transaction, so the
+      // thrown ownership error rolls back everything, not just the message write).
+      expect(getConversation(db, 'A')!.updatedAt).toBe(aUpdatedBefore);
+      expect(getConversation(db, 'B')!.updatedAt).toBe(bUpdatedBefore);
+    });
+
+    it('allows a normal update when the id and conversationId agree', () => {
+      const db = freshDb();
+      freshConversation(db, 'c1');
+      upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'v1' });
+      const updated = upsertMessage(db, 'c1', { id: 'm1', role: 'user', content: 'v2' });
+      expect(updated).toMatchObject({ id: 'm1', content: 'v2' });
+    });
+
+    it('serializes concurrent writers on the same conversation instead of racing to the same position', () => {
+      const dir = tmp();
+      const dbFile = path.join(dir, 'app.sqlite');
+      const db1 = openDatabase('/r', { dataDir: dir });
+      seedProject(db1);
+      insertConversation(db1, { id: 'c1', projectId: 'p1', createdAt: 1, updatedAt: 1 });
+      upsertMessage(db1, 'c1', { id: 'm0', role: 'user', content: 'seed' }); // position 0
+
+      // A second, independent connection to the same file simulates a concurrent writer/host
+      // process. A short `timeout` keeps the busy-lock assertion below fast instead of waiting
+      // out better-sqlite3's 5000ms default.
+      const db2 = new Database(dbFile, { timeout: 100 });
+      try {
+        // db1 opens (but does not commit) a write transaction on the same conversation — the
+        // same lock `upsertMessage`'s own `.immediate()` transaction would hold mid-flight.
+        db1.prepare('BEGIN IMMEDIATE').run();
+        db1
+          .prepare(
+            `INSERT INTO messages (id, conversation_id, role, content, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run('m1', 'c1', 'user', 'in-flight on db1', 1, 2);
+
+        // While db1's transaction is open, db2's own upsertMessage (which also opens a BEGIN
+        // IMMEDIATE transaction) cannot acquire the write lock and fails fast with SQLITE_BUSY
+        // instead of reading a stale MAX(position) and silently colliding with db1's in-flight row.
+        expect(() =>
+          upsertMessage(db2, 'c1', { id: 'm2', role: 'user', content: 'from db2' }),
+        ).toThrow();
+
+        // Once db1 commits, db2's upsert succeeds and correctly continues the position sequence
+        // past db1's now-committed row instead of reusing position 1.
+        db1.prepare('COMMIT').run();
+        const created = upsertMessage(db2, 'c1', { id: 'm2', role: 'user', content: 'from db2' });
+        expect(created).toMatchObject({ id: 'm2', content: 'from db2' });
+
+        const rawPositions = db1
+          .prepare(`SELECT id, position FROM messages WHERE conversation_id = ? ORDER BY position`)
+          .all('c1') as { id: string; position: number }[];
+        expect(rawPositions).toEqual([
+          { id: 'm0', position: 0 },
+          { id: 'm1', position: 1 },
+          { id: 'm2', position: 2 },
+        ]);
+      } finally {
+        db2.close();
+      }
+    });
   });
 });
 

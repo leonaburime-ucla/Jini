@@ -80,7 +80,9 @@ function hasReservedWorkspacePathInTags(content: string): boolean {
   HTML_TAG_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = HTML_TAG_RE.exec(content)) !== null) {
-    const tag = match[0] ?? '';
+    // A successful regex-exec result's whole-match slot (`match[0]`) is never
+    // undefined; the assertion just satisfies `noUncheckedIndexedAccess`.
+    const tag = match[0]!;
     if (hasReservedWorkspacePathAttribute(tag) || hasReservedWorkspacePathInStyleAttributes(tag)) {
       return true;
     }
@@ -93,7 +95,10 @@ function hasReservedWorkspacePathAttribute(tag: string): boolean {
   let match: RegExpExecArray | null;
   while ((match = URL_ATTRIBUTE_RE.exec(tag)) !== null) {
     const attributeName = match[1]?.toLowerCase();
-    const candidate = match[2] ?? match[3] ?? match[4] ?? '';
+    // Exactly one of the three quote-form alternatives (groups 2/3/4)
+    // participates in any successful match, so this is always defined; the
+    // cast just satisfies `noUncheckedIndexedAccess`.
+    const candidate = (match[2] ?? match[3] ?? match[4]) as string;
     if (candidateReferencesReservedWorkspacePath(candidate, attributeName === 'srcset')) {
       return true;
     }
@@ -105,7 +110,10 @@ function hasReservedWorkspacePathInStyleAttributes(tag: string): boolean {
   STYLE_ATTRIBUTE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = STYLE_ATTRIBUTE_RE.exec(tag)) !== null) {
-    const cssText = match[1] ?? match[2] ?? match[3] ?? '';
+    // Exactly one of the three quote-form alternatives (groups 1/2/3)
+    // participates in any successful match, so this is always defined; the
+    // cast just satisfies `noUncheckedIndexedAccess`.
+    const cssText = (match[1] ?? match[2] ?? match[3]) as string;
     if (cssTextReferencesReservedWorkspacePath(cssText)) {
       return true;
     }
@@ -117,7 +125,10 @@ function hasReservedWorkspacePathInStyleBlocks(content: string): boolean {
   STYLE_BLOCK_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = STYLE_BLOCK_RE.exec(content)) !== null) {
-    const cssText = match[1] ?? '';
+    // The style-block body group uses a lazy `*?` quantifier (matches even an
+    // empty body), so it always participates in a successful match; the
+    // assertion just satisfies `noUncheckedIndexedAccess`.
+    const cssText = match[1]!;
     if (cssTextReferencesReservedWorkspacePath(cssText)) {
       return true;
     }
@@ -130,7 +141,11 @@ function cssTextReferencesReservedWorkspacePath(cssText: string): boolean {
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(cssText)) !== null) {
-      const candidate = match.slice(1).find((value) => value !== undefined) ?? '';
+      // Both CSS_URL_RE and CSS_IMPORT_RE are single top-level alternations
+      // across all their capture groups, so exactly one group is ever defined
+      // on a successful match — `.find` always finds it; the assertion just
+      // satisfies `noUncheckedIndexedAccess`.
+      const candidate = match.slice(1).find((value) => value !== undefined)!;
       if (candidateReferencesReservedWorkspacePath(candidate, false)) {
         return true;
       }
@@ -192,7 +207,10 @@ function srcsetCandidateUrls(srcset: string): string[] {
 }
 
 function firstUrlToken(value: string): string {
-  return value.trim().split(/\s+/)[0] ?? '';
+  // `String.split()` on a regex separator always returns at least one
+  // element (even `''.split(/\s+/)` is `['']`), so `[0]` is never
+  // `undefined` here — the assertion only satisfies `noUncheckedIndexedAccess`.
+  return value.trim().split(/\s+/)[0]!;
 }
 
 function isLocalPathLike(path: string): boolean {

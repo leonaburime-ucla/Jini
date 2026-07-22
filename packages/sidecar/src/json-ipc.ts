@@ -17,9 +17,20 @@ import { createServer as createNetServer } from "node:net";
 import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
+import { redactSecrets } from "@jini/core";
+
 import { isWindowsNamedPipePath } from "./ipc-path.js";
 import { closeServer } from "./net.js";
 import type { JsonIpcHandler, JsonIpcServerHandle } from "./types.js";
+
+/** Default cap on one connection's single frame (SEC-004): bytes received before a newline
+ *  arrives. Generous for any realistic request/response payload while still bounding a
+ *  streamed-without-a-newline attacker/misbehaving peer to a fixed amount of memory. */
+const DEFAULT_MAX_FRAME_BYTES = 1_000_000;
+
+/** Default idle deadline (SEC-004): a connection that has not delivered one complete
+ *  newline-terminated frame within this window is dropped rather than held open forever. */
+const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 
 let jsonIpcTraceSeq = 0;
 
@@ -153,13 +164,27 @@ async function prepareIpcPath(socketPath: string): Promise<void> {
 export async function createJsonIpcServer({
   handler,
   socketPath,
+  maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
+  idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 }: {
   handler: JsonIpcHandler;
   socketPath: string;
+  /** Reject a connection whose single frame exceeds this many bytes before a newline arrives (SEC-004). @default 1_000_000 */
+  maxFrameBytes?: number;
+  /** Drop a connection that has not delivered one complete frame within this many ms (SEC-004). @default 30_000 */
+  idleTimeoutMs?: number;
 }): Promise<JsonIpcServerHandle> {
   await prepareIpcPath(socketPath);
   const server = createNetServer((socket) => {
     let buffer = "";
+    let receivedBytes = 0;
+    // One-request-per-connection guard (SEC-004): the `data` listener is `async`, so its
+    // synchronous prefix (up to the first `await`) always finishes — and can set this flag —
+    // before Node dispatches the next queued `data` event on this same socket. Once a frame has
+    // been claimed, any further bytes on this connection (a second frame arriving while the
+    // handler is still awaiting, or trailing garbage after the first frame) are ignored rather
+    // than starting a second concurrent handler call / response race.
+    let handled = false;
     // Decode UTF-8 across chunk boundaries: a multibyte character (e.g. CJK,
     // 3 bytes) can be split across two `data` events. `chunk.toString()` per
     // chunk would turn each half into U+FFFD, corrupting the payload (observed
@@ -169,6 +194,23 @@ export async function createJsonIpcServer({
     const traceId = nextJsonIpcTraceId();
     const startedAt = process.hrtime.bigint();
     traceJsonIpc("server.connection", { socketPath, traceId });
+
+    // Idle deadline (SEC-004): a peer that opens a connection and never completes a
+    // newline-terminated frame (or dribbles bytes indefinitely) would otherwise hold the
+    // connection — and this closure's buffer — open forever.
+    const idleTimer = setTimeout(() => {
+      if (handled) return;
+      handled = true;
+      traceJsonIpc("server.idle_timeout", {
+        durationMs: jsonIpcTraceDurationMs(startedAt),
+        idleTimeoutMs,
+        socketPath,
+        traceId,
+      });
+      socket.destroy();
+    }, idleTimeoutMs);
+    idleTimer.unref();
+
     socket.on("error", (error) => {
       traceJsonIpc("server.socket_error", {
         durationMs: jsonIpcTraceDurationMs(startedAt),
@@ -178,6 +220,7 @@ export async function createJsonIpcServer({
       });
     });
     socket.on("close", () => {
+      clearTimeout(idleTimer);
       traceJsonIpc("server.socket_close", {
         durationMs: jsonIpcTraceDurationMs(startedAt),
         socketPath,
@@ -185,15 +228,37 @@ export async function createJsonIpcServer({
       });
     });
     socket.on("data", async (chunk) => {
+      if (handled) return;
       traceJsonIpc("server.data", {
         bytes: chunk.byteLength,
         durationMs: jsonIpcTraceDurationMs(startedAt),
         socketPath,
         traceId,
       });
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > maxFrameBytes) {
+        handled = true;
+        clearTimeout(idleTimer);
+        traceJsonIpc("server.frame_too_large", {
+          durationMs: jsonIpcTraceDurationMs(startedAt),
+          maxFrameBytes,
+          receivedBytes,
+          socketPath,
+          traceId,
+        });
+        socket.end(
+          `${JSON.stringify({
+            ok: false,
+            error: { code: "FRAME_TOO_LARGE", message: "request frame exceeds the maximum size" },
+          })}\n`,
+        );
+        return;
+      }
       buffer += decoder.write(chunk);
       const newlineIndex = buffer.indexOf("\n");
       if (newlineIndex < 0) return;
+      handled = true; // Claim the connection before awaiting the handler — see the flag's own doc above.
+      clearTimeout(idleTimer);
       const frame = buffer.slice(0, newlineIndex);
       buffer = buffer.slice(newlineIndex + 1);
       let message: unknown;
@@ -239,9 +304,16 @@ export async function createJsonIpcServer({
         });
         socket.end(`${JSON.stringify({ ok: true, result })}\n`);
       } catch (error) {
+        // SEC-004: a handler failure can embed paths, credentials, or other host detail (the
+        // same trust-boundary concern as SEC-005's HTTP fix). The peer gets a stable code plus
+        // the traceId as a correlation handle; the real detail is redacted and logged
+        // server-side only, unconditionally (not gated behind JINI_JSON_IPC_TRACE).
+        const redactedDetail = redactSecrets(error instanceof Error ? error.message : String(error));
+        // eslint-disable-next-line no-console
+        console.error(`[@jini/sidecar] json-ipc handler failed (traceId=${traceId})`, redactedDetail);
         traceJsonIpc("server.handler_failed", {
           durationMs: jsonIpcTraceDurationMs(startedAt),
-          error: error instanceof Error ? error.message : String(error),
+          error: redactedDetail,
           message: messageSummary,
           socketPath,
           traceId,
@@ -249,7 +321,7 @@ export async function createJsonIpcServer({
         socket.end(
           `${JSON.stringify({
             ok: false,
-            error: jsonIpcError(error),
+            error: { code: "HANDLER_ERROR", message: "internal error", requestId: traceId },
           })}\n`,
         );
       }
@@ -358,7 +430,11 @@ export async function requestJsonIpc<T = any>(
       if (newlineIndex < 0) return;
       socket.end();
       settle(() => {
-        const response = JSON.parse(buffer.slice(0, newlineIndex)) as { error?: { message?: string }; ok: boolean; result?: T };
+        const response = JSON.parse(buffer.slice(0, newlineIndex)) as {
+          error?: { code?: string; message?: string; requestId?: string };
+          ok: boolean;
+          result?: T;
+        };
         if (!response.ok) {
           traceJsonIpc("client.response_error", {
             durationMs: jsonIpcTraceDurationMs(startedAt),
@@ -367,7 +443,13 @@ export async function requestJsonIpc<T = any>(
             socketPath,
             traceId,
           });
-          rejectRequest(new Error(response.error?.message ?? "IPC request failed"));
+          const rejection = new Error(response.error?.message ?? "IPC request failed") as Error & {
+            code?: string;
+            requestId?: string;
+          };
+          if (response.error?.code !== undefined) rejection.code = response.error.code;
+          if (response.error?.requestId !== undefined) rejection.requestId = response.error.requestId;
+          rejectRequest(rejection);
           return;
         }
         traceJsonIpc("client.response_success", {

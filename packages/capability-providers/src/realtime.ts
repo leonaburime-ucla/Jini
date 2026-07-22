@@ -5,10 +5,12 @@
  * as part of the Zana/Tovu-convergent capability set (Supabase Realtime is
  * Zana's reference adapter).
  *
- * `createInMemoryRealtimeProvider` is a minimal reference stub proving the
- * port is implementable — synchronous in-process fan-out, no cross-process
- * delivery. A real adapter (Supabase Realtime, a WebSocket/Redis pub-sub
- * service) implements the same interface.
+ * This file defines only the port's stable interface/type surface — safe to
+ * import from the normal `@jini/capability-providers` entry point. The
+ * in-memory reference implementation (`createInMemoryRealtimeProvider`) is a
+ * non-production stub and lives under `src/unsafe-reference/`, exported only
+ * from the separate `@jini/capability-providers/unsafe-reference` entry
+ * point — see that directory's `index.ts` header for the full warning.
  */
 
 export type RealtimeHandler<T = unknown> = (event: T) => void;
@@ -21,39 +23,4 @@ export interface RealtimeProvider {
   publish<T>(channel: string, event: T): Promise<void>;
   /** Registers `handler` for every future `publish` on `channel`. Returns an unsubscribe function. */
   subscribe<T>(channel: string, handler: RealtimeHandler<T>): RealtimeUnsubscribe;
-}
-
-/** Creates the in-memory reference `RealtimeProvider`. Delivery is in-process only — no cross-process fan-out. */
-export function createInMemoryRealtimeProvider(): RealtimeProvider {
-  const channels = new Map<string, Set<RealtimeHandler>>();
-
-  function subscribersFor(channel: string): Set<RealtimeHandler> {
-    let subscribers = channels.get(channel);
-    if (!subscribers) {
-      subscribers = new Set();
-      channels.set(channel, subscribers);
-    }
-    return subscribers;
-  }
-
-  return {
-    async publish<T>(channel: string, event: T): Promise<void> {
-      const subscribers = channels.get(channel);
-      if (!subscribers) return;
-      for (const handler of [...subscribers]) {
-        handler(event);
-      }
-    },
-
-    subscribe<T>(channel: string, handler: RealtimeHandler<T>): RealtimeUnsubscribe {
-      const subscribers = subscribersFor(channel);
-      subscribers.add(handler as RealtimeHandler);
-      let unsubscribed = false;
-      return () => {
-        if (unsubscribed) return;
-        unsubscribed = true;
-        subscribers.delete(handler as RealtimeHandler);
-      };
-    },
-  };
 }

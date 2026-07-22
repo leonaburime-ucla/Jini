@@ -93,6 +93,14 @@ describe('buildTranscript', () => {
     expect(transcript).toContain('2 large prior tool results');
   });
 
+  it('uses the singular "result" (not "results") when exactly one large tool result is found', () => {
+    const history: ChatMessage[] = [
+      { id: '1', role: 'assistant', content: 'a', events: [{ kind: 'tool_result', toolUseId: 't1', content: 'x'.repeat(20), isError: false }] },
+    ];
+    const transcript = buildTranscript(history, { largeToolResultChars: 10 });
+    expect(transcript).toContain('1 large prior tool result exist');
+  });
+
   it('scopes history to the target agent, dropping turns from a different agent family', () => {
     const history: ChatMessage[] = [
       { id: '1', role: 'user', content: 'first' },

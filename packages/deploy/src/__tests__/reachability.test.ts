@@ -65,6 +65,20 @@ describe('checkDeploymentUrl', () => {
     expect(result).toEqual({ reachable: false, status: 'protected', statusCode: 401, statusMessage: 'gated' });
   });
 
+  it('classifies the GET fallback as protected too, after HEAD triggered the fallback with a non-401 client error', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(403)) // HEAD: triggers the GET fallback (statusCode >= 400)
+      .mockResolvedValueOnce(jsonResponse(401, {}, 'Authentication Required')); // GET: reports protected
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await checkDeploymentUrl('https://site.example', {
+      detectProtected: (_resp, body) => body.includes('Authentication Required'),
+      protectedMessage: 'gated',
+    });
+    expect(result).toEqual({ reachable: false, status: 'protected', statusCode: 401, statusMessage: 'gated' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('folds a network error (e.g. connection refused) into reachable:false with a message', async () => {
     vi.stubGlobal(
       'fetch',
@@ -73,6 +87,90 @@ describe('checkDeploymentUrl', () => {
     const result = await checkDeploymentUrl('https://site.example');
     expect(result.reachable).toBe(false);
     expect(result.statusMessage).toContain('fetch failed');
+  });
+
+  describe('SEC-003: hostile provider-returned URLs are rejected before any network call', () => {
+    it('rejects a literal private/loopback IP address without calling fetch', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('https://127.0.0.1/steal');
+      expect(result.reachable).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cloud-metadata-shaped link-local address (169.254.169.254) without calling fetch', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('https://169.254.169.254/latest/meta-data/');
+      expect(result.reachable).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects localhost without calling fetch', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('https://localhost:9999/');
+      expect(result.reachable).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects a plain http:// candidate (deployment providers always serve over https) without calling fetch', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('http://site.example');
+      expect(result.reachable).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects embedded URL credentials without calling fetch', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('https://user:pass@site.example');
+      expect(result.reachable).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('still accepts a genuinely public https URL (the guard is not overly broad)', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200));
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await checkDeploymentUrl('https://site.example');
+      expect(result).toEqual({ reachable: true, statusCode: 200 });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('SEC-003: DNS-rebinding-shape — the connection-time lookup guard is actually wired in', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('rejects when the injected lookup resolves the hostname to a private address, using the REAL fetch (not stubbed)', async () => {
+      // Deliberately does not stub global fetch: the rejection must come from the real undici
+      // Agent's connect-time `lookup` (wired via the injected `lookupImpl`) refusing to connect,
+      // not from a mocked network layer — this is what proves the dispatcher is actually
+      // attached to the fetch call, mirroring asset-cache's own createValidatingLookup coverage.
+      const result = await checkDeploymentUrl('https://rebinding-attacker.example', {
+        timeoutMs: 2_000,
+        lookupImpl: ((_hostname: string, _opts: unknown, cb: (err: Error | null, address?: unknown, family?: number) => void) =>
+          cb(null, '169.254.169.254', 4)) as never,
+      });
+      expect(result.reachable).toBe(false);
+      expect(result.statusMessage).toContain('Public link is not reachable yet');
+    });
+
+    it('a lookup resolving to a public address is allowed through to the real network attempt (which then fails to connect, proving no false-positive rejection)', async () => {
+      // 192.0.2.1 is TEST-NET-1 (RFC 5737) — publicly-routable address space reserved for
+      // documentation, so it is not classified as private, but nothing listens there, so the
+      // real connection attempt itself fails. This proves the guard let a public-looking
+      // address through to the actual connect step instead of rejecting it.
+      const result = await checkDeploymentUrl('https://not-actually-there.example', {
+        timeoutMs: 1_000,
+        lookupImpl: ((_hostname: string, _opts: unknown, cb: (err: Error | null, address?: unknown, family?: number) => void) =>
+          cb(null, '192.0.2.1', 4)) as never,
+      });
+      expect(result.reachable).toBe(false);
+      expect(result.statusMessage).not.toContain('private address');
+    });
   });
 });
 

@@ -12,13 +12,20 @@
 // `<dataDir>/mcp-tokens.json` keyed by McpServerConfig.id, with the same
 // atomic write + per-dataDir mutex pattern the rest of the runtime uses.
 //
-// File mode: chmod 0600 on POSIX so other local users can't read raw
-// bearer tokens. This is best-effort — we log and continue if the chmod
-// fails (e.g. on Windows / some networked filesystems).
+// File mode: owner-only (0600) from the very first byte, via
+// `writeSecretFileAtomic` (CR-006 / SEC-RB-002) — NOT a post-rename chmod.
+// The previous chmod-after-rename approach left a window where the file
+// briefly existed with default (potentially world/group-readable)
+// permissions, and silently continued persisting the token when chmod
+// failed for any reason other than ENOTSUP/EPERM, which is not a
+// fail-closed guarantee. `writeSecretFileAtomic` creates the file with mode
+// 0600 atomically at creation and fails closed (removing the temp file and
+// throwing) if a POSIX platform did not honor that mode; it skips
+// verification on `win32`, which has no POSIX permission-bit model.
 
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { writeSecretFileAtomic } from './secure-write.js';
 
 /**
  * Stored OAuth token for a single MCP server. Mirrors the relevant subset
@@ -190,25 +197,11 @@ async function writeTokensFile(
   next: McpTokensFile,
 ): Promise<McpTokensFile> {
   const file = tokensFile(dataDir);
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';
-  await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
-  await rename(tmp, file);
-  // Best-effort lockdown of file mode. Bearer tokens can hand someone
-  // posting-as-you against the upstream MCP, so we restrict to owner-only
-  // read/write where the OS supports it.
-  try {
-    await chmod(file, 0o600);
-  } catch (err: unknown) {
-    const e = err as { code?: string; message?: string };
-    if (e.code !== 'ENOTSUP' && e.code !== 'EPERM') {
-      console.warn(
-        '[mcp-tokens] could not chmod 0600',
-        file,
-        e.message ?? err,
-      );
-    }
-  }
+  // Bearer tokens can hand someone posting-as-you against the upstream MCP,
+  // so the file is created with owner-only (0600) permissions from the
+  // first byte and the write fails closed if that can't be guaranteed on a
+  // POSIX platform — see `writeSecretFileAtomic`.
+  await writeSecretFileAtomic(file, JSON.stringify(next, null, 2));
   return next;
 }
 

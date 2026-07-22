@@ -50,6 +50,22 @@ const AUTH_META: AuthorizationServerMetadata = {
   scopes_supported: ['s'],
 };
 
+// Same shape as AUTH_META, but issued at the MCP resource's own origin —
+// used by beginAuth tests that exercise the "no protected-resource
+// document, assume the resource origin IS the auth server" fallback. Since
+// discoverAuthServer now enforces RFC 8414 §3.3 issuer matching, a fixture
+// whose issuer doesn't match the origin actually queried would be rejected
+// rather than resolved (see the `discoverAuthServer` "rejects ... issuer"
+// test above), so those beginAuth fixtures must declare an issuer at the
+// origin they're actually discovered against.
+const AUTH_META_AT_MCP_ORIGIN: AuthorizationServerMetadata = {
+  issuer: 'https://mcp.example.com',
+  authorization_endpoint: 'https://mcp.example.com/authorize',
+  token_endpoint: 'https://mcp.example.com/token',
+  registration_endpoint: 'https://mcp.example.com/register',
+  scopes_supported: ['s'],
+};
+
 describe('PKCE + state helpers', () => {
   it('generates a base64url verifier and a deterministic S256 challenge', () => {
     const v = generateCodeVerifier();
@@ -89,26 +105,107 @@ describe('discoverProtectedResource', () => {
   it('returns null when nothing is published', async () => {
     expect(await discoverProtectedResource('https://mcp.example.com/mcp', makeFetch(notFound))).toBeNull();
   });
+  it('skips a falsy stream chunk before completing (readCappedText tolerates a non-conformant duck-typed reader)', async () => {
+    // A spec-conformant ReadableStreamDefaultReader never resolves
+    // `{ done: false, value: undefined }`, but readCappedText accepts any
+    // object duck-typing `getReader()` (see the `typeof body.getReader ===
+    // 'function'` check) rather than requiring a real stream instance —
+    // this proves the `if (!value) continue` guard actually protects
+    // against such a malformed/duck-typed reader instead of being dead code.
+    let step = 0;
+    const fakeBody = {
+      getReader: () => ({
+        read: async () => {
+          step += 1;
+          if (step === 1) return { done: false, value: undefined };
+          if (step === 2) return { done: false, value: new TextEncoder().encode(JSON.stringify({ resource: 'ok' })) };
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {},
+      }),
+    };
+    const fakeResponse = { ok: true, body: fakeBody } as unknown as Response;
+    expect(await discoverProtectedResource('https://mcp.example.com/mcp', makeFetch(() => fakeResponse))).toEqual({
+      resource: 'ok',
+    });
+    expect(step).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('discoverAuthServer', () => {
   it('returns null for an unparseable issuer', async () => {
     expect(await discoverAuthServer('not a url', makeFetch(notFound))).toBeNull();
   });
-  it('returns metadata and preserves the advertised issuer', async () => {
+  it('returns metadata when the document omits issuer and its endpoints share the queried origin', async () => {
     const f = makeFetch((url) =>
       url === 'https://auth.example.com/.well-known/oauth-authorization-server'
-        ? jsonResponse({ issuer: 'https://issuer.example.com', authorization_endpoint: 'a', token_endpoint: 't' })
+        ? jsonResponse({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+          })
         : notFound(),
     );
     const meta = await discoverAuthServer('https://auth.example.com', f);
-    expect(meta?.issuer).toBe('https://issuer.example.com');
+    expect(meta?.issuer).toBe('https://auth.example.com');
+    expect(meta?.authorization_endpoint).toBe('https://auth.example.com/authorize');
+  });
+  it('rejects a discovery document whose issuer does not match the queried issuer (RFC 8414 §3.3 / SEC-RB-001 / CR-005)', async () => {
+    const f = makeFetch((url) =>
+      url === 'https://auth.example.com/.well-known/oauth-authorization-server'
+        ? jsonResponse({
+            issuer: 'https://attacker.example.com',
+            authorization_endpoint: 'https://attacker.example.com/authorize',
+            token_endpoint: 'https://attacker.example.com/token',
+          })
+        : notFound(),
+    );
+    // Previously this mismatched issuer was silently trusted and returned;
+    // it must now be rejected outright rather than adopted.
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
+  });
+  it('rejects a discovery document whose endpoints live on a different origin than the queried issuer, even when the issuer field matches', async () => {
+    const f = makeFetch((url) =>
+      url === 'https://auth.example.com/.well-known/oauth-authorization-server'
+        ? jsonResponse({
+            issuer: 'https://auth.example.com',
+            authorization_endpoint: 'https://attacker.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+          })
+        : notFound(),
+    );
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
+  });
+  it('rejects a registration_endpoint on a different origin than the queried issuer', async () => {
+    const f = makeFetch((url) =>
+      url === 'https://auth.example.com/.well-known/oauth-authorization-server'
+        ? jsonResponse({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://attacker.example.com/register',
+          })
+        : notFound(),
+    );
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
+  });
+  it('rejects a discovery document whose endpoint value is not a parseable URL (endpointsShareIssuerOrigin catch)', async () => {
+    const f = makeFetch((url) =>
+      url === 'https://auth.example.com/.well-known/oauth-authorization-server'
+        ? jsonResponse({
+            authorization_endpoint: 'not a url at all',
+            token_endpoint: 'https://auth.example.com/token',
+          })
+        : notFound(),
+    );
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
   });
   it('skips docs missing endpoints and defaults the issuer to the queried url', async () => {
     const f = makeFetch((url) => {
       if (url === 'https://auth.example.com/.well-known/oauth-authorization-server') return jsonResponse({ nope: true });
       if (url === 'https://auth.example.com/.well-known/openid-configuration') {
-        return jsonResponse({ authorization_endpoint: 'a', token_endpoint: 't' });
+        return jsonResponse({
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+        });
       }
       return notFound();
     });
@@ -143,6 +240,27 @@ describe('registerClient', () => {
   it('throws when the response is missing a client_id', async () => {
     const f = makeFetch(() => jsonResponse({ nope: true }));
     await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(/missing client_id/);
+  });
+  it('folds an oversized error-response body into an empty error text, tolerating a reader whose cancel() also throws', async () => {
+    // A body that never signals `done` (each pull enqueues a chunk already
+    // past the 1MB cap) keeps the stream in the "readable" state when
+    // readCappedText's byte-cap check throws, so the finally block's
+    // `reader.cancel()` actually invokes this underlying source's `cancel`
+    // — which itself throws, exercising readCappedText's inner swallow
+    // *and* safeErrorText's own outer catch (the byte-cap error surfaces
+    // through readCappedText uncaught).
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controllerStream) {
+        controllerStream.enqueue(new Uint8Array(2_000_000));
+      },
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    const f = makeFetch(() => new Response(stream, { status: 500, statusText: 'ISE' }));
+    await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(
+      /dynamic client registration failed: HTTP 500 ISE/,
+    );
   });
 });
 
@@ -352,7 +470,7 @@ describe('beginAuth', () => {
   });
 
   it('falls back to the origin issuer + server url when no protected-resource doc exists', async () => {
-    const f = makeFetch(router({ prm: undefined, authDoc: AUTH_META }));
+    const f = makeFetch(router({ prm: undefined, authDoc: AUTH_META_AT_MCP_ORIGIN }));
     const out = await beginAuth({ serverId: 's1', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://cb', dataDir: tmp(), fetchImpl: f });
     const url = new URL(out.authorizeUrl);
     expect(url.searchParams.get('scope')).toBe('s'); // from authServer.scopes_supported
@@ -361,13 +479,13 @@ describe('beginAuth', () => {
   });
 
   it('honors an explicit scope override', async () => {
-    const f = makeFetch(router({ prm: { resource: 'https://res.example.com', scopes_supported: [] }, authDoc: { ...AUTH_META, scopes_supported: undefined } }));
+    const f = makeFetch(router({ prm: { resource: 'https://res.example.com', scopes_supported: [] }, authDoc: { ...AUTH_META_AT_MCP_ORIGIN, scopes_supported: undefined } }));
     const out = await beginAuth({ serverId: 's1', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://cb', dataDir: tmp(), scope: 'custom', fetchImpl: f });
     expect(new URL(out.authorizeUrl).searchParams.get('scope')).toBe('custom');
   });
 
   it('emits no scope when none can be resolved', async () => {
-    const f = makeFetch(router({ prm: { scopes_supported: [] }, authDoc: { ...AUTH_META, scopes_supported: undefined } }));
+    const f = makeFetch(router({ prm: { scopes_supported: [] }, authDoc: { ...AUTH_META_AT_MCP_ORIGIN, scopes_supported: undefined } }));
     const out = await beginAuth({ serverId: 's1', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://cb', dataDir: tmp(), fetchImpl: f });
     expect(new URL(out.authorizeUrl).searchParams.has('scope')).toBe(false);
     expect(out.pending).not.toHaveProperty('scope');
@@ -402,5 +520,139 @@ describe('defaults to the global fetch when no fetchImpl is passed', () => {
     expect((await refreshAccessToken({ tokenEndpoint: 'https://auth.example.com/token', clientId: 'cid', refreshToken: 'rt' })).access_token).toBe('AT');
     const out = await beginAuth({ serverId: 's1', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://cb', dataDir: tmp() });
     expect(out.authorizeUrl).toContain('https://auth.example.com/authorize');
+  });
+});
+
+// SEC-RB-001 / CR-005: every outbound fetch in this file (discovery, DCR,
+// token exchange) must refuse plaintext/private/loopback destinations,
+// refuse to follow redirects, cap response bytes, and time out — rather
+// than trusting a caller- or metadata-supplied URL unconditionally.
+describe('SSRF hardening: outbound-fetch safety (SEC-RB-001 / CR-005)', () => {
+  it('discoverAuthServer rejects a non-https issuer without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    expect(await discoverAuthServer('http://auth.example.com', fetchSpy as unknown as typeof fetch)).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('discoverProtectedResource rejects a non-https resource url without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    expect(
+      await discoverProtectedResource('http://mcp.example.com/mcp', fetchSpy as unknown as typeof fetch),
+    ).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('discoverProtectedResource rejects a literal private/loopback IP without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    expect(
+      await discoverProtectedResource('https://127.0.0.1/mcp', fetchSpy as unknown as typeof fetch),
+    ).toBeNull();
+    expect(
+      await discoverProtectedResource('https://169.254.169.254/mcp', fetchSpy as unknown as typeof fetch),
+    ).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('registerClient rejects a non-https registration endpoint without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    await expect(
+      registerClient('http://auth.example.com/register', 'https://cb', fetchSpy as unknown as typeof fetch),
+    ).rejects.toThrow();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('exchangeCodeForToken rejects a non-https token endpoint without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    await expect(
+      exchangeCodeForToken(
+        { tokenEndpoint: 'http://auth.example.com/token', clientId: 'cid', redirectUri: 'https://cb', code: 'c', codeVerifier: 'v' },
+        fetchSpy as unknown as typeof fetch,
+      ),
+    ).rejects.toThrow();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('stringifies a non-Error rejection from fetchImpl instead of assuming an .message field exists', async () => {
+    // Real fetch implementations always reject with an Error, but the
+    // catch handler defensively falls back to String(err) for anything
+    // else — a caller-injected fetchImpl (this file's public functions all
+    // accept one) rejecting with a raw string is the direct way to prove
+    // that fallback path actually runs.
+    const f = (() => Promise.reject('raw string failure')) as unknown as typeof fetch;
+    await expect(registerClient('https://auth.example.com/register', 'https://cb', f)).rejects.toThrow(
+      /request to https:\/\/auth\.example\.com failed: raw string failure/,
+    );
+  });
+
+  it('refreshAccessToken rejects a literal private-IP token endpoint without ever calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    await expect(
+      refreshAccessToken(
+        { tokenEndpoint: 'https://127.0.0.1/token', clientId: 'cid', refreshToken: 'rt' },
+        fetchSpy as unknown as typeof fetch,
+      ),
+    ).rejects.toThrow();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses to follow a redirect response instead of trusting it (discovery folds the refusal into null)', async () => {
+    const f = makeFetch(() => new Response(null, { status: 302, headers: { location: 'https://internal.example/secret' } }));
+    expect(await discoverProtectedResource('https://mcp.example.com/mcp', f)).toBeNull();
+  });
+
+  it('refuses to follow a redirect from the token endpoint (surfaces as a thrown error, not a followed hop)', async () => {
+    const f = makeFetch(() => new Response(null, { status: 307, headers: { location: 'https://internal.example/steal-token' } }));
+    await expect(
+      refreshAccessToken({ tokenEndpoint: 'https://auth.example.com/token', clientId: 'cid', refreshToken: 'rt' }, f),
+    ).rejects.toThrow(/redirect/);
+  });
+
+  it('treats an oversized discovery response as a failure rather than buffering it unbounded', async () => {
+    const huge = JSON.stringify({
+      authorization_endpoint: 'https://auth.example.com/authorize',
+      token_endpoint: 'https://auth.example.com/token',
+      padding: 'x'.repeat(5_000_000),
+    });
+    const f = makeFetch(() => new Response(huge, { status: 200, headers: { 'content-type': 'application/json' } }));
+    expect(await discoverAuthServer('https://auth.example.com', f)).toBeNull();
+  });
+
+  it('aborts a hanging registration request once the fetch timeout elapses, rejecting rather than hanging forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const hangingFetch = ((_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+        })) as unknown as typeof fetch;
+      // registerClient makes exactly one fetch call (unlike discovery, which
+      // loops over multiple well-known candidates and would need the
+      // timeout advanced once per candidate) — the simplest deterministic
+      // way to prove the internal AbortSignal-based timeout actually fires.
+      const promise = registerClient('https://auth.example.com/register', 'https://cb', hangingFetch);
+      // Attach a handler immediately so Node doesn't flag the eventual
+      // rejection as "unhandled" during the gap before `advanceTimersByTimeAsync`
+      // resolves; the real assertion below still observes the same rejection.
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(10_000); // the internal fetch timeout
+      await expect(promise).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  describe('connection-time DNS-rebinding guard (real fetch, injected lookup — mirrors packages/deploy/src/reachability.test.ts)', () => {
+    it('rejects when the injected lookup resolves the well-known host to a private/link-local address', async () => {
+      // Deliberately does not stub global fetch: the rejection must come
+      // from the real undici Agent's connect-time `lookup` (wired via the
+      // injected `lookupImpl`) refusing to connect, not from a mocked
+      // network layer.
+      const result = await discoverProtectedResource(
+        'https://rebinding-attacker.example/mcp',
+        undefined,
+        ((_hostname: string, _opts: unknown, cb: (err: Error | null, address?: unknown, family?: number) => void) =>
+          cb(null, '169.254.169.254', 4)) as never,
+      );
+      expect(result).toBeNull();
+    }, 15_000);
   });
 });

@@ -26,6 +26,31 @@ const VALID_STATUSES: ReadonlySet<MediaTaskStatus> = new Set([
 ]);
 const TERMINAL_STATUSES: ReadonlySet<MediaTaskStatus> = new Set(['done', 'failed', 'interrupted']);
 
+// CR-013: `assertValidStatus` alone only proves enum membership, not that a
+// transition is legal — it allowed e.g. `done` -> `running`. This is the
+// actual lifecycle graph the store's own docs claim
+// (queued -> running -> done|failed|interrupted); same-state is included so
+// a caller can `update()` progress/file without also having to re-derive the
+// current status, but nothing can leave a terminal state once reached.
+const ALLOWED_TRANSITIONS: Readonly<Record<MediaTaskStatus, ReadonlySet<MediaTaskStatus>>> = {
+  // `queued` may go straight to a terminal state too (a caller isn't
+  // required to make a separate "now running" update before finishing).
+  queued: new Set(['queued', 'running', 'done', 'failed', 'interrupted']),
+  running: new Set(['running', 'done', 'failed', 'interrupted']),
+  done: new Set(['done']),
+  failed: new Set(['failed']),
+  interrupted: new Set(['interrupted']),
+};
+
+function cloneTask(task: MediaTask): MediaTask {
+  return {
+    ...task,
+    progress: [...task.progress],
+    file: task.file == null ? null : structuredClone(task.file),
+    error: task.error == null ? null : { ...task.error },
+  };
+}
+
 export interface MediaTaskError {
   readonly message: string;
   readonly status?: number;
@@ -119,6 +144,9 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
 
   return {
     async create(input: MediaTaskCreateInput): Promise<MediaTask> {
+      if (tasks.has(input.id)) {
+        throw new Error(`media task "${input.id}" already exists`);
+      }
       const status = input.status ?? 'queued';
       assertValidStatus(status);
       const now = Date.now();
@@ -127,9 +155,9 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
         id: input.id,
         ownerRef: input.ownerRef,
         status,
-        progress: input.progress ?? [],
-        file: input.file ?? null,
-        error: input.error ?? null,
+        progress: input.progress ? [...input.progress] : [],
+        file: input.file == null ? null : structuredClone(input.file),
+        error: input.error == null ? null : { ...input.error },
         startedAt,
         endedAt: null,
         createdAt: now,
@@ -138,11 +166,12 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
         ...(input.model !== undefined ? { model: input.model } : {}),
       };
       tasks.set(task.id, task);
-      return task;
+      return cloneTask(task);
     },
 
     async get(id: string): Promise<MediaTask | null> {
-      return tasks.get(id) ?? null;
+      const task = tasks.get(id);
+      return task ? cloneTask(task) : null;
     },
 
     async update(id: string, patch: MediaTaskPatch): Promise<MediaTask | null> {
@@ -150,15 +179,20 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
       if (!existing) return null;
       const status = patch.status ?? existing.status;
       assertValidStatus(status);
+      // CR-013: enum membership alone doesn't prove the transition is legal
+      // (e.g. `done` -> `running`) — check the actual lifecycle graph too.
+      if (!ALLOWED_TRANSITIONS[existing.status].has(status)) {
+        throw new RangeError(`Invalid media task transition: "${existing.status}" -> "${status}"`);
+      }
       const surface = 'surface' in patch ? (patch.surface ?? undefined) : existing.surface;
       const model = 'model' in patch ? (patch.model ?? undefined) : existing.model;
       const next: MediaTask = {
         id: existing.id,
         ownerRef: existing.ownerRef,
         status,
-        progress: patch.progress ?? existing.progress,
-        file: 'file' in patch ? (patch.file ?? null) : existing.file,
-        error: 'error' in patch ? (patch.error ?? null) : existing.error,
+        progress: patch.progress ? [...patch.progress] : existing.progress,
+        file: 'file' in patch ? (patch.file == null ? null : structuredClone(patch.file)) : existing.file,
+        error: 'error' in patch ? (patch.error == null ? null : { ...patch.error }) : existing.error,
         startedAt: existing.startedAt,
         endedAt: 'endedAt' in patch ? (patch.endedAt ?? null) : existing.endedAt,
         createdAt: existing.createdAt,
@@ -167,7 +201,7 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
         ...(model !== undefined ? { model } : {}),
       };
       tasks.set(id, next);
-      return next;
+      return cloneTask(next);
     },
 
     async listByOwner(ownerRef: string, options: MediaTaskListOptions = {}): Promise<MediaTask[]> {
@@ -175,7 +209,8 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
       return [...tasks.values()]
         .filter((t) => t.ownerRef === ownerRef)
         .filter((t) => includeTerminal || !TERMINAL_STATUSES.has(t.status))
-        .sort((a, b) => b.startedAt - a.startedAt);
+        .sort((a, b) => b.startedAt - a.startedAt)
+        .map(cloneTask);
     },
 
     async delete(id: string): Promise<void> {
@@ -183,6 +218,9 @@ export function createInMemoryMediaTaskStore(): MediaTaskStore {
     },
 
     async reconcileOnBoot(options: MediaTaskReconcileOptions): Promise<MediaTaskReconcileResult> {
+      if (!Number.isFinite(options.terminalTtlMs) || options.terminalTtlMs < 0) {
+        throw new RangeError(`Invalid terminalTtlMs: ${options.terminalTtlMs} must be a non-negative finite number`);
+      }
       const now = options.now ?? Date.now();
       const cutoff = now - options.terminalTtlMs;
       let interrupted = 0;

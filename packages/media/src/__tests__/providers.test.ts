@@ -13,6 +13,11 @@ import {
   VIDEO_MODELS,
 } from '../providers.js';
 
+/** Every catalogued model's `provider` field must resolve via `findProvider` — the dispatch engine (`dispatch/engine.ts`) relies on this invariant to treat `findProvider(def.provider)` as non-null once `def` itself came from `findMediaModel`, rather than re-guarding a case the catalogue's own construction already rules out. */
+function allCatalogueModels() {
+  return [...IMAGE_MODELS, ...VIDEO_MODELS, ...AUDIO_MODELS_BY_KIND.music, ...AUDIO_MODELS_BY_KIND.speech, ...AUDIO_MODELS_BY_KIND.sfx];
+}
+
 describe('provider catalogue shape', () => {
   it('every provider has a unique, non-empty id and label', () => {
     const ids = new Set<string>();

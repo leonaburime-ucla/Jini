@@ -14,10 +14,31 @@ This is **not a new interface.** `EventLog`/`EventLogEntry`/
 `@jini/daemon`, and `@jini/sqlite` implements that exact contract — same
 method signatures, same `dedupeKey` idempotency semantics, same
 distinguishable `'replay-gap'` result, same never-reused monotonic per-run
-cursor allocation, same FIFO-at-`maxEntriesPerRun` eviction (default 2000,
-matching the in-memory adapter's default). `packages/daemon/src/event-log.ts`'s
-own module doc literally names this package as the intended future durable
-adapter (see that file's header comment).
+cursor allocation, same FIFO-at-`maxEntriesPerRun` eviction mechanism.
+`packages/daemon/src/event-log.ts`'s own module doc literally names this
+package as the intended future durable adapter (see that file's header
+comment).
+
+**Retention default is a deliberate divergence, not parity.** `maxEntriesPerRun`
+defaults to 2000 when omitted (`DEFAULT_MAX_ENTRIES_PER_RUN` in
+`src/event-log.ts`) — this does **not** match the in-memory reference
+adapter, which defaults to unbounded retention when the option is omitted
+(see `createInMemoryEventLog`'s own doc in `packages/daemon/src/event-log.ts`).
+An earlier version of this note incorrectly claimed the sqlite default of
+2000 "match[ed] the in-memory adapter's default"; that was never true (the
+in-memory adapter has never had a 2000 default) and, independently, this
+package's own code did not actually apply a 2000 default until the
+2026-07-21 SEC-RB-008 fix — before then, an omitted option meant unbounded
+here too, contradicting this doc. The two adapters now intentionally differ:
+the in-memory adapter stays unbounded-by-default (its own module doc's
+rationale: the caller should own that tradeoff explicitly), while this
+durable, on-disk adapter defaults to a bounded window because unattended
+persistent growth is a real operational risk an in-process structure doesn't
+share. `replay`'s `afterCursor` validation is also adapter-specific: this
+package throws for a cursor that isn't `null` or a non-negative safe-integer
+string, rather than returning the port's `'invalid-cursor'` result kind (see
+`assertValidReplayCursor` in `src/event-log.ts`) — the in-memory adapter is
+unchanged and still returns `'invalid-cursor'` for a non-numeric cursor.
 
 ## File map
 

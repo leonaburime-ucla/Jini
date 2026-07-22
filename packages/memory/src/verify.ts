@@ -23,10 +23,18 @@ export interface ActiveRuleForVerify {
   check?: string;
 }
 
+/**
+ * Closed set of recognized row statuses. Any other value — `'error'`,
+ * `'unknown'`, `'FAIL'`, empty string, or anything else a model might
+ * emit — is not a valid pass and must not be treated as one; see
+ * `isValidRowStatus`/`enforceVerify`.
+ */
+export type VerifyScorecardRowStatus = 'pass' | 'fail';
+
 export interface VerifyScorecardRow {
   /** The row's own text — restates (in the model's words) which rule it addresses. */
   rule: string;
-  status: 'pass' | 'fail' | string;
+  status: VerifyScorecardRowStatus;
 }
 
 export interface VerifyScorecard {
@@ -84,9 +92,26 @@ function significantWords(value: string): Set<string> {
 }
 
 /**
+ * Runtime guard for `VerifyScorecardRow.status`: a host's `extractScorecard`
+ * parses freeform model output, so the TypeScript type alone does not stop
+ * an unrecognized value (`'error'`, `'unknown'`, wrong case, empty string,
+ * ...) from reaching here at runtime. Only an exact, recognized value
+ * counts as valid — everything else is treated as a failure, never as a
+ * silent pass.
+ * @internal
+ */
+function isValidRowStatus(status: unknown): status is VerifyScorecardRowStatus {
+  return status === 'pass' || status === 'fail';
+}
+
+/**
  * A scorecard row covers a rule when the row shares enough signal with the
  * rule's name or check: a direct substring containment, or at least two
- * shared significant words (lenient on purpose — models paraphrase).
+ * shared significant words (lenient on purpose — models paraphrase). This
+ * per-pair test is intentionally fuzzy (see the module-level caveat on
+ * `enforceVerify`'s unique row-consumption); it decides whether a
+ * *candidate* row/rule pair matches, not whether the mapping as a whole is
+ * unambiguous.
  * @internal
  */
 function rowCoversRule(rowText: string, rule: ActiveRuleForVerify): boolean {
@@ -109,6 +134,20 @@ function rowCoversRule(rowText: string, rule: ActiveRuleForVerify): boolean {
 /**
  * Deterministically evaluate the self-verify contract for one turn.
  *
+ * Two fail-closed properties (2026-07-21 security review, SEC-RB-007):
+ *  - A row whose `status` is not exactly `'pass'` or `'fail'` (wrong case,
+ *    `'error'`, `'unknown'`, or any other value a model might emit) counts
+ *    as a failed row, never as a silent pass.
+ *  - Each row can satisfy at most one active rule: rules are matched
+ *    against rows in order and a matched row is removed from the pool, so
+ *    one vague/generic row can no longer be counted as covering several
+ *    distinct required rules simultaneously. The underlying per-pair test
+ *    (`rowCoversRule`) is still a fuzzy substring/word-overlap heuristic —
+ *    this only removes the many-rules-from-one-row failure mode, it does
+ *    not add a fully explicit, stable rule-ID-to-evidence mapping. That
+ *    larger redesign (rule IDs instead of prose matching) is out of scope
+ *    here; see the paired test asserting the current heuristic's limits.
+ *
  * @param input - The turn output, active rules, artifact/enable flags, and
  *   the host's scorecard extractor.
  * @returns The verify verdict.
@@ -130,13 +169,29 @@ export function enforceVerify(input: EnforceVerifyInput): VerifyResult {
   if (!input.hadArtifact) return { ...base, status: 'skipped', skipReason: 'no-artifact' };
 
   const scorecard = input.extractScorecard(input.assistantOutput);
-  if (!scorecard) {
+  if (!scorecard || !Array.isArray(scorecard.rows)) {
     return { ...base, status: 'missing', uncoveredRules: activeRules.map((r) => r.name) };
   }
 
   const rows = scorecard.rows;
-  const rowsFailed = rows.filter((r) => r.status === 'fail').length;
-  const uncoveredRules = activeRules.filter((rule) => !rows.some((row) => rowCoversRule(row.rule, rule))).map((rule) => rule.name);
+  const rowsFailed = rows.filter((r) => !isValidRowStatus(r.status) || r.status === 'fail').length;
+
+  // Unique rule-to-row consumption: once a row has been used to cover a
+  // rule, it is removed from the pool for subsequent rules.
+  const usedRowIndices = new Set<number>();
+  const uncoveredRules: string[] = [];
+  for (const rule of activeRules) {
+    let covered = false;
+    for (let i = 0; i < rows.length; i++) {
+      if (usedRowIndices.has(i)) continue;
+      if (rowCoversRule(rows[i]!.rule, rule)) {
+        usedRowIndices.add(i);
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) uncoveredRules.push(rule.name);
+  }
   const rulesCovered = activeRules.length - uncoveredRules.length;
   const status: VerifyStatus = rowsFailed > 0 || uncoveredRules.length > 0 ? 'fail' : 'pass';
 

@@ -1,4 +1,31 @@
+import type { LookupFunction } from 'node:net';
+import { Agent } from 'undici';
+import { assertSafePublicUrl, AssetCacheError, createValidatingLookup } from '@jini/platform';
 import type { DeployLinkStatus, DeploymentUrlCheck } from './types.js';
+
+/**
+ * SEC-003: reachability probes fetch a *provider-returned* URL/alias
+ * (Vercel/Cloudflare deployment `url`/`alias`/`aliases[]`), so a compromised or
+ * malicious provider response is a live SSRF vector — the same trust-boundary
+ * shape `@jini/platform`'s asset-cache solves for a caller-supplied media URL.
+ * Reused here rather than reinvented (see
+ * ADS-memory/reports/security/SEC-backend-coverage-push-2026-07-20.md, SEC-003,
+ * which cites asset-cache as "a good model for deploy reachability"):
+ * `assertSafePublicUrl` fast-rejects bad schemes/credentials/localhost/literal
+ * private IPs before any socket opens, and `createValidatingLookup` is wired
+ * as the fetch dispatcher's connection-time `lookup` so the address that is
+ * *validated* is the exact address the socket *connects to* — closing the
+ * DNS-rebinding/TOCTOU gap a separate pre-validation lookup would leave open.
+ */
+function assertSafeDeploymentUrl(raw: string): URL {
+  const url = assertSafePublicUrl(raw);
+  if (url.protocol !== 'https:') {
+    // Deployment providers always serve over TLS; an http:// candidate is
+    // never legitimate and downgrading a probe to plaintext is its own risk.
+    throw new AssetCacheError(400, 'deployment url must use https');
+  }
+  return url;
+}
 
 /**
  * Provider-supplied hook for recognizing a deployment URL that responded
@@ -14,6 +41,8 @@ export interface ReachabilityOptions {
   timeoutMs?: number;
   detectProtected?: ProtectedResponseDetector;
   protectedMessage?: string;
+  /** Injectable `dns.lookup` for the connection-time SSRF guard (tests only — see `assertSafeDeploymentUrl`). */
+  lookupImpl?: Parameters<typeof createValidatingLookup>[0];
 }
 
 export interface ReachabilityWaitOptions {
@@ -22,6 +51,8 @@ export interface ReachabilityWaitOptions {
   providerLabel?: string;
   detectProtected?: ProtectedResponseDetector;
   protectedMessage?: string;
+  /** Injectable `dns.lookup` for the connection-time SSRF guard (tests only). */
+  lookupImpl?: Parameters<typeof createValidatingLookup>[0];
 }
 
 export interface ReachabilityWaitResult {
@@ -60,16 +91,43 @@ export function normalizeDeploymentUrl(url: unknown): string {
  * @complexity O(1) network round-trip.
  * @overallScore 100/100
  */
+// A fresh `Agent` per call would needlessly discard connection pooling; the common
+// (no test override) case shares one lazily-created dispatcher. A caller-supplied
+// `lookupImpl` (tests only) always gets its own dispatcher instead of touching the shared one.
+let defaultDispatcher: Agent | null = null;
+function resolveDispatcher(lookupImpl?: Parameters<typeof createValidatingLookup>[0]): Agent {
+  if (lookupImpl) {
+    return new Agent({ connect: { lookup: createValidatingLookup(lookupImpl) as unknown as LookupFunction } });
+  }
+  defaultDispatcher ??= new Agent({ connect: { lookup: createValidatingLookup() as unknown as LookupFunction } });
+  return defaultDispatcher;
+}
+
 async function requestDeploymentUrl(
   url: string,
   method: 'HEAD' | 'GET',
   timeoutMs: number,
   options: ReachabilityOptions,
 ): Promise<DeploymentUrlCheck> {
+  let safeUrl: URL;
+  try {
+    safeUrl = assertSafeDeploymentUrl(url);
+  } catch (err) {
+    return {
+      reachable: false,
+      statusMessage: `Public link is not reachable yet: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { method, redirect: 'manual', signal: controller.signal });
+    // `dispatcher` carries the connection-time SSRF guard (see `assertSafeDeploymentUrl`'s
+    // doc). Attached at runtime, matching asset-cache's own pattern, to avoid the
+    // undici-types (bundled with @types/node) vs undici@7 Dispatcher version skew a typed
+    // field would trip over.
+    const init: RequestInit = { method, redirect: 'manual', signal: controller.signal };
+    (init as { dispatcher?: unknown }).dispatcher = resolveDispatcher(options.lookupImpl);
+    const resp = await fetch(safeUrl.toString(), init);
     if (resp.status >= 200 && resp.status < 400) {
       return { reachable: true, statusCode: resp.status };
     }

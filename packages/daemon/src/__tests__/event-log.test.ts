@@ -45,6 +45,17 @@ describe('createInMemoryEventLog — ordered append + replay', () => {
     const replay = await log.replay('r1', null);
     expect(replay).toEqual({ kind: 'unknown-run' });
   });
+
+  it('lists known run ids in stable order and removes a dropped run from that index', async () => {
+    const log = createInMemoryEventLog();
+    await log.append({ runId: 'run-b', event: 'start', data: {} });
+    await log.append({ runId: 'run-a', event: 'start', data: {} });
+
+    expect(await log.listRunIds()).toEqual(['run-a', 'run-b']);
+
+    await log.drop('run-a');
+    expect(await log.listRunIds()).toEqual(['run-b']);
+  });
 });
 
 describe('createInMemoryEventLog — idempotency-key dedup', () => {
@@ -79,7 +90,7 @@ describe('createInMemoryEventLog — idempotency-key dedup', () => {
 });
 
 describe('createInMemoryEventLog — eviction + replay-gap adversarial cases', () => {
-  it('evicts oldest entries once maxEntriesPerRun is exceeded', async () => {
+  it('evicts oldest entries once maxEntriesPerRun is exceeded, and flags the null-cursor replay as truncated', async () => {
     const log = createInMemoryEventLog({ maxEntriesPerRun: 3 });
     for (let i = 0; i < 5; i += 1) {
       await log.append({ runId: 'r1', event: 'agent', data: i });
@@ -89,6 +100,20 @@ describe('createInMemoryEventLog — eviction + replay-gap adversarial cases', (
     if (replay.kind === 'ok') {
       // ids 1..5 assigned; ids 1,2 evicted; 3,4,5 retained.
       expect(replay.entries.map((e) => e.id)).toEqual(['3', '4', '5']);
+      expect(replay.truncated).toBe(true);
+    }
+  });
+
+  it('does not cap retention when maxEntriesPerRun is omitted (eviction is opt-in, not a silent default)', async () => {
+    const log = createInMemoryEventLog();
+    for (let i = 0; i < 2500; i += 1) {
+      await log.append({ runId: 'r1', event: 'agent', data: i });
+    }
+    const replay = await log.replay('r1', null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') {
+      expect(replay.entries).toHaveLength(2500);
+      expect(replay.truncated).toBeUndefined();
     }
   });
 
@@ -120,7 +145,18 @@ describe('createInMemoryEventLog — eviction + replay-gap adversarial cases', (
     expect(caughtUp).toEqual({ kind: 'ok', entries: [] });
   });
 
-  it('a first-time replay(null) after eviction is not treated as a gap (nothing was ever promised to a caller that never asked)', async () => {
+  it('reports a gap with a null oldestAvailableCursor when maxEntriesPerRun is 0 (every entry evicted immediately)', async () => {
+    const log = createInMemoryEventLog({ maxEntriesPerRun: 0 });
+    await log.append({ runId: 'r1', event: 'agent', data: 'evicted-on-arrival' });
+    // runLog exists (append created it) but retains zero entries, so
+    // `oldestRetained` is undefined — exercises the "empty retained log"
+    // fallback branches (oldestRetainedId falls back to runLog.nextId, and
+    // oldestAvailableCursor reports null instead of a real id).
+    const replay = await log.replay('r1', '0');
+    expect(replay).toEqual({ kind: 'replay-gap', requestedCursor: '0', oldestAvailableCursor: null });
+  });
+
+  it('a first-time replay(null) after eviction is not treated as a gap (nothing was ever promised to a caller that never asked), but IS flagged truncated', async () => {
     const log = createInMemoryEventLog({ maxEntriesPerRun: 2 });
     for (let i = 0; i < 10; i += 1) {
       await log.append({ runId: 'r1', event: 'agent', data: i });
@@ -129,6 +165,7 @@ describe('createInMemoryEventLog — eviction + replay-gap adversarial cases', (
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') {
       expect(replay.entries).toHaveLength(2);
+      expect(replay.truncated).toBe(true);
     }
   });
 });

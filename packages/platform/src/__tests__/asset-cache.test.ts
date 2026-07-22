@@ -5,7 +5,7 @@
 // hosts are refused, that only http(s) media URLs are accepted, and that the
 // disk cache fetches once then replays (including concurrent de-duplication).
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -79,6 +79,7 @@ describe('isPrivateAddress', () => {
       '::ffff:7f00:1', // hex IPv4-mapped 127.0.0.1 (Node normalizes brackets to this)
       '::ffff:0a00:1', // hex IPv4-mapped 10.0.0.1
       '::ffff:a9fe:a9fe', // hex IPv4-mapped 169.254.169.254 (metadata)
+      'fe80:0:0:0:0:0:0:1', // link-local, fully expanded — no "::" compression
       'not-an-ip',
     ]) {
       expect(isPrivateAddress(addr)).toBe(true);
@@ -92,6 +93,7 @@ describe('isPrivateAddress', () => {
       '172.15.0.1',
       '172.32.0.1',
       '2606:4700:4700::1111',
+      '2606:4700:4700:0:0:0:0:1111', // same address, fully expanded — no "::" compression
       '::ffff:5db8:d822', // hex IPv4-mapped 93.184.216.34 (public)
     ]) {
       expect(isPrivateAddress(addr)).toBe(false);
@@ -294,4 +296,88 @@ describe('createAssetCache', () => {
   // DNS-rebinding (host that *resolves* to a private address) is covered by the
   // createValidatingLookup suite above — that guard runs at connection time,
   // inside the undici Agent, not through the injectable fetchImpl.
+
+  it('reads a bodyless response (no stream) via arrayBuffer, capped at maxBytes', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () =>
+        new Response(null, { status: 200, headers: { 'content-type': 'image/png' } })) as typeof fetch,
+    });
+    const out = await cache.get('https://res.cloudinary.com/x/empty.png');
+    expect(out.buf.byteLength).toBe(0);
+  });
+
+  it('rejects a bodyless response whose buffered size still exceeds maxBytes', async () => {
+    // A real Response can't have a null `.body` AND non-empty arrayBuffer()
+    // bytes, so this exercises the no-stream branch with a minimal duck-typed
+    // stand-in — the same shape createAssetCache's injectable fetchImpl
+    // already accepts instead of a native Response.
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/png' : null) },
+      body: null,
+      arrayBuffer: async () => new ArrayBuffer(64),
+    };
+    const cache = createAssetCache({
+      cacheDir: dir,
+      maxBytes: 16,
+      fetchImpl: (async () => fakeResponse) as unknown as typeof fetch,
+    });
+    await expect(cache.get('https://res.cloudinary.com/x/no-stream-big.png')).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('swallows a reader.cancel() failure while aborting an oversized stream', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controllerStream) {
+        controllerStream.enqueue(new Uint8Array(32).fill(9));
+      },
+      cancel() {
+        throw new Error('cancel exploded');
+      },
+    });
+    const cache = createAssetCache({
+      cacheDir: dir,
+      maxBytes: 8,
+      fetchImpl: (async () =>
+        new Response(stream, { status: 200, headers: { 'content-type': 'image/png' } })) as typeof fetch,
+    });
+    // Still surfaces the 413 — the failed cancel() must not mask it or throw
+    // a different error out of the finally block.
+    await expect(cache.get('https://res.cloudinary.com/x/cancel-fails.png')).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('wraps a fetch rejection as a 502', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => {
+        throw new Error('network down');
+      }) as typeof fetch,
+    });
+    await expect(cache.get('https://res.cloudinary.com/x/unreachable.png')).rejects.toMatchObject({
+      status: 502,
+      message: expect.stringContaining('network down'),
+    });
+  });
+
+  it('rejects a non-OK upstream response as a 502', async () => {
+    const cache = createAssetCache({
+      cacheDir: dir,
+      fetchImpl: (async () => new Response('nope', { status: 404 })) as typeof fetch,
+    });
+    await expect(cache.get('https://res.cloudinary.com/x/missing.png')).rejects.toMatchObject({ status: 502 });
+  });
+
+  it('serves from memory when the disk write fails (cacheDir is not a usable directory)', async () => {
+    // cacheDir already exists as a plain FILE, so mkdir(cacheDir) inside
+    // writeToDisk fails — the fetch must still succeed from memory.
+    const fileAsCacheDir = path.join(dir, 'cache-dir-is-actually-a-file');
+    await writeFile(fileAsCacheDir, 'not a directory');
+    const cache = createAssetCache({
+      cacheDir: fileAsCacheDir,
+      fetchImpl: (async () => pngResponse(4)) as typeof fetch,
+    });
+    const out = await cache.get('https://res.cloudinary.com/x/write-fails.png');
+    expect(out.buf.byteLength).toBe(4);
+  });
 });

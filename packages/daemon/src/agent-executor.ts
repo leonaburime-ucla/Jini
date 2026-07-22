@@ -9,22 +9,48 @@
  * a real `node:child_process` spawn, feeding both `RunLifecycle.emit()` and
  * this package's own `@jini/protocol` event envelope.
  *
- * ## v1 scope: 9 of 24 registered agent defs
+ * ## v1 scope: 23 of 24 registered agent defs
  *
  * `@jini/agent-runtime`'s registry ships 24 built-in defs across four
- * `streamFormat` families. Only the JSON-stream-parser family — the four
+ * `streamFormat` families. The JSON-stream-parser family — the four
  * `createXStreamHandler`-shaped parsers (`claude-stream-json`,
  * `json-event-stream`, `copilot-stream-json`, `qoder-stream-json`), covering
  * 9 defs (amp, codebuddy, claude, codex, cursor-agent, opencode, mimo,
- * copilot, qoder) — is wired here. The other 15 defs (`acp-json-rpc` × 9,
- * `pi-rpc` × 1) use `attachAcpSession`/`attachPiRpcSession`, which own their
- * own child-process I/O internally and return a synchronous controller
- * instead of an awaitable spawn-confirmed outcome — a structurally
- * different driver shape, deliberately not built here (see
- * `source-map.md`). `plain` (5 defs) has no existing parser or dispatch
- * branch anywhere in this codebase; its design space isn't decided.
- * `run()` rejects cleanly (never a bare throw) with an `AgentExecutorError`
- * for any def outside the supported 9 — see `isSupportedStreamFormat`.
+ * copilot, qoder) — plus all 9 `acp-json-rpc` defs, plus the one `pi-rpc`
+ * def (`pi`), are wired here. ACP and pi-rpc each own their own JSON-RPC
+ * prompt-delivery protocol, so each takes its own lifecycle branch rather
+ * than being treated as a stdout-tail parser; pi-rpc's events arrive through
+ * the exact same `{type, ...}` vocabulary `translateAgentRuntimeEvent`
+ * already handles for ACP/JSON-stream (confirmed by reading every
+ * `mapPiRpcEvent` `send()` call site — no new translation code was needed),
+ * so only the driver wiring (spawn → attach → cancel → finish) was new for it.
+ *
+ * 4 of the 5 `streamFormat: 'plain'` defs — grok-build, aider, deepseek,
+ * qwen — are also driven, per
+ * `ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md`'s
+ * recommended "Option B": no structured stream parser at all. Every raw
+ * `child.stdout` chunk is forwarded verbatim as a `text_delta` `'agent'`
+ * event, live, as it arrives — never buffered until close (see
+ * `wireChildLifecycle`'s `streamFormat === 'plain'` branch). Prompt delivery
+ * across the 4 is not uniform: qwen already fit the pre-existing stdin-only
+ * guard; grok-build stages the prompt to a temp file via
+ * `preparePromptFileForAgent` (its path threaded into `buildArgs` through a
+ * `RuntimeContext`, cleaned up after the child exits on every path,
+ * including pre-spawn/spawn-failure ones); aider/deepseek carry the prompt
+ * on argv and are guarded pre-spawn by `checkPromptArgvBudget` plus the two
+ * Windows CreateProcess command-line-expansion guards
+ * (`checkWindowsCmdShimCommandLineBudget`/`checkWindowsDirectExeCommandLineBudget`).
+ *
+ * The 5th plain def, **antigravity, is deliberately still rejected.** It
+ * needs two concerns unrelated to `streamFormat: 'plain'` itself — buffering
+ * stdout until close so a leaked OAuth URL can be suppressed before it
+ * reaches the client, and a cross-run lock serializing writes to its shared
+ * `settings.json` model-selection file — that the proposal doc explicitly
+ * scoped out to its own follow-up (see that doc's §2c/§3). `run()` guards it
+ * with its own `def.id === 'antigravity'` check, ahead of (and independent
+ * of) the generic plain-format prompt-delivery/dispatch logic. `run()`
+ * rejects cleanly (never a bare throw) with an `AgentExecutorError` for any
+ * def outside the supported 23 — see `isSupportedStreamFormat`.
  *
  * ## Invariant
  *
@@ -41,6 +67,7 @@
  * blanket "not retryable" default is the only honest answer available.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { redactSecrets } from '@jini/core';
 import type { RunAgentPayload, RunErrorPayload } from '@jini/protocol';
 import {
   applyAgentLaunchEnv,
@@ -50,8 +77,19 @@ import {
   createQoderStreamHandler,
   getAgentDef,
   resolveAgentLaunch,
+  attachAcpSession,
+  attachPiRpcSession,
+  checkPromptArgvBudget,
+  checkWindowsCmdShimCommandLineBudget,
+  checkWindowsDirectExeCommandLineBudget,
+  preparePromptFileForAgent,
+  type AcpPermissionHandler,
+  type AcpSessionController,
   type AgentLaunchResolution,
+  type PiRpcSession,
+  type PreparedPromptFile,
   type RuntimeAgentDef,
+  type RuntimeContext,
 } from '@jini/agent-runtime';
 import {
   collectProcessTreePids,
@@ -76,17 +114,34 @@ const SUPPORTED_STREAM_FORMATS = [
   'json-event-stream',
   'copilot-stream-json',
   'qoder-stream-json',
+  'acp-json-rpc',
+  'pi-rpc',
+  'plain',
 ] as const;
 
-/** The 4 of the registry's stream-format families this driver implements — see module doc. */
+/** The families of the registry's stream-format this driver implements — see module doc. */
 export type SupportedStreamFormat = (typeof SUPPORTED_STREAM_FORMATS)[number];
 
+type JsonStreamFormat = Exclude<SupportedStreamFormat, 'acp-json-rpc' | 'pi-rpc' | 'plain'>;
+
 /**
- * Narrows a `RuntimeAgentDef.streamFormat` string to the 4 supported
+ * `streamFormat` values `wireChildLifecycle` drives directly off raw
+ * `child.stdout` `'data'` events: the 4 JSON-stream-parser formats (fed
+ * through a real `feed()`/`flush()` state machine via
+ * {@link createStreamHandlerForDef}) plus `'plain'` (no parser at all —
+ * each chunk is forwarded verbatim as a `text_delta`, see that function's
+ * doc). Distinct from `'acp-json-rpc'`/`'pi-rpc'`, which own their own
+ * JSON-RPC prompt/event protocol and get their own
+ * `wireAcpLifecycle`/`wirePiRpcLifecycle` wiring instead.
+ */
+type ChildDrivenStreamFormat = JsonStreamFormat | 'plain';
+
+/**
+ * Narrows a `RuntimeAgentDef.streamFormat` string to the supported
  * families.
  * @param value - The def's raw `streamFormat` string.
- * @returns `true` when `value` is one of the 4 JSON-stream-parser formats this driver wires.
- * @complexity O(1) — fixed 4-element membership check.
+ * @returns `true` when `value` is one of the JSON-stream-parser, ACP, pi-rpc, or plain formats this driver wires.
+ * @complexity O(1) — fixed membership check.
  * @overallScore 100/100
  */
 export function isSupportedStreamFormat(value: string): value is SupportedStreamFormat {
@@ -100,7 +155,9 @@ export function isSupportedStreamFormat(value: string): value is SupportedStream
  * `'codex'`, `'cursor-agent'`, `'opencode'`; `mimo` shares `'opencode'`'s
  * `kind`); an unrecognized/absent `eventParser` degrades to that parser's
  * own `{type:'raw', line}` fallback rather than throwing, matching the
- * parser's own documented behavior.
+ * parser's own documented behavior. Never called for `streamFormat:
+ * 'plain'` — `wireChildLifecycle` handles that format inline with no
+ * parser at all (see `ChildDrivenStreamFormat`'s doc).
  * @param def - The resolved agent def (only `.eventParser` is read beyond `streamFormat`).
  * @param streamFormat - `def.streamFormat`, already narrowed by {@link isSupportedStreamFormat}.
  * @param onEvent - Sink the parser calls once per parsed (or malformed-raw) event.
@@ -110,7 +167,7 @@ export function isSupportedStreamFormat(value: string): value is SupportedStream
  */
 function createStreamHandlerForDef(
   def: RuntimeAgentDef,
-  streamFormat: SupportedStreamFormat,
+  streamFormat: JsonStreamFormat,
   onEvent: (event: Record<string, unknown>) => void,
 ): StreamHandler {
   switch (streamFormat) {
@@ -296,7 +353,8 @@ export type AgentExecutorErrorCode =
   | 'AGENT_NOT_FOUND'
   | 'AGENT_RUNTIME_UNSUPPORTED'
   | 'AGENT_BINARY_NOT_RESOLVED'
-  | 'AGENT_SPAWN_FAILED';
+  | 'AGENT_SPAWN_FAILED'
+  | 'AGENT_PROMPT_TOO_LARGE';
 
 /** Thrown by `AgentExecutor.run()` on every failure path — never a bare `Error`, so callers can branch on `.code` instead of parsing `.message`. */
 export class AgentExecutorError extends Error {
@@ -389,6 +447,57 @@ async function terminateChildTree(deps: TerminateChildTreeDeps, child: ChildProc
   await deps.stopProcesses(pids);
 }
 
+/** Which caller invoked {@link terminateChildTreeBestEffort} — carried through to `onCleanupFailure` (SEC-007) for diagnosis. */
+export type AgentCleanupFailurePhase = 'cancel' | 'acp-attach-failure' | 'pi-rpc-attach-failure';
+
+export interface AgentCleanupFailureContext {
+  readonly runId: string;
+  readonly phase: AgentCleanupFailurePhase;
+  readonly pid: number;
+  readonly error: unknown;
+}
+
+/** Default sink when a host does not supply `onCleanupFailure`: still observable, never silent. Redacted per SEC-007 (a spawn/permission error can embed paths/host detail). */
+function defaultCleanupFailureSink(context: AgentCleanupFailureContext): void {
+  // eslint-disable-next-line no-console
+  console.error(
+    `[@jini/daemon] agent-executor: process-tree cleanup failed for run "${context.runId}" (${context.phase}, pid=${context.pid})`,
+    redactSecrets(errorMessage(context.error)),
+  );
+}
+
+/**
+ * Fire-and-forget-safe wrapper around {@link terminateChildTree} for the cancellation paths
+ * (a synchronous `onCancelRequested` listener, an ACP attach-failure catch) that observed this
+ * promise with a bare `void` — silently swallowing any `listProcessSnapshots`/`stopProcesses`
+ * rejection (e.g. EPERM — see `packages/platform/src/__tests__/process.test.ts`) and letting it
+ * become an unhandled rejection, with descendants possibly still running and no diagnostic at
+ * all (SEC-007). This never rejects: a tree-stop failure is reported through `onCleanupFailure`
+ * (redacted) and followed by a best-effort direct kill of `child` itself, since the immediate
+ * child is still worth trying even when tree enumeration/escalation failed.
+ */
+function terminateChildTreeBestEffort(
+  deps: TerminateChildTreeDeps,
+  child: ChildProcess,
+  runId: string,
+  phase: AgentCleanupFailurePhase,
+  onCleanupFailure: (context: AgentCleanupFailureContext) => void,
+): Promise<void> {
+  return terminateChildTree(deps, child).catch((error: unknown) => {
+    // `terminateChildTree` only reaches a rejecting call (rather than its own early return) once
+    // its own `child.pid == null` guard has already passed, and a real ChildProcess's `pid` is
+    // never unset after being assigned — so `child.pid` is provably a number here. The non-null
+    // assertion documents that invariant instead of a `?? null` fallback that could never
+    // actually be exercised (same pattern as `pi-rpc/session.ts`'s `resolveSessionPathChangedSince`).
+    onCleanupFailure({ runId, phase, pid: child.pid!, error });
+    try {
+      if (child.pid != null && !child.killed) child.kill('SIGKILL');
+    } catch {
+      // Best-effort only — nothing further can be done from here.
+    }
+  });
+}
+
 /** A small handle `writePromptToStdin` uses to close stdin exactly once, shared with the `turn_end`-triggered close inside {@link wireChildLifecycle}. */
 interface StdinCloseHandle {
   closeStdinOnce(): void;
@@ -397,9 +506,12 @@ interface StdinCloseHandle {
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
   readonly def: RuntimeAgentDef;
-  readonly streamFormat: SupportedStreamFormat;
+  readonly streamFormat: ChildDrivenStreamFormat;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
+  /** Removes a `promptViaFile`-staged temp file (grok-build) after the child exits. A no-op default when no prompt file was staged for this run — see `run()`'s `preparePromptFileForAgent` call site. */
+  readonly cleanupPromptFile: () => Promise<void>;
 }
 
 /**
@@ -422,6 +534,18 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
  * drained before computing the terminal outcome — so `finish()`'s `'end'`
  * event is always durably last, never interleaved with a still-in-flight
  * `'agent'`/`'stdout'`/`'stderr'` append.
+ *
+ * `streamFormat: 'plain'` gets no `createStreamHandlerForDef` parser at
+ * all (Option B — see module doc and
+ * `ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md`
+ * §3): every raw stdout chunk is forwarded live, verbatim, as its own
+ * `text_delta` `'agent'` event, through the same `enqueueEmit` FIFO queue
+ * every other emit already goes through — no buffering until close, no new
+ * parser state machine. **Deliberately un-hygiened for v1**: no ANSI/
+ * terminal-control-sequence stripping is applied (there is no Jini
+ * equivalent of OD's `TerminalControlSequenceStripper` yet) — a documented
+ * decision, not an oversight; see `packages/daemon/source-map.md`'s
+ * 2026-07-21 addition for the reasoning.
  *
  * @param ctx - Run/def/child/lifecycle plus the cancellation-escalation ports.
  * @returns A handle exposing `closeStdinOnce` for the initial prompt write to share.
@@ -453,21 +577,30 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
     child.stdin?.end();
   }
 
-  const streamHandler = createStreamHandlerForDef(def, streamFormat, (rawEvent) => {
-    const translation = translateAgentRuntimeEvent(rawEvent);
-    if (translation.kind === 'agent') {
-      enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
-    } else if (translation.kind === 'error') {
-      enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
-    } else if (translation.kind === 'turn-end') {
-      closeStdinOnce();
-    }
-  });
+  const streamHandler: StreamHandler | null =
+    streamFormat === 'plain'
+      ? null
+      : createStreamHandlerForDef(def, streamFormat, (rawEvent) => {
+          const translation = translateAgentRuntimeEvent(rawEvent);
+          if (translation.kind === 'agent') {
+            enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
+          } else if (translation.kind === 'error') {
+            enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
+          } else if (translation.kind === 'turn-end') {
+            closeStdinOnce();
+          }
+        });
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
     const text = chunk.toString('utf8');
     enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: text } }));
-    streamHandler.feed(text);
+    if (streamFormat === 'plain') {
+      enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: { type: 'text_delta', delta: text } }));
+    } else {
+      // Non-null: `streamHandler` is only ever null when `streamFormat === 'plain'` (see its
+      // construction above), the branch this `else` provably excludes.
+      streamHandler!.feed(text);
+    }
   });
 
   child.stderr?.on('data', (chunk: Buffer | string) => {
@@ -487,7 +620,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
 
   const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
     cancelRequested = true;
-    void terminateChildTree(ctx, child);
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
   });
 
   child.on('close', (code, signal) => {
@@ -498,16 +631,221 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       // line to a `{type:'raw'}` event rather than throwing (confirmed by
       // reading each of the 4 modules in full — see module doc). A guard
       // here would be dead code for the fixed, closed set of parsers this
-      // driver dispatches to.
-      streamHandler.flush();
+      // driver dispatches to. `streamHandler` is null for `'plain'` (no
+      // parser, hence nothing to flush) — `?.` skips it cleanly.
+      streamHandler?.flush();
       await emitQueue;
       unsubscribeCancel();
+      await ctx.cleanupPromptFile();
       const status = classifyRunCloseStatus({ cancelRequested, code, signal });
       await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
     })();
   });
 
   return { closeStdinOnce };
+}
+
+interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
+  readonly runId: string;
+  readonly child: ChildProcess;
+  readonly lifecycle: RunLifecycle;
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly envFormat: 'array' | 'map' | undefined;
+  readonly onPermissionRequest: AcpPermissionHandler | undefined;
+  readonly attachAcpSession: typeof attachAcpSession;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
+  /** Same seam as `WireChildLifecycleContext.cleanupPromptFile` — no current ACP def declares `promptViaFile`, so this is always the no-op default in practice today, threaded through for consistency rather than special-cased away. */
+  readonly cleanupPromptFile: () => Promise<void>;
+}
+
+/**
+ * Maps an ACP session's transport error into the canonical run-error shape.
+ * ACP adapters may add a structured `error` member, but a daemon driver must
+ * never make one vendor's error shape part of the run protocol.
+ */
+function translateAcpError(payload: unknown): RunErrorPayload {
+  if (!isRecord(payload)) return { message: asString(payload, 'ACP agent failed') };
+  const message = asString(payload.message, 'ACP agent failed');
+  const error = isRecord(payload.error) ? payload.error : null;
+  const code = error ? asOptionalString(error.code) : undefined;
+  const retryable = error && typeof error.retryable === 'boolean' ? error.retryable : undefined;
+  return {
+    message,
+    ...(code !== undefined
+      ? {
+          error: {
+            code,
+            message: asString(error?.message, message),
+            ...(retryable !== undefined ? { retryable } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Wires an ACP child to a run. Unlike the JSON-stream path, ACP owns the
+ * prompt protocol and reports its parsed events through `attachAcpSession`'s
+ * callback. This wrapper retains raw stdout/stderr for diagnostics, preserves
+ * event order through the same FIFO discipline, forwards cancellation both as
+ * ACP `session/cancel` and an OS process-tree stop, and uses the controller's
+ * clean-prompt signal rather than SIGTERM (expected ACP cleanup) to determine
+ * success.
+ */
+function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
+  const { runId, child, lifecycle } = ctx;
+  let cancelRequested = false;
+  let emitQueue: Promise<void> = Promise.resolve();
+
+  function enqueueEmit(task: () => Promise<unknown>): void {
+    emitQueue = emitQueue.then(async () => {
+      try {
+        await task();
+      } catch {
+        // A late event racing a terminal lifecycle is intentionally dropped;
+        // it must not prevent subsequent queued cleanup from running.
+      }
+    });
+  }
+
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stdin?.on('error', () => {});
+  child.on('error', () => {});
+
+  let controller: AcpSessionController | null = null;
+  const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
+    cancelRequested = true;
+    controller?.abort();
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
+  });
+
+  child.on('close', (code, signal) => {
+    void (async () => {
+      await emitQueue;
+      unsubscribeCancel();
+      await ctx.cleanupPromptFile();
+      const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
+      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+    })();
+  });
+
+  controller = ctx.attachAcpSession({
+    child,
+    prompt: ctx.prompt,
+    cwd: ctx.cwd,
+    ...(ctx.envFormat !== undefined ? { envFormat: ctx.envFormat } : {}),
+    ...(ctx.onPermissionRequest !== undefined ? { onPermissionRequest: ctx.onPermissionRequest } : {}),
+    send(event, payload) {
+      if (event === 'agent') {
+        const translation = translateAgentRuntimeEvent(payload);
+        if (translation.kind === 'agent') {
+          enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
+        } else if (translation.kind === 'error') {
+          enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
+        }
+        return;
+      }
+      if (event === 'error') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translateAcpError(payload) }));
+      }
+    },
+  });
+  return controller;
+}
+
+interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
+  readonly runId: string;
+  readonly child: ChildProcess;
+  readonly lifecycle: RunLifecycle;
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly attachPiRpcSession: typeof attachPiRpcSession;
+  readonly onCleanupFailure: (context: AgentCleanupFailureContext) => void;
+  /** Same seam as `WireChildLifecycleContext.cleanupPromptFile` — no current pi-rpc def declares `promptViaFile`, so this is always the no-op default in practice today, threaded through for consistency rather than special-cased away. */
+  readonly cleanupPromptFile: () => Promise<void>;
+}
+
+/**
+ * Wires a pi-rpc child to a run. Like ACP, pi owns its own prompt-delivery
+ * protocol (`prompt`/`new_session`/`abort` RPC commands over stdin) and
+ * reports parsed events through `attachPiRpcSession`'s `send` callback —
+ * unlike ACP's callback, pi-rpc's `send` always uses the `'agent'` channel
+ * (confirmed by reading every `mapPiRpcEvent` call site: error-ness is
+ * signaled via the payload's own `type: 'error'` field, never a separate
+ * channel), so this wrapper runs every payload through the same
+ * `translateAgentRuntimeEvent` pipeline ACP/JSON-stream already use, with no
+ * channel branch needed. Raw stdout/stderr are still forwarded for
+ * diagnostics (same as ACP) even though `attachPiRpcSession` also consumes
+ * `child.stdout` itself for its own JSON-RPC parsing — Node multicasts
+ * `'data'` events to every listener, so both coexist safely.
+ *
+ * v1 omits `model`/`imagePaths`/`uploadRoot`/`parentSession` — none of
+ * `AgentExecutorRunInput`'s fields carry them yet (matching this module's
+ * established "explicitly out of scope" discipline for other follow-ups:
+ * multi-turn tool continuation, resumable session ids, etc.).
+ */
+function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
+  const { runId, child, lifecycle } = ctx;
+  let cancelRequested = false;
+  let emitQueue: Promise<void> = Promise.resolve();
+
+  function enqueueEmit(task: () => Promise<unknown>): void {
+    emitQueue = emitQueue.then(async () => {
+      try {
+        await task();
+      } catch {
+        // A late event racing a terminal lifecycle is intentionally dropped;
+        // it must not prevent subsequent queued cleanup from running.
+      }
+    });
+  }
+
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    enqueueEmit(() => lifecycle.emit(runId, { event: 'stderr', data: { chunk: chunk.toString('utf8') } }));
+  });
+  child.stdin?.on('error', () => {});
+  child.on('error', () => {});
+
+  let session: PiRpcSession | null = null;
+  const unsubscribeCancel = lifecycle.onCancelRequested(runId, () => {
+    cancelRequested = true;
+    session?.abort();
+    void terminateChildTreeBestEffort(ctx, child, runId, 'cancel', ctx.onCleanupFailure);
+  });
+
+  child.on('close', (code, signal) => {
+    void (async () => {
+      await emitQueue;
+      unsubscribeCancel();
+      await ctx.cleanupPromptFile();
+      const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
+      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+    })();
+  });
+
+  session = ctx.attachPiRpcSession({
+    child: ctx.child,
+    prompt: ctx.prompt,
+    cwd: ctx.cwd,
+    send(_channel, payload) {
+      const translation = translateAgentRuntimeEvent(payload);
+      if (translation.kind === 'agent') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
+      } else if (translation.kind === 'error') {
+        enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
+      }
+    },
+  });
+  return session;
 }
 
 /**
@@ -552,12 +890,33 @@ export interface CreateAgentExecutorOptions {
   readonly createCommandInvocation?: typeof createCommandInvocation;
   /** @default `node:child_process`'s `spawn` */
   readonly spawn?: typeof nodeSpawn;
+  /** @default the real `@jini/agent-runtime` ACP session transport */
+  readonly attachAcpSession?: typeof attachAcpSession;
+  /**
+   * Host-owned policy for ACP agents' native tool calls. The ACP agent still
+   * executes its own selected option; Jini-registered tool execution belongs
+   * to `createDelegatedToolBridge`, not this permission callback.
+   */
+  readonly acpPermissionHandler?: AcpPermissionHandler;
+  /** @default the real `@jini/agent-runtime` pi-rpc session transport */
+  readonly attachPiRpcSession?: typeof attachPiRpcSession;
+  /**
+   * Stages a `promptViaFile` def's (grok-build) composed prompt to a temp
+   * file before `buildArgs` runs. Touches the real filesystem by default
+   * (`fs.mkdtemp`/`fs.writeFile`/`fs.rm`) — injectable so tests can drive
+   * it without real disk I/O, matching this factory's "no real subprocess,
+   * filesystem, or PATH lookup by default in tests" convention.
+   * @default the real `@jini/agent-runtime` prompt-file stager
+   */
+  readonly preparePromptFileForAgent?: typeof preparePromptFileForAgent;
   /** @default the real `@jini/platform` process-snapshot enumerator */
   readonly listProcessSnapshots?: typeof listProcessSnapshots;
   /** @default the real `@jini/platform` descendant-PID collector */
   readonly collectProcessTreePids?: typeof collectProcessTreePids;
   /** @default the real `@jini/platform` SIGTERM→SIGKILL escalator */
   readonly stopProcesses?: typeof stopProcesses;
+  /** Host-owned sink for a process-tree cleanup failure (SEC-007) — e.g. EPERM stopping descendants. @default logs a redacted diagnostic via `console.error` */
+  readonly onCleanupFailure?: (context: AgentCleanupFailureContext) => void;
 }
 
 /**
@@ -582,9 +941,13 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const applyAgentLaunchEnvFn = options.applyAgentLaunchEnv ?? applyAgentLaunchEnv;
   const createCommandInvocationFn = options.createCommandInvocation ?? createCommandInvocation;
   const spawnFn = options.spawn ?? nodeSpawn;
+  const attachAcpSessionFn = options.attachAcpSession ?? attachAcpSession;
+  const attachPiRpcSessionFn = options.attachPiRpcSession ?? attachPiRpcSession;
+  const preparePromptFileForAgentFn = options.preparePromptFileForAgent ?? preparePromptFileForAgent;
   const listProcessSnapshotsFn = options.listProcessSnapshots ?? listProcessSnapshots;
   const collectProcessTreePidsFn = options.collectProcessTreePids ?? collectProcessTreePids;
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
+  const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -625,15 +988,41 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       return failBeforeSpawn(
         input.runId,
         'AGENT_RUNTIME_UNSUPPORTED',
-        `AgentExecutor: agent "${def.id}" has streamFormat "${streamFormat}", which is not implemented in v1 — only ${SUPPORTED_STREAM_FORMATS.join(', ')} are supported (see packages/daemon/source-map.md for the deferred ACP/pi-rpc/plain formats)`,
+        `AgentExecutor: agent "${def.id}" has streamFormat "${streamFormat}", which is not implemented in v1 — only ${SUPPORTED_STREAM_FORMATS.join(', ')} are supported (see packages/daemon/source-map.md for the deferred antigravity guard)`,
       );
     }
-    if (def.promptViaStdin !== true) {
+    // Antigravity is the one plain def NOT driven — see module doc. This
+    // guard is deliberately independent of (and ahead of) the generic
+    // prompt-delivery/dispatch logic below: even though antigravity's def
+    // declares promptViaStdin: true and would otherwise clear every guard
+    // that follows, it needs auth-URL-leak buffering and a cross-run
+    // model-selection lock this driver has no seam for yet.
+    if (streamFormat === 'plain' && def.id === 'antigravity') {
       return failBeforeSpawn(
         input.runId,
         'AGENT_RUNTIME_UNSUPPORTED',
-        `AgentExecutor: agent "${def.id}" does not deliver its prompt via stdin — v1 has no argv/file-based prompt delivery path`,
+        `AgentExecutor: agent "${def.id}" needs auth-URL-leak buffering and a cross-run model-selection lock that generic streamFormat 'plain' driving does not provide — deliberately deferred, see ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md`,
       );
+    }
+    if (
+      streamFormat !== 'acp-json-rpc' &&
+      def.promptViaStdin !== true &&
+      def.promptViaFile !== true &&
+      typeof def.maxPromptArgBytes !== 'number'
+    ) {
+      return failBeforeSpawn(
+        input.runId,
+        'AGENT_RUNTIME_UNSUPPORTED',
+        `AgentExecutor: agent "${def.id}" does not deliver its prompt via stdin, a staged prompt file, or a byte-budgeted argv — v1 has no other prompt delivery path`,
+      );
+    }
+
+    // Argv-bound defs (aider, deepseek) — reject an oversized prompt before
+    // ever resolving a binary or touching the filesystem. A no-op for every
+    // def without `maxPromptArgBytes` (checkPromptArgvBudget's own guard).
+    const argvBudgetError = checkPromptArgvBudget(def, input.prompt);
+    if (argvBudgetError) {
+      return failBeforeSpawn(input.runId, 'AGENT_PROMPT_TOO_LARGE', argvBudgetError.message);
     }
 
     const configuredEnv = toStringEnvRecord(input.env ?? process.env);
@@ -647,7 +1036,45 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     }
 
     const spawnEnv = applyAgentLaunchEnvFn({ ...(input.env ?? process.env) }, launch);
-    const args = def.buildArgs(input.prompt, []);
+
+    // Stage a promptViaFile def's (grok-build) prompt to a temp file before
+    // buildArgs runs — its buildArgs throws without
+    // runtimeContext.promptFilePath. A no-op (returns null) for every def
+    // without promptViaFile: true (preparePromptFileForAgent's own guard).
+    let preparedPromptFile: PreparedPromptFile | null;
+    try {
+      preparedPromptFile = await preparePromptFileForAgentFn(def, input.prompt, input.runId);
+    } catch (err) {
+      return failBeforeSpawn(
+        input.runId,
+        'AGENT_SPAWN_FAILED',
+        `AgentExecutor: could not stage a prompt file for agent "${def.id}": ${errorMessage(err)}`,
+      );
+    }
+    // Cleaned up after the child exits (wireChildLifecycle/wireAcpLifecycle/wirePiRpcLifecycle's
+    // close handlers) and on every pre-spawn/spawn-failure path below — a leaked temp file
+    // containing the full prompt is a confidentiality gap, not just a disk leak.
+    const cleanupPromptFile: () => Promise<void> = preparedPromptFile
+      ? preparedPromptFile.cleanup
+      : async () => {};
+    const runtimeContext: RuntimeContext | undefined = preparedPromptFile
+      ? { promptFilePath: preparedPromptFile.path }
+      : undefined;
+
+    const args = def.buildArgs(input.prompt, [], undefined, undefined, runtimeContext);
+
+    // Post-buildArgs guard for argv-bound defs whose resolved binary is a
+    // Windows .cmd/.bat shim or a direct .exe: a prompt under the raw byte
+    // budget can still expand past CreateProcess's command-line cap once
+    // quote-escaped. Both are no-ops off-Windows / for non-argv-bound defs.
+    const windowsBudgetError =
+      checkWindowsCmdShimCommandLineBudget(def, launch.launchPath, args) ??
+      checkWindowsDirectExeCommandLineBudget(def, launch.launchPath, args);
+    if (windowsBudgetError) {
+      await cleanupPromptFile();
+      return failBeforeSpawn(input.runId, 'AGENT_PROMPT_TOO_LARGE', windowsBudgetError.message);
+    }
+
     const invocation = createCommandInvocationFn({ command: launch.launchPath, args, env: spawnEnv });
 
     let child: ChildProcess;
@@ -659,6 +1086,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
     } catch (err) {
+      await cleanupPromptFile();
       return failBeforeSpawn(
         input.runId,
         'AGENT_SPAWN_FAILED',
@@ -666,20 +1094,26 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       );
     }
 
-    const stdinHandle = wireChildLifecycle({
-      runId: input.runId,
-      def,
-      streamFormat,
-      child,
-      lifecycle,
-      listProcessSnapshots: listProcessSnapshotsFn,
-      collectProcessTreePids: collectProcessTreePidsFn,
-      stopProcesses: stopProcessesFn,
-    });
+    const stdinHandle =
+      streamFormat === 'acp-json-rpc' || streamFormat === 'pi-rpc'
+        ? null
+        : wireChildLifecycle({
+            runId: input.runId,
+            def,
+            streamFormat,
+            child,
+            lifecycle,
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+            onCleanupFailure: onCleanupFailureFn,
+            cleanupPromptFile,
+          });
 
     try {
       await waitForSpawnOrError(child);
     } catch (err) {
+      await cleanupPromptFile();
       await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
       throw new AgentExecutorError(
         'AGENT_SPAWN_FAILED',
@@ -687,7 +1121,88 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       );
     }
 
-    writePromptToStdin(def, child, input.prompt, stdinHandle);
+    if (streamFormat === 'acp-json-rpc') {
+      try {
+        wireAcpLifecycle({
+          runId: input.runId,
+          child,
+          lifecycle,
+          prompt: input.prompt,
+          cwd: input.cwd,
+          envFormat: def.acpMcpEnvFormat,
+          onPermissionRequest: options.acpPermissionHandler,
+          attachAcpSession: attachAcpSessionFn,
+          listProcessSnapshots: listProcessSnapshotsFn,
+          collectProcessTreePids: collectProcessTreePidsFn,
+          stopProcesses: stopProcessesFn,
+          onCleanupFailure: onCleanupFailureFn,
+          cleanupPromptFile,
+        });
+      } catch (err) {
+        // Unlike the cancellation-listener call sites, we are already in an async function
+        // about to call finish() and throw — nothing else races this, so cleanup is awaited
+        // here rather than fired-and-forgotten (SEC-007: "await where lifecycle ordering allows it").
+        await terminateChildTreeBestEffort(
+          {
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+          },
+          child,
+          input.runId,
+          'acp-attach-failure',
+          onCleanupFailureFn,
+        );
+        await cleanupPromptFile();
+        await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
+        throw new AgentExecutorError(
+          'AGENT_SPAWN_FAILED',
+          `AgentExecutor: could not attach ACP session for agent \"${def.id}\": ${errorMessage(err)}`,
+        );
+      }
+      return;
+    }
+
+    if (streamFormat === 'pi-rpc') {
+      try {
+        wirePiRpcLifecycle({
+          runId: input.runId,
+          child,
+          lifecycle,
+          prompt: input.prompt,
+          cwd: input.cwd,
+          attachPiRpcSession: attachPiRpcSessionFn,
+          listProcessSnapshots: listProcessSnapshotsFn,
+          collectProcessTreePids: collectProcessTreePidsFn,
+          stopProcesses: stopProcessesFn,
+          onCleanupFailure: onCleanupFailureFn,
+          cleanupPromptFile,
+        });
+      } catch (err) {
+        // Same discipline as the ACP attach-failure path directly above: await cleanup here
+        // rather than fire-and-forget (SEC-007).
+        await terminateChildTreeBestEffort(
+          {
+            listProcessSnapshots: listProcessSnapshotsFn,
+            collectProcessTreePids: collectProcessTreePidsFn,
+            stopProcesses: stopProcessesFn,
+          },
+          child,
+          input.runId,
+          'pi-rpc-attach-failure',
+          onCleanupFailureFn,
+        );
+        await cleanupPromptFile();
+        await lifecycle.finish({ runId: input.runId, status: 'failed', code: null, signal: null, resumable: false });
+        throw new AgentExecutorError(
+          'AGENT_SPAWN_FAILED',
+          `AgentExecutor: could not attach pi-rpc session for agent \"${def.id}\": ${errorMessage(err)}`,
+        );
+      }
+      return;
+    }
+
+    writePromptToStdin(def, child, input.prompt, stdinHandle!);
   }
 
   return { run };

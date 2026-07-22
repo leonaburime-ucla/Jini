@@ -218,3 +218,195 @@ subdirectory (`automation/`, `brand/`, `export/`, `figma/`, `library/`,
 `media/`, `memory/`, `plugin/`, `project/`, `research/`, `share/`,
 `templates/`, `ui/`) is product-command implementation over OD's REST API,
 matching the OD verdicts already recorded in the classification table above.
+
+## 2026-07-21 addition — the first concrete `run` commands (`feat/http-routes-and-cli-commands`)
+
+This package's own "What was ported" section above already ends with: "no pack has registered
+against `CommandRegistry` yet because no HTTP-client-mode pack exists in this repo to call." That
+gap is what this addition closes — not a port from OD's `cli.ts` (that file's `run` subcommand,
+per the classification table's own `run` row, is OD-bodied: every request carries
+`projectId`/`skillId`/`pluginId`/`conversationId`/`designSystemId`, none of which exist in the
+kernel). Instead, `run-command.ts` is a fresh, thin CLI transport over `@jini/http`'s actual run
+routes (`packages/http/src/runs.ts`, all already real on this branch): `POST /api/runs`,
+`GET /api/runs` (added alongside this task — see `packages/http/source-map.md`'s matching entry),
+`POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` (SSE).
+
+**Commands added**: `run start --context-ref <ref> [--agent-id <id>] [--idempotency-key <key>]`,
+`run list [--context-ref <ref>]`, `run cancel <runId> [--reason <text>]`, and
+`run watch <runId> [--after-cursor <cursor>]`. Each parses its own flags via this package's
+existing `flags.ts`, resolves the daemon base URL via a caller-supplied `resolveBaseUrl` callback
+(deliberately not wired to a concrete `resolveDaemonUrl()` call here — that decision belongs to
+whatever pack registers these commands for real, matching this file's stance of staying
+transport-thin), calls `postJsonToDaemon`/`getJsonFromDaemon` exactly as they already exist, and
+prints the daemon's JSON response. `registerRunCommands(registry, deps)` registers a single `run`
+top-level command against `CommandRegistry` and hand-dispatches its first remaining token to one
+of the four handlers (the same "look at the next token, dispatch, fall through to usage" shape
+`command-registry.ts` itself documents as ported from OD's root router) — a pack that also
+supports the CommandRegistry's `override` option can replace it.
+
+**`getJsonFromDaemon` — a new sibling to `postJsonToDaemon`, not a rewrite.** `http.ts`'s
+`postJsonToDaemon` was POST-only; `run list` and `run watch`'s initial SSE-stream request are GET
+requests, and the task's own ground rules require reusing this package's already-hardened
+transport rather than reintroducing unbounded I/O or raw error disclosure for a new GET path. The
+POST-specific body/timeout/size-cap/structured-error logic was extracted into a private
+`requestJsonFromDaemon(base, route, {method, body?}, options)`; `postJsonToDaemon` and
+`getJsonFromDaemon` are now both thin wrappers over it that only fix `method`/`body` at their own
+call site. This is a behavior-preserving extraction, verified by re-running the pre-existing
+`http.test.ts` unchanged against the refactored file before adding a single new test — all 27
+original assertions still pass byte-for-byte. `getJsonFromDaemon` carries the identical
+timeout/size-cap/structured-error/redaction contract; it just never sends a body or a
+`content-type` header.
+
+**`run watch`'s SSE consumption — the mechanics this package's own deferred-item 4 above named,
+now built.** No existing SSE client existed anywhere in `@jini/cli` to reuse (the CLI package had
+never consumed a streaming response before this). `readSseFrames` parses the wire format
+`@jini/http`'s `runs.ts` `formatSseEvent` actually emits (`id: <cursor>\nevent: <kind>\ndata:
+<json>\n\n`) into one frame per blank-line-terminated block, translating each to one NDJSON line
+on stdout and stopping at the canonical `RunProtocolEvent` terminal `'end'` kind — exactly the
+pattern this file's own module docblock and this package's `source-map.md` (in the section above)
+described as the target shape. A frame with no `data:` line (e.g. a bare heartbeat/comment) is
+silently dropped rather than emitted as an empty line. Per this task's own ground rules (bounded
+I/O, no unbounded reads), the frame-accumulation buffer is capped at 10MB (mirroring `http.ts`'s
+`readJsonWithLimit` byte cap) — a daemon that never terminates a frame cannot grow memory without
+bound; exceeding the cap (or any other stream-read failure) exits via the same structured-error
+contract as every other failure in this file, not as an unhandled rejection. Each frame's `data` is
+run through `redact.ts`'s `stripControlSequences` (not the fuller `sanitizeUntrustedText`, which
+also truncates and secret-redacts) before being written: it is untrusted network content from a
+prompt-influenced agent run and must not be able to inject terminal escapes, but it is the run's
+actual event payload the user asked to watch, not incidental diagnostic text, so it is not
+truncated or redacted the way an error message is.
+
+**Not built**: a concrete `resolveDaemonUrl()`-backed default for `resolveBaseUrl`, and a `run get
+<runId>` command (the underlying `GET /api/runs/:runId` route already exists in
+`packages/http/src/runs.ts` but was not asked for in this pass's exact four-command scope — a
+trivial follow-up given the route is real). Also not built: any wiring of this file's commands
+into an actual bootable CLI entrypoint (`packages/cli/src/index.ts` remains a barrel only, per
+extraction-plan's node-host/CLI-bootstrap gap) — `registerRunCommands` is ready for a future pack
+to call, matching this package's established "no pack has registered yet" caveat.
+
+Tests: `src/__tests__/run-command.test.ts` (46 tests) plus `src/__tests__/http.test.ts`'s new
+`getJsonFromDaemon` describe block — 100% coverage on all 4 metrics for both `run-command.ts` and
+the touched portions of `http.ts`'s new code paths (the pre-existing `readJsonWithLimit`
+content-length/`.text()`-fallback gaps in `http.ts` predate this task and were not introduced or
+widened by it — confirmed by diffing coverage against the unmodified file before this change).
+
+## Dependencies (updated)
+
+No new dependency. `run-command.ts` uses only this package's own existing exports
+(`flags.ts`/`errors.ts`/`http.ts`/`redact.ts`/`usage.ts`/`command-registry.ts`) plus Node/Web
+platform primitives (`fetch`, `ReadableStream`, `TextDecoder`) already implicitly available in
+this package's runtime target.
+
+## 2026-07-21 addition — `daemon status` / `daemon stop` commands (backlog pass)
+
+Closes the two `UNCLEAR` rows this file's classification table names for `daemon status`/`daemon
+stop`: the blocking condition ("`@jini/http` is a stub... no `/status`/`/shutdown` route to call")
+no longer holds — `daemonStatusRoute`/`daemonShutdownRoute` (`packages/http/src/daemon-status.ts`)
+have existed since the 2026-07-18 backend-routes port, and this file's own barrel-branch
+reconciliation section already re-verified that months ago without building against it "to avoid
+guessing at a contract nobody has committed to yet." That caveat no longer applies either: this
+same package's `run-command.ts` (the section directly above) is now a real, tested, established
+"first concrete command" precedent — `daemon-command.ts` follows the exact same shape rather than
+pioneering a new one.
+
+**Commands added**: `daemon status` (`GET /api/daemon/status`) and `daemon stop`
+(`POST /api/daemon/shutdown`, an empty JSON body). Same `resolveBaseUrl`-callback,
+`postJsonToDaemon`/`getJsonFromDaemon`-transport, print-the-JSON-response shape as
+`run-command.ts`; `registerDaemonCommands(registry, deps)` registers a single `daemon` top-level
+command dispatching `status`/`stop` on the next token.
+
+**The shutdown route's `requireSameOrigin: true` gate needs no special handling from a CLI
+caller.** A bare `fetch()` sends no `Origin` header; `guardSameOrigin`/`isLocalSameOrigin` falls
+through to its Host-header check in that case, which passes as long as the resolved daemon URL's
+host:port is one the daemon itself considers local (`packages/http/src/origin-validation.ts`'s
+`isAllowedBrowserHost`) — the same call shape `run-command.ts` already uses, no extra headers
+added here.
+
+**Not built**: `version` (the third original `UNCLEAR` row, `GET /api/version`) — `@jini/http` has
+no version route yet (`daemonStatusRoute`'s own `version` field is caller-injected, not a
+standalone endpoint), so there is still nothing to call. Also not built: `daemon db`/`db verify`/
+`db vacuum` (depend on a `storage/db-inspect.ts` port `packages/http/source-map.md` already notes
+as not built), and real `@jini/sidecar`-backed daemon-URL discovery (`resolveDaemonUrl`'s injected
+`discover` callback remains unwired — a separate backlog item, tracked independently).
+
+Tests: `src/__tests__/daemon-command.test.ts` (19 tests) — 100% coverage on all 4 metrics,
+including both commands' `--help`/default-writer/default-fetch paths, the shutdown POST body
+shape, structured-error exits (both daemon-rejected and unknown-subcommand), and
+`exitCodes`-table pass-through on both the success and error paths. No new dependency.
+
+## 2026-07-21 investigation — real `@jini/sidecar`-backed daemon-URL discovery, still correctly not built
+
+Checked whether `resolveDaemonUrl`'s injected `discover` callback (deferred-item 1 in this file's
+own "Deferred" section, and its own barrel-branch-reconciliation section) is buildable yet. It is
+not, and this is a confirmed finding, not a guess: `@jini/sidecar`'s `createJsonIpcServer` (per
+`packages/sidecar/source-map.md`) is a fully generic, contract-driven NDJSON-over-socket/pipe
+server — but `grep -rln "requestJsonIpc\|createJsonIpcServer\|bootstrapSidecarRuntime"
+packages/node-host/src packages/daemon/src` finds zero call sites. `@jini/node-host`'s
+`createLocalNodeDaemon` (`packages/node-host/src/create-local-node-daemon.ts`) resolves and
+returns a real `LocalNodeDaemon.baseUrl` (see `resolveBoundPort`/`resolveReportHost`), but only
+in-process, to whatever code called `createLocalNodeDaemon` directly — nothing persists that URL
+anywhere a *separate* CLI process could find it (no IPC status server, no port file, no pidfile).
+
+Building a CLI-side `discover()` implementation now would mean inventing an IPC message
+contract/shape unilaterally inside a CLI backlog task and hoping a future daemon-side server
+matches it — precisely the "declared port whose implementation doesn't hold up" failure mode this
+file's own `daemon status`/`daemon stop` UNCLEAR-verdict history already declined twice (first
+when `@jini/http` had no route to call, described above). Not built for the same reason. A real
+fix needs daemon-side work first: `@jini/node-host`'s `createLocalNodeDaemon` (or a wrapping CLI
+bootstrap) would need to boot a `@jini/sidecar` IPC server exposing at minimum a "status" message
+`{host, port}` (or write a discoverable port/pidfile) before this package's `discover` callback has
+anything real to probe. Tracked as a separate, node-host-scoped backlog item, not a `@jini/cli` one.
+
+## 2026-07-21 addition — real local daemon-URL discovery (`local-daemon-discovery.ts`)
+
+Closes deferred-item 1 above and the investigation immediately preceding this section: the
+daemon-side prerequisite ("write a discoverable port/pidfile") is now built —
+`@jini/node-host`'s `createLocalNodeDaemon` writes a `@jini/sidecar`-backed on-disk registry
+record once it starts listening (see that package's own 2026-07-21 source-map.md entry, and
+`@jini/sidecar`'s matching entry for the low-level `daemon-registry.ts` primitives). This addition
+is the missing CLI-side reader for that record — a port/pidfile, not the IPC-server shape the
+investigation above considered and declined ("no `@jini/sidecar` IPC server" was never actually
+required — a flat JSON pointer file, read once, is sufficient for "find a URL," and doesn't need a
+live daemon round-trip to work when the daemon might not even be running).
+
+**`createLocalDaemonDiscovery({ dataDir } | { registryPath })`** builds a
+`resolveDaemonUrl({ discover })`-compatible probe: it reads the registry record via
+`@jini/sidecar`'s `readLiveDaemonRegistryRecord` (which already verifies the recording process's
+pid is still alive — a stale record from a crashed daemon is never trusted, matching the task's
+own "verify liveness, don't just trust the file" requirement) and returns its `url`, or `null`
+when nothing live is found. Exactly like `resolveDaemonUrl` itself has no baked-in env var name or
+default URL, this function has no baked-in `dataDir` — the caller (whatever wires a
+`@jini/node-host` daemon and a `@jini/cli`-transport pack together for one product) supplies the
+same `dataDir` (or an explicit `registryPath`, matching a non-default `discoveryFile` override on
+the daemon side) to both sides. Throws synchronously at build time (not when the returned probe is
+later invoked) if neither is given, matching this package's existing "fail loud on a caller
+mis-config, don't silently no-op" stance (e.g. `resolveDaemonRegistryPath`'s own empty-`dataDir`
+guard in `@jini/sidecar`).
+
+The existing flag → env var → discover → default precedence in `resolveDaemonUrl` is untouched —
+`createLocalDaemonDiscovery`'s output is just a value a caller may now pass as `discover`, proven
+via a `resolveDaemonUrl` integration test showing an explicit flag still wins over local discovery,
+and `defaultUrl` still applies when no live local daemon is found.
+
+**Multiple daemons on one machine.** Not a new concern this addition had to design for: each
+`createLocalNodeDaemon` call already requires its own `dataDir` (for its own sqlite file), and
+`@jini/sidecar`'s registry path is derived from `dataDir` — so two daemons on one machine already
+get two non-colliding registry records with zero extra configuration on either side.
+
+**Tests**: `src/__tests__/local-daemon-discovery.test.ts` (7 tests) — discovery by `dataDir`,
+discovery by explicit `registryPath` (proven to take precedence over a simultaneously-present
+`dataDir`-derived record at a different port), `null` on a missing record, **`null` for a stale
+record from a real spawned-then-awaited-exit child process** (not a mock — the actual "crashed
+daemon" scenario), the build-time throw on missing config, and two `resolveDaemonUrl` integration
+cases (flag beats discovery; discovery falls through to `defaultUrl`). 100/100/100/100 on
+`local-daemon-discovery.ts`; package-wide `pnpm --dir packages/cli exec vitest run --coverage` is
+99.68/98.47/97.36/99.68 (253 tests, 13 files) — the one pre-existing gap (`prompt.ts`,
+97.7/88.4/85.71/97.7, lines 123-125) predates this change and was not introduced or widened by it.
+
+## Dependencies (updated)
+
+Adds `@jini/sidecar` (workspace) — `readLiveDaemonRegistryRecord`/`resolveDaemonRegistryPath`.
+This is the first `@jini/cli` dependency on `@jini/sidecar`; both are in
+`extraction-plan.md` §3's locked fourteen, so no `UNLOCKED.md` admission is needed
+(`scripts/check-engine-boundaries.ts`'s R7 rule only restricts a locked package importing an
+*unlocked* one).

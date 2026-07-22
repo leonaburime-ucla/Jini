@@ -44,101 +44,149 @@ export function listMessages(db: SqliteDb, conversationId: string) {
 }
 
 /**
+ * Thrown by `upsertMessage` when the caller presents a message `id` together with a
+ * `conversationId` that does not match the conversation the row already belongs to (`id` is a
+ * global primary key, not scoped per-conversation, so this is the only signal available). Rather
+ * than silently updating the wrong conversation's message — or silently doing nothing — while
+ * still bumping the caller-supplied `conversationId`'s `updated_at`, this is a hard failure: it is
+ * always a caller/transport bug (a confused id, or a multi-tenant mixup) and never a legitimate
+ * state to paper over.
+ */
+export class MessageConversationMismatchError extends Error {
+  constructor(
+    public readonly messageId: string,
+    public readonly actualConversationId: string,
+    public readonly requestedConversationId: string,
+  ) {
+    super(
+      `upsertMessage: message id ${JSON.stringify(messageId)} belongs to a different conversation ` +
+        `(${JSON.stringify(actualConversationId)}), not ${JSON.stringify(requestedConversationId)}`,
+    );
+    this.name = 'MessageConversationMismatchError';
+  }
+}
+
+/**
  * Inserts or updates a message row and bumps the parent conversation's `updated_at` for recency sorting.
  * On insert, appends to the end of the conversation's position sequence.
  * On update, preserves `telemetry_finalized_at` once set (one-way latch).
+ *
+ * The existence check, position calculation, insert-or-update, and conversation `updated_at` bump
+ * all run inside one `better-sqlite3` transaction (opened with `BEGIN IMMEDIATE` via `.immediate()`,
+ * not the default deferred `BEGIN`) so the whole read-then-write sequence is atomic: a concurrent
+ * connection's own `upsertMessage` call for the same conversation cannot read the pre-write
+ * `MAX(position)` while this one is still in flight and thereby compute the same next position —
+ * `BEGIN IMMEDIATE` acquires the write lock before this transaction's first read, so a concurrent
+ * writer blocks (or fails with `SQLITE_BUSY`, per its own busy-timeout policy) until this one
+ * commits, rather than interleaving.
+ *
+ * `id` is the messages table's global primary key (not scoped per-conversation), so a row can only
+ * ever belong to one conversation. If the caller-supplied `m.id` already exists under a different
+ * `conversationId`, this throws {@link MessageConversationMismatchError} instead of silently
+ * updating the wrong conversation's row (or the wrong conversation's `updated_at`).
+ *
  * @param db - Open SQLite connection.
  * @param conversationId - Owning conversation id.
  * @param m - Message fields; JSON sub-fields are stringified automatically.
  * @returns The normalized, re-fetched message row, or null if the row vanished between write and read.
+ * @throws {MessageConversationMismatchError} if `m.id` already exists under a different conversation.
  */
 export function upsertMessage(db: SqliteDb, conversationId: string, m: DbRow) {
-  const existing = db
-    .prepare(`SELECT position FROM messages WHERE id = ?`)
-    .get(m.id) as DbRow | undefined;
-  const now = Date.now();
-  if (existing) {
-    db.prepare(
-      `UPDATE messages
-          SET role = ?, content = ?, agent_id = ?, agent_name = ?,
-              run_id = ?, run_status = ?, last_run_event_id = ?,
-              events_json = ?, attachments_json = ?,
-              session_mode = ?, run_context_json = ?,
-              telemetry_finalized_at = CASE
-                WHEN ? THEN COALESCE(telemetry_finalized_at, ?)
-                ELSE telemetry_finalized_at
-              END,
-              started_at = ?, ended_at = ?
-        WHERE id = ?`,
-    ).run(
-      m.role,
-      m.content,
-      m.agentId ?? null,
-      m.agentName ?? null,
-      m.runId ?? null,
-      m.runStatus ?? null,
-      m.lastRunEventId ?? null,
-      m.events ? JSON.stringify(m.events) : null,
-      m.attachments ? JSON.stringify(m.attachments) : null,
-      normalizeMessageSessionModeForStorage(m.sessionMode),
-      m.runContext ? JSON.stringify(m.runContext) : null,
-      m.telemetryFinalized === true ? 1 : 0,
+  const runUpsert = db.transaction(() => {
+    const existing = db
+      .prepare(`SELECT conversation_id AS conversationId, position FROM messages WHERE id = ?`)
+      .get(m.id) as (DbRow & { conversationId: string }) | undefined;
+
+    if (existing && existing.conversationId !== conversationId) {
+      throw new MessageConversationMismatchError(m.id, existing.conversationId, conversationId);
+    }
+
+    const now = Date.now();
+    if (existing) {
+      db.prepare(
+        `UPDATE messages
+            SET role = ?, content = ?, agent_id = ?, agent_name = ?,
+                run_id = ?, run_status = ?, last_run_event_id = ?,
+                events_json = ?, attachments_json = ?,
+                session_mode = ?, run_context_json = ?,
+                telemetry_finalized_at = CASE
+                  WHEN ? THEN COALESCE(telemetry_finalized_at, ?)
+                  ELSE telemetry_finalized_at
+                END,
+                started_at = ?, ended_at = ?
+          WHERE id = ? AND conversation_id = ?`,
+      ).run(
+        m.role,
+        m.content,
+        m.agentId ?? null,
+        m.agentName ?? null,
+        m.runId ?? null,
+        m.runStatus ?? null,
+        m.lastRunEventId ?? null,
+        m.events ? JSON.stringify(m.events) : null,
+        m.attachments ? JSON.stringify(m.attachments) : null,
+        normalizeMessageSessionModeForStorage(m.sessionMode),
+        m.runContext ? JSON.stringify(m.runContext) : null,
+        m.telemetryFinalized === true ? 1 : 0,
+        now,
+        m.startedAt ?? null,
+        m.endedAt ?? null,
+        m.id,
+        conversationId,
+      );
+    } else {
+      const max = db
+        .prepare(
+          `SELECT COALESCE(MAX(position), -1) AS m FROM messages WHERE conversation_id = ?`,
+        )
+        .get(conversationId) as DbRow | undefined;
+      const position = (max?.m ?? -1) + 1;
+      const createdAt = typeof m.createdAt === 'number' && Number.isFinite(m.createdAt)
+        ? m.createdAt
+        : now;
+      // 18 values: id, conversation_id, role, content, agent_id, agent_name,
+      // run_id, run_status, last_run_event_id, events_json, attachments_json,
+      // session_mode, run_context_json, telemetry_finalized_at, started_at,
+      // ended_at, position, created_at.
+      db.prepare(
+        `INSERT INTO messages
+           (id, conversation_id, role, content, agent_id, agent_name,
+            run_id, run_status, last_run_event_id, events_json,
+            attachments_json, session_mode, run_context_json,
+            telemetry_finalized_at, started_at, ended_at, position, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        m.id,
+        conversationId,
+        m.role,
+        m.content,
+        m.agentId ?? null,
+        m.agentName ?? null,
+        m.runId ?? null,
+        m.runStatus ?? null,
+        m.lastRunEventId ?? null,
+        m.events ? JSON.stringify(m.events) : null,
+        m.attachments ? JSON.stringify(m.attachments) : null,
+        normalizeMessageSessionModeForStorage(m.sessionMode),
+        m.runContext ? JSON.stringify(m.runContext) : null,
+        m.telemetryFinalized === true ? now : null,
+        m.startedAt ?? null,
+        m.endedAt ?? null,
+        position,
+        createdAt,
+      );
+    }
+    // Bump conversation activity so recency-sorted listings (e.g. `listConversations`) reflect this write.
+    db.prepare(`UPDATE conversations SET updated_at = ? WHERE id = ?`).run(
       now,
-      m.startedAt ?? null,
-      m.endedAt ?? null,
-      m.id,
-    );
-  } else {
-    const max = db
-      .prepare(
-        `SELECT COALESCE(MAX(position), -1) AS m FROM messages WHERE conversation_id = ?`,
-      )
-      .get(conversationId) as DbRow | undefined;
-    const position = (max?.m ?? -1) + 1;
-    const createdAt = typeof m.createdAt === 'number' && Number.isFinite(m.createdAt)
-      ? m.createdAt
-      : now;
-    // 18 values: id, conversation_id, role, content, agent_id, agent_name,
-    // run_id, run_status, last_run_event_id, events_json, attachments_json,
-    // session_mode, run_context_json, telemetry_finalized_at, started_at,
-    // ended_at, position, created_at.
-    db.prepare(
-      `INSERT INTO messages
-         (id, conversation_id, role, content, agent_id, agent_name,
-          run_id, run_status, last_run_event_id, events_json,
-          attachments_json, session_mode, run_context_json,
-          telemetry_finalized_at, started_at, ended_at, position, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      m.id,
       conversationId,
-      m.role,
-      m.content,
-      m.agentId ?? null,
-      m.agentName ?? null,
-      m.runId ?? null,
-      m.runStatus ?? null,
-      m.lastRunEventId ?? null,
-      m.events ? JSON.stringify(m.events) : null,
-      m.attachments ? JSON.stringify(m.attachments) : null,
-      normalizeMessageSessionModeForStorage(m.sessionMode),
-      m.runContext ? JSON.stringify(m.runContext) : null,
-      m.telemetryFinalized === true ? now : null,
-      m.startedAt ?? null,
-      m.endedAt ?? null,
-      position,
-      createdAt,
     );
-  }
-  // Bump conversation activity so recency-sorted listings (e.g. `listConversations`) reflect this write.
-  db.prepare(`UPDATE conversations SET updated_at = ? WHERE id = ?`).run(
-    now,
-    conversationId,
-  );
-  const row = db.prepare(`SELECT ${MESSAGE_COLS} FROM messages WHERE id = ?`).get(m.id) as
-    | DbRow
-    | undefined;
-  return row ? normalizeMessage(row) : null;
+    const row = db
+      .prepare(`SELECT ${MESSAGE_COLS} FROM messages WHERE id = ? AND conversation_id = ?`)
+      .get(m.id, conversationId) as DbRow | undefined;
+    return row ? normalizeMessage(row) : null;
+  });
+  return runUpsert.immediate();
 }
 
 /**

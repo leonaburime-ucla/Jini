@@ -3,8 +3,9 @@
  *
  * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
  * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
- * legacy-shaped compat error helpers, a route-pack registrar, and generic daemon status/shutdown
- * routes. See `source-map.md` for full provenance and scope-decision notes.
+ * legacy-shaped compat error helpers, a route-pack registrar, generic daemon status/shutdown
+ * routes, and a generic active-resource-focus channel. See `source-map.md` for full provenance
+ * and scope-decision notes.
  */
 export type {
   Handler,
@@ -43,7 +44,54 @@ export {
 export type { AdapterContext } from './adapter.js';
 export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
+export type { CreateSseChannelOptions, SseChannel, SseEvent } from './sse.js';
+export { createSseChannel, DEFAULT_MAX_QUEUED_SSE_EVENTS, requestedAfterCursor } from './sse.js';
+
+export type {
+  ResolveWorkspaceRootOptions,
+  WorkspaceRootRequest,
+  WorkspaceRootResolver,
+} from './workspace-root.js';
+export { denyAllWorkspaceRoots, resolveWorkspaceRoot, WorkspaceRootDeniedError } from './workspace-root.js';
+
 export { mountPackHttp } from './pack-http.js';
+
+export type { RunCancellationService } from './cancel-owned-runs.js';
+export { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+
+export type { ActiveContextDeps, ActiveContextResource } from './active-context.js';
+export {
+  ACTIVE_CONTEXT_TTL_MS,
+  getActiveRoute,
+  registerActiveContextRoutes,
+  setActiveRoute,
+} from './active-context.js';
+
+export type {
+  CatalogueEntry,
+  HostEditor,
+  HostEditorsResponse,
+  HostToolLaunchPlan,
+  HostToolProbeEnv,
+  LaunchHostToolResult,
+  Platform,
+  RealPlatform,
+} from './host-tools.js';
+export {
+  applicableForPlatform,
+  CATALOGUE,
+  currentPlatform,
+  defaultProbeEnv,
+  hostEditorsRoute,
+  launchHostTool,
+  listAvailableEditors,
+  pathDirs,
+  probeCommandOnPath,
+  probeMacBundle,
+  registerHostToolsRoutes,
+  resolveEntry,
+  resolveHostToolLaunchPlan,
+} from './host-tools.js';
 
 export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
 export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
@@ -70,6 +118,97 @@ export type {
   DaemonStatusResponse,
 } from './daemon-status.js';
 export { daemonShutdownRoute, daemonStatusRoute, registerDaemonStatusRoutes } from './daemon-status.js';
+
+export type {
+  RunCancelResponse,
+  RunCreateRequest,
+  RunHttpDeps,
+  RunInternalErrorContext,
+  RunListResponse,
+  RunStartContext,
+  RunStartHandler,
+  RunStartResponse,
+  RunStatusResponse,
+} from './runs.js';
+export {
+  registerRunEventStream,
+  registerRunRoutes,
+  runCancelRoute,
+  runListRoute,
+  runStartRoute,
+  runStatusRoute,
+} from './runs.js';
+
+export type { AgentListResponse, AgentsHttpDeps, AgentSummary } from './agents.js';
+export { agentListRoute, registerAgentRoutes } from './agents.js';
+
+export type {
+  MemoryChangeEmitter,
+  MemoryConfigResponse,
+  MemoryDeleteEntryResponse,
+  MemoryEntryInput,
+  MemoryEntryResponse,
+  MemoryExtractionLog,
+  MemoryExtractionsResponse,
+  MemoryHttpDeps,
+  MemoryIndexResponse,
+  MemoryNoteEntry,
+  MemoryNoteEntrySummary,
+  MemoryNoteStore,
+  MemoryNoteStoreOptions,
+  MemoryOverviewResponse,
+  MemoryRemovedResponse,
+  MemoryTreeNode,
+  MemoryTreeNodePatch,
+  MemoryTreeResponse,
+  MemoryUpdateTreeNodeResponse,
+  MemoryVerificationsResponse,
+  MemoryVerifyLog,
+} from './memory.js';
+export {
+  memoryClearExtractionsRoute,
+  memoryClearVerificationsRoute,
+  memoryCreateEntryRoute,
+  memoryDeleteEntryRoute,
+  memoryListExtractionsRoute,
+  memoryListVerificationsRoute,
+  memoryOverviewRoute,
+  memoryReadEntryRoute,
+  memoryRemoveExtractionRoute,
+  memoryRemoveVerificationRoute,
+  memoryTreeRoute,
+  memoryUpdateEntryRoute,
+  memoryUpdateTreeNodeRoute,
+  memoryWriteConfigRoute,
+  memoryWriteIndexRoute,
+  registerMemoryEventStream,
+  registerMemoryRoutes,
+} from './memory.js';
+
+export type {
+  CreateDaemonDbToolRegistrationsOptions,
+  DaemonDbHttpDeps,
+  DaemonDbInternalErrorContext,
+  DaemonDbOperations,
+  DaemonDbStatusReport,
+  DaemonDbTableInfo,
+  DaemonDbToolRegistrations,
+  DaemonDbVacuumResult,
+  DbIntegrityIssue,
+  DbIntegrityIssueKind,
+  DbIntegrityReport,
+} from './db-ops.js';
+export {
+  createDaemonDbToolRegistrations,
+  daemonDbInspectRoute,
+  daemonDbVacuumRoute,
+  daemonDbVerifyRoute,
+  DB_INSPECT_TOOL_ID,
+  DB_VACUUM_TOOL_ID,
+  DB_VERIFY_TOOL_ID,
+  denyAllDaemonDbPolicy,
+  registerDaemonDbRoutes,
+} from './db-ops.js';
 
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes

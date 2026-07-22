@@ -66,8 +66,7 @@ export function resolveRegistryEntryVersion(
   const range = requestedRange?.trim();
   const defaultVersion =
     entry.distTags?.['latest'] ?? entry.version ?? versions.find((version) => !version.yanked)?.version;
-  const targetVersion =
-    range && range !== 'latest' ? resolveRequestedVersion(versions, entry.distTags ?? {}, range) : defaultVersion;
+  const targetVersion = range && range !== 'latest' ? resolveRequestedVersion(entry, range) : defaultVersion;
   if (!targetVersion) return null;
 
   const versionRecord = versions.find((version) => version.version === targetVersion);
@@ -90,15 +89,32 @@ export function resolveRegistryEntryVersion(
   return resolved;
 }
 
-function resolveRequestedVersion(
-  versions: NonNullable<RegistryEntry['versions']>,
-  distTags: Record<string, string>,
-  range: string,
-): string | null {
+/**
+ * Resolve an exact-version request or dist-tag lookup to a version string
+ * that is *proven* to exist in `entry.versions` (and is not yanked) before
+ * it is ever handed back to a caller alongside a source/integrity payload.
+ *
+ * Without this check, a caller could request a version that has no record
+ * in `entry.versions` and still receive the top-level entry's source/ref/
+ * integrity — silently mislabeling those bytes with the requested (but
+ * nonexistent) version number. See CR-008.
+ *
+ * The one legacy exception: an entry that declares no `versions` ledger at
+ * all (a single-version registry entry) is allowed to resolve an exact
+ * request that matches its own top-level `version` — there is no ledger to
+ * be authoritative over in that case, and the top-level fields *are* that
+ * version's source/integrity by construction.
+ */
+function resolveRequestedVersion(entry: RegistryEntry, range: string): string | null {
+  const versions = entry.versions ?? [];
+  const distTags = entry.distTags ?? {};
+
   const tagged = distTags[range];
-  if (tagged) return tagged;
+  if (tagged) {
+    return versionExists(versions, entry, tagged) ? tagged : null;
+  }
   if (!range.startsWith('^') && !range.startsWith('~')) {
-    return range;
+    return versionExists(versions, entry, range) ? range : null;
   }
 
   const base = parseSemver(range.slice(1));
@@ -133,6 +149,25 @@ function resolveRequestedVersion(
     })
     .sort((left, right) => compareSemver(parseSemver(right)!, parseSemver(left)!));
   return candidates[0] ?? null;
+}
+
+/**
+ * True when `version` is a real, non-yanked version of `entry`: either a
+ * matching, non-yanked record in `entry.versions`, or — only when
+ * `entry.versions` declares no ledger at all — an exact match against the
+ * entry's own top-level `version` (the legacy single-version case).
+ *
+ * A version that *is* present in `entry.versions` but yanked is explicitly
+ * rejected here rather than left for the caller to notice later, so a
+ * yanked exact-version/dist-tag request can never resolve.
+ */
+function versionExists(versions: NonNullable<RegistryEntry['versions']>, entry: RegistryEntry, version: string): boolean {
+  const record = versions.find((candidate) => candidate.version === version);
+  if (record) return !record.yanked;
+  // No versions ledger at all (not just "this version is missing from it")
+  // — fall back to treating the entry's own top-level version as the one
+  // version this entry has.
+  return versions.length === 0 && entry.version === version;
 }
 
 interface SemverParts {

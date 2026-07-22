@@ -3,22 +3,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// chmod is intercepted so we can exercise the best-effort 0600 lockdown's
-// success + failure branches without needing an OS that rejects chmod. All
+// `stat` is intercepted so the fail-closed "the OS didn't honor mode 0600"
+// path (CR-006 / SEC-RB-002 — `writeSecretFileAtomic`) can be exercised
+// deterministically without needing an OS that actually misbehaves. All
 // other fs/promises calls delegate to the real implementation.
-const hoisted = vi.hoisted(() => ({ chmodMode: 'ok' as 'ok' | 'enotsup' | 'eperm' | 'error' | 'nomsg' }));
+const hoisted = vi.hoisted(() => ({ statMode: 'ok' as 'ok' | 'group-readable' }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  const codes: Record<string, string> = { enotsup: 'ENOTSUP', eperm: 'EPERM', error: 'EIO' };
   return {
     ...actual,
-    chmod: (p: fs.PathLike, mode: fs.Mode) => {
-      if (hoisted.chmodMode === 'ok') return actual.chmod(p, mode);
-      // A message-less error object -> exercises the `e.message ?? err` fallback.
-      if (hoisted.chmodMode === 'nomsg') return Promise.reject({ code: 'EIO' });
-      const e = new Error('chmod refused') as NodeJS.ErrnoException;
-      e.code = codes[hoisted.chmodMode];
-      return Promise.reject(e);
+    stat: async (p: fs.PathLike) => {
+      const real = await actual.stat(p);
+      if (hoisted.statMode === 'group-readable' && String(p).includes('.tmp')) {
+        (real as unknown as { mode: number }).mode = (real.mode & ~0o777) | 0o644;
+      }
+      return real;
     },
   };
 });
@@ -45,7 +44,7 @@ function writeRaw(dir: string, json: string): void {
 }
 
 beforeEach(() => {
-  hoisted.chmodMode = 'ok';
+  hoisted.statMode = 'ok';
 });
 afterEach(() => {
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
@@ -156,36 +155,31 @@ describe('token store mutations', () => {
     expect(Object.keys(all).sort()).toEqual(['a', 'b']);
   });
 
-  it('swallows an unsupported chmod (ENOTSUP/EPERM) without warning', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    for (const mode of ['enotsup', 'eperm'] as const) {
-      hoisted.chmodMode = mode;
-      const dir = tmp();
-      await setToken(dir, 's1', tok);
-      expect(await getToken(dir, 's1')).toEqual(tok);
+  it('persists the token file with owner-only (0600) permissions from creation (CR-006 / SEC-RB-002)', async () => {
+    const dir = tmp();
+    await setToken(dir, 's1', tok);
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(path.join(dir, 'mcp-tokens.json')).mode & 0o777;
+      expect(mode).toBe(0o600);
     }
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 
-  it('warns but still persists when chmod fails for another reason', async () => {
-    hoisted.chmodMode = 'error';
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('fails closed — rejects and leaves no token file — when the OS does not honor owner-only mode', async () => {
+    hoisted.statMode = 'group-readable';
     const dir = tmp();
-    await setToken(dir, 's1', tok);
-    expect(warn).toHaveBeenCalledWith('[mcp-tokens] could not chmod 0600', expect.any(String), 'chmod refused');
-    expect(await getToken(dir, 's1')).toEqual(tok);
-    warn.mockRestore();
+    await expect(setToken(dir, 's1', tok)).rejects.toThrow(/owner-only/);
+    expect(fs.existsSync(path.join(dir, 'mcp-tokens.json'))).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]); // no leftover temp file either
   });
 
-  it('falls back to the raw error when the chmod failure carries no message', async () => {
-    hoisted.chmodMode = 'nomsg';
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('does not clobber a previously-persisted token when a later write fails closed', async () => {
     const dir = tmp();
     await setToken(dir, 's1', tok);
-    expect(warn).toHaveBeenCalledWith('[mcp-tokens] could not chmod 0600', expect.any(String), { code: 'EIO' });
+    hoisted.statMode = 'group-readable';
+    await expect(setToken(dir, 's2', { accessToken: 'B', tokenType: 'Bearer', savedAt: 2 })).rejects.toThrow();
+    hoisted.statMode = 'ok';
     expect(await getToken(dir, 's1')).toEqual(tok);
-    warn.mockRestore();
+    expect(await getToken(dir, 's2')).toBeNull();
   });
 });
 

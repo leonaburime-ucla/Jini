@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createNoteStore, type NoteChangeEvent, type NoteStore } from '../note-store.js';
+import { createNoteStore, NoteStoreConfigError, type NoteChangeEvent, type NoteStore } from '../note-store.js';
 
 const config = { validTypes: ['user', 'feedback', 'project'], defaultType: 'user' };
 
@@ -347,6 +347,281 @@ describe('createNoteStore', () => {
 
       const entryNode = tree.find((n) => n.id === 'user_a');
       expect(entryNode).toMatchObject({ parentId: 'folder:user', path: '/user/user_a', name: 'A', description: 'a-desc', kind: 'entry' });
+    });
+  });
+});
+
+// CR-010 / SEC-RB-004: filesystem-escape and fail-open hardening.
+describe('createNoteStore — filesystem safety hardening', () => {
+  describe('subdir validation', () => {
+    it('rejects a subdir containing ".." at construction time', () => {
+      expect(() => createNoteStore({ ...config, subdir: '../../etc' })).toThrow(/subdir/);
+      expect(() => createNoteStore({ ...config, subdir: '..' })).toThrow(/subdir/);
+    });
+
+    it('rejects a subdir containing a path separator', () => {
+      expect(() => createNoteStore({ ...config, subdir: 'a/b' })).toThrow(/subdir/);
+      expect(() => createNoteStore({ ...config, subdir: 'a\\b' })).toThrow(/subdir/);
+    });
+
+    it('rejects an absolute subdir', () => {
+      expect(() => createNoteStore({ ...config, subdir: '/etc' })).toThrow(/subdir/);
+    });
+
+    it('accepts a plain single-segment subdir', () => {
+      expect(() => createNoteStore({ ...config, subdir: 'my-notes' })).not.toThrow();
+    });
+
+    it('rejects an empty subdir', () => {
+      expect(() => createNoteStore({ ...config, subdir: '' })).toThrow(/non-empty/);
+    });
+
+    it('rejects a subdir longer than 128 characters', () => {
+      expect(() => createNoteStore({ ...config, subdir: 'x'.repeat(129) })).toThrow(/128/);
+    });
+
+    it('rejects a non-string subdir at runtime, for JS callers bypassing the type system', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(() => createNoteStore({ ...config, subdir: 42 as any })).toThrow(/non-empty/);
+    });
+
+    // `path.basename(subdir) !== subdir || path.isAbsolute(subdir)` (the
+    // final guard in assertSafeSubdir) is unreachable on this host: every
+    // input that could trigger either half is already excluded by the
+    // separator/`.`/`..` checks above it (POSIX `isAbsolute` requires a
+    // leading `/`; `basename` only differs from its input when a separator
+    // is present). Verified analytically, not just "not covered" — this is
+    // redundant defense-in-depth, most plausibly for platform differences
+    // (e.g. Windows drive-relative paths) this host can't exercise.
+    // `vi.spyOn` cannot stub it either: `node:path`'s exports are
+    // non-configurable here (`TypeError: Cannot redefine property:
+    // basename`), unlike `fs.promises` above — a module-level `vi.mock`
+    // would work but risks destabilizing every other test in this file that
+    // depends on real `path` behavior, for a branch already proven dead.
+    // Left flagged rather than forced.
+  });
+
+  describe('symlink containment', () => {
+    it('rejects operations when the configured subdir is a symlink that escapes dataDir, and does not write through it', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'jini-note-store-outside-'));
+      try {
+        const fs = await import('node:fs/promises');
+        // Plant a symlink named "notes" inside dataDir pointing entirely outside it.
+        await fs.symlink(outsideDir, join(dataDir, 'notes'), 'dir');
+
+        await expect(store.upsertEntry(dataDir, { name: 'Evil', type: 'user' })).rejects.toThrow(/escapes its data root/);
+        await expect(store.readConfig(dataDir)).rejects.toThrow();
+        await expect(store.listEntries(dataDir)).resolves.toEqual([]);
+
+        // Nothing should have been written into the outside directory.
+        const outsideContents = await fs.readdir(outsideDir);
+        expect(outsideContents).toEqual([]);
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects reading through a symlinked entry file that points outside the store, instead of following it', async () => {
+      const fs = await import('node:fs/promises');
+      const secretDir = mkdtempSync(join(tmpdir(), 'jini-note-store-secret-'));
+      try {
+        const secretPath = join(secretDir, 'secret.txt');
+        await fs.writeFile(secretPath, 'super-secret-content');
+
+        await store.upsertEntry(dataDir, { name: 'X', type: 'user' });
+        const entryPath = join(store.dir(dataDir), 'user_x.md');
+        await fs.unlink(entryPath);
+        await fs.symlink(secretPath, entryPath);
+
+        const entry = await store.readEntry(dataDir, 'user_x');
+        expect(entry).toBeNull();
+
+        const list = await store.listEntries(dataDir);
+        expect(list.map((e) => e.id)).not.toContain('user_x');
+      } finally {
+        rmSync(secretDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not follow a symlinked entry file when deleting (unlink removes the link, not its target)', async () => {
+      const fs = await import('node:fs/promises');
+      const outsideDir = mkdtempSync(join(tmpdir(), 'jini-note-store-outside-del-'));
+      try {
+        const targetPath = join(outsideDir, 'target.txt');
+        await fs.writeFile(targetPath, 'must-survive');
+
+        await store.upsertEntry(dataDir, { name: 'Y', type: 'user' });
+        const entryPath = join(store.dir(dataDir), 'user_y.md');
+        await fs.unlink(entryPath);
+        await fs.symlink(targetPath, entryPath);
+
+        await store.deleteEntry(dataDir, 'user_y');
+
+        await expect(fs.readFile(targetPath, 'utf8')).resolves.toBe('must-survive');
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('index injection', () => {
+    it('escapes embedded newlines and Markdown link syntax in name/description without corrupting the index structure', async () => {
+      const maliciousName = 'Evil](../../etc/passwd) [Injected';
+      const maliciousDesc = 'line1\nline2 [Click me](https://evil.example/steal)';
+      await store.upsertEntry(dataDir, { name: maliciousName, description: maliciousDesc, type: 'user' });
+
+      const index = await store.readIndex(dataDir);
+      const bulletLines = index.split(/\r?\n/).filter((l) => l.trim().startsWith('- ['));
+      // Exactly one bullet was produced — no extra bullet/link was injected
+      // via the embedded newline or bracket/paren syntax.
+      expect(bulletLines).toHaveLength(1);
+
+      // The raw stored text must not contain an unescaped "](" sequence
+      // other than the legitimate one preceding the real (id-derived) href.
+      const rawLinkOpenings = index.match(/(?<!\\)\]\(/g) ?? [];
+      expect(rawLinkOpenings).toHaveLength(1);
+
+      // The entry is still correctly recognized as linked/active despite
+      // the special characters (round-trips through the parser).
+      const active = await store.listActiveEntries(dataDir);
+      expect(active.map((e) => e.id)).toContain('user_evil_etc_passwd_injected');
+    });
+
+    it('keeps a single physical index line for a name that is only newlines', async () => {
+      await store.upsertEntry(dataDir, { name: '\n\n\n', type: 'user' });
+      const index = await store.readIndex(dataDir);
+      const bulletLines = index.split(/\r?\n/).filter((l) => l.trim().startsWith('- ['));
+      expect(bulletLines).toHaveLength(1);
+    });
+  });
+
+  describe('listener isolation', () => {
+    it('does not reject the write call when a change listener throws', async () => {
+      store.events.on('change', () => {
+        throw new Error('listener boom');
+      });
+      await expect(store.upsertEntry(dataDir, { name: 'A', type: 'user' })).resolves.toMatchObject({ id: 'user_a' });
+      // The write actually committed despite the throwing listener.
+      const entry = await store.readEntry(dataDir, 'user_a');
+      expect(entry).not.toBeNull();
+    });
+
+    it('does not reject deleteEntry or writeConfig/writeIndex when a listener throws', async () => {
+      await store.upsertEntry(dataDir, { name: 'A', type: 'user' });
+      store.events.on('change', () => {
+        throw new Error('listener boom');
+      });
+      await expect(store.deleteEntry(dataDir, 'user_a')).resolves.toBeUndefined();
+      await expect(store.writeConfig(dataDir, { enabled: false })).resolves.toEqual({ enabled: false });
+      await expect(store.writeIndex(dataDir, 'x')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('config fail-closed semantics', () => {
+    it('fails closed (rejects) rather than defaulting to enabled when the config file is unreadable for a reason other than "missing"', async () => {
+      await store.writeConfig(dataDir, { enabled: false });
+
+      const fs = await import('node:fs');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const originalLstat: any = fs.promises.lstat;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const spy = vi.spyOn(fs.promises, 'lstat').mockImplementation(async (p: any, ...rest: any[]) => {
+        // Match by suffix, not exact equality: the store resolves the
+        // realpath of its directory before joining the filename, which can
+        // differ lexically from a directly-constructed path (e.g. /tmp vs.
+        // /private/tmp on macOS).
+        if (typeof p === 'string' && p.endsWith('.config.json')) {
+          const err = new Error('EACCES: permission denied, lstat') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }
+        return originalLstat(p, ...rest);
+      });
+      try {
+        const err = await store.readConfig(dataDir).catch((e) => e);
+        expect(err).toBeInstanceOf(NoteStoreConfigError);
+        expect(err).toMatchObject({ code: 'EACCES' });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('still defaults to enabled when the config file is genuinely missing (ENOENT)', async () => {
+      await expect(store.readConfig(dataDir)).resolves.toEqual({ enabled: true });
+    });
+
+    it('fails closed on corrupt JSON rather than treating it as enabled', async () => {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(store.dir(dataDir), { recursive: true });
+      await fs.writeFile(join(store.dir(dataDir), '.config.json'), '{ not valid json');
+      await expect(store.readConfig(dataDir)).rejects.toBeInstanceOf(NoteStoreConfigError);
+      await expect(store.readConfig(dataDir)).rejects.toMatchObject({ code: 'EPARSE' });
+    });
+
+    it('fails closed with ENOTREG rather than reading through when the config path is a directory, not a file', async () => {
+      const fs = await import('node:fs/promises');
+      // A directory at the expected config path exercises readRegularFileStrict's
+      // `!st.isFile()` guard — lstat succeeds (so this isn't the ENOENT path)
+      // but the entry itself must be rejected rather than followed/read.
+      await fs.mkdir(join(store.dir(dataDir), '.config.json'), { recursive: true });
+      const err = await store.readConfig(dataDir).catch((e) => e);
+      expect(err).toBeInstanceOf(NoteStoreConfigError);
+      expect(err).toMatchObject({ code: 'ENOTREG' });
+    });
+  });
+
+  describe('atomic writes', () => {
+    it('leaves no stray temp files behind after entry/index/config writes', async () => {
+      await store.upsertEntry(dataDir, { name: 'A', type: 'user' });
+      await store.writeConfig(dataDir, { enabled: false });
+      await store.writeIndex(dataDir, 'custom');
+      const fs = await import('node:fs/promises');
+      const names = await fs.readdir(store.dir(dataDir));
+      expect(names.every((n) => !n.endsWith('.tmp'))).toBe(true);
+    });
+
+    it('replaces a pre-existing symlinked entry path atomically instead of writing through it', async () => {
+      const fs = await import('node:fs/promises');
+      const outsideDir = mkdtempSync(join(tmpdir(), 'jini-note-store-outside-write-'));
+      try {
+        const targetPath = join(outsideDir, 'target.txt');
+        await fs.writeFile(targetPath, 'must-not-be-overwritten');
+        await fs.mkdir(store.dir(dataDir), { recursive: true });
+        await fs.symlink(targetPath, join(store.dir(dataDir), 'user_z.md'));
+
+        const entry = await store.upsertEntry(dataDir, { id: 'user_z', name: 'Z', type: 'user' });
+        expect(entry.id).toBe('user_z');
+
+        // The outside file must be untouched — rename() replaced the
+        // symlink itself rather than writing through it.
+        await expect(fs.readFile(targetPath, 'utf8')).resolves.toBe('must-not-be-overwritten');
+        // And the store's own file must now be a plain, correctly-written entry.
+        const stat = await fs.lstat(join(store.dir(dataDir), 'user_z.md'));
+        expect(stat.isSymbolicLink()).toBe(false);
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('cleans up the temp file and propagates the original error when the final rename fails', async () => {
+      const fs = await import('node:fs');
+      const originalRename = fs.promises.rename;
+      const spy = vi
+        .spyOn(fs.promises, 'rename')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockImplementation(async (from: any, to: any) => {
+          if (typeof from === 'string' && from.includes('.tmp')) {
+            throw new Error('ENOSPC: no space left on device, rename');
+          }
+          return originalRename(from, to);
+        });
+      try {
+        await expect(store.writeConfig(dataDir, { enabled: false })).rejects.toThrow(/ENOSPC/);
+        const names = await fs.promises.readdir(store.dir(dataDir));
+        expect(names.some((n) => n.endsWith('.tmp'))).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

@@ -4,9 +4,12 @@
  * source; the shape is the object-storage capability Zana's `app-chassis`
  * (`packages/storage`) and Tovu-Runner's ports layer both name explicitly.
  *
- * `createInMemoryStorageProvider` is a minimal reference stub proving the
- * port is implementable. A real adapter (S3, R2, Supabase Storage, local
- * disk) implements the same interface.
+ * This file defines only the port's stable interface/type surface — safe to
+ * import from the normal `@jini/capability-providers` entry point. The
+ * in-memory reference implementation (`createInMemoryStorageProvider`) is a
+ * non-production stub and lives under `src/unsafe-reference/`, exported only
+ * from the separate `@jini/capability-providers/unsafe-reference` entry
+ * point — see that directory's `index.ts` header for the full warning.
  */
 
 export interface StorageObjectMeta {
@@ -29,38 +32,4 @@ export interface StorageProvider {
   delete(key: string): Promise<void>;
   /** Lists objects whose key starts with `prefix` (all objects when `prefix` is omitted), sorted by key. */
   list(prefix?: string): Promise<StorageObjectMeta[]>;
-}
-
-/** Creates the in-memory reference `StorageProvider`. No persistence — state is lost on process exit. */
-export function createInMemoryStorageProvider(): StorageProvider {
-  const objects = new Map<string, { data: Uint8Array; meta: StorageObjectMeta }>();
-
-  return {
-    async put(key: string, data: Uint8Array, options: StoragePutOptions = {}): Promise<StorageObjectMeta> {
-      const meta: StorageObjectMeta = {
-        key,
-        size: data.byteLength,
-        updatedAt: Date.now(),
-        ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
-      };
-      objects.set(key, { data: data.slice(), meta });
-      return meta;
-    },
-
-    async get(key: string): Promise<Uint8Array | null> {
-      const entry = objects.get(key);
-      return entry ? entry.data.slice() : null;
-    },
-
-    async delete(key: string): Promise<void> {
-      objects.delete(key);
-    },
-
-    async list(prefix = ''): Promise<StorageObjectMeta[]> {
-      return [...objects.values()]
-        .map((entry) => entry.meta)
-        .filter((meta) => meta.key.startsWith(prefix))
-        .sort((a, b) => a.key.localeCompare(b.key));
-    },
-  };
 }

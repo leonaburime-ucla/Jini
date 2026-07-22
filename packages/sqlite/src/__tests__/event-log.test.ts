@@ -53,10 +53,33 @@ describe('createSqliteEventLog — ordered append + replay', () => {
     expect(replay).toEqual({ kind: 'unknown-run' });
   });
 
-  it('replay with a non-numeric cursor returns invalid-cursor', async () => {
+  it('replay rejects a non-numeric cursor (throws instead of returning invalid-cursor)', async () => {
     await log.append({ runId: 'r1', event: 'start', data: 1 });
-    const replay = await log.replay('r1', 'not-a-number');
-    expect(replay).toEqual({ kind: 'invalid-cursor', requestedCursor: 'not-a-number' });
+    await expect(log.replay('r1', 'not-a-number')).rejects.toThrow(/invalid replay cursor/);
+  });
+
+  it('replay rejects a negative cursor', async () => {
+    await log.append({ runId: 'r1', event: 'start', data: 1 });
+    await expect(log.replay('r1', '-1')).rejects.toThrow(/invalid replay cursor/);
+  });
+
+  it('replay rejects a fractional cursor', async () => {
+    await log.append({ runId: 'r1', event: 'start', data: 1 });
+    await expect(log.replay('r1', '1.5')).rejects.toThrow(/invalid replay cursor/);
+  });
+
+  it('replay rejects a NaN-shaped cursor', async () => {
+    await log.append({ runId: 'r1', event: 'start', data: 1 });
+    await expect(log.replay('r1', 'NaN')).rejects.toThrow(/invalid replay cursor/);
+  });
+
+  it('replay rejects an Infinity-shaped cursor', async () => {
+    await log.append({ runId: 'r1', event: 'start', data: 1 });
+    await expect(log.replay('r1', 'Infinity')).rejects.toThrow(/invalid replay cursor/);
+  });
+
+  it('cursor validation runs even when the run is unknown (throws, not unknown-run)', async () => {
+    await expect(log.replay('never-seen', '-1')).rejects.toThrow(/invalid replay cursor/);
   });
 
   it('drop() removes all state for a run; a subsequent replay reports unknown-run', async () => {
@@ -127,7 +150,7 @@ describe('createSqliteEventLog — idempotency-key dedup', () => {
 });
 
 describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () => {
-  it('evicts oldest entries once maxEntriesPerRun is exceeded', async () => {
+  it('evicts oldest entries once maxEntriesPerRun is exceeded, and flags the null-cursor replay as truncated', async () => {
     const capped = createSqliteEventLog(':memory:', { maxEntriesPerRun: 3 });
     for (let i = 0; i < 5; i += 1) {
       await capped.append({ runId: 'r1', event: 'agent', data: i });
@@ -136,8 +159,48 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') {
       expect(replay.entries.map((e) => e.id)).toEqual(['3', '4', '5']);
+      expect(replay.truncated).toBe(true);
     }
     await capped.close();
+  });
+
+  it('caps retention at the documented default of 2000 when maxEntriesPerRun is omitted', async () => {
+    const defaulted = createSqliteEventLog(':memory:');
+    for (let i = 0; i < 2500; i += 1) {
+      await defaulted.append({ runId: 'r1', event: 'agent', data: i });
+    }
+    const replay = await defaulted.replay('r1', null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') {
+      expect(replay.entries).toHaveLength(2000);
+      expect(replay.entries[0]?.id).toBe('501'); // oldest 500 of 2500 evicted (2500 - 2000 cap)
+      expect(replay.entries[replay.entries.length - 1]?.id).toBe('2500');
+      expect(replay.truncated).toBe(true);
+    }
+    await defaulted.close();
+  });
+
+  it('honors an explicit maxEntriesPerRun larger than the default, overriding it in either direction', async () => {
+    const generous = createSqliteEventLog(':memory:', { maxEntriesPerRun: 3000 });
+    for (let i = 0; i < 2500; i += 1) {
+      await generous.append({ runId: 'r1', event: 'agent', data: i });
+    }
+    const replay = await generous.replay('r1', null);
+    expect(replay.kind).toBe('ok');
+    if (replay.kind === 'ok') {
+      expect(replay.entries).toHaveLength(2500);
+      expect(replay.truncated).toBeUndefined();
+    }
+    await generous.close();
+  });
+
+  it('throws at construction when maxEntriesPerRun is negative, fractional, or non-finite', () => {
+    expect(() => createSqliteEventLog(':memory:', { maxEntriesPerRun: -1 })).toThrow(/maxEntriesPerRun/);
+    expect(() => createSqliteEventLog(':memory:', { maxEntriesPerRun: 1.5 })).toThrow(/maxEntriesPerRun/);
+    expect(() => createSqliteEventLog(':memory:', { maxEntriesPerRun: Number.NaN })).toThrow(/maxEntriesPerRun/);
+    expect(() =>
+      createSqliteEventLog(':memory:', { maxEntriesPerRun: Number.POSITIVE_INFINITY }),
+    ).toThrow(/maxEntriesPerRun/);
   });
 
   it('returns a distinguishable replay-gap when the requested cursor falls before the oldest retained entry', async () => {
@@ -166,7 +229,7 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     await capped.close();
   });
 
-  it('a first-time replay(null) after eviction is not treated as a gap', async () => {
+  it('a first-time replay(null) after eviction is not treated as a gap, but IS flagged truncated', async () => {
     const capped = createSqliteEventLog(':memory:', { maxEntriesPerRun: 2 });
     for (let i = 0; i < 10; i += 1) {
       await capped.append({ runId: 'r1', event: 'agent', data: i });
@@ -175,6 +238,7 @@ describe('createSqliteEventLog — eviction + replay-gap adversarial cases', () 
     expect(replay.kind).toBe('ok');
     if (replay.kind === 'ok') {
       expect(replay.entries).toHaveLength(2);
+      expect(replay.truncated).toBe(true);
     }
     await capped.close();
   });
@@ -199,6 +263,21 @@ describe('createSqliteEventLog — durability across a restart', () => {
     try {
       const replay = await reopened.replay('r1', null);
       expect(replay).toEqual({ kind: 'ok', entries: [a, b] });
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it('keeps the known-run index across a restart', async () => {
+    await log.append({ runId: 'run-b', event: 'start', data: {} });
+    await log.append({ runId: 'run-a', event: 'start', data: {} });
+    await log.close();
+
+    const reopened = createSqliteEventLog(dbPath);
+    try {
+      expect(await reopened.listRunIds()).toEqual(['run-a', 'run-b']);
+      await reopened.drop('run-a');
+      expect(await reopened.listRunIds()).toEqual(['run-b']);
     } finally {
       await reopened.close();
     }

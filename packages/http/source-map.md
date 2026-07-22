@@ -12,8 +12,9 @@ Per extraction-plan.md §3: `@jini/http` is "HTTP/SSE transport + route-pack
 registrar + injects `ExecutionDelegate`". This task ports the JSON-route
 transport half (the capability-barrel module) and adds a route-pack registrar
 that plugs into `@jini/core`'s existing `Pack`/`createDaemon` composition
-contract. SSE and `ExecutionDelegate` injection are explicitly **not** part of
-this port — see "Explicitly deferred" below.
+contract. The generic lifecycle SSE projection was added in the 2026-07-19
+vertical-slice pass; `ExecutionDelegate` injection remains explicitly deferred
+— see "Explicitly deferred" below.
 
 ## File map
 
@@ -29,6 +30,7 @@ this port — see "Explicitly deferred" below.
 | `src/pack-http.ts` | *(new)* | `mountPackHttp` — the route-pack registrar. See "Design decisions" below. |
 | `src/index.ts` | `apps/daemon/src/http/index.ts` | Root barrel, re-export set unchanged in kind (adds `mountPackHttp`). Flattened to reference sibling files directly instead of subdirectory barrels, since this package has no subdirectories (the capability-barrel *pattern* — foundation/leaf/orchestration layering — is preserved in the module's internal dependency shape even though the directory nesting was collapsed). |
 | `src/daemon-status.ts` | `apps/daemon/src/routes/daemon.ts` (`GET /api/daemon/status`, `POST /api/daemon/shutdown` only — see the routes-classification table below for the rest of that file's verdict) | *(port/backend-routes task, added after the above)* Fully dependency-injected rewrite, not a lift: `getVersion`/`host`/`getPort`/`dataDir`/`isShuttingDown`/`requestShutdown` are all supplied by the caller rather than read from `db`/`env`/process globals the way the origin did. Dropped the origin's `installedPlugins` (a raw `SELECT COUNT(*) FROM installed_plugins` — an OD-product table), a product-specific config-dir field, and a sandbox-mode flag — none of those concepts exist in the engine kernel. The shutdown route reuses the existing `requireSameOrigin: true` `JsonRouteSpec` flag (the same gate `origin.ts`/`guardSameOrigin` already provides) instead of inventing a parallel "local daemon request" gate — this is the pre-existing mechanism, not a new one. `requestShutdown` stays a plain injected callback (not this module calling `process.emit('SIGTERM')` itself) because whether that terminates the process depends on a listener the *caller* registers; preserved the origin's respond-then-`setImmediate`-then-shutdown ordering so the HTTP response is always written before the shutdown callback runs. |
+| `src/runs.ts` | `apps/daemon/src/routes/runs.ts`'s thin lifecycle delegations plus new transport design | **New generic transport seam, not a lift.** `POST /api/runs`, `GET /api/runs/:runId`, `POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` project only `RunLifecycle`; no project, conversation, plugin, or artifact semantics cross this boundary. The SSE endpoint uses the canonical `RunProtocolEvent` envelope and `Last-Event-ID`/`afterCursor` reconnect cursors. `RunStartHandler` is deliberately host-owned: after the start record is durable, a host attaches its chosen driver; the route never makes an agent/tool policy decision itself. |
 
 Every file the origin module's barrel actually exported has a Jini equivalent
 exporting the same name (`compat`'s `sendApiError` is still re-exported as
@@ -85,13 +87,11 @@ registrar are silently skipped (a CLI-only or headless pack is not an error).
 **3. `ExecutionDelegate` injection is explicitly out of scope, not
 overlooked.** Extraction-plan.md §3 describes `@jini/http` as also
 "injects `ExecutionDelegate`" (§2.5's tool-execution-boundary confirm/authorize
-callback pair, transport-specific by design). No `ToolExecutor` or
-`ExecutionDelegate` exists anywhere in this codebase yet — that boundary is
-task 6 in extraction-plan.md §8's ten-task list and has not been started. This
-task builds only the transport plumbing and the pack registrar; delegate
-injection is a real, named follow-up for whichever task builds the
-`ToolExecutor` boundary itself, not something this port could sensibly stub
-without inventing the boundary's shape unilaterally.
+callback pair, transport-specific by design). `ToolExecutor` now exists in
+`@jini/daemon`, but the external CLI stream currently reports a tool use after
+the CLI has executed it; it is not a pre-execution request/response protocol.
+This transport therefore does not pretend to inject a post-hoc callback as an
+authorization gate. A controlled agent protocol is a real, named follow-up.
 
 **4. `ERROR_STATUS_BY_CODE` was re-scoped to `@jini/protocol`'s codes, not
 copied 1:1.** See the `src/response.ts` file-map row above for the exact
@@ -102,13 +102,9 @@ back to the conservative 500 default, same as OD's unmapped-code behavior).
 
 ## Explicitly deferred (not part of this port)
 
-- **SSE.** Extraction-plan.md §3 names "HTTP/**SSE**" as part of this
-  package's eventual scope. The `http/` module ported here is entirely
-  request/response JSON routing; OD's SSE streaming lives elsewhere in
-  `apps/daemon` (the runs/stream routes) and was not part of the
-  capability-barrel module this task was scoped to. A future task should
-  extract SSE transport into this package alongside `adapter.ts`, likely
-  keyed on `@jini/daemon`'s `EventLog`/replay-cursor port.
+- **Additional streaming projections.** The lifecycle SSE run transport now
+  exists, but AGUI mapping, terminal sessions, and product-specific stream
+  families remain out of scope.
 - **`ExecutionDelegate` injection.** See Design decision 3 above.
 - **The OD-sync patch-router** (extraction-plan.md §4.3's "a patch touching a
   `delegated-to-jini` path fails CI until the equivalent package patch
@@ -267,8 +263,8 @@ port, not a lift.
 | 8 | `project/comments.ts` | 91 | MIXED | Generic preview-comment CRUD; the only OD tie is the `/api/projects/:id/...` path segment and an `updateProject(db, id, {})` call used purely to bump a timestamp. Renaming the parent to a generic workspace/session id would make this portable as-is. `DELETE` lacks the try/catch its POST/PATCH siblings have. |
 | 9 | `project/conversations.ts` | 219 | MIXED, leans OD-PRODUCT | Conversation/message CRUD + fork/seed semantics is a plausible generic "chat/run history" shape, but as written it's entangled with `@open-design/contracts`' `ChatSessionMode` (includes the OD-specific `'design'` mode), OD's brand-extraction transcript backfill, and analytics/telemetry reporting. Real risk: `DELETE /conversations/:cid` awaits `cancelRunsOwnedBy(...)` with no try/catch — an unhandled-rejection path (see #10). |
 | 10 | `project/cancel-owned-runs.ts` | 33 | GENERIC | A single helper (`cancelRunsOwnedBy`), not a route registrar — defines its own minimal structural `RunCancellationService` interface, no OD imports. Only naming ties to "project" (`{conversationId?, projectId?}` scope), trivially generalizes. Its `runs.list(...)` call is unguarded and is the concrete origin of the unhandled-rejection risk propagating through `conversations.ts` above. |
-| 11 | `terminal.ts` | 109 | MIXED | Generic PTY/SSE session transport (list/create/stream/stdin/resize/kill), wrapped in `ctx.projectStore.getProject`/`ctx.projectFiles.resolveProjectDir` purely to resolve a spawn cwd. Would port cleanly once a generic "workspace root resolver" port exists. Requires SSE (deferred). No lock between a `kill` and a concurrent `stdin`/`resize` on the same session id. |
-| 12 | `daemon.ts` | 173 | MIXED — **partially ported this round, see below** | `GET /api/daemon/status` and `POST /api/daemon/shutdown` are genuinely generic once the OD-specific `installedPlugins`/`mediaConfigDir`/`sandboxMode` fields are dropped. `GET/POST /api/daemon/db*` (SQLite inspect/verify/vacuum) are generic in shape but depend on a separate `storage/db-inspect.ts` port not built this round. `POST /api/agents/:agentId/oauth-launch` (hardcoded to `agentId === 'antigravity'`) and `GET /api/critique/conformance` are OD-product and excluded entirely. Real risk: `process.emit('SIGTERM')` only fires *existing* listeners — it doesn't send a real signal — so the shutdown route is a no-op unless something elsewhere registered a handler; preserved as an injected `requestShutdown` callback in the port rather than assumed. |
+| 11 | `terminal.ts` | 109 | MIXED | Generic PTY/SSE session transport (list/create/stream/stdin/resize/kill), wrapped in `ctx.projectStore.getProject`/`ctx.projectFiles.resolveProjectDir` purely to resolve a spawn cwd. Would port cleanly once a generic "workspace root resolver" port exists. Requires SSE (deferred). No lock between a `kill` and a concurrent `stdin`/`resize` on the same session id. **Update 2026-07-21**: both blockers this row named are now resolved as standalone prerequisites — `src/sse.ts` (a generic SSE channel) and `src/workspace-root.ts` (a generic workspace-root resolver), see their own 2026-07-21 addition sections below — but `terminal.ts` itself has not been ported; wiring it to these two primitives remains future work. |
+| 12 | `daemon.ts` | 173 | MIXED — **partially ported this round, see below** | `GET /api/daemon/status` and `POST /api/daemon/shutdown` are genuinely generic once the OD-specific `installedPlugins`/`mediaConfigDir`/`sandboxMode` fields are dropped. `GET/POST /api/daemon/db*` (SQLite inspect/verify/vacuum) are generic in shape and were originally deferred pending a separate `storage/db-inspect.ts` port — **that port now exists (`@jini/sqlite`'s `db-inspect.ts`) and the three DB routes were ported 2026-07-21 as `src/db-ops.ts`, see its own addition section below.** `POST /api/agents/:agentId/oauth-launch` (hardcoded to `agentId === 'antigravity'`) and `GET /api/critique/conformance` are OD-product and excluded entirely. Real risk: `process.emit('SIGTERM')` only fires *existing* listeners — it doesn't send a real signal — so the shutdown route is a no-op unless something elsewhere registered a handler; preserved as an injected `requestShutdown` callback in the port rather than assumed. |
 | 13 | `telemetry.ts` | 180 | OD-PRODUCT (recon's "plausibly generic" guess does not hold) | Only the bare `POST /api/observability/event` passthrough route shape is schema-agnostic; every dependency it's built on (`@open-design/sidecar-proto`, `@open-design/contracts/analytics`, a Langfuse run-feedback bridge, an installer-migration telemetry bootstrap, PostHog wired to OD's consent model) is OD-specific. Also: this module unconditionally installs process-level `uncaughtException`/`unhandledRejection` handlers that call `process.exit(1)` as a side effect of route registration — an architectural smell to flag, not something to port as-is. |
 | 14 | `design-system-tool.ts` | 104 | OD-PRODUCT | Single tool-token route resolving a project's *active design system* by id; no generic sliver. |
 | 15 | `design-systems.ts` | 473 | OD-PRODUCT | 19 routes, all design-system generation/revision/token-contract/showcase/craft. `@open-design/contracts` `Project`/`ProjectFile` import is a direct product dependency. Two small pure utilities (`sanitizeArchiveFilename`, the showcase asset-URL rewriter's traversal guard) are algorithmically generic but embedded, not separable routes. |
@@ -323,7 +319,9 @@ named as "plausibly generic" (`chat.ts`, `runs.ts`, `terminal.ts`, `telemetry.ts
 - **`telemetry.ts`**: turned out OD-PRODUCT on inspection, contradicting the recon's
   guess — not a deferral, a corrected verdict.
 - **`daemon.ts`'s remaining routes** (`db`/`db/verify`/`db/vacuum`): generic in
-  shape but depend on a `storage/db-inspect.ts` port not built this round.
+  shape but depended on a `storage/db-inspect.ts` port not built this round. **Update
+  2026-07-21**: that port now exists (`@jini/sqlite`'s `db-inspect.ts`) and these three
+  routes were ported as `src/db-ops.ts` — see its own addition section below.
 - **`host-tools.ts`'s generic sliver** (catalogue/probe/launch machinery, `GET
   /api/editors`): identified as portable and well-hardened, but not ported this
   round for time — a good next-task candidate, smaller in scope than the SSE-bound
@@ -369,3 +367,518 @@ different task's blast radius.
 Tests: `src/__tests__/api-security-middleware.test.ts`, `src/__tests__/route-registration-guard.test.ts`
 — 100% coverage on all 4 metrics, no new dependencies (both files use only this package's existing
 exports plus `express`, already a dependency).
+
+## 2026-07-21 addition — `cancel-owned-runs.ts` (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#10 `project/cancel-owned-runs.ts` (GENERIC)**,
+the one route-adjacent file the table already called out as fully generic despite living in the
+otherwise-OD-PRODUCT `routes/project/` directory. Verified against
+`leonaburime-ucla/open-design`, branch `refactor/web-memory-slice` (the branch this table's
+routes-classification section was built against), via `git show
+refactor/web-memory-slice:apps/daemon/src/routes/project/cancel-owned-runs.ts` — unchanged from
+what the table describes: a single 33-line helper (`cancelRunsOwnedBy`), no route registrar, no
+OD import.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/cancel-owned-runs.ts` | `apps/daemon/src/routes/project/cancel-owned-runs.ts` (`refactor/web-memory-slice`) | `cancelRunsOwnedBy`, re-scoped rather than lifted verbatim — see below. |
+
+**Re-scoping, not a straight lift.** OD's version takes a `{conversationId?, projectId?}` scope
+object and calls `runs.list({...scope, status: 'active'})` — both the two-field scope shape and
+the `status: 'active'` list-filter argument are OD nouns/API shape, not kernel concepts. Per
+extraction-plan §2.1, `@jini/daemon`'s real `RunLifecycle` keys every run on one opaque
+`contextRef: string` (see `packages/daemon/src/run-lifecycle.ts`'s `StartRunInput`/`list`), and
+its `list(contextRef?: string): Promise<readonly RunStatus[]>` has no server-side status filter at
+all. So this port: (1) takes a single `contextRef: string` in place of the two-field scope object
+— the kernel has no separate "conversation" or "project" identity, only the caller's opaque
+reference; (2) calls `list(contextRef)` unfiltered and filters non-terminal runs client-side with
+`@jini/protocol`'s existing `isTerminalRunState`, since the real `RunLifecycle` has nowhere to push
+a `status` argument down to. The per-run-swallowed-cancellation-failure behavior (`.catch(() =>
+{})`) and the "safe to call unconditionally, races with a naturally-finishing run harmlessly"
+property are both preserved unchanged from the origin.
+
+**Kept structural, not typed against `@jini/daemon`'s `RunLifecycle` directly** (`RunCancellationService`
+in the new file) — mirrors the origin's own stated reason ("kept structural so it is satisfied by
+the real `design.runs` without depending on the daemon's loose `ServerContext.design: any` type").
+In Jini, `RunLifecycle` is already a real, precisely-typed interface rather than a loose `any`, so
+the structural cut here is instead about test-double simplicity: a caller can satisfy
+`RunCancellationService` with a two-method fake with no need to stub the rest of `RunLifecycle`'s
+surface (`rehydrate`/`start`/`get`/`onCancelRequested`/`finish`/`waitForTerminal`). The real
+`RunLifecycle.list`/`cancel` return types (`Promise<readonly RunStatus[]>`,
+`Promise<RunStatus>`) are both structurally assignable to this file's narrower
+`RunCancellationService` (return-type covariance), so passing a real `RunLifecycle` in works with
+no adapter.
+
+Not (yet) wired into a route: this port is the reusable helper only, matching the source-map's own
+classification of file #10 as "a single helper... not a route registrar." No delete-conversation
+or delete-project route exists anywhere in this repo yet for it to be called from (both `#8
+project/comments.ts` and `#9 project/conversations.ts` remain deferred per this table's own
+"What got ported this round vs. deferred" section — they need a not-yet-built generic
+workspace/session port first). `cancelRunsOwnedBy` is exported from the package barrel
+(`src/index.ts`) so whichever future workspace/session-delete route lands can call it directly.
+
+Tests: `src/__tests__/cancel-owned-runs.test.ts` — 100% coverage on all 4 metrics (cancels only
+non-terminal runs, no-op on an all-terminal or empty run list, swallows a per-run cancellation
+rejection without the aggregate promise rejecting). No new dependency — uses only this package's
+existing `@jini/protocol` dependency.
+
+## 2026-07-21 addition — `host-tools.ts`'s GENERIC slice (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#23 `host-tools.ts` (MIXED — "partially ported
+this round" caveat)** — specifically the piece that row's own reasoning already identified as
+"zero OD dependency and... well-hardened": the editor catalogue, `$PATH`/mac-bundle probing, and
+guarded detached-spawn machinery (`CATALOGUE`, `resolveEntry`, `launchHostTool`,
+`resolveHostToolLaunchPlan`, `applicableForPlatform`), plus `GET /api/editors`, the one route that
+uses only that machinery. Verified against `leonaburime-ucla/open-design`, branch
+`refactor/web-memory-slice`, via `git show refactor/web-memory-slice:apps/daemon/src/routes/host-tools.ts`
+— 380 lines, matching the table's line count and verdict exactly.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/host-tools.ts` | `apps/daemon/src/routes/host-tools.ts` (`refactor/web-memory-slice`) | `CATALOGUE`/`currentPlatform`/`applicableForPlatform`/`pathDirs`/`probeCommandOnPath`/`probeMacBundle`/`resolveEntry`/`resolveHostToolLaunchPlan`/`launchHostTool`/`listAvailableEditors` (the origin's inline `GET /api/editors` handler body, extracted into its own named, directly-testable function) ported. `HostEditorId`/`HostEditor`/`HostEditorsResponse`/`OpenProjectInEditorResponse` types switched from `@open-design/contracts` to local, non-branded equivalents (`HostEditorId` narrowed to a plain `string` — the catalogue's own id literals are the only real constraint, and pinning a closed union here would make a future catalogue addition a breaking type change for no benefit). `createCommandInvocation` switched from `@open-design/platform` to this repo's own already-ported `@jini/platform` (new dependency on this package, see below) — same signature, mechanical import-source change. **Not ported**: `POST /api/projects/:id/open-in` (needs `ctx.projectStore.getProject`/`ctx.projectFiles.resolveProjectDir` to resolve a working directory — exactly the not-yet-built generic workspace-root port this table's own row #23 note anticipated) and the`server-context.js` `RouteDeps`-based `registerHostToolsRoutes(app, ctx)` registrar shape (replaced with a dependency-free `registerHostToolsRoutes(app, adapter)` mounting only the one ported route). |
+
+**Redesigned for testability, not lifted verbatim — same discipline as `packages/media/src/dispatch/context.ts`.**
+The origin reads `process.env`/`process.platform` and calls real `fs.access`/`child_process.spawn`
+directly inside `pathDirs`/`probeCommandOnPath`/`probeMacBundle`/`launchHostTool`. Every probing
+function here instead takes an injectable `HostToolProbeEnv` (`{access, env, platform}`, defaulting
+to `defaultProbeEnv()` which wires the real ones), and `launchHostTool` takes an injectable
+`spawnImpl` (defaulting to the real `node:child_process` `spawn`). This is what makes every
+platform branch (darwin/win32/linux/unknown), every found/missing outcome (CLI shim on `$PATH`,
+mac app bundle, direct absolute-path access), and both directions of `launchHostTool`'s
+`'spawn'`/`'error'` settle-race exercisable from one Linux CI runner without a real filesystem or
+subprocess — the exact problem a straight lift would have hit immediately (this repo's CI has no
+macOS/Windows runner and no installed copies of any catalogue entry).
+
+**One proven dead-branch removal, not carried forward** (same category as `local-daemon-request.ts`'s):
+`resolveEntry`'s return type was a discriminated union (`{available: true, resolvedPath, launch} |
+{available: false}`) rather than the origin's one-shape-with-optionals, because `resolvedPath` and
+`launch` are only ever set together in both of the origin's own "found" branches, never
+independently — the origin's `resolveHostToolLaunchPlan` unavailable-branch spread
+(`...(probe.resolvedPath ? {resolvedPath} : {})`) was therefore dead code carried forward
+unexamined. Making the type a discriminated union (a) makes the impossible state
+unrepresentable instead of merely untested, and (b) was required anyway once `exactOptionalPropertyTypes`
+flagged assigning a possibly-`undefined` value to the `available: true` variant's non-optional
+`resolvedPath` field.
+
+Tests: `src/__tests__/host-tools.test.ts` — 100% coverage on all 4 metrics (every platform branch,
+every probe found/missing outcome including the win32 suffix loop and the mac-bundle
+array-of-candidate-names case, the real `CATALOGUE` `finder` entry's own `commandArgs` closure
+specifically — not just an equivalent inline fixture, `launchHostTool`'s settle-race in both
+directions plus a non-`Error` `'error'` payload, and the mounted `GET /api/editors` route).
+
+## Dependencies (updated)
+
+`@jini/platform` (workspace, new) — `createCommandInvocation`, used by `host-tools.ts`'s
+`launchHostTool`. Already a dependency-free, well-tested port (see `packages/platform/source-map.md`);
+this is its first consumer inside `@jini/http`.
+
+## 2026-07-21 addition — `GET /api/runs` list route (CLI backlog pass, `feat/http-routes-and-cli-commands`)
+
+Not a port from OD (the original `src/runs.ts` "File map" row above already notes `runs.ts` is "a
+new generic transport seam, not a lift"). Added while building `@jini/cli`'s `run list` command
+(see `packages/cli/source-map.md`): `@jini/daemon`'s `RunLifecycle.list(contextRef?)` already
+existed and had no HTTP projection at all, which would have made `run list` either impossible to
+build or forced into guessing at a contract. `runListRoute` (`GET /api/runs`, optional
+`?contextRef=` query parameter, no same-origin requirement — matching `runStatusRoute`'s read-only
+posture) is a thin, direct projection of that existing kernel method: `parseRunList` validates the
+query parameter is a non-empty string when present, `handle` calls `lifecycle.list(contextRef)`
+and wraps the result as `{ runs }`. Added to `registerRunRoutes` alongside the other three JSON
+routes. Tests: `src/__tests__/runs.test.ts` (parse: absent/present/empty/non-string contextRef;
+handle: unscoped list, scoped list, empty-result list; mount: route inventory, cross-origin GET
+allowed, end-to-end through the real `createRunLifecycle`). No new dependency.
+
+## 2026-07-21 addition — `active-context.ts` (backlog pass, `feat/http-routes-and-cli-commands`)
+
+Ported the routes-classification table's row **#1 `active-context.ts` (MIXED)** — the one row the
+table already called "the one real candidate that needs neither SSE nor a workspace/session port."
+Verified against the real source first, per this branch's own discipline, rather than trusting the
+table's characterization blind: fetched `leonaburime-ucla/open-design`'s
+`refactor/web-memory-slice` branch (`git show
+refactor/web-memory-slice:apps/daemon/src/routes/active-context.ts`, via a local clone at
+`/Users/la/Desktop/Programming/Open-Marketing`, remote-fetched under ref `lucla/refactor-web-memory-slice`).
+The read **confirmed the table's characterization** in every respect: an in-memory
+`ActiveContextStore` gated by a `ACTIVE_CONTEXT_TTL_MS` (5-minute) staleness check, two fully
+synchronous handlers (`handlePostActive`/`handleGetActive` — no `await` anywhere in the origin
+file), and exactly one real OD coupling — `handleGetActive` calling `deps.getProject(deps.db,
+current.projectId)` purely to resolve a `project?.name` display string. One immaterial
+discrepancy found and not worth correcting in the table: the origin file is 128 lines by `wc -l`,
+not the table's 129 — a trivial off-by-one in whatever line-counting the original recon used, not
+a substantive error.
+
+| Jini file | Origin file | Transform |
+|---|---|---|
+| `src/active-context.ts` | `apps/daemon/src/routes/active-context.ts` (`refactor/web-memory-slice`) | `ActiveContext`/`ActiveContextStore`/`parsePostActive`→`parseSetActive`/`handlePostActive`→`handleSetActive`/`handleGetActive`/`postActiveRoute`→`setActiveRoute`/`getActiveRoute`/`registerActiveContextRoutes`, logic verbatim modulo the field-renaming and DI changes below. `createApiError` switched from `@open-design/contracts` to `@jini/protocol` (mechanical, same as every other file in this package). |
+
+**Field renaming, per the table's own suggestion.** The origin's `projectId: string` becomes
+`resourceRef: string` (an opaque identifier with no project-specific meaning) and `fileName:
+string | null` becomes `detail: string | null` (a generic sub-locator within that resource — a
+file path was one instance of this, not the concept itself). `GetActiveOutput`'s `projectName:
+string | null` becomes `resourceName: string | null`, still resolved the same way (nullish-coalesced
+from the resolved resource's own optional `name` field).
+
+**`deps.getProject` becomes an injected `resolveResource`, matching this branch's established DI
+convention** (`daemon-status.ts`/`host-tools.ts`: real collaborators supplied by the caller via a
+deps object, not read from a global store). The origin's two-argument `getProject(db, projectId)`
+signature existed only because OD's project store itself takes a `db` handle; since this package
+has no database dependency at all, the port collapses that to a single-argument
+`resolveResource(resourceRef): ActiveContextResource | null | undefined` — the caller closes over
+whatever store/db it actually has. The origin's `db: unknown` field is dropped from deps entirely
+(nothing in the ported file needs it once `getProject` is closed over by the caller instead of
+being handed `db` at call time).
+
+**`now` stays an internal testability seam, not a caller-mandatory dependency** — the origin wires
+`now: () => Date.now()` inside `registerActiveContextRoutes` itself (not sourced from `ctx`), so
+this port makes `ActiveContextDeps.now` optional, defaulting to `Date.now` when the caller omits
+it (`deps.now ?? (() => Date.now())`), while still being fully injectable for tests. This is a
+narrower dependency surface than `getProject`/`resolveResource`, which is why it lives in the same
+`ActiveContextDeps` type but as an optional field rather than being promoted to its own concept.
+
+**Both routes share one in-memory store per `registerActiveContextRoutes` call**, unchanged from
+the origin: the store is constructed fresh inside the registrar and closed over by both the
+`POST`/`GET` route deps, so a `POST /api/active` is visible to a subsequent `GET /api/active` on
+the same mounted instance — this state-sharing is the one behavior a route-level (not just
+handler-level) test had to prove, since it is invisible if each route's `handle` is only tested in
+isolation.
+
+Not wired into a route pack (no `Pack.http` composition calls `registerActiveContextRoutes` yet)
+— matching this file's own precedent (`cancel-owned-runs.ts`'s 2026-07-21 addition: ported and
+exported from the barrel, not yet consumed by a concrete pack). `registerActiveContextRoutes` is
+exported from `src/index.ts` for whichever future pack needs an active-resource-focus channel.
+
+Tests: `src/__tests__/active-context.test.ts` — 100% coverage on all 4 metrics (27 tests: `parse`
+branches for clear/set/missing-resourceRef/non-string-resourceRef/empty-resourceRef/non-string-
+detail/empty-detail/null-body; `handle` branches for clear, set, no-current, TTL-expired,
+exact-TTL-boundary-still-active, and all four `resolveResource` return shapes — named object,
+`{}`, `null`, `undefined`; `registerActiveContextRoutes` mount inventory, cross-route store sharing
+for both a set and a clear, `now` default-vs-injected, and same-origin enforcement on both
+routes). No new dependency — uses only this package's existing `@jini/protocol`/`adapter.ts`/
+`types.ts` exports.
+
+## 2026-07-21 addition — `agents.ts` (`GET /api/agents`, built while wiring `@jini/mcp`'s `list_agents` tool)
+
+Not a port from OD — a new generic transport seam, same category as this file's own `GET
+/api/runs` addition above ("`@jini/daemon`'s `RunLifecycle.list(contextRef?)` already existed and
+had no HTTP projection at all"). While porting `@jini/mcp`'s stdio MCP tool-hosting mechanism
+(`packages/mcp/source-map.md`'s 2026-07-21 addition) and deciding whether to build its `list_agents`
+tool, the investigation found `@jini/agent-runtime`'s barrel already exports `AGENT_DEFS:
+RuntimeAgentDef[]` (`packages/agent-runtime/src/registry.ts`'s `BASE_AGENT_DEFS`, 24 built-in
+adapter defs) — real, static, in-memory registration data with no HTTP projection anywhere in this
+package.
+
+`agentListRoute` (`GET /api/agents`) projects that list down to `{id, name}` pairs — deliberately
+not `@jini/agent-runtime`'s full `RuntimeAgentDef` (which carries CLI-spawn internals like `bin`,
+`buildArgs`, `env`, `listModels` that no HTTP caller should see). `AgentsHttpDeps.listAgents: () =>
+readonly AgentSummary[]` is injected rather than this module importing `@jini/agent-runtime`
+directly and reading `AGENT_DEFS` itself — matching `daemon-status.ts`/`active-context.ts`'s DI
+convention (a real collaborator supplied by the caller, not read from a global), and keeping
+`@jini/http` from taking on a new package dependency for a two-field projection. A future pack's
+`http(app, services)` composition supplies `listAgents: () => AGENT_DEFS.map(d => ({id: d.id, name:
+d.name}))` (or a filtered/curated subset) at wiring time.
+
+**Deliberately static, not a live probe.** OD's own `/api/agents` route (referenced from
+`apps/daemon/src/mcp.ts`'s `listAgents`, `packages/mcp/source-map.md`'s "The `list_agents`
+decision") returns an `available: boolean` field per agent, computed by actually probing whether
+each agent's binary is installed/reachable at request time, plus `installUrl` for
+not-installed agents and a `modelsCount`/truncated-`models` projection. None of that was built
+here: live detection needs a real design decision (per-agent timeout, caching, concurrency), which
+is exactly the kind of judgment call the `@jini/mcp` task brief said not to force for a
+small-and-clean addition. This route answers a narrower, unambiguous question — "what agents has
+this host registered" — not "what's actually usable right now."
+
+No same-origin requirement (`requireSameOrigin` unset), matching `runListRoute`/`runStatusRoute`'s
+posture: a read-only, side-effect-free GET with no per-request state.
+
+Tests: `src/__tests__/agents.test.ts` — 100% coverage on all 4 metrics (7 tests: `parse` requires
+no input; `handle` wraps the injected list as `{agents}`, reflects an empty registry without
+erroring, and calls `listAgents` fresh on every `handle` rather than caching; `registerAgentRoutes`
+mount inventory, an end-to-end request through the mounted handler, and cross-origin GET allowed).
+No new dependency.
+
+## 2026-07-21 addition — `sse.ts` (generic SSE channel prerequisite, `feat/http-routes-and-cli-commands`)
+
+Not a port from OD — a generalization of machinery that already existed inline inside this
+package's own `runs.ts` (`registerRunEventStream`'s bounded-queue, backpressure-aware
+`res.write`/`'drain'` state machine with `Last-Event-ID` replay support, itself a 2026-07-19
+addition). Every "requires SSE (deferred)" verdict against `chat.ts`/`terminal.ts`/`memory.ts` in
+the routes-classification table above named this exact gap: `@jini/http`'s adapter was JSON-route-only,
+so porting any SSE-shaped OD route meant either inventing a one-off streaming helper per route or
+building the shared primitive first. `createSseChannel<E extends SseEvent>(res, options)` is that
+primitive: `enqueue`/`open`/`isClosed`/`end`/`abandon`/`onClose`, generalized over any event type
+(not just `RunProtocolEvent`) so a route only has to describe *what* to stream, not *how*. OD's own
+precedent is `ctx.http.createSseResponse`, an Express-request-scoped helper both
+`apps/daemon/src/routes/runs.ts` and `apps/daemon/src/routes/terminal.ts` receive via dependency
+injection and call themselves — this file is the Jini equivalent of that shared role, not an
+invented-from-scratch design.
+
+`runs.ts` was refactored to call this primitive (`import { createSseChannel, requestedAfterCursor }
+from './sse.js'`) rather than keep its own private copy of the same state machine — the same
+"one implementation, one set of tests for the mechanism itself" discipline this package already
+applies to `origin-validation.ts`/`compat.ts`. `requestedAfterCursor(req)` (reads `Last-Event-ID`,
+falling back to an `afterCursor` query parameter) was extracted alongside it, also now shared rather
+than duplicated per SSE route.
+
+**This unblocks, but does not itself port,** `terminal.ts`/`chat.ts`/`memory.ts` (routes-classification
+table rows #11/#5/#4) — those routes still need their own product-neutral rewrites; only the shared
+transport primitive they'd all depend on now exists.
+
+Tests: `src/__tests__/sse.test.ts` — 100% coverage on all 4 metrics (27 tests: wire-format framing
+including a custom `formatEvent` override, queue-overflow disconnect at the configured
+`maxQueuedEvents` ceiling, backpressure (`write() === false` → `'drain'` → resumed flush), a
+mid-flush `res.write` throw calling `onWriteError` and ending the channel without throwing back
+through the producer, `isEndEvent`-triggered auto-close, `enqueue` before `open` still replaying on
+first flush, idempotency of `open`/`end`/`abandon`, client-disconnect via the response's `'close'`
+event observed before `open` is ever called, `onClose` firing exactly once regardless of which cause
+closes the channel first and firing immediately if registered after closure already happened, and
+`requestedAfterCursor`'s header-then-query-then-null precedence). No new dependency — only
+`express`'s existing `Response` type.
+
+## 2026-07-21 addition — `workspace-root.ts` (generic workspace-root resolution prerequisite, `feat/http-routes-and-cli-commands`)
+
+Not a port from OD — a generalization of a dependency several routes-classification rows named by
+hand: "given some opaque resource reference, what filesystem directory does a spawned process or
+launched editor run in?" OD answers that with `ctx.projectStore.getProject` +
+`ctx.projectFiles.resolveProjectDir` (a project-store lookup plus a metadata-driven directory
+resolver, both OD-product-specific) — named explicitly as the reason `POST /api/projects/:id/open-in`
+(row #23 `host-tools.ts`) and the interactive-terminal spawn route (row #11 `terminal.ts`) were not
+ported earlier. The kernel has no concept of "project," so it cannot hardcode that lookup, but it
+also must not silently invent a directory (guessing `process.cwd()` or an OS temp dir would let one
+request's resource reference leak into an unrelated working directory).
+
+`WorkspaceRootRequest` (`{resourceRef, detail?}`, matching `active-context.ts`'s `resourceRef`/`detail`
+naming) plus a host-injectable `WorkspaceRootResolver` callback are resolved by
+`resolveWorkspaceRoot(request, options)`. Follows the same explicit-injection, conservative-default
+shape already established by `@jini/cli`'s `resolveDaemonUrl` and `db-ops.ts`'s
+`denyAllDaemonDbPolicy`: the built-in default (`denyAllWorkspaceRoots`) resolves nothing for every
+request, and `resolveWorkspaceRoot` throws a `WorkspaceRootDeniedError` rather than ever falling back
+to a guessed path — a host must explicitly opt in with its own resolver before any route can act on
+a real directory.
+
+**This unblocks, but does not itself port,** `POST /api/projects/:id/open-in` (row #23) or
+`terminal.ts`'s spawn routes (row #11) — those still need to be written to call
+`resolveWorkspaceRoot` with a caller-supplied resolver; only the shared port they'd depend on now
+exists, exported from the barrel (`denyAllWorkspaceRoots`, `resolveWorkspaceRoot`,
+`WorkspaceRootDeniedError`) for whichever future task wires a consumer.
+
+Tests: `src/__tests__/workspace-root.test.ts` — 100% coverage on all 4 metrics (11 tests: the default
+resolver denies every request; an explicit resolver's resolved path is returned; `null`/`undefined`/
+empty-string resolver results all throw `WorkspaceRootDeniedError` carrying the original
+`resourceRef`; a synchronous resolver and an async/`Promise`-returning resolver both work;
+`detail` is optional and passed through unmodified when present). No new dependency.
+
+## 2026-07-21 addition — `db-ops.ts` (`GET/POST /api/daemon/db*`, `feat/http-routes-and-cli-commands`)
+
+Ports the routes-classification table's row **#12 `daemon.ts`**'s remaining slice: `GET
+/api/daemon/db`, `POST /api/daemon/db/verify`, `POST /api/daemon/db/vacuum` (SQLite
+inspect/integrity-check/vacuum). That row originally deferred these three routes pending a separate
+`storage/db-inspect.ts` port; that port now exists as `@jini/sqlite`'s `db-inspect.ts`
+(`inspectSqliteDatabase`/`verifySqliteIntegrity`). `db-ops.ts` itself does **not** depend on
+`@jini/sqlite` or `better-sqlite3` at all — `DaemonDbOperations` is a plain injected interface,
+structurally identical to `@jini/sqlite`'s return shapes so a caller can wire those in with zero
+adapter code, matching `daemon-status.ts`/`host-tools.ts`'s existing "caller supplies the real
+collaborator" convention in this package.
+
+**Routed through the tool-execution boundary, not a plain route handler.** All three operations
+reveal internal schema/row-count/file-size information (`inspect`/`verify`) or rewrite the database
+file in place (`vacuum`) — real security stakes. Per this repo's tool-execution-boundary precedent
+(`packages/deploy/src/tool.ts`'s `deploy.publish`, `packages/daemon/src/delegated-tool-bridge.ts`),
+`createDaemonDbToolRegistrations` builds three `{descriptor, handler, policy}` triples a host
+registers against `@jini/core`'s `ToolRegistry`; the actual work only runs inside a `ToolHandler`
+that `@jini/daemon`'s `ToolExecutor.execute` invokes after `ToolPolicy.authorize` allows it — never
+directly from `registerDaemonDbRoutes`'s route handlers. `denyAllDaemonDbPolicy` (every call denied,
+unconditionally) is the default policy for all three tools, matching `@jini/deploy`'s
+`denyAllDeployPublishPolicy` precedent — a host must explicitly opt in with its own policy (role-gated,
+same-principal-as-daemon-owner, etc.) rather than getting a working DB inspector for free merely by
+registering the tools. OD's own origin left `GET /api/daemon/db` completely ungated and only guarded
+`verify`/`vacuum` behind `requireLocalDaemonRequest` — a real pre-existing gap, not carried forward
+here. All three routes additionally keep `requireSameOrigin: true` (matching `daemon-status.ts`'s
+shutdown route) as defense in depth, not a substitute for the tool-execution boundary.
+
+Failed/timed-out/cancelled tool executions are redacted the same way `runs.ts`'s
+`RunInternalErrorContext`/SEC-005 discipline already established: the client only ever sees a generic
+`INTERNAL_ERROR` with a correlation id; the real exception (which can embed schema names, file paths,
+or a raw SQLite error message) goes only to a host-owned `onInternalError` sink (defaulting to
+`console.error`). `ToolExecutor.execute`'s own `'failed'` status already reduces a caught exception
+down to `err.message` (a string) before this route ever sees it — `ToolExecutionResult.error` has no
+room for the original `Error` object, so this route's SEC-005 discipline is "never widen that string
+back out to the client," not "preserve the original exception," which the test suite asserts against
+directly rather than assuming.
+
+Tests: `src/__tests__/db-ops.test.ts` — 100% coverage on all 4 metrics (32 tests). Includes the
+load-bearing proof that the `ToolExecutor` authorization gate is actually in the call path and not
+bypassable: a dedicated `makeDenyByDefaultDeps` helper wires the tools' real production default
+policy (`denyAllDaemonDbPolicy` — no policy override at all) through a real `ToolExecutor`/
+`ToolRegistry` (no route-level mock) and asserts the injected `DaemonDbOperations` method itself is
+never invoked when denied — proven for `inspect` (asserting the 403-equivalent `TOOL_OPERATION_DENIED`
+result) and separately for `verify`/`vacuum`. Also covers: `createDaemonDbToolRegistrations`
+registering exactly the three documented tool ids and defaulting every one to
+`denyAllDaemonDbPolicy`; a caller-supplied policy overriding the default for all three; confirmation
+denial reported identically to a policy denial; `failed`/`timed-out`/`cancelled` `ToolExecutionResult`
+statuses all redacted to a correlation-id-bearing `INTERNAL_ERROR` (the timed-out/cancelled cases
+driven through a minimal fake `ToolExecutor` that resolves synchronously, rather than racing a real
+`setTimeout`-based abort against a handler that — like all three of `db-ops.ts`'s own handlers —
+has no way to forward `ctx.signal` into `DaemonDbOperations`, since that interface has none: the real
+collaborator it documents itself as wiring, `@jini/sqlite`'s synchronous `better-sqlite3` calls,
+cannot be cooperatively cancelled mid-flight regardless); `verify`'s query-parameter parsing
+(non-string/repeated `quick` rejected, absent defaults to `false`, `'1'`/`'true'`/`'TRUE'` parsed
+true, everything else false); and `registerDaemonDbRoutes`'s route inventory, same-origin enforcement
+blocking all three routes before the tool executor ever runs, and an end-to-end mounted request for
+each of the three routes (including the vacuum route specifically, to exercise its trivial `parse`
+through the real HTTP-adapter path rather than only via a direct `.handle()` call). No new
+dependency.
+
+Not wired into a route pack (no `Pack.http` composition calls `registerDaemonDbRoutes` yet), matching
+this file's established precedent for freshly-added, barrel-exported-but-unconsumed route registrars
+(`active-context.ts`, `cancel-owned-runs.ts`).
+
+## 2026-07-21 addition — `host-tools.ts`'s `POST /api/resources/:resourceRef/open-in` (route-pack audit, `feat/http-routes-and-cli-commands`)
+
+Closes the one remaining gap this file's own "GENERIC slice" section (above) named: OD's `POST
+/api/projects/:id/open-in`, not portable at that time because it needed `ctx.projectStore.getProject`/
+`ctx.projectFiles.resolveProjectDir` to resolve a working directory. Now that `workspace-root.ts`
+exists (this same audit's other prerequisite), the route ports as `openResourceInEditorRoute`
+(`src/host-tools.ts`), mounted alongside `hostEditorsRoute` by `registerHostToolsRoutes`, which now
+takes an optional third `HostToolsOpenInDeps` parameter (`{resolveRoot?, probeEnv?, spawnImpl?}`,
+each defaulting the same way the rest of this file's DI already does).
+
+`projectId` generalizes to the `resourceRef` path param this package already uses
+(`active-context.ts`/`cancel-owned-runs.ts`); `getProject`/`resolveProjectDir` generalizes to
+`deps.resolveRoot` (defaulting to `denyAllWorkspaceRoots` — a host that never wires a real resolver
+gets `404 NOT_FOUND` on every call, never a guessed path). OD's `PROJECT_NOT_FOUND` (dropped from
+`ERROR_STATUS_BY_CODE` per this file's own "File map" note — no `@jini/protocol` equivalent) becomes
+generic `NOT_FOUND`; `EDITOR_NOT_AVAILABLE` (OD's 409 for "known catalogue entry, not installed on
+this machine") becomes `CONFLICT`, which already maps to 409. The launch-failure message is returned
+to the caller verbatim, unlike `runs.ts`'s SEC-005 redaction — a documented judgment call: this is a
+same-origin, explicitly-consented, single local action (open the tool the caller named), not an
+internal agent-run exception crossing a trust boundary.
+
+Tests: `src/__tests__/host-tools.test.ts` grew from 47 to 67 tests, now 100/100/100/100 (was already
+100% before this addition). New coverage: every `parse` malformed-input branch; success with/without
+an optional `detail` field; unknown editor id; platform-inapplicable editor; the workspace-root
+auth-denial path (default resolver, proving the operation is denied end to end); an explicit resolver
+denying a specific resource; a non-`WorkspaceRootDeniedError` propagating unmapped rather than being
+swallowed; a known-but-not-installed catalogue entry (409); a launch failure (500, real message);
+same-origin enforcement on the mounted route; and the `deps.spawnImpl` omitted-default branch —
+deliberately exercised against a synthetic, guaranteed-nonexistent absolute path (not a real
+catalogue command) so the real `node:child_process.spawn` fails safely with `ENOENT` instead of
+risking launching a real editor on whatever machine runs this test suite. No new dependency.
+
+## 2026-07-21 addition — `memory.ts` (memory-routes pack, `feat/http-routes-and-cli-commands`)
+
+Ports the generic majority of the routes-classification table's row **#4 `memory.ts` (MIXED)** —
+config, entry CRUD, tree view, index, extraction/verification history, and the SSE change/
+extraction/verify feed — now that both of this audit's prerequisites (`sse.ts`, and, for this file,
+nothing else was blocking) are in place. Read in full against
+`leonaburime-ucla/open-design`'s `refactor/web-memory-slice` branch (`apps/daemon/src/routes/
+memory.ts`, 690 lines) rather than re-trusting the prior table's characterization blind.
+
+**New file:** `src/memory.ts` — `memoryOverviewRoute` (`GET /api/memory`), `memoryTreeRoute` (`GET
+/api/memory/tree`), `memoryUpdateTreeNodeRoute` (`PATCH /api/memory/tree/:id`),
+`memoryWriteIndexRoute` (`PUT /api/memory/index`), `memoryWriteConfigRoute` (`PATCH
+/api/memory/config`), `registerMemoryEventStream` (`GET /api/memory/events`, SSE),
+`memoryListExtractionsRoute`/`memoryClearExtractionsRoute`/`memoryRemoveExtractionRoute` (`GET`/
+`DELETE`/`DELETE :id` on `/api/memory/extractions`), the equivalent three for
+`/api/memory/verifications`, and `memoryCreateEntryRoute`/`memoryReadEntryRoute`/
+`memoryUpdateEntryRoute`/`memoryDeleteEntryRoute` (`POST /api/memory`, `GET`/`PUT`/`DELETE
+/api/memory/:id`). `registerMemoryRoutes` mounts all of them, preserving OD's own static-before-
+`:id`-catch-all registration ordering discipline (Express matches in registration order — a literal
+`config`/`tree`/`extractions` path segment must not be shadowed by the `:id` wildcard).
+
+**Deliberately does not depend on `@jini/memory`, despite that package already existing in this repo
+and its `NoteStore`/`ExtractionLog`/`VerifyLog` interfaces matching every route's needs almost
+exactly.** `@jini/memory`'s `UNLOCKED.md` entry has `"lockedPackagesMayImport": false` and
+`"status": "incubating"`; `@jini/http` is one of `scripts/check-engine-boundaries.ts`'s fourteen
+*locked* packages, so a direct import would fail `pnpm guard`'s R7 check outright — the exact
+constraint `packages/media/src/sqlite-task-store.ts`'s `ADS-memory/reports/proposals/
+PROP-media-durable-tasks-2026-07-21.md` already documents for `@jini/sqlite`/`@jini/media`. Verified
+this would actually trip before writing a line of route code (not assumed). `src/memory.ts` instead
+defines local structural types (`MemoryNoteStore`/`MemoryExtractionLog`/`MemoryVerifyLog`/
+`MemoryChangeEmitter`) that a real `@jini/memory` instance satisfies with zero adapter code — the
+same "host supplies the real collaborator" DI convention `daemon-status.ts`/`host-tools.ts`/
+`db-ops.ts` already established, now additionally load-bearing for a hard boundary rule rather than
+just a dependency-weight preference.
+
+**Ported, mapped onto `@jini/memory`'s real primitives (verified by reading `packages/memory/src/
+note-store.ts`/`extraction-log.ts`/`verify.ts` directly, not guessed):** `readConfig`/`writeConfig`
+(→ `enabled` only, see gap below), `readIndex`/`writeIndex`, `listEntries`, `buildTree`,
+`updateTreeNode` (`'note not found'` → `404`, matching OD's own `'memory not found'` check pattern),
+`upsertEntry`/`readEntry`/`deleteEntry`, and `ExtractionLog`/`VerifyLog`'s `list`/`clear`/`remove` +
+their `events` emitters (`'attempt'`/`'verify'`) relayed onto the SSE feed's `extraction`/`verify`
+channels alongside `NoteStore.events`'s `'change'` channel — reproducing OD's own "one SSE connection
+multiplexing three channels" design via the new `sse.ts` primitive instead of OD's bespoke
+`createSseResponse`.
+
+**Explicitly NOT ported** (see `src/memory.ts`'s own module doc for the full per-route reasoning):
+`POST /api/memory/rules/suggest` (OD's canvas/deck-annotation distillation — OD-PRODUCT, confirmed by
+direct read of the annotation shape: `targetLabel`/`filePath`/`selectionKind`/`htmlHint`), `POST
+/api/memory/connectors/suggest` / `.../connectors/extract` (OD's project-scoped connector-mining
+pipeline — OD-PRODUCT), `POST /api/memory/extract` (the heuristic-regex pre-turn phase and the
+BYOK-chat-provider-passthrough LLM post-turn phase are both OD-specific composition, per this repo's
+root `AGENTS.md`'s pre-existing note that `@jini/memory`'s "heuristic-regex... prompt-composition
+pieces" were "explicitly left un-ported"), and `GET /api/memory/system-prompt` (`composeMemoryBody`
+does not exist anywhere in `@jini/memory` yet — same `AGENTS.md` note). A real, documented
+capability gap rather than a route-level scoping choice: `@jini/memory`'s `NoteStoreOptions` is
+`{enabled: boolean}` only, so `MemoryConfigPatch`'s other four OD booleans
+(`chatExtractionEnabled`/`profileEnabled`/`rewriteEnabled`/`verifyEnabled`) and its whole
+`extraction` (LLM-provider) config sub-object have no home to port into yet.
+
+Tests: `src/__tests__/memory.test.ts` — 100/100/100/100 coverage, 52 tests. Covers every route's
+success path, malformed-input path, and (for mutating routes) the same-origin-denial path; the
+`'note not found'` → 404 vs. any-other-error → 400 split on tree-node update; a non-Error throw
+stringified rather than crashing; Express registration ordering (asserted via index positions, not
+just "it works"); and the SSE multiplexer's three-channel relay plus listener cleanup on client
+disconnect (`res`'s `'close'` event unsubscribing all three `events.on` registrations, proven by
+asserting `listenerCount` drops to zero, not just "no more writes happen"). No new dependency.
+
+## 2026-07-21 — route-pack audit (`feat/http-routes-and-cli-commands`): summary and remaining verdicts
+
+The task brief for this backlog pass named seven route packs to investigate: chat/model proxy,
+artifact delivery, terminal/PTY, memory routes, automation/routines, DB operations, and editor/host
+tools. Per-pack outcome, verified rather than guessed for every one:
+
+- **DB operations** — fully ported and tested this round (`db-ops.ts`, above).
+- **Editor/host tools** — the one remaining gap from the prior partial port closed this round
+  (`open-in`, above); this pack is now complete.
+- **Memory routes** — the generic majority ported and tested this round (`memory.ts`, above); the
+  remainder is a documented, real capability gap in `@jini/memory` itself (not a route-level choice).
+- **Terminal/PTY** — investigated directly (`apps/daemon/src/routes/terminal.ts` +
+  `apps/daemon/src/terminals.ts`, both read in full). Both of this pack's previously-named blockers
+  (SSE, workspace-root resolution) are now resolved, but a real, unresolved authorization-shape
+  question remains: `ToolExecutor`'s call-scoped `execute()` model does not naturally fit a
+  session-scoped interactive shell, where the actual dangerous surface is the *entire session's
+  ongoing existence* (every subsequent `stdin` write), not just its creation instant. `node-pty` is
+  also a new native compiled dependency with no existing precedent in this workspace. See
+  `ADS-memory/reports/proposals/PROP-http-route-packs-terminal-pty-2026-07-21.md`.
+- **Automation/routines** — investigated directly (`apps/daemon/src/routes/automation.ts`,
+  `apps/daemon/src/routes/routine.ts`, `apps/daemon/src/routines.ts`,
+  `apps/daemon/src/automation-{proposals,templates,ingestions}.ts`, all read in full). `automation.ts`'s
+  real blocker is three un-ported backend modules (1,225 lines), not "needs OD's memory store" as
+  previously stated — though the memory-store dependency specifically is now the *same already-solved*
+  shape `memory.ts` handled. `routine.ts`'s CRUD is blocked on a real `RoutineStore` persistence-port
+  design decision (the `routines`/`routine_runs` tables are explicitly out of scope per
+  `packages/sqlite/source-map.md`). Positive finding: the underlying `routines.ts` scheduler (726
+  lines — DST-safe timezone math, race-safe scheduled-slot persistence, already fully
+  dependency-injected via `RoutinePersistence`/`RoutineRunHandler`) is genuinely clean and portable
+  today, but belongs in `@jini/daemon` (no HTTP surface of its own), not this package — flagged as a
+  strong, well-scoped follow-up recommendation. See `ADS-memory/reports/proposals/
+  PROP-http-route-packs-automation-routines-2026-07-21.md`.
+- **Chat/model proxy** — investigated directly (full route inventory confirmed against the actual
+  2267-line file; the OpenRouter `'X-Title': 'Open Design'` product-identity leak confirmed at its
+  exact line; the tool-loop turn-runners' missing duplicate-`end`-event guard confirmed by reading
+  `runTurn`/`runAnthropicToolTurn`/`runGeminiToolTurn` directly — none of the three declares the
+  `ended`-flag guard every non-tool-loop streamer in the same file has). The real blocker is a
+  cross-package architecture question, not effort: `@jini/agent-runtime` already owns multi-provider
+  wire-protocol knowledge in this codebase (`providers/model-catalog.ts`, `claude-stream.ts`/
+  `copilot-stream.ts`/`qoder-stream.ts`, and — concretely — `role-marker-guard.ts`, already the
+  ported/generalized version of the exact contamination-guard mechanism chat.ts's tool-loop runners
+  use), making it a stronger candidate home than `@jini/http`, which has zero provider-specific
+  knowledge anywhere in its existing surface. See `ADS-memory/reports/proposals/
+  PROP-http-route-packs-chat-model-proxy-2026-07-21.md`.
+- **Artifact delivery** — re-confirmed against this file's own pre-existing, already-thorough
+  classification (row #32, `live-artifact.ts`, OD-PRODUCT: "every dependency is OD's project/
+  tool-grant model," a real independent access-control gap noted, no generic sliver found). No new
+  investigation performed beyond re-citing that already-verified row; nothing to port. Not proposal-
+  doc-worthy — this is a clear negative finding, not a genuinely undecided question.
+
+Two new generic prerequisites this pass built and dogfooded: `sse.ts` (§ above; `runs.ts` itself was
+refactored to consume it, proving reusability rather than asserting it) and `workspace-root.ts` (§
+above; consumed by `host-tools.ts`'s `open-in` route this same pass).

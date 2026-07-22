@@ -34,8 +34,8 @@ only the generic Express-assembly-and-listen skeleton is ported here.
 - **`@jini/agent-runtime` wiring.** `CreateLocalNodeDaemonConfig.agents` is accepted in the type
   for forward-compat but not wired to anything — no registry-to-daemon integration exists anywhere
   in this codebase yet.
-- **SSE.** `@jini/http`'s adapter is JSON-route-only so far (see that package's own "Explicitly
-  deferred" section) — nothing here changes that.
+- **Additional streaming projections.** The generic lifecycle SSE run transport is mounted here;
+  AGUI, terminal sessions, and product-specific stream families remain out of scope.
 
 ## Design decisions
 
@@ -119,3 +119,82 @@ on all 4 metrics (statements/branches/functions/lines), 49 tests, 3 test files.
 middlewares, the route-registration guard, `configuredAllowedOrigins`, and the generic daemon-status
 routes. `express` (`^4.21.0`) + `@types/express` (devDependency) — this package's own composition
 root creates the real Express app.
+
+## 2026-07-19 addition — lifecycle HTTP vertical slice and restart recovery
+
+`createLocalNodeDaemon` now awaits `RunLifecycle.rehydrate()` immediately after
+opening its SQLite event log and before it accepts HTTP traffic. That rebuilds
+the lifecycle's process-local status/idempotency indexes from durable records;
+an interrupted non-terminal run is conclusively recorded as a resumable
+failure because its child process cannot survive a host restart. If rehydration
+itself fails, the SQLite handle is closed before boot rejects.
+
+The composition root registers `@jini/http`'s generic run transport:
+`POST /api/runs`, `GET /api/runs/:runId`,
+`POST /api/runs/:runId/cancel`, and `GET /api/runs/:runId/events` (SSE with
+`Last-Event-ID` replay). `CreateLocalNodeDaemonConfig.onRunStarted` is an
+optional host-owned driver hook invoked only after the lifecycle has durably
+started a run. This keeps agent selection, prompt construction, working-root
+resolution, and capability policy in the consuming host rather than making
+the Node preset a product runtime. The integration test exercises create,
+live SSE, reconnect, idempotency, cancel, stop/restart, and durable replay
+over real sockets.
+
+## 2026-07-21 addition — local daemon-registry discovery record (`discoveryFile`)
+
+Closes the gap `packages/cli/source-map.md`'s own 2026-07-21 investigation named: "nothing
+persists that URL anywhere a *separate* CLI process could find it (no IPC status server, no port
+file, no pidfile)." `createLocalNodeDaemon` now writes a small, atomically-written JSON record
+(`{url, host, port, pid, startedAt}`) once it is actually listening, via `@jini/sidecar`'s new
+`daemon-registry.ts` primitives (`writeDaemonRegistryRecord`/`removeDaemonRegistryRecordIfCurrent`/
+`resolveDaemonRegistryPath`) — see that package's own matching source-map.md entry for the
+low-level design (atomic write, guarded removal, pid-liveness verification).
+
+**Why `dataDir`-scoped, not a single machine-wide well-known path.** The task's own open question
+was whether multiple daemons on one machine is a real scenario here. It is not a *new* scenario
+this feature had to invent support for — it already exists structurally: two `createLocalNodeDaemon`
+calls already require two different `dataDir`s (each opens its own `<dataDir>/events.db`; sharing
+one would already corrupt sqlite state). Scoping the registry record to
+`resolveDaemonRegistryPath(dataDir)` (`<dataDir>/daemon.json`, a sibling of `events.db`) inherits
+that same isolation for free — two daemons on one machine get two non-colliding records with zero
+new configuration, and there is no single global path to argue over or collide on. This mirrors
+`resolveDaemonUrl`'s own "conservative default, fully host-overridable" pattern: `discoveryFile`
+defaults to the `dataDir`-derived path, accepts an explicit override string, or `false` to disable
+writing a record at all.
+
+**New `CreateLocalNodeDaemonConfig.discoveryFile?: string | false`.** The write happens inside the
+`'listening'` event handler, *before* `createLocalNodeDaemon`'s own returned promise resolves — a
+caller that immediately shells out to a CLI command right after `await createLocalNodeDaemon(...)`
+must not lose a race against this module's own write. `stop()` removes the record via
+`removeDaemonRegistryRecordIfCurrent(registryPath, process.pid)` — the pid guard (matching
+`json-file.ts`'s pre-existing `removePointerIfCurrent` pattern) means a slow-shutting-down old
+daemon can never delete a newer daemon's already-written record on a reused `dataDir`.
+
+**Both the write and the removal are best-effort by explicit design, not an oversight.** Wrapped in
+try/catch and silently swallowed on failure: the discovery record is a convenience for automatic
+CLI discovery, not a correctness requirement for the daemon itself (a caller can always fall back
+to an explicit `--daemon-url`/env var), so an unwritable `dataDir` must not fail daemon boot, and a
+failed cleanup must not fail an otherwise-successful graceful shutdown. Proven with a real,
+deterministic failure (an `ENOTDIR`-forcing blocker file in the registry path's ancestor directory
+— privilege-independent, unlike a chmod-based test, which does not actually deny access when tests
+run as root, per `packages/sidecar/source-map.md`'s own note on the same issue) rather than an
+environment-dependent permission trick.
+
+**Not built.** No change to `resolveDaemonUrl` itself (that lives in `@jini/cli` and already had its
+injection point); no attempt to also expose the record over `@jini/sidecar`'s NDJSON-IPC surface
+(`json-ipc.ts`) — a flat JSON pointer file is sufficient for "read this once to get a URL" and
+avoids standing up a long-lived IPC server just for discovery. See `@jini/cli`'s own source-map.md
+for the reader side (`local-daemon-discovery.ts`).
+
+**Tests**: 8 new cases appended to `src/__tests__/create-local-node-daemon.test.ts`'s existing
+real-socket suite (default path + content shape, resolves before the daemon's own promise does,
+custom `discoveryFile`, `discoveryFile: false`, `stop()` removes the record, two dataDirs on one
+"machine" get two non-colliding records, write-failure-is-best-effort via the ENOTDIR trick,
+removal-failure-is-best-effort via mocking `@jini/sidecar`'s export). 100/100/100/100 coverage
+maintained across the whole package (60 tests, 3 files) — `pnpm --dir packages/node-host exec
+vitest run --coverage`.
+
+## Dependencies (updated)
+
+Adds `@jini/sidecar` (workspace) — `writeDaemonRegistryRecord`/`removeDaemonRegistryRecordIfCurrent`/
+`resolveDaemonRegistryPath`.

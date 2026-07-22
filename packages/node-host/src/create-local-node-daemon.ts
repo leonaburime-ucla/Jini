@@ -4,13 +4,20 @@
  * The "host preset" (extraction-plan.md §2.4) that lets a brand-new product boot a running daemon
  * process by implementing zero interfaces: assembles `@jini/sqlite`'s durable `EventLog`,
  * `@jini/daemon`'s `RunLifecycle` and `AgentExecutor` (the driver that actually spawns an agent
- * CLI subprocess for the 9 v1-supported defs — see `@jini/daemon`'s own source-map.md), an Express
+ * CLI subprocess for the 18 currently-supported defs — see `@jini/daemon`'s own source-map.md), an Express
  * app wrapped in `@jini/http`'s route-registration guard and security middleware, a caller's own
  * `@jini/core` packs, and the generic daemon-status routes, then listens and returns `{url, server,
  * stop}`. Generalized from OD's `startServer()` — see `source-map.md` for the exact line-by-line
  * provenance and drop-list (every plugin/design-system/connector/routine/media/marketplace/
  * telemetry/project route `startServer` also wires is explicitly out of scope; this is the generic
  * assembly skeleton only).
+ *
+ * Also writes (2026-07-21) a `@jini/sidecar`-backed local daemon-registry record — see
+ * `resolveDaemonRegistryPath`'s own doc and this file's `CreateLocalNodeDaemonConfig.discoveryFile`
+ * — once the real bound port is known, and removes it during `stop()`. This is the missing daemon
+ * side of `@jini/cli`'s `resolveDaemonUrl({ discover })` injection point (see that package's
+ * `local-daemon-discovery.ts` and its own `source-map.md`'s 2026-07-21 investigation, which found
+ * no such record existed anywhere a separate CLI process could read).
  */
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -25,10 +32,13 @@ import {
   configuredAllowedOrigins,
   installRouteRegistrationGuard,
   mountPackHttp,
+  registerRunRoutes,
   registerApiBearerAuthMiddleware,
   registerApiOriginGuardMiddleware,
   registerDaemonStatusRoutes,
+  type RunStartHandler,
 } from '@jini/http';
+import { removeDaemonRegistryRecordIfCurrent, resolveDaemonRegistryPath, writeDaemonRegistryRecord } from '@jini/sidecar';
 
 import { closeHttpServer, normalizeDaemonBindHost } from './host-bootstrap.js';
 
@@ -107,6 +117,22 @@ export interface CreateLocalNodeDaemonConfig<
    * codebase today (see extraction-plan.md and this package's `source-map.md`).
    */
   agents?: unknown[];
+  /** Optional host-owned driver attached immediately after `POST /api/runs` durably starts a run. */
+  onRunStarted?: RunStartHandler;
+  /**
+   * Where this daemon's local discovery record (URL/host/port/pid) is written once it starts
+   * listening, so a separate CLI process on the same machine can find it via
+   * `@jini/cli`'s `createLocalDaemonDiscovery`. Defaults to `resolveDaemonRegistryPath(dataDir)`
+   * (`<dataDir>/daemon.json`) — the same conservative, host-overridable-default pattern
+   * `resolveDaemonUrl` itself already uses, and scoped to `dataDir` so two daemons on one machine
+   * (already required to use two different `dataDir`s for two independent sqlite files) never
+   * collide on a single registry path. Pass `false` to disable writing a discovery record
+   * entirely. Writing (and removing, on `stop()`) this record is always best-effort: a failure
+   * here (e.g. an unwritable `dataDir`) never fails daemon startup or shutdown — the record is a
+   * convenience for automatic discovery, not a correctness requirement, and a caller can always
+   * fall back to an explicit `--daemon-url`/env var.
+   */
+  discoveryFile?: string | false;
 }
 
 export interface LocalNodeDaemon {
@@ -182,6 +208,7 @@ export async function createLocalNodeDaemon(
   const env = config.env ?? process.env;
   const host = normalizeDaemonBindHost(config.host ?? DEFAULT_HOST);
   const requestedPort = config.port ?? 0;
+  const registryPath = config.discoveryFile === false ? null : (config.discoveryFile ?? resolveDaemonRegistryPath(config.dataDir));
 
   // @jini/http's own `guardSameOrigin` (used by the daemon-status shutdown route below) resolves
   // `bindHost` purely from real `process.env.JINI_BIND_HOST` — it has no parameter path for an
@@ -196,13 +223,24 @@ export async function createLocalNodeDaemon(
 
   const eventLog = createSqliteEventLog(join(config.dataDir, 'events.db'));
   const runLifecycle = createRunLifecycle({ eventLog });
+  try {
+    await runLifecycle.rehydrate();
+  } catch (error) {
+    // Rehydration happens before the HTTP server exists, so it cannot use the
+    // later bind-failure cleanup path. Never leak the sqlite handle on corrupt
+    // or otherwise unreadable durable history.
+    await eventLog.close();
+    throw error;
+  }
   // Zero-config default, unlike ToolExecutorToken (which needs a caller-supplied
   // ToolRegistry and is therefore NOT auto-bound here — see this file's own
   // KernelBoundIds doc and packages/daemon/source-map.md's AgentExecutor
   // section): createAgentExecutor's own defaults already resolve the real
   // @jini/agent-runtime registry, launch resolution, and node:child_process
   // spawn, so every caller gets a working AgentExecutor with no additional
-  // wiring.
+  // wiring. ACP agents intentionally still require a host-injected permission
+  // policy before any native tool request can proceed; that fail-closed
+  // authority decision has no safe zero-config default.
   const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle });
 
   const kernelBindings = bindings()
@@ -249,6 +287,12 @@ export async function createLocalNodeDaemon(
     env,
   });
 
+  registerRunRoutes(
+    app,
+    { lifecycle: runLifecycle, ...(config.onRunStarted === undefined ? {} : { onStarted: config.onRunStarted }) },
+    { resolvedPortRef },
+  );
+
   mountPackHttp(app, config.packs, daemon);
 
   let shuttingDown = false;
@@ -260,6 +304,16 @@ export async function createLocalNodeDaemon(
     if (!stopPromise) {
       stopPromise = (async () => {
         await closeHttpServer(server);
+        if (registryPath !== null) {
+          // Best-effort (see this file's own `discoveryFile` doc): a daemon that already served
+          // every request successfully must not fail its own shutdown just because its discovery
+          // record couldn't be removed (e.g. `dataDir` became unwritable mid-run).
+          try {
+            await removeDaemonRegistryRecordIfCurrent(registryPath, process.pid);
+          } catch {
+            // Intentionally swallowed — see the try's own comment.
+          }
+        }
         // A caller-supplied `onShutdown` failing must never leak the durable EventLog's open
         // sqlite file handle — `finally` guarantees the close still runs, then the original
         // rejection (if any) propagates to whoever is awaiting `stop()`.
@@ -317,8 +371,30 @@ export async function createLocalNodeDaemon(
         return;
       }
       resolvedPortRef.current = boundPort;
+      const reportedUrl = `http://${resolveReportHost(host)}:${boundPort}`;
 
-      resolve({ url: `http://${resolveReportHost(host)}:${boundPort}`, server, stop });
+      // Writing the discovery record is async; the promise this executor returns must not
+      // resolve — handing the URL back to the caller — until the record a same-machine CLI would
+      // read is actually in place, or a caller that immediately shells out to a CLI command right
+      // after `await createLocalNodeDaemon(...)` could lose the race against its own write.
+      void (async () => {
+        if (registryPath !== null) {
+          try {
+            await writeDaemonRegistryRecord(registryPath, {
+              url: reportedUrl,
+              host: resolveReportHost(host),
+              port: boundPort,
+              pid: process.pid,
+              startedAt: new Date().toISOString(),
+            });
+          } catch {
+            // Best-effort (see this file's own `discoveryFile` doc): a daemon that is otherwise
+            // fully up and serving must not fail to boot just because its discovery record
+            // couldn't be written (e.g. an unwritable dataDir).
+          }
+        }
+        resolve({ url: reportedUrl, server, stop });
+      })();
     });
 
     // `app.listen` throws synchronously when the port is already in use on some Node versions,

@@ -123,6 +123,35 @@ describe('AmrModelLoadingCache', () => {
     expect(fetchRemote).toHaveBeenCalledTimes(2);
   });
 
+  it('reports remoteError on a cached remote list once a subsequent background refresh fails', async () => {
+    const cache = new AmrModelLoadingCache(1000);
+    const fetchPreset = vi.fn(async () => [{ id: 'preset-1', label: 'Preset 1' }]);
+    let call = 0;
+    const fetchRemote = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return [{ id: 'remote-1', label: 'Remote 1' }];
+      throw new Error('refresh failed');
+    });
+
+    await cache.get('scope-a', { fetchPreset, fetchRemote });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Advance past the refresh interval so a second (failing) refresh fires.
+    vi.setSystemTime(1000);
+    await cache.get('scope-a', { fetchPreset, fetchRemote });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A third get() still serves the last-known-good remote list instantly,
+    // now annotated with the error from the background refresh that failed.
+    const result = await cache.get('scope-a', { fetchPreset, fetchRemote });
+    expect(result.source).toBe('remote');
+    expect(result.models).toEqual([{ id: 'remote-1', label: 'Remote 1' }]);
+    expect(result.stale).toBe(true);
+    expect(result.remoteError).toBe('refresh failed');
+  });
+
   it('treats a remote fetch that resolves with zero models as an error (no silent empty catalog)', async () => {
     const cache = new AmrModelLoadingCache();
     const fetchPreset = vi.fn(async () => [{ id: 'preset-1', label: 'Preset 1' }]);

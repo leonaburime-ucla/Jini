@@ -318,6 +318,28 @@ describe('detectAgents / detectAgentsStream — full probe pipeline (via the rea
     expect(amr.models).toEqual([]);
   });
 
+  it('safeProbe isolates a fault thrown by an injected amrProfileResolver and reports the agent unavailable', async () => {
+    const bin = path.join(dir, 'vela');
+    makeExecutable(bin);
+    mockState.responses.set(JSON.stringify(['--version']), { stdout: '0.9.0\n' });
+    // Live model fetch fails (non-retriable), so `probe()` falls through to
+    // `withRememberedAmrModels`, which calls straight into the injected
+    // resolver with no try/catch of its own — a thrown resolver therefore
+    // rejects `probe()` itself, and `safeProbe` must catch that rejection
+    // (rather than letting one adapter's fault collapse the whole picker).
+    mockState.responses.set(JSON.stringify(['model', 'list', '--format', 'json']), {
+      error: new Error('malformed response'),
+    });
+    const throwingResolver: AmrProfileResolver = {
+      resolveProfile: () => {
+        throw new Error('resolver blew up');
+      },
+    };
+    const results = await detectAgents({ amr: { VELA_BIN: bin } }, throwingResolver);
+    const amr = results.find((a) => a.id === 'amr')!;
+    expect(amr.available).toBe(false);
+  });
+
   it('amr: a successful live fetch short-circuits withRememberedAmrModels without consulting remembered state', async () => {
     const bin = path.join(dir, 'vela');
     makeExecutable(bin);

@@ -20,10 +20,11 @@
 // Cursor's MCP config — those are the de-facto interchange formats — so
 // users can copy-paste between tools without translation.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { pathContains } from '@jini/platform';
+import { writeSecretFileAtomic } from './secure-write.js';
 
 /** Wire-level transport discriminator for how the daemon connects to an external MCP server. */
 export type McpTransport = 'stdio' | 'sse' | 'http';
@@ -239,7 +240,11 @@ const writeLocks = new Map<string, Promise<unknown>>();
  * Sanitize and atomically write the MCP config to `<dataDir>/mcp-config.json`.
  * Uses a per-`dataDir` promise-chain mutex so concurrent writes serialize
  * instead of racing. The body is sanitized through `sanitizeMcpConfig` before
- * being written, and the file is replaced via an atomic rename-over-tmp.
+ * being written. This file may carry environment variables and
+ * `Authorization` header values (API keys, bearer tokens — see
+ * `McpServerConfig.env`/`.headers`), so it is written with owner-only
+ * (0600) permissions from the very first byte via `writeSecretFileAtomic`
+ * rather than a post-rename chmod (CR-006 / SEC-RB-002).
  * @param dataDir The resolved runtime data directory.
  * @param body The raw config body to sanitize and persist.
  * @returns The sanitized `McpConfig` that was written to disk.
@@ -260,11 +265,7 @@ export async function writeMcpConfig(
 
 async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
   const next = sanitizeMcpConfig(body);
-  const file = configFile(dataDir);
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';
-  await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
-  await rename(tmp, file);
+  await writeSecretFileAtomic(configFile(dataDir), JSON.stringify(next, null, 2));
   return next;
 }
 
@@ -273,11 +274,31 @@ async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
 // ───────────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve `p` to its real (symlink-free) path when it exists on disk;
+ * falls back to lexical `path.resolve` (still normalizing `..`/`.`
+ * segments) when it does not exist yet, or the platform can't resolve it.
+ */
+function resolveRealOrLexical(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
  * True when `cwd` is a daemon-managed project directory under `projectsDir`
  * (= safe to write `.mcp.json` into without risk of clobbering a user-owned
  * file). Git-linked projects whose cwd points at the user's own repo, and
  * the no-project fallback that resolves to the project root, both return false
  * — the daemon must NOT write external-MCP config into either of those.
+ *
+ * Both `cwd` and `projectsDir` are realpath-resolved before the containment
+ * check (falling back to lexical `path.resolve` normalization for a path
+ * that doesn't exist on disk yet), and containment is decided with
+ * `@jini/platform`'s separator-aware `pathContains` rather than a raw
+ * string-prefix check — a `..`-containing path or a symlinked descendant
+ * can defeat a plain `startsWith` (CR-006 / SEC-RB-011).
  */
 export function isManagedProjectCwd(
   cwd: string | null | undefined,
@@ -285,8 +306,10 @@ export function isManagedProjectCwd(
 ): boolean {
   if (!cwd || typeof cwd !== 'string') return false;
   if (typeof projectsDir !== 'string' || projectsDir.length === 0) return false;
-  if (cwd === projectsDir) return false; // projects root, not a project
-  return cwd.startsWith(projectsDir + path.sep);
+  const resolvedProjectsDir = resolveRealOrLexical(projectsDir);
+  const resolvedCwd = resolveRealOrLexical(cwd);
+  if (resolvedCwd === resolvedProjectsDir) return false; // projects root, not a project
+  return pathContains(resolvedProjectsDir, resolvedCwd);
 }
 
 /**

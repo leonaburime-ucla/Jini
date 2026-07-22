@@ -19,13 +19,16 @@ type MarkdownFenceRange = { start: number; end: number; html: string };
 
 function findUnskipped(content: string, needle: string, fromIndex: number, ranges: ReadonlyArray<Range>): number {
   let from = fromIndex;
-  while (from <= content.length) {
+  // `needle` (always `CLOSE`, non-empty) makes `content.indexOf` itself
+  // return -1 once `from` runs past `content.length` — the loop always exits
+  // through the `idx === -1` check below, so no bounded `while` or trailing
+  // fallback return is needed for this to provably terminate.
+  for (;;) {
     const idx = content.indexOf(needle, from);
     if (idx === -1) return -1;
     if (!rangeContains(ranges, idx)) return idx;
     from = idx + needle.length;
   }
-  return -1;
 }
 
 // Like `findUnskipped(OPEN, …)` but also rejects prefix-shared literals like
@@ -34,7 +37,10 @@ function findUnskipped(content: string, needle: string, fromIndex: number, range
 // so the two paths agree on what a renderer will treat as a tag.
 function findRealOpen(content: string, fromIndex: number, ranges: ReadonlyArray<Range>): number {
   let from = fromIndex;
-  while (from <= content.length) {
+  // Same reasoning as findUnskipped: `OPEN` is a fixed non-empty literal, so
+  // `content.indexOf` alone provides the bound safety once `from` runs past
+  // `content.length` — no separate bounded `while` is needed.
+  for (;;) {
     const idx = content.indexOf(OPEN, from);
     if (idx === -1) return -1;
     if (rangeContains(ranges, idx) || !isRealArtifactOpenAt(content, idx)) {
@@ -43,7 +49,6 @@ function findRealOpen(content: string, fromIndex: number, ranges: ReadonlyArray<
     }
     return idx;
   }
-  return -1;
 }
 
 /**
@@ -99,7 +104,10 @@ function findRecoverablePrecedingHtmlArtifact(sourceText: string): string | null
   const ranges: Range[] = unclosedFenceStart !== null ? [...baseRanges, [unclosedFenceStart, sourceText.length]] : baseRanges;
 
   let from = 0;
-  while (from <= sourceText.length) {
+  // `findRealOpen` already returns -1 once `from` runs past `sourceText.length`
+  // (it inherits the same `indexOf`-based bound safety), so this loop also
+  // always exits through an inner return — no trailing fallback needed.
+  for (;;) {
     const open = findRealOpen(sourceText, from, ranges);
     if (open === -1) return null;
 
@@ -119,8 +127,6 @@ function findRecoverablePrecedingHtmlArtifact(sourceText: string): string | null
 
     from = end + CLOSE.length;
   }
-
-  return null;
 }
 
 function stripRecoverablePrecedingHtml(content: string, sourceText: string): string | null {
@@ -163,7 +169,11 @@ function parseArtifactAttrs(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   let m: RegExpExecArray | null = re.exec(raw);
   while (m !== null) {
-    out[m[1] as string] = (m[2] ?? m[3] ?? '') as string;
+    // The pattern's quote alternation means exactly one of group 2 (double-
+    // quoted) / group 3 (single-quoted) participates in any successful match
+    // — never both, never neither — so `m[2] ?? m[3]` is always defined; the
+    // cast just satisfies `noUncheckedIndexedAccess`.
+    out[m[1] as string] = (m[2] ?? m[3]) as string;
     m = re.exec(raw);
   }
   return out;

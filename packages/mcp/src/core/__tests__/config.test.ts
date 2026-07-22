@@ -154,6 +154,15 @@ describe('readMcpConfig / writeMcpConfig', () => {
     const final = await readMcpConfig(dir);
     expect(final.servers[0]?.id).toBe('b'); // last write wins
   });
+
+  it('writes mcp-config.json with owner-only (0600) permissions (CR-006 / SEC-RB-002 — env/headers may carry API keys)', async () => {
+    const dir = tmp();
+    await writeMcpConfig(dir, { servers: [{ id: 'a', command: 'node' }] });
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(path.join(dir, 'mcp-config.json')).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
+  });
 });
 
 describe('isManagedProjectCwd', () => {
@@ -165,6 +174,59 @@ describe('isManagedProjectCwd', () => {
     expect(isManagedProjectCwd(null, projects)).toBe(false);
     expect(isManagedProjectCwd(undefined, projects)).toBe(false);
     expect(isManagedProjectCwd('/data/projects/p', '')).toBe(false);
+  });
+
+  it('rejects a lexical ".." escape even though the raw string starts with the projects-root prefix (CR-006 / SEC-RB-011)', () => {
+    const projects = '/data/projects';
+    expect(isManagedProjectCwd(`${projects}/../escape`, projects)).toBe(false);
+    expect(isManagedProjectCwd(`${projects}/p1/../../escape`, projects)).toBe(false);
+  });
+
+  describe('realpath-based containment against a real filesystem', () => {
+    const realDirs: string[] = [];
+    function realTmp(): string {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), 'jini-mcp-managed-cwd-'));
+      realDirs.push(d);
+      return d;
+    }
+    afterEach(() => {
+      for (const d of realDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+    });
+
+    it('accepts a real subdirectory of the projects root after realpath resolution', () => {
+      const root = realTmp();
+      const projects = path.join(root, 'projects');
+      fs.mkdirSync(projects);
+      const proj = path.join(projects, 'p1');
+      fs.mkdirSync(proj);
+      expect(isManagedProjectCwd(proj, projects)).toBe(true);
+    });
+
+    it('rejects a symlinked descendant that resolves outside the projects root', () => {
+      const root = realTmp();
+      const projects = path.join(root, 'projects');
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(projects);
+      fs.mkdirSync(outside);
+      const evilLink = path.join(projects, 'evil');
+      fs.symlinkSync(outside, evilLink);
+      expect(isManagedProjectCwd(evilLink, projects)).toBe(false);
+    });
+
+    it('rejects a symlinked projects root whose real target differs from a symlinked cwd elsewhere', () => {
+      const root = realTmp();
+      const realProjects = path.join(root, 'real-projects');
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(realProjects);
+      fs.mkdirSync(outside);
+      const projectsLink = path.join(root, 'projects-link');
+      fs.symlinkSync(realProjects, projectsLink);
+      // A path that is lexically under the symlinked root name, but whose
+      // real target is outside the real projects tree.
+      const evilLink = path.join(realProjects, 'evil');
+      fs.symlinkSync(outside, evilLink);
+      expect(isManagedProjectCwd(path.join(projectsLink, 'evil'), projectsLink)).toBe(false);
+    });
   });
 });
 

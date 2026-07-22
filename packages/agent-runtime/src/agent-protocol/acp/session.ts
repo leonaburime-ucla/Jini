@@ -32,7 +32,6 @@ import {
   rpcErrorRetryable,
   promotedOpenCodeSessionErrorPayload,
   formatUsage,
-  choosePermissionOutcome,
 } from './rpc.js';
 import {
   acpRawEventShape,
@@ -53,6 +52,50 @@ import {
 import { buildAcpSessionNewParams, buildPromptBlocks, type AcpMcpServerInput } from './session-params.js';
 import { noopAccountFailureClassifier, type AccountFailureClassifier } from './account-failure.js';
 
+/** One option offered by an ACP agent for a pending tool permission request. */
+export interface AcpPermissionOption {
+  readonly optionId: string;
+  readonly kind?: string;
+  readonly name?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * The complete, host-auditable context for an ACP agent's request to perform
+ * one of *its own* tool calls. Selecting an option authorizes or rejects the
+ * agent's native tool execution; it is intentionally distinct from Jini's
+ * `ToolExecutor`, which only executes Jini-registered delegated tools.
+ */
+export interface AcpPermissionRequest {
+  readonly requestId: JsonRpcId;
+  readonly sessionId: string | null;
+  readonly toolCall: JsonObject | null;
+  readonly options: readonly AcpPermissionOption[];
+  /** Original ACP request parameters for forward-compatible audit storage. */
+  readonly rawParams: JsonObject;
+}
+
+/** A host's response to an {@link AcpPermissionRequest}. */
+export type AcpPermissionDecision =
+  | { readonly outcome: 'selected'; readonly optionId: string }
+  | { readonly outcome: 'cancelled' };
+
+/**
+ * Injected ACP authorization seam. It may be async so a host can persist an
+ * audit record or await an interactive policy decision before replying.
+ */
+export type AcpPermissionHandler = (
+  request: AcpPermissionRequest,
+) => AcpPermissionDecision | Promise<AcpPermissionDecision>;
+
+/** Public state/abort handle returned by {@link attachAcpSession}. */
+export interface AcpSessionController {
+  hasFatalError(): boolean;
+  getDurableSessionId(): string | null;
+  completedSuccessfully(): boolean;
+  abort(): void;
+}
+
 /**
  * Options for `attachAcpSession`. All fields except `child`, `prompt`, and
  * `send` are optional and carry sensible defaults.
@@ -67,6 +110,13 @@ export interface AttachAcpSessionOptions {
   // Passed through to buildAcpSessionNewParams — see AcpSessionOptions.
   envFormat?: 'array' | 'map';
   send: (event: string, payload: unknown) => void;
+  /**
+   * Receives every native ACP tool-permission request before the agent can
+   * execute it. Omit it only when the host intends the session to fail closed
+   * on its first permission request; a runnable ACP host injects a policy
+   * that records and selects an offered option.
+   */
+  onPermissionRequest?: AcpPermissionHandler;
   clientName?: string;
   clientVersion?: string;
   stageTimeoutMs?: number;
@@ -106,7 +156,8 @@ export interface AttachAcpSessionOptions {
  *    - `agent_message_chunk` → `text_delta` (with DSML and tool-call text suppression)
  *    - `tool_call` / `tool_call_update` → deferred `tool_use` / `tool_result` pairs
  *    - status updates → `agent.status` events
- * 6. Handles `session/request_permission` calls by auto-approving.
+ * 6. Handles `session/request_permission` calls through an injected policy,
+ *    failing closed when no policy is supplied.
  * 7. On prompt completion, flushes suppression buffers, emits usage, and closes stdin.
  *
  * Returns a controller object that the caller may use to query session state
@@ -132,9 +183,10 @@ export function attachAcpSession({
   modelUnavailableErrorCode,
   accountFailureClassifier = noopAccountFailureClassifier,
   resumeSessionId,
+  onPermissionRequest,
   onCliReady,
   onSessionInit,
-}: AttachAcpSessionOptions) {
+}: AttachAcpSessionOptions): AcpSessionController {
   const runStartedAt = Date.now();
   const effectiveCwd = path.resolve(cwd || process.cwd());
   if (!child.stdin || !child.stdout) {
@@ -173,6 +225,7 @@ export function attachAcpSession({
   let dsmlArtifactSuppressorToolCallId: string | null = null;
   let dsmlArtifactSuppressorArmedAfterText = false;
   let dsmlArtifactSuppressorSawIncrementalProse = false;
+  const pendingPermissionRequestIds = new Set<JsonRpcId>();
   const toolCallTextSuppressor = createToolCallTextSuppressor();
   let toolCallTextSuppressorLastSuppressedChars = 0;
   const artifactTextSuppressionSummary = {
@@ -480,18 +533,64 @@ export function attachAcpSession({
 
   const replyPermission = (raw: JsonObject) => {
     const params = asObject(raw.params);
-    const optionId = choosePermissionOutcome(params?.options);
-    if (!optionId || !isJsonRpcId(raw.id)) {
+    if (!params || !isJsonRpcId(raw.id)) {
       fail(`unhandled ACP permission request: ${JSON.stringify(raw)}`);
       return;
     }
-    resetStageTimer('session/request_permission');
+    const requestId = raw.id;
+
+    const optionRecords = Array.isArray(params.options)
+      ? params.options.filter(
+          (option): option is AcpPermissionOption =>
+            Boolean(asObject(option)) && typeof asObject(option)?.optionId === 'string',
+        )
+      : [];
+    const request: AcpPermissionRequest = {
+      requestId,
+      sessionId: typeof params.sessionId === 'string' ? params.sessionId : null,
+      toolCall: asObject(params.toolCall) ?? null,
+      options: optionRecords,
+      rawParams: params,
+    };
+
+    const respond = (decision: AcpPermissionDecision) => {
+      pendingPermissionRequestIds.delete(requestId);
+      if (aborted || finished) return;
+      if (
+        decision.outcome === 'selected' &&
+        !optionRecords.some((option) => option.optionId === decision.optionId)
+      ) {
+        fail(`ACP permission handler selected an unavailable option: ${decision.optionId}`);
+        return;
+      }
+      resetStageTimer('session/request_permission');
+      try {
+        sendRpcResult(stdin, requestId, {
+          outcome:
+            decision.outcome === 'selected'
+              ? { outcome: 'selected', optionId: decision.optionId }
+              : { outcome: 'cancelled' },
+        });
+      } catch (err) {
+        fail(`stdin write failed: ${errorMessage(err)}`);
+      }
+    };
+
+    const rejectHandlerFailure = (err: unknown) => {
+      pendingPermissionRequestIds.delete(requestId);
+      fail(`ACP permission handler failed: ${errorMessage(err)}`);
+    };
+
+    pendingPermissionRequestIds.add(requestId);
+    if (!onPermissionRequest) {
+      pendingPermissionRequestIds.delete(requestId);
+      fail('ACP permission request received without an injected permission handler');
+      return;
+    }
     try {
-      sendRpcResult(stdin, raw.id, {
-        outcome: { outcome: 'selected', optionId },
-      });
+      Promise.resolve(onPermissionRequest(request)).then(respond, rejectHandlerFailure);
     } catch (err) {
-      fail(`stdin write failed: ${errorMessage(err)}`);
+      rejectHandlerFailure(err);
     }
   };
 
@@ -891,6 +990,18 @@ export function attachAcpSession({
       aborted = true;
       finished = true;
       clearStageTimer();
+      // ACP requires pending permission requests to receive a terminal
+      // `cancelled` response when the prompt turn is cancelled. Do this
+      // before closing stdin, which may otherwise make the response
+      // impossible to deliver.
+      for (const requestId of pendingPermissionRequestIds) {
+        try {
+          sendRpcResult(stdin, requestId, { outcome: { outcome: 'cancelled' } });
+        } catch {
+          // Closing stdin/process signalling below remains the fallback.
+        }
+      }
+      pendingPermissionRequestIds.clear();
       if (!child.stdin || child.stdin.destroyed || child.stdin.writableEnded)
         return;
       // Only cancel an established session; before session/new resolves there

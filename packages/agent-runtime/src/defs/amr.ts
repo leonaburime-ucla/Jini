@@ -59,32 +59,37 @@ export function normalizeVelaModelId(rawId: string): string | null {
   return withoutPrefix.replace(/_/g, '-');
 }
 
+// Every capture group below is a mandatory (non-optional) part of its
+// pattern — `(haiku|opus|sonnet)` is a required alternation and `(\d+)`
+// requires 1+ digit characters — so none can be empty/undefined when the
+// overall regex matches. `family` needs an explicit assertion because it's
+// the only capture with a method called on it directly; the others type-check
+// fine interpolated bare (`noUncheckedIndexedAccess` types them
+// `string | undefined`, but TypeScript doesn't restrict template-literal
+// interpolation the way it restricts a method call on a possibly-undefined
+// value).
 function normalizeKnownVelaVersionId(rawId: string): string | null {
   const claude = /^claude[_-](haiku|opus|sonnet)[_-](\d+)[_-](\d+)(.*)$/i.exec(rawId);
   if (claude) {
     const [, family, major, minor, suffix = ''] = claude;
-    if (!family || !major || !minor) return null;
-    return `claude-${family.toLowerCase()}-${major}.${minor}${suffix.replace(/_/g, '-')}`;
+    return `claude-${family!.toLowerCase()}-${major}.${minor}${suffix.replace(/_/g, '-')}`;
   }
 
   const gpt = /^gpt_(\d+)_(\d+)(.*)$/i.exec(rawId);
   if (gpt) {
     const [, major, minor, suffix = ''] = gpt;
-    if (!major || !minor) return null;
     return `gpt-${major}.${minor}${suffix.replace(/_/g, '-')}`;
   }
 
   const gemini = /^gemini_(\d+)_(\d+)(.*)$/i.exec(rawId);
   if (gemini) {
     const [, major, minor, suffix = ''] = gemini;
-    if (!major || !minor) return null;
     return `gemini-${major}.${minor}${suffix.replace(/_/g, '-')}`;
   }
 
   const minimax = /^minimax_m(\d+)_(\d+)(.*)$/i.exec(rawId);
   if (minimax) {
     const [, major, minor, suffix = ''] = minimax;
-    if (!major || !minor) return null;
     return `minimax-m${major}.${minor}${suffix.replace(/_/g, '-')}`;
   }
 
@@ -110,8 +115,9 @@ export function parseVelaModels(stdout: string): RuntimeModelOption[] {
   for (const line of String(stdout || '').split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const [rawId] = trimmed.split(/\s+/);
-    if (!rawId) continue;
+    // `trimmed` is already non-empty and has no leading whitespace (checked
+    // above), so its first whitespace-split token is always non-empty too.
+    const rawId = trimmed.split(/\s+/)[0]!;
     const id = normalizeVelaModelId(rawId);
     if (!id || seen.has(id) || !isVelaChatModelId(id)) continue;
     seen.add(id);
@@ -196,33 +202,6 @@ function isRetriableVelaModelsError(error: unknown): boolean {
   ].some((pattern) => message.includes(pattern));
 }
 
-async function fetchVelaModelsWithRetry(
-  resolvedBin: string,
-  env: NodeJS.ProcessEnv,
-): Promise<RuntimeModelOption[]> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= AMR_MODELS_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      const { stdout } = await execAgentFile(resolvedBin, ['models'], {
-        env,
-        timeout: AMR_MODELS_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-      });
-      return parseVelaModels(String(stdout));
-    } catch (error) {
-      lastError = error;
-      if (
-        attempt === AMR_MODELS_RETRY_DELAYS_MS.length ||
-        !isRetriableVelaModelsError(error)
-      ) {
-        throw error;
-      }
-      await sleep(AMR_MODELS_RETRY_DELAYS_MS[attempt] ?? 0);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(velaModelsErrorMessage(lastError));
-}
-
 export async function fetchVelaPresetModels(
   resolvedBin: string,
   env: NodeJS.ProcessEnv,
@@ -239,8 +218,14 @@ export async function fetchVelaRemoteModelsWithRetry(
   resolvedBin: string,
   env: NodeJS.ProcessEnv,
 ): Promise<RuntimeModelOption[]> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= AMR_MODELS_RETRY_DELAYS_MS.length; attempt += 1) {
+  // The internal exhaustion check below (`attempt === AMR_MODELS_RETRY_DELAYS_MS.length`)
+  // always throws on the last allowed attempt — strictly before the `for`
+  // condition itself would ever end the loop — so there's no way to fall
+  // through normally; no trailing fallback throw is needed. That same check
+  // also means `attempt` is always a valid in-bounds index into
+  // `AMR_MODELS_RETRY_DELAYS_MS` whenever we reach the `sleep()` call below
+  // (the assertion just satisfies `noUncheckedIndexedAccess`).
+  for (let attempt = 0; ; attempt += 1) {
     try {
       const { stdout } = await execAgentFile(resolvedBin, ['model', 'list', '--format', 'json'], {
         env,
@@ -249,17 +234,15 @@ export async function fetchVelaRemoteModelsWithRetry(
       });
       return parseVelaModelJson(String(stdout), 'remote');
     } catch (error) {
-      lastError = error;
       if (
         attempt === AMR_MODELS_RETRY_DELAYS_MS.length ||
         !isRetriableVelaModelsError(error)
       ) {
         throw error;
       }
-      await sleep(AMR_MODELS_RETRY_DELAYS_MS[attempt] ?? 0);
+      await sleep(AMR_MODELS_RETRY_DELAYS_MS[attempt]!);
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(velaModelsErrorMessage(lastError));
 }
 
 /** Live account fields parsed from `vela billing summary --format json`. */

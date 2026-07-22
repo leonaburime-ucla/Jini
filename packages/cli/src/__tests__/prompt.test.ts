@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readBodyFromFlags, readPromptFromFlags } from '../prompt.js';
+import { PayloadTooLargeError, readBodyFromFlags, readPromptFromFlags } from '../prompt.js';
 
 describe('readPromptFromFlags', () => {
   it('returns --prompt verbatim when set', async () => {
@@ -70,6 +70,72 @@ describe('readPromptFromFlags', () => {
       fakeStdin.emit('data', 'in');
       fakeStdin.emit('end');
       await expect(pending).resolves.toBe('piped in');
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('rejects with PayloadTooLargeError when a --prompt-file exceeds maxBytes', async () => {
+    const { writeFile, mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'jini-cli-prompt-cap-'));
+    const file = join(dir, 'prompt.txt');
+    await writeFile(file, 'this is way more than five bytes', 'utf8');
+    try {
+      await expect(readPromptFromFlags({ 'prompt-file': file }, { maxBytes: 5 })).rejects.toThrow(
+        PayloadTooLargeError,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a --prompt-file read that is already aborted', async () => {
+    const { writeFile, mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'jini-cli-prompt-abort-'));
+    const file = join(dir, 'prompt.txt');
+    await writeFile(file, 'some content', 'utf8');
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(readPromptFromFlags({ 'prompt-file': file }, { signal: controller.signal })).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects the default stdin reader once the byte cap is exceeded, mid-stream', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {};
+    (fakeStdin as unknown as { pause: () => void }).pause = () => {};
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const pending = readPromptFromFlags({ 'prompt-file': '-' }, { maxBytes: 5 });
+      fakeStdin.emit('data', 'way more than five bytes');
+      await expect(pending).rejects.toThrow(PayloadTooLargeError);
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('cancels the default stdin reader when the signal aborts mid-read', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {};
+    (fakeStdin as unknown as { pause: () => void }).pause = () => {};
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const controller = new AbortController();
+      const pending = readPromptFromFlags({ 'prompt-file': '-' }, { signal: controller.signal });
+      fakeStdin.emit('data', 'partial ');
+      controller.abort();
+      await expect(pending).rejects.toThrow();
     } finally {
       Object.defineProperty(process, 'stdin', { value: original, configurable: true });
     }
@@ -146,6 +212,56 @@ describe('readBodyFromFlags', () => {
     try {
       const result = await readBodyFromFlags({ 'body-file': '-' });
       expect(result).toBe('piped in');
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('rejects with PayloadTooLargeError when a --body-file exceeds maxBytes', async () => {
+    const { writeFile, mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'jini-cli-body-cap-'));
+    const file = join(dir, 'body.txt');
+    await writeFile(file, 'this is way more than five bytes', 'utf8');
+    try {
+      await expect(readBodyFromFlags({ 'body-file': file }, { maxBytes: 5 })).rejects.toThrow(PayloadTooLargeError);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects the default async-iterator stdin reader once the byte cap is exceeded', async () => {
+    const fakeStdin = {
+      [Symbol.asyncIterator]: async function* () {
+        yield 'way ';
+        yield 'more than five bytes';
+      },
+      destroy: () => {},
+    } as unknown as NodeJS.ReadStream;
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      await expect(readBodyFromFlags({ 'body-file': '-' }, { maxBytes: 5 })).rejects.toThrow(PayloadTooLargeError);
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('cancels the default async-iterator stdin reader via an already-aborted signal', async () => {
+    const fakeStdin = {
+      [Symbol.asyncIterator]: async function* () {
+        yield 'piped ';
+        yield 'in';
+      },
+      destroy: () => {},
+    } as unknown as NodeJS.ReadStream;
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(readBodyFromFlags({ 'body-file': '-' }, { signal: controller.signal })).rejects.toThrow();
     } finally {
       Object.defineProperty(process, 'stdin', { value: original, configurable: true });
     }

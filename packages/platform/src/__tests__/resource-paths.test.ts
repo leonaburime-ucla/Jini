@@ -196,4 +196,35 @@ describe('@jini/platform — resource-paths — resolveDataDir', () => {
       spy.mockRestore();
     }
   });
+
+  it('falls back specifically to $LOGNAME when $USER is unset, and to "unknown" when neither is set', async () => {
+    const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => {
+      throw new Error('user info unavailable in this environment');
+    });
+    const previousUser = process.env.USER;
+    const previousLogname = process.env.LOGNAME;
+    try {
+      const parent = await makeTempDir('jini-resource-paths-datadir-blocked-');
+      const blockerFile = join(parent, 'blocker');
+      await writeFile(blockerFile, 'not a directory', 'utf8');
+
+      delete process.env.USER;
+      process.env.LOGNAME = 'fallback-logname';
+      expect(() => resolveDataDir(CONFIG, join(blockerFile, 'nested'), '/unused-root')).toThrow(
+        /Current user: fallback-logname/,
+      );
+
+      delete process.env.USER;
+      delete process.env.LOGNAME;
+      expect(() => resolveDataDir(CONFIG, join(blockerFile, 'nested'), '/unused-root')).toThrow(
+        /Current user: unknown/,
+      );
+    } finally {
+      spy.mockRestore();
+      if (previousUser === undefined) delete process.env.USER;
+      else process.env.USER = previousUser;
+      if (previousLogname === undefined) delete process.env.LOGNAME;
+      else process.env.LOGNAME = previousLogname;
+    }
+  });
 });

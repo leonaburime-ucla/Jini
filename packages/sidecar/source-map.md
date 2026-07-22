@@ -82,3 +82,70 @@ The "patch-router" half of task 4's gate ("a real historical `packages/platform`
 patch routes cleanly" — the sidecar package shares the same gate) depends on
 task 1 (harnesses + sync-ownership manifest), which has not been done yet. Not
 attempted here — see the Programmer handoff report for this task.
+
+## 2026-07-21 addition — `daemon-registry.ts` (local daemon-URL discovery, first real consumer)
+
+Origin: none — this is new, greenfield code, not an OD port. Written to close a real gap
+`packages/cli/source-map.md`'s own 2026-07-21 investigation found: `@jini/node-host`'s
+`createLocalNodeDaemon` resolves a real listening URL but "nothing persists that URL anywhere a
+*separate* CLI process could find it (no IPC status server, no port file, no pidfile)" — and that
+investigation explicitly named this package's own `createJsonIpcServer`/`requestJsonIpc` as
+unused (`grep -rln "requestJsonIpc\|createJsonIpcServer\|bootstrapSidecarRuntime"
+packages/node-host/src packages/daemon/src` found zero call sites at the time). This addition is
+this package's **first real consumer among the locked packages** — before this, `@jini/cli` and
+`@jini/node-host` both existed without ever importing `@jini/sidecar`.
+
+**Why a flat JSON pointer file, not the full NDJSON-IPC surface (`json-ipc.ts`).** The problem is
+"read a URL once, from a separate process, without a live daemon round-trip" — the daemon may not
+even be running yet (or may have just crashed) when the read happens, so a socket-based RPC adds a
+connection-refused failure mode for no benefit over a file read. This package already has the
+exact right-shaped primitive for that: `json-file.ts`'s `writeJsonFile`/`readJsonFile` (atomic
+temp-file-rename write, forgiving read) are the same tools `paths.ts`'s own `current.json`
+namespace pointer (`resolvePointerPath`) already uses for an analogous "what's currently running"
+question. `daemon-registry.ts` is built directly on those two functions plus one genuinely new
+primitive this package had no prior need for:
+
+- **`isProcessAlive(pid)`** — a `process.kill(pid, 0)` liveness probe (no signal is actually sent;
+  `0` only tests deliverability). Returns `true` on success or `EPERM` (process exists, just not
+  signalable by this user — still "alive" for discovery purposes), `false` for `ESRCH` (no such
+  process), a non-positive/non-integer input, or any other unexpected error (treated
+  conservatively as not-confirmed-alive). This is the "verify liveness, don't just trust the file"
+  half of the task's own edge-case list — a naive reader that only checked file existence would
+  hand back a stale daemon's URL after a crash.
+- **`resolveDaemonRegistryPath(dataDir, fileName?)`** — `<dataDir>/daemon.json` by default, a
+  sibling of `@jini/sqlite`'s own `<dataDir>/events.db`. Deliberately `dataDir`-scoped rather than
+  a single machine-wide well-known path — see `@jini/node-host`'s matching source-map.md entry for
+  why that's the right answer to "is multi-daemon-per-machine a real scenario here."
+- **`writeDaemonRegistryRecord`/`removeDaemonRegistryRecordIfCurrent`** — thin, typed wrappers over
+  `writeJsonFile`/`readJsonFile`+`removeFile`. The guarded-removal shape (only remove if the
+  record's `pid` still matches the caller's) is the identical pattern `json-file.ts`'s existing
+  `removePointerIfCurrent` already established for its own pointer file — reused here, not
+  reinvented, for the same reason: a slow-shutting-down old process must never delete a newer
+  process's already-written record.
+- **`readLiveDaemonRegistryRecord`** — the combined "read, validate shape, verify liveness"
+  primitive a CLI-side discovery probe actually needs in one call: a missing file, a
+  malformed/foreign JSON record, and a well-formed record whose `pid` is dead all resolve to
+  `null` (never throw) — discovery failing is an ordinary, expected outcome, not an exceptional
+  one.
+
+**Concurrent writes.** Handled entirely by the pre-existing `writeJsonFile` atomic
+temp-file-rename primitive this module reuses rather than reimplements — every reader observes a
+fully-written record or none at all, never a torn/partial one. Not re-tested here beyond a
+sequential-writes-converge-to-the-last-one case (`daemon-registry.test.ts`); a true
+same-millisecond simultaneous-writer collision on `writeJsonFile`'s own `${filePath}.${pid}.${Date.now()}.tmp`
+naming is a narrow, pre-existing characteristic of that already-shipped primitive, not something
+this addition introduces or was asked to fix.
+
+**Tests**: `src/__tests__/daemon-registry.test.ts` (19 tests) — round-trip, missing/malformed
+record, the crashed-daemon stale-pid case via a **real spawned-then-awaited-exit child process**
+(not a mock) for both `readLiveDaemonRegistryRecord` and `isProcessAlive` directly, guarded
+removal (match/no-match/absent), and `isProcessAlive`'s branches (current-process alive, exited
+child dead, non-integer/zero/negative inputs never even reach `process.kill`, mocked
+`EPERM`/`ESRCH`/unrecognized-error responses). 100/100/100/100 on `daemon-registry.ts` itself;
+package-wide `pnpm --dir packages/sidecar exec vitest run --coverage` is 98.42/92.23/98.21/98.42
+(66 tests total, 2 files), above this package's existing 97/89/98/97 ratchet-baseline gate.
+
+## Dependencies (updated)
+
+No new dependency — `daemon-registry.ts` uses only this package's own existing `json-file.ts`
+exports plus `node:path` and the global `process`.

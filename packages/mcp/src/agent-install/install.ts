@@ -128,6 +128,23 @@ export interface ManualInstallPlan {
 /** Discriminated union of all installation plan shapes returned by `planAgentInstall`. */
 export type InstallPlan = CliInstallPlan | JsonInstallPlan | ManualInstallPlan;
 
+// RESIDUAL RISK (CR-006 / SEC-RB-002): `-e`/`--env KEY=VALUE` is claude's,
+// codex's, and kimi's own documented `mcp add` CLI contract for passing
+// server env vars — a fixed, external interface this package does not
+// control and cannot change unilaterally. Because these values land in
+// `addArgv` (argv), they are visible to any other local process that can
+// list this process's command line (e.g. `ps -ww`) for the — typically very
+// brief — window while the daemon's executor shells out to `claude`/`codex`/
+// `kimi mcp add`. This package only builds the plan (`planAgentInstall`
+// itself performs no fs/spawn, per this file's header comment); there is no
+// executor here yet to redact `addArgv` before logging it, so there is
+// nothing left in this package's own code to redact. Whichever executor
+// eventually drives these plans MUST NOT log/echo `addArgv` verbatim
+// (redact anything that looks like an env value from `-e`/`--env` pairs
+// before writing it to any log/error surface), and should prefer a
+// less-exposed handoff (e.g. piping `env` via stdin, or setting it directly
+// in the spawned child's environment) for any future agent whose CLI
+// supports that instead of argv-only `KEY=VALUE`.
 function envFlags(env: Record<string, string>, flag: string): string[] {
   const out: string[] = [];
   for (const [k, v] of Object.entries(env)) {
@@ -360,13 +377,45 @@ function traeConfigPath(home: string, platform: NodeJS.Platform): string {
 
 // --- Pure JSON merge / removal (the heart of the 'json' strategy) -------
 
+// CR-007: `JsonInstallPlan` is a public shape and `applyJsonInstall` /
+// `removeJsonInstall` are public functions — a caller-supplied `keyPath`/
+// `serverKey` containing `__proto__`, `prototype`, or `constructor` would
+// otherwise let bracket-notation traversal (`cursor[key]`) walk onto (and
+// then assign directly onto) `Object.prototype` or a constructor function,
+// polluting every plain object in the process rather than merely the target
+// config file. Every segment is validated before any traversal/assignment
+// happens, so a dangerous plan is rejected outright instead of partially
+// applied.
+const DANGEROUS_OBJECT_PATH_SEGMENTS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+]);
+
+function assertSafeObjectPathSegment(segment: string, context: string): void {
+  if (DANGEROUS_OBJECT_PATH_SEGMENTS.has(segment)) {
+    throw new Error(
+      `refusing to apply MCP install plan: "${segment}" is not a safe ${context} segment (prototype-pollution guard)`,
+    );
+  }
+}
+
+function assertSafeJsonInstallPlan(plan: JsonInstallPlan): void {
+  for (const key of plan.keyPath) {
+    assertSafeObjectPathSegment(key, 'keyPath');
+  }
+  assertSafeObjectPathSegment(plan.serverKey, 'serverKey');
+}
+
 /**
  * Merge one server entry into existing config text without disturbing the
  * rest. Missing intermediate objects are created. Returns pretty JSON with
  * a trailing newline. Throws if existing text is non-empty but unparseable
- * (caller decides whether to bail or back up).
+ * (caller decides whether to bail or back up), or if `plan.keyPath` /
+ * `plan.serverKey` contains a dangerous object-path segment (CR-007).
  */
 export function applyJsonInstall(existingText: string | null, plan: JsonInstallPlan): string {
+  assertSafeJsonInstallPlan(plan);
   const root = parseJsonObject(existingText, plan.configPath);
   let cursor: Record<string, unknown> = root;
   for (const key of plan.keyPath) {
@@ -382,9 +431,12 @@ export function applyJsonInstall(existingText: string | null, plan: JsonInstallP
 
 /**
  * Remove the server entry. Returns the new text, or null when the file did
- * not exist / had nothing to remove (caller treats null as a no-op).
+ * not exist / had nothing to remove (caller treats null as a no-op). Throws
+ * if `plan.keyPath` / `plan.serverKey` contains a dangerous object-path
+ * segment (CR-007).
  */
 export function removeJsonInstall(existingText: string | null, plan: JsonInstallPlan): string | null {
+  assertSafeJsonInstallPlan(plan);
   if (existingText == null || existingText.trim() === '') return null;
   const root = parseJsonObject(existingText, plan.configPath);
   let cursor: Record<string, unknown> = root;

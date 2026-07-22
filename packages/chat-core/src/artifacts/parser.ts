@@ -32,7 +32,11 @@ function parseAttrs(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   let m: RegExpExecArray | null = re.exec(raw);
   while (m !== null) {
-    out[m[1] as string] = (m[2] ?? m[3] ?? '') as string;
+    // The pattern's quote alternation means exactly one of group 2 (double-
+    // quoted) / group 3 (single-quoted) participates in any successful match
+    // — never both, never neither — so `m[2] ?? m[3]` is always defined; the
+    // cast just satisfies `noUncheckedIndexedAccess`.
+    out[m[1] as string] = (m[2] ?? m[3]) as string;
     m = re.exec(raw);
   }
   return out;

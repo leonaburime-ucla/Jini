@@ -165,64 +165,16 @@ produces/consumes exactly those types, not parallel ones, per the task
 brief. `node:crypto` (`randomUUID`) — Node built-in, no new external
 dependency.
 
-## artifacts/ — generic artifact-store kernel port (2026-07-18)
+## artifacts/ — MOVED to `@jini/artifacts` (2026-07-19)
 
-Origin: `apps/daemon/src/artifacts/` (6 files) on the real fork clone
-`leonaburime-ucla/open-design`, read directly from `/tmp/od-source` for this
-task. Per `docs/jini-port/recon/r1-daemon.md` TASK 1's MIXED-classification
-entry for `artifacts/`: "the artifact store concept is a generic engine
-port, but OD's artifact = HTML prototype / design output. Extract the store
-interface; keep OD's file-kind classification as adapter."
+Originally ported here 2026-07-18 as a generic artifact-store kernel port (6 files from OD's
+`apps/daemon/src/artifacts/`). Moved out into a standalone `@jini/artifacts` package on
+2026-07-19 after the swarm-consensus architecture debate found `ArtifactStoreToken` had been
+declared alongside this package's genuine kernel tokens — a real violation of the locked
+kernel-noun set (extraction-plan.md §2.1: "NO ... artifacts ... in the kernel"). Full original
+provenance, file map, and validation record preserved unedited at
+`packages/artifacts/source-map.md`.
 
-**Home decision: `@jini/daemon`, not `@jini/core`.** Both packages' existing
-scope was checked first per the task brief. `@jini/core` (per
-`docs/jini-port/extraction-plan.md` §3) owns `ProviderRegistry`/
-`ToolRegistry`/DI tokens+resolver/`Principal`/`Authorizer` — pure
-registries and composition machinery, not stateful storage. `@jini/daemon`
-already owns `RunLifecycle` + the durable `EventLog` kernel port
-(extraction-plan §12 C1) via the exact async-port-plus-in-memory-reference-
-implementation shape (`event-log.ts` / `createInMemoryEventLog`) this task
-needed to mirror for `ArtifactStore` / `createInMemoryArtifactStore`. The
-extraction-plan's own §10 roadmap-appendix text also describes artifacts as
-tied to runs producing output — kernel-adjacent, matching `@jini/daemon`'s
-existing charter. `ArtifactStoreToken` was added to `src/tokens.ts`
-alongside `RunLifecycleToken`/`EventLogToken`, same pattern.
-
-**No duplicate primitive.** `@jini/agent-runtime` already has an
-`ArtifactTaxonomy` (`isArtifact`/`classify` — a pure path-classification
-predicate, ported from OD's `runtimes/run-artifacts.ts` in an earlier task)
-whose own doc comment explicitly deferred `ArtifactStore` (actual
-create/read/manifest persistence) as "a later storage/sqlite task's
-concern" — confirmed by reading that file before starting this one. This
-task's `ArtifactStore` is exactly that deferred follow-up, a different
-concern (storage, not classification) in a different package — not a
-duplicate of `ArtifactTaxonomy`.
-
-### File map
-
-| Jini file | OD origin file(s) | Transform |
-|---|---|---|
-| `artifacts/manifest.ts` | `artifacts/manifest.ts` | De-branded: `ALLOWED_KINDS`/`ALLOWED_RENDERERS`/`ALLOWED_EXPORTS` (including a literal `'design-system'` kind — OD's own product concept) were hardcoded module constants; now a caller-supplied `ArtifactManifestTaxonomy`. `status` (`'streaming'\|'complete'\|'error'`) kept as a fixed literal union — a generic artifact-lifecycle concept, not a product taxonomy. `sourceSkillId`/`designSystemId` fields collapsed into one generic `sourceContextId` (opaque to the engine). Two coverage-driven refactors (Phase 6.5 category 4): the redundant `typeof manifest.kind/renderer !== 'string'` re-checks after `validateBoundedString` already returned for any non-string value, and the `typeof JSON.stringify(...) !== 'string'` check (always a string for a plain-object argument) — all three replaced with type assertions + comments. `inferLegacyManifest` (OD's HTML/deck/markdown/svg extension-based inference) is **not ported** — see `ManifestInferrer` below. |
-| `artifacts/store.ts` | `artifacts/create.ts` | Not a lift: the origin's `createProjectArtifactFile` took OD's own product-shaped workspace/file-tree writer as an injected dependency, and a companion `postCreateArtifactRequest` built a request body for OD's own per-workspace HTTP upload route — neither is a generic engine concern. Defines `ArtifactStore` (create/get/list) + `createInMemoryArtifactStore` reference implementation directly, mirroring `event-log.ts`'s `EventLog`/`createInMemoryEventLog` shape. `resolveArtifactManifest` ports the origin's require-explicit-OR-infer-OR-throw resolution logic (`ArtifactManifestRequiredError`/`ArtifactManifestInvalidError` kept, same codes). `ManifestInferrer` is the injection seam replacing OD's `inferLegacyManifest` call — a no-op default (`noopManifestInferrer` in `manifest.ts`) until a host supplies its own file-kind classification, per the task brief's explicit instruction to keep that OD-owned. |
-| `artifacts/publication-guard.ts` | `artifacts/publication-guard.ts` | De-branded: the origin hardcoded `UNRESOLVED_ARTIFACT_PLACEHOLDERS` (5 literal strings lifted from one bundled example template's pitch-deck fill-in-the-blank convention) and `PUBLICATION_GUARDED_ARTIFACT_KINDS = {'html','deck'}`. Both are now a caller-supplied `PublicationGuardConfig` (`guardedKinds` + `blockedPlaceholders`), empty by default (blocks nothing until configured) — the guard *mechanism* is generic, the marker strings were 100% one template's own content. API also folds the kind-gate into `assertArtifactPublicationAllowed` itself (`isPublicationGuardedKind` check now inside the assert) rather than leaving it a separate check the caller must remember to run first, as the origin did — a deliberate port-time design improvement, not a preserved-behavior requirement. |
-| `artifacts/runtime-compat.ts` | `artifacts/runtime-compat.ts` | **Not a lift — the seam only.** The origin, `normalizeArtifactRuntimeImports`, is entirely a fix for one specific CDN-bundle bug (rewriting a vanilla Motion UMD `<script>` tag to the `framer-motion` bundle when React-hook usage is detected) that OD's own system prompt steers models toward hitting — pure product/library-specific knowledge, explicitly out of scope per the task brief ("keep OD's specific logic as adapter"). This module defines only the generic `RuntimeCompatNormalizer` hook type + `noopRuntimeCompatNormalizer` default + a `composeRuntimeCompatNormalizers` helper for layering several a host might need; the Motion-CDN fix itself is not ported anywhere. |
-| `artifacts/stub-guard.ts` | `artifacts/stub-guard.ts` | De-branded: `STUB_GUARDED_MANIFEST_KINDS = {'html','deck'}` and a literal `.html`/`.htm` sibling-matching extension were hardcoded; `siblingExtensions` is now a caller-supplied config field (`extensionAlternation` builds the regex generically from it). `readArtifactStubGuardConfigFromEnv` read three `OD_ARTIFACT_STUB_GUARD*` env vars (see `source-map.md` for exact original names); renamed `ARTIFACT_STUB_GUARD*` (no product prefix), same three-var shape/defaults. Two coverage-driven refactors (Phase 6.5): a `candidateIdentifiers.length === 0` guard made dead by the preceding regex-match precondition was removed (the next line's `.some()` on an empty array already produces the same `continue`); a `largest === null` guard after a loop that (given the already-checked non-empty `priors`) always assigns on its first iteration was replaced with a non-null assertion + comment. |
-| `artifacts/text-suppression.ts` | `artifacts/text-suppression.ts` | The core (`createTaggedTextSuppressor`) was already fully generic in the origin (open/close regex + predicates as parameters, no product coupling) — ported verbatim. De-branded the origin's two pre-built instances: `createDsmlArtifactTextSuppressor` hardcoded OD's own "DSML" two-word tag-family (`<\|DSML artifact>...<\|/DSML\|>`); replaced with `createXmlTagTextSuppressor(tagNames)`, a generic factory over a caller-supplied tag-name list supporting both `<tagName>...</tagName>` and a `<\|tagName>...<\|/tagName\|>` bracket-pipe variant (a different, simpler bracket-pipe convention than OD's own two-word "DSML tagname" form, which doesn't generalize to arbitrary tag names). `createToolCallTextSuppressor` (`<tool_call>`/`<edit>` blocks) is a generic agent-protocol convention, not OD-branded, and is kept as a named instance. Two coverage-driven refactors (Phase 6.5): `compactTagCandidate`'s and the tool-call predicates' `!text.startsWith('<')` checks were dead — their only caller (`possibleTagStart`) always passes a tail slice starting at a `<` position — removed with a comment, keeping only the (real, reachable) `.includes('>')` check. |
-| `artifacts/index.ts` | *(new — barrel)* | Re-exports every module above. |
-
-### Not ported / explicitly out of scope
-
-- `artifacts/create.ts`'s `buildCreateArtifactRequestBody`/`postCreateArtifactRequest` — OD's own HTTP request-shape builder for its `/api/projects/:id/files` route; an HTTP route shape is a product/transport-layer surface, not a kernel port concern (an OD adapter's own `@jini/http` pack would own the equivalent request handling against this port).
-- `artifacts/manifest.ts`'s `inferLegacyManifest` (the HTML/deck/markdown/svg extension-based classification logic) — OD's own file-kind taxonomy; the `ManifestInferrer` injection seam replaces it, per the task brief's explicit instruction.
-- `artifacts/publication-guard.ts`'s `UNRESOLVED_ARTIFACT_PLACEHOLDERS` literal strings — one bundled example template's own pitch-deck content, not a generic mechanism.
-- `artifacts/runtime-compat.ts`'s Motion/Framer-Motion CDN-bundle rewrite logic in full — a third-party-library-specific fix, not a generic engine concern.
-
-### Validation
-
-- `pnpm --filter @jini/daemon typecheck` (src + tests): zero errors, zero TS2307.
-- `pnpm --filter @jini/daemon test` (full package): 178/178 passing, including the pre-existing `identifier-lint.test.ts` vocabulary-firewall check (a doc-comment `projectId` mention was caught and genericized by this exact lint during this task — the lint earning its keep).
-- **Coverage** (`json-summary`+`json` reporters, `pnpm exec vitest run --root . src/artifacts/ --coverage`, real aggregate for the whole `src/artifacts/` folder): **statements 100%, branches 100%, functions 100%, lines 100%** — every individual file at 100% on all four metrics, no exceptions, no coverage-suppression comments anywhere in this task's files.
-- **Purity**: `grep -rniE "open[- ]design|\bod_|--od-stamp|/tmp/open-design|@open-design" src/artifacts/` — zero matches. `pnpm guard` (repo root) passes (skeleton, rules pending implementation — see the agent-runtime source-map's identical caveat).
 ## Addendum: `legacy-data-migration.ts` (2026-07-18, Part D of the backend
 registry/memory/services/migration task)
 
@@ -556,12 +508,13 @@ kernel code informed by that shape.
 | Jini file | Contents |
 |---|---|
 | `src/agent-executor.ts` | `AgentExecutor` interface, `createAgentExecutor(...)` factory, `translateAgentRuntimeEvent` (the pure event-translation function), the stream-parser dispatch table, spawn/stdin/cancellation wiring. |
+| `src/delegated-tool-bridge.ts` | **New, generic composition code** — adapts a Jini-owned delegated tool request to the existing `ToolExecutor`, with canonical run `tool_use`/`tool_result` events and run-cancellation propagation. It intentionally supplies no wire server. |
 | `src/tokens.ts` (edited) | Added `AgentExecutorToken` alongside `RunLifecycleToken`/`EventLogToken`/`ArtifactStoreToken`/`ToolExecutorToken`, same convention. |
 | `src/index.ts` (edited) | Re-exports `./agent-executor.js`; module doc updated to mention `AgentExecutor`. |
 | `package.json` (edited) | Added `@jini/agent-runtime` and `@jini/platform` as direct dependencies (both previously zero-cross-referenced with `@jini/daemon`; `@jini/platform` added directly rather than relied on transitively through `@jini/agent-runtime`, per the task brief — no cycle: neither package imports `@jini/daemon`). |
 | `packages/node-host/src/create-local-node-daemon.ts` (edited, different package) | `KernelBoundIds` extended to `'jini.eventLog' \| 'jini.runLifecycle' \| 'jini.agentExecutor'`; `AgentExecutorToken` bound automatically alongside `EventLogToken`/`RunLifecycleToken` via `createAgentExecutor({ lifecycle: runLifecycle })` — a genuine zero-config default (unlike `ToolExecutorToken`, deliberately NOT auto-bound, since it needs a caller-supplied `ToolRegistry` with no sensible default). |
 
-### v1 scope: 9 of 24 registered agent defs
+### v1 scope: 18 of 24 registered agent defs
 
 `@jini/agent-runtime`'s registry ships 24 built-in defs. Only the 9 using one
 of the four `createXStreamHandler`-family JSON-stream parsers are wired:
@@ -571,25 +524,23 @@ cursor-agent, opencode, mimo — `mimo` shares `opencode`'s `eventParser`
 Confirmed by reading every one of the 9 defs' `buildArgs`/`promptViaStdin`/
 `promptInputFormat` fields in full: **all 9 use `promptViaStdin: true`** —
 `claude` and `codebuddy` use `promptInputFormat: 'stream-json'`, the
-remaining 7 use the default `'text'`. `AgentExecutor.run()` therefore only
-implements the stdin-delivery path; a def whose `streamFormat` is supported
-but whose `promptViaStdin` is not `true` also rejects with
-`AGENT_RUNTIME_UNSUPPORTED` (a defensive guard for a future registry change,
-not reachable by any of the current 24 defs).
+remaining 7 use the default `'text'`. Alongside those JSON-stream adapters,
+all 9 `acp-json-rpc` defs (hermes, devin, amr, vibe, kimi, reasonix, kiro,
+trae-cli, kilo) now use a separate branch: the real `attachAcpSession`
+handshake owns prompt delivery and parsed events; the driver preserves raw
+stdio, uses the controller's clean-prompt result rather than its expected
+cleanup SIGTERM, and sends cancellation through both ACP and process-tree
+termination. Its subprocess integration fixture proves launch → handshake →
+audited permission choice → stream → lifecycle completion.
+
+A non-ACP supported def still requires `promptViaStdin: true`; ACP does not,
+because its prompt is the `session/prompt` JSON-RPC call.
 
 **Deferred, not built this task** (all still callable/tested inside
 `@jini/agent-runtime` itself — only the *driver* wiring is deferred):
 
-- **The 15 ACP/pi-rpc defs** (`acp-json-rpc` × 9: hermes, devin, amr, vibe,
-  kimi, reasonix, kiro, trae-cli, kilo; `pi-rpc` × 1: pi). These use
-  `attachAcpSession`/`attachPiRpcSession`, which already accept a `send(event,
-  payload)` callback shaped close to `DriverEmittableInput`, but own their
-  own child-process I/O internally and return a synchronous controller
-  instead of an awaitable spawn-confirmed outcome — and treat "completed
-  successfully" as decoupled from process exit (their own source comment:
-  a SIGTERM on clean completion is expected, not an error). This is a
-  second, structurally distinct driver branch — the natural fast-follow,
-  flagged explicitly rather than silently dropped.
+- **The one pi-rpc def** (`pi`). It uses the separately-shaped
+  `attachPiRpcSession` controller; no driver has been added for it yet.
 - **`plain` (5 defs: antigravity, grok-build, aider, deepseek, qwen)** has
   zero existing consuming code anywhere in this codebase — no parser, no
   dispatch branch. The design space (a single final chunk on `flush()`? raw
@@ -685,19 +636,24 @@ despite being an exact fit; `AgentExecutor` is their first real caller.
 This catches MCP-server/tool-subprocess descendants an OD-style
 POSIX-process-group-only kill would miss.
 
-**8. Real-time tool-call authorize/confirm gating is intentionally
-absent.** `AgentExecutor` emits `tool_use`/`tool_result` as ordinary
-durable `'agent'` events — it never gates them before/after execution.
-This matches OD's own actual behavior (`tool-loop-guard.ts` only
-*observes* for runaway repetition; it never gates a call before it runs —
-see this file's `ToolExecutor` section above for the fuller account of why
-no OD source exists to lift for gating).
+**8. Native-agent authorization and Jini tool execution are two explicit
+paths.** ACP's `onPermissionRequest` seam receives the tool-call metadata and
+offered option ids before the ACP agent executes its own tool; without an
+injected policy it fails closed, while a runnable host records and chooses an
+offered allow/reject/cancel outcome. The
+autonomous JSON-stream CLIs still report `tool_use` only after their internal
+execution, so their telemetry remains observational. Separately,
+`createDelegatedToolBridge` is the actual Jini-tool path: it emits a matching
+run event pair around `ToolExecutor.execute`, so registry policy,
+confirmation, timeout, cancellation, and the executor audit all apply. It is
+transport-neutral by design; an MCP or other server must decode a concrete
+delegated request before calling it.
 
 ### Explicitly out of scope (same deferral discipline as the node-host keystone)
 
 - `ExecutionDelegate`/`ToolExecutorToken`/HTTP wiring (`mountPackHttp`) —
   separate, already-deferred task per `packages/http/source-map.md`.
-- The 15 ACP/pi-rpc defs and the 5 `plain` defs — see "v1 scope" above.
+- The one pi-rpc def and the 5 `plain` defs — see "v1 scope" above.
 - Retry-loop *orchestration* (deciding to start a second run) and
   retry-*signal production* (the failure classifier `decideSafeRunRetry`
   consumes) — both separate, unscoped tasks; `resumable` stays `false`
@@ -705,7 +661,7 @@ no OD source exists to lift for gating).
 - A concrete HTTP/SSE-exposed "chat pack" wiring `AgentExecutorToken` +
   `RunLifecycleToken` into routes — the natural next layer beyond "create
   `AgentExecutor` and wire agent-runtime into it."
-- Persistence, MCP-server injection, prompt composition (skill/memory
+- A generic MCP stdio server shell, persistence, MCP-server injection, prompt composition (skill/memory
   injection, transcript recomposition), and telemetry — all OD-product or
   transport-layer concerns with no kernel-port home; `AgentExecutor`
   receives an already-composed `prompt` string and does nothing to it
@@ -760,3 +716,186 @@ independently-actionable follow-up.
 - `pnpm typecheck` (repo-wide): clean, every package "Done", exit 0.
 - `pnpm guard`: `[guard] ok`.
 - `grep -rInE 'Open Design|OD_|open-design' packages/daemon/src packages/node-host/src`: empty.
+
+## 2026-07-21 addition — driving the `pi-rpc` def (19 of 24 registered agent defs)
+
+Closes one of the two "deferred, not built" driver gaps this file's own "v1 scope" section named:
+the one `pi-rpc` def (`pi`) now has a real `wirePiRpcLifecycle` branch in `agent-executor.ts`,
+mirroring `wireAcpLifecycle`'s existing shape (spawn → attach → cancel → finish). The `plain` × 5
+defs remain deliberately unsupported — their design space is still undecided (see the module doc).
+
+**No new event-translation code was needed.** `@jini/agent-runtime`'s `mapPiRpcEvent` (the pure
+RPC-to-daemon event mapper behind `attachPiRpcSession`) already sends every event through the exact
+`{type, ...}` vocabulary `translateAgentRuntimeEvent` handles for ACP/JSON-stream — confirmed by
+reading every `send(...)` call site in `agent-protocol/pi-rpc/events.ts` (status/text_delta/
+thinking_start/thinking_delta/tool_use/tool_result/usage/error, all on the `'agent'` channel; pi-rpc
+never calls `send('error', ...)` the way ACP's `send(event, payload)` distinguishes — error-ness is
+signaled via the payload's own `type: 'error'` field instead). One gap: `thinking_end` has no
+`translateAgentRuntimeEvent` case and is silently `'ignored'` — a real, documented drop (same
+category as `usage`'s already-documented sub-field drops), not a bug.
+
+**`PiRpcSession`/`PiRpcSessionOptions` types added to `@jini/agent-runtime`'s barrel** (`agent-
+protocol/pi-rpc/index.ts` → `agent-protocol/index.ts` → root `index.ts`) — previously only the
+`attachPiRpcSession` function itself was exported, matching that barrel's own "three public
+symbols" doc comment; `AcpSessionController`/`AttachAcpSessionOptions` were already exported for
+ACP, so this closes an asymmetry rather than introducing a new pattern.
+
+**`wirePiRpcLifecycle` vs. `wireAcpLifecycle` — differences, not just a rename:**
+- Success/failure comes from `PiRpcSession.hasFatalError()` (boolean, true = failed), not ACP's
+  `completedSuccessfully()` (true = succeeded) — inverted polarity, so `status = cancelRequested ?
+  'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded'`, not a direct swap of the ACP
+  ternary's arms.
+- No `envFormat`/`onPermissionRequest` — pi-rpc has no MCP-env-format or native-tool-permission
+  concept; `attachPiRpcSession`'s options instead include `model`/`imagePaths`/`uploadRoot`/
+  `parentSession`, none of which `AgentExecutorRunInput` carries yet in v1 (same "explicitly out of
+  scope" discipline this file already applies to ACP's multi-turn tool continuation and session-
+  resume ids — see the module's Design decisions 2–3).
+- `AgentCleanupFailurePhase` gained a `'pi-rpc-attach-failure'` tag alongside the existing
+  `'cancel'`/`'acp-attach-failure'`, and `AgentCleanupFailureContext.pid` was tightened from
+  `number | null` to `number` (with a documented non-null assertion at its one construction site)
+  — `terminateChildTree`'s own `child.pid == null` early-return guard means the cleanup-failure
+  catch path is only ever reached once a pid was already assigned, so the `| null` was dead, not
+  defensive; proved rather than assumed before simplifying (same discipline `packages/http`'s
+  `host-tools.ts` port already established for `resolveEntry`'s discriminated union).
+
+Tests: `src/__tests__/agent-executor.test.ts`'s new "pi-rpc dispatch (fake attachPiRpcSession)"
+describe block (11 tests, mirroring the ACP dispatch block's coverage: happy path, failed-not-
+cancelled, cancel+process-tree escalation, SEC-007 stopProcesses-rejects fallback, SEC-007 direct
+child.kill()-also-throws fallback, error-channel routing, an ignored/unmapped event, an
+already-terminal emit race, and both attach-failure paths including the default (uninjected)
+`onCleanupFailure` sink) plus two fixed pre-existing tests that asserted the old "pi-rpc
+unsupported" behavior. 100% coverage on all 4 metrics for `agent-executor.ts` (up from a
+pre-existing, previously-undetected gap in `terminateChildTreeBestEffort`'s own cleanup-failure
+path, closed as part of this pass since it's shared infrastructure this task's new code also calls
+into). Full package: 285/285 tests. `pnpm guard`: clean.
+
+## 2026-07-21 addition — driving 4 of the 5 `streamFormat: 'plain'` defs (23 of 24 registered agent defs)
+
+Closes the other "deferred, not built" driver gap this file's own "v1 scope" section named, per
+`ADS-memory/reports/proposals/PROP-plain-format-agent-driving-2026-07-21.md` (written earlier the same
+day, approved for implementation, read in full before this task started). grok-build, aider, deepseek,
+and qwen now drive through `run()`; **antigravity stays deliberately unsupported** — see below. This
+closes the module doc's `plain` gap entirely except for that one named, scoped-out exception.
+
+### Output-side dispatch — Option B, exactly as the proposal recommended
+
+`wireChildLifecycle`'s existing raw `child.stdout.on('data', ...)` handler (already emitting a raw
+`'stdout'` event for every format, `plain` included) now also emits, per chunk, when
+`streamFormat === 'plain'`: `lifecycle.emit(runId, {event:'agent', data:{type:'text_delta', delta:
+text}})`. No new stream-parser state machine and no `wireXLifecycle` function of ACP/pi-rpc's
+complexity — `createStreamHandlerForDef` is simply never called for `'plain'` (`streamHandler` is
+`null` for that branch; `flush()` becomes `streamHandler?.flush()`, a no-op). Every emit still goes
+through the same per-run FIFO `enqueueEmit` queue every other format already uses (design decision 6),
+so multi-chunk ordering is preserved — proved by a dedicated 25-chunk synchronous-back-to-back test,
+not just single-chunk coverage. Emits on `'agent'`/`text_delta`, not OD's literal `'stdout'` channel —
+the proposal's one deliberate, flagged deviation from the researched OD ground truth (§3/§4 open
+question 1), for consistency with how the other 19 already-wired defs all use `'agent'`/`text_delta` as
+the one chat-content channel and treat `'stdout'` as a separate always-on raw/diagnostic echo.
+
+**Text hygiene (open question 3): raw passthrough, no stripping — an explicit v1 decision, not a
+silent gap.** There is no Jini equivalent of OD's `TerminalControlSequenceStripper` yet. Rather than
+build one speculatively (arguably a broader `AgentExecutor`-level concern affecting every format's raw
+`'stdout'` echo too, not just `plain`'s new `'agent'` emit — scope explicitly deferred, matching the
+discipline of naming a boundary rather than silently expanding one), v1 forwards every chunk verbatim.
+Proved intentional, not accidental, by a dedicated test asserting exact passthrough of a fixture
+containing `\r`, ANSI SGR color codes (`\x1b[32m...\x1b[0m`), unmodified.
+
+### Prompt-delivery generalization — the prerequisite the proposal called out (§1, §2d, §3 opening)
+
+`AgentExecutor` previously called none of `@jini/agent-runtime`'s already-built, already-tested
+prompt-delivery machinery (`preparePromptFileForAgent`, `checkPromptArgvBudget`,
+`checkWindowsCmdShimCommandLineBudget`, `checkWindowsDirectExeCommandLineBudget`) and its one guard
+(`streamFormat !== 'acp-json-rpc' && def.promptViaStdin !== true`) rejected grok-build/aider/deepseek on
+prompt-delivery shape alone. Now, in `run()`:
+
+- The guard is widened to `def.promptViaStdin !== true && def.promptViaFile !== true && typeof
+  def.maxPromptArgBytes !== 'number'` (still short-circuited past for `acp-json-rpc`) — a def clears it
+  by declaring any one of the three shapes, matching how OD's own call sites key **only** off the def's
+  declared fields, with zero per-agent-id branches (§2d).
+- `checkPromptArgvBudget(def, input.prompt)` runs pre-launch-resolution, pre-filesystem-touch, for
+  every run (a no-op for the 22 defs without `maxPromptArgBytes` — only aider/deepseek declare it) — an
+  over-budget prompt fails via the existing `failBeforeSpawn`/`AgentExecutorError` path with a new
+  `AGENT_PROMPT_TOO_LARGE` code, never a raw `spawn()` `ENAMETOOLONG`/`E2BIG`.
+- `preparePromptFileForAgentFn(def, input.prompt, input.runId)` runs unconditionally after launch
+  resolution succeeds (a no-op — returns `null` — for the 23 defs without `promptViaFile: true`; only
+  grok-build declares it), staging
+  grok-build's prompt to a real `0o600` temp file. Wrapped in try/catch: a staging failure (e.g.
+  `ENOSPC`) now rejects cleanly via `failBeforeSpawn('AGENT_SPAWN_FAILED', ...)` instead of bare-throwing
+  out of `run()` — a new guard this task added to keep the module's own "never a bare throw" Invariant
+  intact once `run()` gained its first `await`ed filesystem call.
+- The resulting `{promptFilePath}` becomes a `RuntimeContext` argument, now actually threaded into
+  `def.buildArgs(input.prompt, [], undefined, undefined, runtimeContext)` — previously always called as
+  `def.buildArgs(input.prompt, [])`, no third/fourth/fifth argument at all (proposal open question 4).
+  **Resolved minimally, not broadly**: `AgentExecutorRunInput` itself gained no new public field (no
+  `options`/`model`/`reasoning`) — only the internally-derived `promptFilePath` is threaded through.
+  Widening the input shape for `options.model`/`reasoningOptions` (antigravity, grok-build's own
+  `reasoningOptions` field) remains exactly the pre-existing, unscoped gap the proposal flagged it as.
+- Post-`buildArgs`, `checkWindowsCmdShimCommandLineBudget`/`checkWindowsDirectExeCommandLineBudget` run
+  against the resolved launch path + built args (both no-ops off-Windows or for non-argv-bound defs) —
+  included per the proposal's test-evidence bar (§4 point 4, "if in scope"); judged in-scope here since
+  the underlying math is already fully built and tested in `@jini/agent-runtime`, and skipping it would
+  leave a real gap (a prompt under the POSIX budget that still blows the Windows CreateProcess cap after
+  quote-expansion). Tested on this macOS host via fake `C:\...\aider.cmd`/`C:\...\aider.exe` resolved
+  paths, mirroring `prompt-budget.test.ts`'s own cross-platform-on-one-host technique.
+- **Cleanup discipline**: a `cleanupPromptFile: () => Promise<void>` closure (the real
+  `preparedPromptFile.cleanup`, or an `async () => {}` no-op when nothing was staged) is threaded through
+  every path from the point a file might exist onward — the Windows-budget-reject path, the
+  synchronous-`spawn()`-throw path, the `waitForSpawnOrError` reject path (child `'error'` before
+  `'spawn'`), and — via a new `cleanupPromptFile` field on `WireChildLifecycleContext` /
+  `WireAcpLifecycleContext` / `WirePiRpcLifecycleContext` — every format's `close` handler and ACP/pi-rpc
+  attach-failure catch. Threaded into all three lifecycle-wiring functions uniformly (not just the plain
+  branch) since no current ACP/pi-rpc def declares `promptViaFile` — always the no-op default there today,
+  kept for consistency/future-proofing rather than special-cased away, at zero extra branch-coverage cost
+  (an unconditional call, not a new conditional). A leaked temp file with full prompt content on a
+  failure path is a confidentiality gap, not just a disk leak — proved by real-filesystem assertions
+  (`fs.readFile`/`fs.stat`/`fs.access`) in the happy-path test, and by injected-fake `cleanup` spies on
+  every failure-path test.
+
+### Antigravity — deliberately still rejected, guarded independently of the generic plain logic
+
+A new `streamFormat === 'plain' && def.id === 'antigravity'` check in `run()`, evaluated immediately
+after `isSupportedStreamFormat` and *ahead of* the widened prompt-delivery guard — antigravity's own def
+declares `promptViaStdin: true` and would otherwise clear every guard below it. Matches OD's own choice
+to hardcode `def.id === 'antigravity'` in `server.ts` rather than generalize a field (proposal §2c/§3,
+open question 2/6): it needs auth-URL-leak buffering (agy can print an OAuth URL to stdout and still
+exit 0) and a cross-run model-selection lock serializing writes to its shared `settings.json`, both
+concerns unrelated to `streamFormat: 'plain'` itself and explicitly scoped to their own follow-up by the
+proposal. Still rejects with `AgentExecutorError('AGENT_RUNTIME_UNSUPPORTED', ...)`, pointing at the
+proposal doc. Regression-tested: a fake def shaped exactly like antigravity (`id: 'antigravity',
+streamFormat: 'plain', promptViaStdin: true`) — i.e. one that would pass every other guard — still
+rejects specifically because of its id.
+
+### `isSupportedStreamFormat` / `SUPPORTED_STREAM_FORMATS`
+
+`'plain'` added, exactly matching the pi-rpc addition's shape: appended to the tuple,
+`JsonStreamFormat`'s `Exclude` widened to also drop `'plain'` (so `createStreamHandlerForDef`'s 4-way
+switch stays exhaustive and is never asked to handle a format it can't parse), and a new
+`ChildDrivenStreamFormat = JsonStreamFormat | 'plain'` type documents which formats
+`wireChildLifecycle` — as opposed to `wireAcpLifecycle`/`wirePiRpcLifecycle` — actually drives.
+
+### Deviations from the proposal
+
+None material — the proposal made every hard call (Option B over A/C, `'agent'`/`text_delta` over
+`'stdout'`, defer antigravity, raw passthrough as the hygiene default) and this task implemented them
+as written. Two things the proposal left open and this task decided: (1) the Windows command-line-budget
+guards are in scope (see above); (2) `preparePromptFileForAgent` itself failing gets a defensive
+try/catch → `AGENT_SPAWN_FAILED` rather than bare-throwing, to preserve the module's pre-existing
+Invariant once `run()` gained its first pre-spawn `await`ed filesystem call (proposal open question 5
+asked *where* the cleanup hook lives, not whether staging failure needed its own guard — this task
+answered both).
+
+Tests: three new `describe` blocks in `src/__tests__/agent-executor.test.ts` — "plain-format dispatch
+(Option B...)" (4 tests: verbatim multi-chunk passthrough incl. ANSI/`\r` fixture + ordering assertion,
+a dedicated 25-chunk synchronous-ordering test, cancellation/process-tree escalation through the new
+branch, non-zero-exit → failed), "plain-format prompt-file delivery (grok-build)" (4 tests: real
+`0o600`-mode temp file end-to-end incl. post-close removal, cleanup-on-spawn-throw, cleanup-on-spawn-
+`'error'`-before-`'spawn'`, clean `AGENT_SPAWN_FAILED` rejection when staging itself throws), and
+"plain-format argv prompt-budget guard (aider/deepseek)" (4 tests: under-budget happy path, over-budget
+POSIX rejection pre-spawn, Windows `.cmd`-shim rejection, Windows direct-`.exe` rejection) — plus one
+new antigravity-regression test and one existing test's fixture format string swapped from `'plain'`
+(now supported) to `'made-up-format'` to keep testing a genuinely-unsupported format. 86/86 tests in
+this file, 100% coverage on all 4 metrics for `agent-executor.ts`. Full package: 298/298 tests, no
+regressions in `run-lifecycle.ts`/`delegated-tool-bridge.ts`'s own pre-existing, unrelated gaps.
+`pnpm --dir packages/node-host exec vitest run --coverage` (a real downstream consumer of
+`createAgentExecutor`'s default binding): 52/52, 100% on all 4 metrics, unaffected. `pnpm guard`: clean.
+`grep -rInE 'Open Design|OD_|open-design' packages/daemon/src`: empty.

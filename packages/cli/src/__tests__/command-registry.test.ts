@@ -43,15 +43,68 @@ describe('CommandRegistry', () => {
     expect(resolved).toBe(true);
   });
 
-  it('replaces an existing registration when re-registering the same name', async () => {
+  it('throws when re-registering an already-used command name', () => {
+    const registry = new CommandRegistry();
+    registry.add('run', vi.fn());
+    expect(() => registry.add('run', vi.fn())).toThrow(/already registered/);
+  });
+
+  it('replaces an existing registration when { override: true } is passed', async () => {
     const registry = new CommandRegistry();
     const first = vi.fn();
     const second = vi.fn();
     registry.add('run', first);
-    registry.add('run', second);
+    registry.add('run', second, { override: true });
     await registry.dispatch(['run']);
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalled();
+  });
+
+  it('does not mistake a value-flag\'s own value for the command name', async () => {
+    const registry = new CommandRegistry();
+    const handler = vi.fn();
+    registry.add('run', handler);
+    const result = await registry.dispatch(['--daemon-url', 'http://127.0.0.1:4111', 'run'], {
+      valueFlags: new Set(['daemon-url']),
+    });
+    expect(result).toEqual({ kind: 'handled' });
+    expect(handler).toHaveBeenCalledWith(['--daemon-url', 'http://127.0.0.1:4111']);
+  });
+
+  it('skips multiple value-flags before finding the command name', async () => {
+    const registry = new CommandRegistry();
+    const handler = vi.fn();
+    registry.add('run', handler);
+    const result = await registry.dispatch(
+      ['--daemon-url', 'http://127.0.0.1:4111', '--token', 'abc123', 'run', 'start'],
+      { valueFlags: new Set(['daemon-url', 'token']) },
+    );
+    expect(result).toEqual({ kind: 'handled' });
+    expect(handler).toHaveBeenCalledWith(['--daemon-url', 'http://127.0.0.1:4111', '--token', 'abc123', 'start']);
+  });
+
+  it('treats an unknown flag as boolean (no value skip) when it is not in valueFlags', async () => {
+    const registry = new CommandRegistry();
+    const handler = vi.fn();
+    registry.add('run', handler);
+    // Without declaring `daemon-url` as a value flag, its value token is
+    // itself non-`-`-prefixed and is (still, correctly) treated as the first
+    // positional token — this documents the pre-existing limitation that
+    // `valueFlags` must be supplied for the dispatcher to know which flags
+    // consume a value; it does not infer that from shape alone.
+    const result = await registry.dispatch(['--daemon-url', 'http://127.0.0.1:4111', 'run']);
+    expect(result).toEqual({ kind: 'not-found', name: 'http://127.0.0.1:4111' });
+  });
+
+  it('handles a `--flag=value` token without consuming the following token', async () => {
+    const registry = new CommandRegistry();
+    const handler = vi.fn();
+    registry.add('run', handler);
+    const result = await registry.dispatch(['--daemon-url=http://127.0.0.1:4111', 'run'], {
+      valueFlags: new Set(['daemon-url']),
+    });
+    expect(result).toEqual({ kind: 'handled' });
+    expect(handler).toHaveBeenCalledWith(['--daemon-url=http://127.0.0.1:4111']);
   });
 
   it('has() reflects registered command names', () => {

@@ -75,6 +75,10 @@ describe('@jini/core composition contract', () => {
     expect(daemon.services.deploy.targets).toEqual([netlify, vercel]);
   });
 
+  it('resolveMany() returns an empty array for a many-token that was never bindMany()-ed', () => {
+    expect(bindings().resolveMany(DeployTargetToken)).toEqual([]);
+  });
+
   it('throws a legible error when a required token is never bound', () => {
     const runsPack = definePack({
       name: 'runs',

@@ -80,6 +80,29 @@ describe('resolveRegistryEntryVersion', () => {
     expect(resolveRegistryEntryVersion(e)?.version).toBe('1.1.0');
   });
 
+  it('returns null instead of silently serving a yanked version when it is the resolved DEFAULT (no range requested)', () => {
+    // Distinct from the "specific yanked version requested directly" case
+    // further down: here no range/version is requested at all, so
+    // resolution falls through to `distTags.latest`/`entry.version` — which
+    // can themselves name a version that is present in the `versions`
+    // ledger but marked yanked there. Without this final yanked check, a
+    // caller asking for "whatever the default is" would silently receive a
+    // yanked release's source/integrity instead of `null`.
+    const viaDistTagsLatest = entry({
+      version: '9.9.9', // deliberately different from distTags.latest, so this proves distTags wins
+      distTags: { latest: '1.0.0' },
+      versions: [{ version: '1.0.0', source: 's1', yanked: true }],
+    });
+    expect(resolveRegistryEntryVersion(viaDistTagsLatest)).toBeNull();
+
+    const viaTopLevelVersion = entry({
+      version: '1.0.0',
+      distTags: undefined,
+      versions: [{ version: '1.0.0', source: 's1', yanked: true }],
+    });
+    expect(resolveRegistryEntryVersion(viaTopLevelVersion)).toBeNull();
+  });
+
   it('picks the highest matching version for a caret range, ignoring out-of-major candidates', () => {
     const e = entry({
       version: '2.0.0',
@@ -220,6 +243,72 @@ describe('resolveRegistryEntryVersion', () => {
       ],
     });
     expect(resolveRegistryEntryVersion(e, '1.1.0')?.version).toBe('1.1.0');
+  });
+
+  describe('version identity cannot detach from source/integrity (CR-008)', () => {
+    it('rejects an exact-version request for a version absent from entry.versions instead of falling back to top-level source/integrity', () => {
+      const e = entry({
+        version: '1.0.0',
+        source: 'top-level-source',
+        integrity: 'sha256:top-level',
+        versions: [
+          { version: '1.0.0', source: 's1' },
+          { version: '1.1.0', source: 's2' },
+        ],
+      });
+      // `9.9.9` has no record in `entry.versions` — must not resolve to the
+      // top-level source/integrity mislabeled as version 9.9.9.
+      expect(resolveRegistryEntryVersion(e, '9.9.9')).toBeNull();
+    });
+
+    it('rejects a dist-tag whose pinned version has no matching record in entry.versions', () => {
+      const e = entry({
+        version: '1.0.0',
+        source: 'top-level-source',
+        distTags: { latest: '1.0.0', beta: '9.9.9-beta.1' },
+        versions: [{ version: '1.0.0', source: 's1' }],
+      });
+      // `beta` points at `9.9.9-beta.1`, which has no record in `versions`.
+      expect(resolveRegistryEntryVersion(e, 'beta')).toBeNull();
+    });
+
+    it('rejects a dist-tag pointing at a yanked version record', () => {
+      const e = entry({
+        version: '1.0.0',
+        distTags: { latest: '1.0.0', beta: '2.0.0-beta.1' },
+        versions: [
+          { version: '1.0.0', source: 's1' },
+          { version: '2.0.0-beta.1', source: 'sb', yanked: true },
+        ],
+      });
+      expect(resolveRegistryEntryVersion(e, 'beta')).toBeNull();
+    });
+
+    it('rejects an exact-version request pointing at a yanked version record (distinct from the dist-tag case)', () => {
+      const e = entry({
+        version: '1.0.0',
+        versions: [
+          { version: '1.0.0', source: 's1' },
+          { version: '2.0.0', source: 's2', yanked: true },
+        ],
+      });
+      expect(resolveRegistryEntryVersion(e, '2.0.0')).toBeNull();
+    });
+
+    it('still allows an exact-version request matching the top-level version when the entry declares no versions ledger at all', () => {
+      // The legacy single-version case: no `versions` array exists, so there
+      // is no ledger to be authoritative over — the top-level `version` *is*
+      // the one version this entry has.
+      const e = entry({ version: '1.0.0', source: 's1' });
+      expect(resolveRegistryEntryVersion(e, '1.0.0')?.source).toBe('s1');
+    });
+
+    it('rejects an exact-version request that does not match the top-level version when there is no versions ledger', () => {
+      const e = entry({ version: '1.0.0', source: 's1' });
+      // No `versions` array, and `9.9.9` isn't the entry's top-level version
+      // either — must not fall back to `s1` mislabeled as version 9.9.9.
+      expect(resolveRegistryEntryVersion(e, '9.9.9')).toBeNull();
+    });
   });
 
   it('carries through integrity / manifestDigest / ref / deprecated when present on the version record', () => {
