@@ -47,6 +47,13 @@ export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 export type { CreateSseChannelOptions, SseChannel, SseEvent } from './sse.js';
 export { createSseChannel, DEFAULT_MAX_QUEUED_SSE_EVENTS, requestedAfterCursor } from './sse.js';
 
+export type {
+  ResolveWorkspaceRootOptions,
+  WorkspaceRootRequest,
+  WorkspaceRootResolver,
+} from './workspace-root.js';
+export { denyAllWorkspaceRoots, resolveWorkspaceRoot, WorkspaceRootDeniedError } from './workspace-root.js';
+
 export { mountPackHttp } from './pack-http.js';
 
 export type { RunCancellationService } from './cancel-owned-runs.js';
@@ -134,6 +141,31 @@ export {
 
 export type { AgentListResponse, AgentsHttpDeps, AgentSummary } from './agents.js';
 export { agentListRoute, registerAgentRoutes } from './agents.js';
+
+export type {
+  CreateDaemonDbToolRegistrationsOptions,
+  DaemonDbHttpDeps,
+  DaemonDbInternalErrorContext,
+  DaemonDbOperations,
+  DaemonDbStatusReport,
+  DaemonDbTableInfo,
+  DaemonDbToolRegistrations,
+  DaemonDbVacuumResult,
+  DbIntegrityIssue,
+  DbIntegrityIssueKind,
+  DbIntegrityReport,
+} from './db-ops.js';
+export {
+  createDaemonDbToolRegistrations,
+  daemonDbInspectRoute,
+  daemonDbVacuumRoute,
+  daemonDbVerifyRoute,
+  DB_INSPECT_TOOL_ID,
+  DB_VACUUM_TOOL_ID,
+  DB_VERIFY_TOOL_ID,
+  denyAllDaemonDbPolicy,
+  registerDaemonDbRoutes,
+} from './db-ops.js';
 
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes

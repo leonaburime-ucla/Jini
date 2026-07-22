@@ -72,13 +72,28 @@ function makeOperations(overrides: Partial<DaemonDbOperations> = {}): DaemonDbOp
   };
 }
 
-/** Builds a real ToolExecutor with the three DB tools registered under `policy`. */
+/**
+ * Builds a real ToolExecutor with the three DB tools registered.
+ *
+ * `useProductionDefaultPolicy: true` forwards no `policy` key at all into
+ * `createDaemonDbToolRegistrations`, letting *its own* default
+ * (`denyAllDaemonDbPolicy`) apply — this is what the auth-denial tests below
+ * need to prove the real production default is wired end to end, not a test
+ * fixture's default. Otherwise falls back to an always-allow policy (or an
+ * explicitly supplied one) for test convenience, since most tests here want
+ * a working happy path and aren't exercising authorization at all.
+ */
 function makeExecutor(
   operations: DaemonDbOperations,
-  policy: ToolPolicy = { authorize: () => 'allow' },
+  useProductionDefaultPolicy: boolean,
+  policy: ToolPolicy | undefined,
 ): { executor: ToolExecutor; registry: ToolRegistry } {
   const registry = createToolRegistry();
-  const registrations = createDaemonDbToolRegistrations({ operations, policy });
+  const registrations = createDaemonDbToolRegistrations(
+    useProductionDefaultPolicy
+      ? { operations }
+      : { operations, policy: policy ?? { authorize: () => 'allow' } },
+  );
   registry.register(registrations.inspect);
   registry.register(registrations.verify);
   registry.register(registrations.vacuum);
@@ -90,12 +105,46 @@ function makeDeps(overrides: Partial<DaemonDbHttpDeps> & { operations?: DaemonDb
   operations: DaemonDbOperations;
 } {
   const operations = overrides.operations ?? makeOperations();
+  // Distinguish "policy key omitted" (test convenience: default to allow) from "policy key
+  // explicitly set to `undefined`" (the caller wants the REAL production default exercised end
+  // to end, not masked by this fixture's own allow-by-default convenience).
+  const useProductionDefaultPolicy =
+    Object.prototype.hasOwnProperty.call(overrides, 'policy') && overrides.policy === undefined;
   const { executor } = overrides.toolExecutor
     ? { executor: overrides.toolExecutor }
-    : makeExecutor(operations, overrides.policy);
+    : makeExecutor(operations, useProductionDefaultPolicy, overrides.policy);
   return {
     deps: { toolExecutor: executor, principal, ...overrides },
     operations,
+  };
+}
+
+/**
+ * Builds deps wired through the tools' REAL production default policy
+ * (`denyAllDaemonDbPolicy` — no policy override at all, unlike `makeDeps`'s
+ * convenience `{authorize: () => 'allow'}` default) so the auth-denial tests
+ * below exercise the actual shipped default, not a test-only stand-in.
+ */
+function makeDenyByDefaultDeps(operations: DaemonDbOperations = makeOperations()): {
+  deps: DaemonDbHttpDeps;
+  operations: DaemonDbOperations;
+} {
+  const registry = createToolRegistry();
+  const regs = createDaemonDbToolRegistrations({ operations }); // no `policy` field — real default applies
+  registry.register(regs.inspect);
+  registry.register(regs.verify);
+  registry.register(regs.vacuum);
+  const executor = createToolExecutor({ registry });
+  return { deps: { toolExecutor: executor, principal }, operations };
+}
+
+/** A minimal fake `ToolExecutor` that resolves `execute()` synchronously with a fixed result — used to test `toolResultToApiResult`'s mapping for statuses (`timed-out`/`cancelled`) a real executor only reaches via a genuine race. */
+function fakeExecutorResolving(result: Awaited<ReturnType<ToolExecutor['execute']>>): ToolExecutor {
+  return {
+    execute: vi.fn(async () => result),
+    resumeConfirmation: vi.fn(),
+    cancel: vi.fn(),
+    getAuditRecord: vi.fn(() => null),
   };
 }
 
@@ -182,10 +231,11 @@ describe('daemonDbInspectRoute', () => {
 
   it('auth-denial: the ToolExecutor gate denies by default, the underlying operation is never invoked, and the route returns 403', async () => {
     // This is the load-bearing proof that the gate is actually in the call path, not
-    // bypassable: `makeDeps()` with no explicit policy wires the real `denyAllDaemonDbPolicy`
-    // default through a REAL ToolExecutor/ToolRegistry (no route-level mock), and asserts the
-    // injected operation itself was never called.
-    const { deps, operations } = makeDeps({ policy: undefined });
+    // bypassable: `makeDenyByDefaultDeps` wires the tools' REAL production default policy
+    // (`denyAllDaemonDbPolicy` — no policy override at all) through a REAL ToolExecutor/
+    // ToolRegistry (no route-level mock), and asserts the injected operation itself was never
+    // called.
+    const { deps, operations } = makeDenyByDefaultDeps();
     const result = await daemonDbInspectRoute.handle(undefined, deps);
     expect(result).toEqual({
       ok: false,
@@ -210,7 +260,12 @@ describe('daemonDbInspectRoute', () => {
     expect(onInternalError).toHaveBeenCalledTimes(1);
     const [context] = onInternalError.mock.calls[0]!;
     expect(context.source).toBe('db-inspect');
-    expect(context.error).toBe(boom);
+    // `ToolExecutor.execute` itself already reduces a caught exception down to `err.message`
+    // (a string) before this route ever sees it — `ToolExecutionResult.error` has no room for
+    // the original `Error` object. This route's own SEC-005 discipline is therefore "never widen
+    // that string back out to the client," which the assertions above already cover; the sink
+    // can only ever receive what the executor handed it.
+    expect(context.error).toBe(boom.message);
   });
 
   it('logs to console.error by default when onInternalError is omitted', async () => {
@@ -244,18 +299,29 @@ describe('daemonDbInspectRoute', () => {
   });
 
   it('reports a timeout as a redacted INTERNAL_ERROR', async () => {
-    const registry = createToolRegistry();
-    const regs = createDaemonDbToolRegistrations({
-      operations: makeOperations({
-        inspect: () => new Promise(() => {}), // never resolves
-      }),
-      policy: { authorize: () => 'allow' },
-      timeoutMs: 1,
+    // `ToolExecutor.execute` only actually returns `timed-out` once the *handler's own* promise
+    // settles after observing an abort — see `packages/daemon/src/__tests__/tool-executor.test.ts`'s
+    // `abortAwareHandler`, which is the executor's real, generically-tested timeout mechanism.
+    // `db-ops.ts`'s own three handlers don't forward `ctx.signal` into `DaemonDbOperations` at all
+    // (that interface has no signal parameter: the real collaborator this module documents itself
+    // as wiring — `@jini/sqlite`'s synchronous `better-sqlite3` calls — cannot be cooperatively
+    // cancelled mid-flight regardless of any signal). Re-deriving that generic race here with a
+    // mock that ignores the signal would hang forever rather than proving anything. This test
+    // instead isolates what actually is `db-ops.ts`'s own responsibility: given a `timed-out`
+    // `ToolExecutionResult` (however the executor arrived at it), does the route redact it into a
+    // generic `INTERNAL_ERROR` with a correlation id, the same as `failed`/`cancelled`? See
+    // `toolResultToApiResult`'s switch.
+    const executor = fakeExecutorResolving({ executionId: 'timed-out-1', status: 'timed-out' });
+    const deps: DaemonDbHttpDeps = { toolExecutor: executor, principal };
+    const result = await daemonDbInspectRoute.handle(undefined, deps);
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) },
     });
-    registry.register(regs.inspect);
-    registry.register(regs.verify);
-    registry.register(regs.vacuum);
-    const executor = createToolExecutor({ registry });
+  });
+
+  it('reports a cancellation as a redacted INTERNAL_ERROR', async () => {
+    const executor = fakeExecutorResolving({ executionId: 'cancelled-1', status: 'cancelled' });
     const deps: DaemonDbHttpDeps = { toolExecutor: executor, principal };
     const result = await daemonDbInspectRoute.handle(undefined, deps);
     expect(result).toEqual({
@@ -340,6 +406,16 @@ describe('registerDaemonDbRoutes', () => {
     const res = makeRes();
     await app.handlers['GET /api/daemon/db']!({ body: {}, query: {}, params: {} }, res);
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('mounts the vacuum route end to end: a same-origin request reaches parse, the executor, and returns 200', async () => {
+    const app = makeApp();
+    const { deps, operations } = makeDeps();
+    registerDaemonDbRoutes(app as any, deps, adapter);
+    const res = makeRes();
+    await app.handlers['POST /api/daemon/db/vacuum']!({ body: {}, query: {}, params: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(operations.vacuum).toHaveBeenCalledTimes(1);
   });
 
   it('requires same-origin on all three mounted routes: blocks a cross-origin request before the tool executor ever runs', async () => {

@@ -96,4 +96,19 @@ describe('@jini/http barrel', () => {
     expect(typeof HttpBarrel.requestedAfterCursor).toBe('function');
     expect(HttpBarrel.DEFAULT_MAX_QUEUED_SSE_EVENTS).toBe(1000);
   });
+
+  it('re-exports the workspace-root port', () => {
+    expect(typeof HttpBarrel.resolveWorkspaceRoot).toBe('function');
+    expect(typeof HttpBarrel.denyAllWorkspaceRoots).toBe('function');
+    expect(HttpBarrel.WorkspaceRootDeniedError).toBeDefined();
+  });
+
+  it('re-exports the daemon DB-ops routes and tool registrar', () => {
+    expect(typeof HttpBarrel.createDaemonDbToolRegistrations).toBe('function');
+    expect(typeof HttpBarrel.registerDaemonDbRoutes).toBe('function');
+    expect(HttpBarrel.daemonDbInspectRoute.path).toBe('/api/daemon/db');
+    expect(HttpBarrel.daemonDbVerifyRoute.path).toBe('/api/daemon/db/verify');
+    expect(HttpBarrel.daemonDbVacuumRoute.path).toBe('/api/daemon/db/vacuum');
+    expect(HttpBarrel.DB_INSPECT_TOOL_ID).toBe('daemon.db.inspect');
+  });
 });
