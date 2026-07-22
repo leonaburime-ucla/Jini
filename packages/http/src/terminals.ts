@@ -204,7 +204,16 @@ export interface TerminalActionResponse {
   readonly terminal?: TerminalSessionInfo;
 }
 
-function actionResultToApiResult(result: TerminalSessionActionResult, notFoundMessage: string): Result<TerminalActionResponse> {
+/**
+ * Exported (not just internal) so the `result.session === null` branch — a real race
+ * (`write`/`resize`/`kill` finding metadata for an id whose underlying session was concurrently
+ * killed between the ownership check and the critical section, per `@jini/daemon`'s
+ * `terminal-session.ts` `currentSnapshot`) — is directly unit-testable against a synthetic
+ * `TerminalSessionActionResult` rather than requiring a real, hard-to-deterministically-force race
+ * through the full `TerminalSessionManager`. Matches this file's own `createDeferredEndGate`
+ * precedent for the same "extract into a directly-testable pure function" shape.
+ */
+export function actionResultToApiResult(result: TerminalSessionActionResult, notFoundMessage: string): Result<TerminalActionResponse> {
   if (result.status === 'not-found') return err(createApiError('NOT_FOUND', notFoundMessage));
   return ok({ ok: result.ok, ...(result.session ? { terminal: result.session } : {}) });
 }

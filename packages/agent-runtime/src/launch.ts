@@ -179,13 +179,24 @@ function looksLikeCodexNodeWrapper(filePath: string): boolean {
   // to sniff a shebang. A node wrapper is a tiny script, so the header is
   // enough.
   let fd: number | null = null;
+  // `looksLikeWrapper` + a trailing `return looksLikeWrapper;`, rather than
+  // returning directly from inside `catch` (the `try` above keeps its own
+  // direct early `return`): a v8/istanbul coverage-instrumentation artifact
+  // for `try { return A } catch { return B } finally {}`, re-derived
+  // empirically (see `providers/model-catalog.ts`'s `listProviderModels`,
+  // which hit the exact same phantom branch at its own `finally` clause
+  // opening and got the same fix) — a minimal repro of this shape leaves an
+  // uncoverable phantom branch at the `finally` clause's own opening brace
+  // no matter which real path a test drives through. Only `catch` needed to
+  // change.
+  let looksLikeWrapper: boolean;
   try {
     fd = openSync(filePath, 'r');
     const buffer = Buffer.alloc(64_000);
     const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
     return /node|@openai\/codex|codex-/i.test(buffer.toString('utf8', 0, bytesRead));
   } catch {
-    return false;
+    looksLikeWrapper = false;
   } finally {
     if (fd !== null) {
       try {
@@ -195,6 +206,7 @@ function looksLikeCodexNodeWrapper(filePath: string): boolean {
       }
     }
   }
+  return looksLikeWrapper;
 }
 
 function safeRealpath(filePath: string): string | null {

@@ -573,3 +573,50 @@ exports (`errors.ts`/`http.ts`/`usage.ts`/`command-registry.ts`/`daemon-url.ts`/
 `local-daemon-discovery.ts`/`run-command.ts`/`daemon-command.ts`) plus Node built-ins
 (`node:url`'s `fileURLToPath`, already indirectly available via `@jini/sidecar`'s own dependency
 tree but now imported directly here for the first time).
+
+## 2026-07-22 addition — genuine near-100% coverage: prompt.ts (audit fix)
+
+`prompt.ts:123-125` (the original task item) plus several sibling gaps this pass's own fresh
+coverage run surfaced (the prior text-reporter output truncated the uncovered-line list to just
+the first entry):
+
+- **`defaultReadStdin`'s already-aborted-before-reading-starts branch** (`reject(limits.signal.reason
+  ?? new Error('stdin read aborted'))`, no test ever supplied an already-aborted signal to the
+  stdin path specifically, only to the file path): new test.
+- **`defaultReadFile`'s dead `typeof chunk === 'string'` branch**: `createReadStream` is never
+  given an `encoding` option anywhere in this file (`ReadLimits` has no such field), so a 'data'
+  chunk is always a real `Buffer`, never a `string` — genuinely dead code, not merely uncovered.
+  Removed (a type assertion replaces the runtime branch, since `@types/node` still types the
+  listener parameter as `string | Buffer` to accommodate a stream some other caller configured
+  with an encoding).
+- **`defaultReadFile`'s `finish()` idempotency guard** (`if (settled) return;`): re-derived, not
+  assumed — Node's Readable stream contract guarantees at most one of 'end'/'error' fires, and
+  `stream.destroy()` called with no error argument (the only way this file calls it) is documented
+  to suppress any further 'error' emission from the destroy path itself. Genuinely unreachable
+  through this file's own real `createReadStream` usage on a modern Node runtime; kept as real
+  protection against a future Node version or non-conforming stream implementation, not forced —
+  this package's `vitest.config.ts` threshold is set just below the measured 99.84% branch number
+  rather than suppressed with a `/* v8 ignore */` comment, matching `@jini/registry`'s established
+  precedent for the same category of finding.
+- **`defaultReadStdin`'s `onError` handler**: never invoked by any test — new test emits a real
+  `'error'` event on the faked `process.stdin`.
+- **`defaultReadStdin`'s mid-read-abort `reason ?? new Error(...)` fallback**: the existing
+  mid-read-abort test used a real `AbortController`, whose `signal.reason` is always a truthy
+  `DOMException` on this Node runtime once aborted — never reaches the fallback. New test uses a
+  minimal hand-built `AbortSignal`-shaped fake (`makeFakeSignal`, new test helper) with a
+  controllable `undefined` reason.
+- **`defaultReadBodyStdin`'s `addEventListener`/`onAbort`/`removeEventListener` (signal-present,
+  not-yet-aborted) path**: every existing signal-based test for this function used an
+  already-aborted signal, which short-circuits via `throwIfAborted()` before the abort listener is
+  ever registered. New test uses `makeFakeSignal` plus a controllable async-generator fake stdin
+  (parks mid-iteration on a promise the test resolves manually) so the abort genuinely fires after
+  reading has started, exercising the real listener registration/invocation/teardown.
+- **`defaultReadBodyStdin`'s Buffer-chunk branch**: every existing fake stdin fixture yielded
+  `string` chunks; real `process.stdin`'s async iterator yields `Buffer` (this function never calls
+  `setEncoding`). New test yields real `Buffer` chunks.
+
+**Verified, personally, this session**: `pnpm --dir packages/cli exec tsc --noEmit`: clean.
+`pnpm --dir packages/cli run test:coverage` — **317/317 tests pass** (12 new), package-wide
+**100/99.84/100/100**, `prompt.ts` itself 100/98.64/100/100 with exactly the one documented branch
+above remaining. Added a committed coverage threshold gate (`vitest.config.ts` had none before this
+pass) at 100/99/100/100, matching this repo's established margin-below-measured convention.

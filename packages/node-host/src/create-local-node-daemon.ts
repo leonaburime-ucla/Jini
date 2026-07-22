@@ -38,14 +38,16 @@
  * `onClose` hook run on shutdown — no caller in this codebase registers one today (see
  * `source-map.md`'s risk log for this known gap).
  */
+import Database from 'better-sqlite3';
 import { createRequire } from 'node:module';
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 
 import express, { type Express } from 'express';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AGENT_DEFS } from '@jini/agent-runtime';
-import { bindings, createDaemon, type Bindings, type Daemon } from '@jini/core';
+import { bindings, createDaemon, createToolRegistry, type Bindings, type Daemon, type Principal } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
 import {
   AgentExecutorToken,
@@ -53,18 +55,42 @@ import {
   createDefaultRunStartHandler,
   createRunByteJournal,
   createRunLifecycle,
+  createTerminalSessionManager,
+  createTerminalToolRegistrations,
+  createToolExecutor,
   EventLogToken,
   resumableFromProcessExit,
   RunLifecycleToken,
   type ResolveRunInput,
+  type RunRetrySideEffectState,
 } from '@jini/daemon';
-import { createSqliteEventLog } from '@jini/sqlite';
+import {
+  createMediaDispatchEngine,
+  createSqliteMediaTaskStore,
+  type ProviderCredentials,
+} from '@jini/media';
+import { createExtractionLog, createNoteStore, createVerifyLog } from '@jini/memory';
+import { createSqliteEventLog, inspectSqliteDatabase, verifySqliteIntegrity } from '@jini/sqlite';
 import {
   configuredAllowedOrigins,
+  createDaemonDbToolRegistrations,
   denyAllWorkspaceRoots,
   express as httpExpress,
   fastify as httpFastify,
   mountPackHttp,
+  // The six route packs below (registerActiveContextRoutes..registerTerminalRoutes) have no
+  // Fastify mounting sibling yet — imported flat (not via the httpExpress/httpFastify namespaces
+  // registerRunRoutes/registerAgentRoutes/registerHostToolsRoutes use below) and wired Express-only
+  // for now; see this file's own "table Fastify" comment at the wiring site and node-host's
+  // source-map.md merge note.
+  registerActiveContextRoutes,
+  registerDaemonDbRoutes,
+  registerMediaRoutes,
+  registerMemoryRoutes,
+  registerModelProxyRoutes,
+  registerTerminalRoutes,
+  type DaemonDbOperations,
+  type DaemonDbVacuumResult,
   type RunStartHandler,
   type WorkspaceRootResolver,
 } from '@jini/http';
@@ -80,6 +106,79 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_TOKEN_ENV_VAR = 'JINI_API_TOKEN';
 const DEFAULT_DISABLE_ENV_VAR = 'JINI_DISABLE_API_AUTH';
 const DEFAULT_BIND_HOST_ENV_VAR = 'JINI_BIND_HOST';
+
+/**
+ * The identity every zero-config, `ToolExecutor`-gated route this preset wires (`terminal.create`,
+ * `daemon.db.*`) executes as. This preset has no multi-tenant identity subsystem of its own — the
+ * bearer-token gate (`registerApiBearerAuthMiddleware`) is a single is-authenticated-or-not check,
+ * not a per-caller identity — so every authenticated caller of a given daemon process already
+ * shares one trust boundary; a single fixed `Principal` here doesn't remove any distinction that
+ * existed before it. A host that needs real per-caller identity supplies its own `toolExecutor`/
+ * `principal` via a custom pack instead of this preset's zero-config default (matching
+ * `delegated-tools.ts`'s mandatory, no-default `resolvePrincipal` for the one route in this
+ * package that genuinely does need per-request identity).
+ */
+const LOCAL_DAEMON_PRINCIPAL: Principal = { id: 'local-daemon' };
+
+/**
+ * Builds a `DaemonDbOperations` (see `@jini/http`'s `db-ops.ts`) against `db` — a *second*
+ * `better-sqlite3` connection to the same `events.db` this preset already owns (safe: both
+ * connections run in WAL mode, which permits multiple concurrently open handles on one file
+ * within a single process — the same fact `create-local-node-daemon.test.ts`'s own
+ * `stop() releases the sqlite file handle` test already relies on empirically). `inspect`/`verify`
+ * are thin wrappers over `@jini/sqlite`'s own `inspectSqliteDatabase`/`verifySqliteIntegrity`;
+ * `vacuum` is the "small wrapper around `db.exec('VACUUM')`" `db-ops.ts`'s own `DaemonDbOperations`
+ * doc names as the missing piece — measuring the primary file's on-disk size before/after (not the
+ * `-wal`/`-shm` sum `inspectSqliteDatabase` reports, since a fresh `VACUUM` checkpoints and shrinks
+ * the primary file itself, which is what "reclaimed" means here).
+ *
+ * Reachable at all only when a host supplies a permissive `ToolPolicy` in place of this preset's
+ * own zero-config `denyAllDaemonDbPolicy` default (see this file's `daemon.db.*` wiring below) —
+ * `vacuum` rewrites the database file in place, so running it against a file another connection
+ * (this same process's own `eventLog`) may be concurrently writing to is a real operational
+ * consideration a host opts into consciously, not something this zero-config default does on its
+ * own initiative.
+ */
+export function buildDaemonDbOperations(db: Database.Database, file: string): DaemonDbOperations {
+  return {
+    inspect: () => inspectSqliteDatabase({ db, file }),
+    verify: (quick: boolean) => verifySqliteIntegrity({ db, quick }),
+    vacuum: (): DaemonDbVacuumResult => {
+      const startedAt = Date.now();
+      const beforeBytes = statSync(file).size;
+      db.exec('VACUUM');
+      const afterBytes = statSync(file).size;
+      return {
+        ok: true,
+        beforeBytes,
+        afterBytes,
+        reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
+        elapsedMs: Date.now() - startedAt,
+      };
+    },
+  };
+}
+
+/**
+ * Gap 4's zero-config retry-classifier default (`classifyFailure`), wired into `createAgentExecutor`
+ * below. Extracted as its own named, exported function rather than an inline arrow — the same
+ * reason `buildDaemonDbOperations` above is: `daemon/source-map.md`'s 2026-07-22 wiring entry
+ * already documents this call site as *not* independently re-provable via a live spawned-process
+ * integration test (that would need either a real, predictably-failing agent CLI installed in
+ * every dev/CI environment, or new test-only spawn-injection hooks — both a worse trade than making
+ * the wiring itself directly unit-testable, matching this file's own established convention for
+ * exactly this reachability shape). Delegates entirely to `@jini/daemon`'s
+ * `resumableFromProcessExit` — see that function's own doc for the classification policy and the
+ * real `sideEffects` this now threads through (forwarded verbatim from `@jini/daemon`'s own
+ * `FailureClassificationContext`, which every real close handler populates).
+ */
+export function classifyRunFailureForRetry(context: {
+  code: number | null;
+  signal: string | null;
+  sideEffects?: Pick<RunRetrySideEffectState, 'userVisibleOutputSeen' | 'toolCallSeen'>;
+}): boolean {
+  return resumableFromProcessExit(context.code, context.signal, context.sideEffects);
+}
 
 /**
  * Extracts the real bound TCP port from `server.address()`'s result once a `'listening'` event
@@ -176,6 +275,15 @@ export interface CreateLocalNodeDaemonConfig<
    * route to actually do anything supplies this.
    */
   resolveWorkspaceRoot?: WorkspaceRootResolver;
+  /**
+   * Per-provider credentials for the zero-config `@jini/media` dispatch engine this preset now
+   * wires (see `POST /api/media/generate` below). Defaults to `{}` — no credentials configured
+   * means every real vendor call fails cleanly with a "missing API key"-shaped error (the engine's
+   * own validation, not a crash), the same safe-by-omission shape `apiToken`'s disable-by-default
+   * env var already uses. A host that wants real generation to work supplies real credentials here
+   * (or builds its own map via `@jini/media`'s `resolveProviderCredentialsFromEnv`).
+   */
+  mediaCredentials?: Readonly<Record<string, ProviderCredentials>>;
   /**
    * Where this daemon's local discovery record (URL/host/port/pid) is written once it starts
    * listening, so a separate CLI process on the same machine can find it via
@@ -313,10 +421,17 @@ export async function createLocalNodeDaemon(
   // resumable, a plain non-zero exit is not — see that function's own doc for
   // the full reasoning); every real run now gets a genuine resumable
   // classification instead of the previous hardcoded `resumable: false`.
+  //
+  // A second, independently-built classifier (`defaultClassifyFailure` in
+  // `agent-executor.ts`, from a parallel cloud session) was found at merge
+  // time with a materially different, contradictory policy and deliberately
+  // removed in favor of this one — see `daemon/source-map.md`'s 2026-07-22
+  // "two independent retry classifiers reconciled at merge time" entry for
+  // the full reasoning.
   const agentExecutor = createAgentExecutor({
     lifecycle: runLifecycle,
     journal,
-    classifyFailure: ({ code, signal }) => resumableFromProcessExit(code, signal),
+    classifyFailure: classifyRunFailureForRetry,
   });
 
   const kernelBindings = bindings()
@@ -356,15 +471,86 @@ export async function createLocalNodeDaemon(
       ? undefined
       : createDefaultRunStartHandler({ agentExecutor, resolveRunInput: config.resolveRunInput }));
   const runRoutesDeps = { lifecycle: runLifecycle, ...(onStarted === undefined ? {} : { onStarted }) };
-  // Two more always-on, zero-config-safe generic routes, alongside runs/daemon-status. Every
-  // other route pack this session's work added (terminals, memory, routines, model-proxy,
-  // db-ops, delegated-tools, active-context) needs a host-specific stateful resource this preset
-  // cannot safely default (a TerminalSessionManager, a note store, a RoutineStore, a resolved
-  // Principal, a ToolRegistry with real tool registrations, ...) — see this package's own
-  // source-map.md for why those stay caller-supplied Packs rather than being wired in here.
-  // `agents`/`host-tools` are the two exceptions: both are safe with pure, harmless defaults.
+  // Two more always-on, zero-config-safe generic routes, alongside runs/daemon-status.
+  // `agents`/`host-tools` are safe with pure, harmless defaults and have real Fastify mounting
+  // siblings, so they're wired identically in both transport branches below.
   const agentRoutesDeps = { listAgents: () => AGENT_DEFS.map((def) => ({ id: def.id, name: def.name })) };
   const hostToolsRoutesDeps = { resolveRoot: config.resolveWorkspaceRoot ?? denyAllWorkspaceRoots };
+
+  // Six more route packs (memory, terminals, model-proxy, active-context, db-ops, media) turned
+  // out to have genuinely safe, zero-config defaults too (audit fix, 2026-07-22 — see this
+  // package's own source-map.md for the per-route-pack reachability analysis). Their non-`app`
+  // state is built here, alongside the deps above, so `stop()`/`failToBind` below can close it on
+  // every path regardless of which transport branch actually mounts the routes onto a real `app`.
+  //
+  // **Table Fastify for now**: none of these six have a Fastify mounting sibling yet (unlike
+  // `runs`/`agents`/`host-tools`, `@jini/http`'s `fastify/` subtree has no `memory`/`terminals`/
+  // `model-proxy`/`active-context`/`db-ops`/`media` equivalent) — per explicit instruction, this
+  // gap is deliberately left open rather than built as part of this merge (matching the Fable
+  // audit's AUD-004 finding). They are therefore wired into the Express branch only, below; a
+  // `transport: 'fastify'` daemon does not serve them today. See this package's source-map.md
+  // merge note for the tracked follow-up.
+
+  // `memory.ts`: `NoteStore`'s methods take `dataDir` per call (not bound to one directory at
+  // construction — see `@jini/memory`'s `note-store.ts`), so this preset's own `config.dataDir`
+  // (already trusted — it's where `events.db`/`journal.db` live) is a genuinely real, harmless
+  // default root, not a fabricated one. `validTypes`/`defaultType` are host-defined taxonomy by
+  // design (`note-store.ts`'s own doc); `['note']`/`'note'` is the minimal generic single-bucket
+  // default. `createExtractionLog`/`createVerifyLog` take no arguments at all — already zero-config.
+  const memoryRoutesDeps = {
+    notes: createNoteStore({ validTypes: ['note'], defaultType: 'note' }),
+    extractions: createExtractionLog(),
+    verifications: createVerifyLog(),
+    dataDir: config.dataDir,
+  };
+
+  // `active-context.ts`: `resolveResource` is mandatory but has an honest, harmless answer this
+  // preset can always give — "unknown" (`undefined`) — since it has no `Project`/`Workspace` noun
+  // of its own to resolve a display name from, the same "no fabricated data" shape
+  // `denyAllWorkspaceRoots` already uses for `host-tools.ts`.
+  const activeContextRoutesDeps = { resolveResource: (): undefined => undefined };
+
+  // `terminals.ts` + `daemon-db.ts` share one internal, zero-config `ToolRegistry`/`ToolExecutor`
+  // pair — both are gated tools this preset registers with a **deny-by-default** `ToolPolicy`
+  // (`denyAllTerminalCreatePolicy`/`denyAllDaemonDbPolicy`, both `@jini/daemon`/`@jini/http`'s own
+  // established precedent, mirroring `host-tools.ts`'s `denyAllWorkspaceRoots`): the route exists
+  // and is reachable, but every real call is denied with no fabricated access, until a host
+  // supplies its own permissive policy. This is what makes spawning a real, `node-pty`-backed
+  // shell (`terminals.ts`) and rewriting the database file in place (`daemon.db.vacuum`) safe to
+  // wire in unconditionally — the capability exists but is inert by construction.
+  const zeroConfigToolRegistry = createToolRegistry();
+  const zeroConfigToolExecutor = createToolExecutor({ registry: zeroConfigToolRegistry });
+
+  const terminalManager = createTerminalSessionManager();
+  zeroConfigToolRegistry.register(createTerminalToolRegistrations({ manager: terminalManager }).create);
+  const terminalRoutesDeps = {
+    manager: terminalManager,
+    toolExecutor: zeroConfigToolExecutor,
+    principal: LOCAL_DAEMON_PRINCIPAL,
+    resolveRoot: config.resolveWorkspaceRoot ?? denyAllWorkspaceRoots,
+  };
+
+  const eventsDbPath = join(config.dataDir, 'events.db');
+  const dbOpsConnection = new Database(eventsDbPath);
+  const dbOpsRegistrations = createDaemonDbToolRegistrations({ operations: buildDaemonDbOperations(dbOpsConnection, eventsDbPath) });
+  zeroConfigToolRegistry.register(dbOpsRegistrations.inspect);
+  zeroConfigToolRegistry.register(dbOpsRegistrations.verify);
+  zeroConfigToolRegistry.register(dbOpsRegistrations.vacuum);
+  const daemonDbRoutesDeps = { toolExecutor: zeroConfigToolExecutor, principal: LOCAL_DAEMON_PRINCIPAL };
+
+  // `media.ts`: `createMediaDispatchEngine` needs no credentials to construct — an empty
+  // `credentials` map (this preset's default) just means every real vendor call fails cleanly
+  // with the engine's own "missing API key" validation, never a crash or fabricated result (see
+  // `CreateLocalNodeDaemonConfig.mediaCredentials`'s own doc). `createSqliteMediaTaskStore` gets
+  // its own durable file under `dataDir`, matching `events.db`/`journal.db`'s own convention —
+  // closed alongside them on every cleanup path below (the exact resource-leak shape this
+  // package's 2026-07-22 `journalEventLog` audit fix already exists to prevent — see this file's
+  // own dated source-map.md entry).
+  const mediaTaskStore = createSqliteMediaTaskStore(join(config.dataDir, 'media-tasks.db'));
+  const mediaRoutesDeps = {
+    engine: createMediaDispatchEngine({ credentials: config.mediaCredentials ?? {} }),
+    taskStore: mediaTaskStore,
+  };
 
   let shuttingDown = false;
   let stopPromise: Promise<void> | null = null;
@@ -385,14 +571,17 @@ export async function createLocalNodeDaemon(
             // Intentionally swallowed — see the try's own comment.
           }
         }
-        // A caller-supplied `onShutdown` failing must never leak either durable EventLog's open
-        // sqlite file handle (the main one, or gap-1's byte-journal one) — `finally` guarantees
-        // both closes still run, then the original rejection (if any) propagates to whoever is
-        // awaiting `stop()`.
+        // A caller-supplied `onShutdown` failing must never leak any of the sqlite file handles
+        // this call opened — `eventLog`, gap 1's separate `journalEventLog`, the media task
+        // store's own `media-tasks.db`, and the raw `better-sqlite3` connection `daemon.db.*`
+        // operates through (see this file's own doc on why each is a distinct file/connection) —
+        // `finally` guarantees every close still runs, then the original rejection (if any)
+        // propagates to whoever is awaiting `stop()`.
         try {
           await config.onShutdown?.();
         } finally {
-          await Promise.all([eventLog.close(), journalEventLog.close()]);
+          dbOpsConnection.close();
+          await Promise.all([eventLog.close(), journalEventLog.close(), mediaTaskStore.close()]);
         }
       })();
     }
@@ -466,6 +655,17 @@ export async function createLocalNodeDaemon(
     httpExpress.registerRunRoutes(app, runRoutesDeps, { resolvedPortRef });
     httpExpress.registerAgentRoutes(app, agentRoutesDeps, { resolvedPortRef });
     httpExpress.registerHostToolsRoutes(app, { resolvedPortRef }, hostToolsRoutesDeps);
+
+    // Express-only for now (table Fastify — see this file's own comment at each dep's
+    // construction above and node-host/source-map.md's merge note): none of these six route
+    // packs has a Fastify mounting sibling yet.
+    registerMemoryRoutes(app, memoryRoutesDeps, { resolvedPortRef });
+    registerModelProxyRoutes(app, {}, { resolvedPortRef });
+    registerActiveContextRoutes(app, activeContextRoutesDeps, { resolvedPortRef });
+    registerTerminalRoutes(app, terminalRoutesDeps, { resolvedPortRef });
+    registerDaemonDbRoutes(app, daemonDbRoutesDeps, { resolvedPortRef });
+    registerMediaRoutes(app, mediaRoutesDeps, { resolvedPortRef });
+
     mountPackHttp(app, config.packs, daemon);
     httpExpress.registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
 
@@ -489,9 +689,11 @@ export async function createLocalNodeDaemon(
 
   return await new Promise<LocalNodeDaemon>((resolve, reject) => {
     const failToBind = (error: unknown) => {
-      // Best-effort: a failed boot must not leave either sqlite file handle this call already
-      // opened (the main EventLog, or gap-1's byte-journal one) dangling open.
-      void Promise.all([eventLog.close(), journalEventLog.close()]).finally(() => reject(error));
+      // Best-effort: a failed boot must not leave any sqlite file handle this call already opened
+      // (`eventLog`, `journalEventLog`, the media task store, or the raw `daemon.db.*` connection)
+      // dangling open.
+      dbOpsConnection.close();
+      void Promise.all([eventLog.close(), journalEventLog.close(), mediaTaskStore.close()]).finally(() => reject(error));
     };
 
     listen()

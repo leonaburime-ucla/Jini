@@ -339,6 +339,22 @@ export async function listProviderModels(
   }
   const timer = setTimeout(() => controller.abort(), PROVIDER_MODELS_TIMEOUT_MS);
 
+  // `result` + a trailing `return result;` after the try/catch/finally,
+  // rather than returning directly from inside `catch` (every return inside
+  // `try` stays a direct early return): a v8/istanbul coverage-instrumentation
+  // artifact, re-derived empirically for this exact shape (a minimal
+  // `try { return A } catch { return B } finally {}` repro reproduces an
+  // uncoverable phantom branch at the `finally` clause's own opening brace,
+  // regardless of which/how many try/catch paths a test exercises — verified
+  // with `success`, `try-throws-then-caught`, and `throw-from-inside-catch`
+  // scenarios, all leaving the same phantom branch at 0). Only `catch`
+  // needed to change: with `try`'s own returns direct and only `catch`
+  // falling through, the phantom branch doesn't appear (also re-derived).
+  // TypeScript accepts `result` as definitely assigned at the trailing
+  // `return` because every real path through `try` above already returns or
+  // throws — the only way to fall through to it is via `catch`, which
+  // assigns unconditionally.
+  let result: ProviderModelsResponse;
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -406,7 +422,7 @@ export async function listProviderModels(
     const latencyMs = Date.now() - start;
     const kind = networkErrorToKind(err);
     const message = err instanceof Error ? err.message : String(err);
-    return {
+    result = {
       ok: false,
       kind,
       latencyMs,
@@ -416,4 +432,5 @@ export async function listProviderModels(
     clearTimeout(timer);
     input.signal?.removeEventListener('abort', abortFromParent);
   }
+  return result;
 }

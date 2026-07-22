@@ -11,6 +11,7 @@ import {
 import type { PtyProcess, PtySpawn } from '@jini/platform';
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
+  actionResultToApiResult,
   createDeferredEndGate,
   registerTerminalEventStream,
   registerTerminalRoutes,
@@ -208,6 +209,26 @@ describe('terminalCreateRoute.handle', () => {
     expect(pty).toBeInstanceOf(FakePty);
   });
 
+  it('threads cols/rows/shell through into the tool input when supplied', async () => {
+    const { manager } = makeManager();
+    const seenInputs: unknown[] = [];
+    const registry = createToolRegistry();
+    const real = createTerminalToolRegistrations({ manager });
+    registry.register({
+      descriptor: real.create.descriptor,
+      policy: { authorize: () => 'allow' },
+      handler: async (ctx) => {
+        seenInputs.push(ctx.input);
+        return real.create.handler(ctx);
+      },
+    });
+    const executor = createToolExecutor({ registry });
+    const deps: TerminalsHttpDeps = { manager, toolExecutor: executor, principal: alice, resolveRoot: () => '/work' };
+    const result = await terminalCreateRoute.handle({ resourceRef: 'proj-1', cols: 100, rows: 40, shell: '/bin/zsh' }, deps);
+    expect(result.ok).toBe(true);
+    expect(seenInputs[0]).toMatchObject({ cols: 100, rows: 40, shell: '/bin/zsh' });
+  });
+
   it('forwards resourceRef/detail into the workspace-root resolver', async () => {
     const resolveRoot = vi.fn(() => '/work') as WorkspaceRootResolver;
     const { deps } = makeDeps({ resolveRoot });
@@ -375,6 +396,24 @@ describe('terminalListRoute', () => {
   });
 });
 
+describe('actionResultToApiResult', () => {
+  it("omits `terminal` entirely when the action result's session is null (a real race: the session was killed between the ownership check and the critical section — see @jini/daemon's currentSnapshot)", () => {
+    const result = actionResultToApiResult({ status: 'ok', ok: false, session: null }, 'terminal "t1" was not found');
+    expect(result).toEqual({ ok: true, value: { ok: false } });
+  });
+
+  it('includes `terminal` when the action result has a real session', () => {
+    const session = { id: 't1', status: 'running', resourceRef: null } as any;
+    const result = actionResultToApiResult({ status: 'ok', ok: true, session }, 'unused');
+    expect(result).toEqual({ ok: true, value: { ok: true, terminal: session } });
+  });
+
+  it('maps not-found to a NOT_FOUND api error with the given message', () => {
+    const result = actionResultToApiResult({ status: 'not-found' }, 'terminal "t1" was not found');
+    expect(result).toEqual({ ok: false, error: { code: 'NOT_FOUND', message: 'terminal "t1" was not found' } });
+  });
+});
+
 describe('terminalStdinRoute', () => {
   it('parse: requires id and a string data field', () => {
     expect(terminalStdinRoute.parse({ body: {}, query: {}, params: {} })).toEqual({
@@ -386,6 +425,11 @@ describe('terminalStdinRoute', () => {
       ok: true,
       value: { id: 't1', data: 'ls\n' },
     });
+  });
+
+  it('parse: rejects a non-object body', () => {
+    const result = terminalStdinRoute.parse({ body: 'not-an-object', query: {}, params: { id: 't1' } });
+    expect(result).toEqual({ ok: false, error: { code: 'BAD_REQUEST', message: 'body must be a JSON object' } });
   });
 
   it('success: forwards to the session and reports ok:true plus the current terminal snapshot', async () => {
@@ -419,6 +463,16 @@ describe('terminalStdinRoute', () => {
 });
 
 describe('terminalResizeRoute', () => {
+  it('parse: rejects a missing id path parameter', () => {
+    const result = terminalResizeRoute.parse({ body: { cols: 100, rows: 40 }, query: {}, params: {} });
+    expect(result).toEqual({ ok: false, error: { code: 'BAD_REQUEST', message: 'id must be a non-empty path parameter' } });
+  });
+
+  it('parse: rejects a non-object body', () => {
+    const result = terminalResizeRoute.parse({ body: 'not-an-object', query: {}, params: { id: 't1' } });
+    expect(result).toEqual({ ok: false, error: { code: 'BAD_REQUEST', message: 'body must be a JSON object' } });
+  });
+
   it('parse: requires numeric cols and rows', () => {
     expect(terminalResizeRoute.parse({ body: { cols: 'x', rows: 10 }, query: {}, params: { id: 't1' } }).ok).toBe(false);
     expect(terminalResizeRoute.parse({ body: { cols: 100, rows: 40 }, query: {}, params: { id: 't1' } })).toEqual({

@@ -973,3 +973,99 @@ files individually at 100/100/100/100.
 turn-runners (see "Scope for this pass" above); wiring a real `ToolExecutor`-backed
 `executeTool` for either provider; extended thinking support for Anthropic; upgrading the SSRF
 guard to the DNS-resolved variant.
+
+## 2026-07-22 addition — genuine ~99.96% coverage across the package (audit fix)
+
+Closed every named gap from a fresh coverage run (`auth.ts`, `detection.ts`, `env.ts`,
+`json-event-stream.ts`, `launch.ts`, `prompt-budget.ts`, `defs/amr.ts`, `defs/antigravity.ts`,
+`providers/model-catalog.ts`) plus every additional gap the same run surfaced, via real refactors
+and real tests — no `/* v8 ignore */`, no padded assertions. Package-wide: **99.96/99.95/100/99.96**
+(statements/branches/functions/lines), up from the prior run's per-file gaps; `vitest.config.ts`'s
+threshold raised from 99/99/99/99 to 99.9/99.9/100/99.9 (a hair below measured, this repo's
+established margin-below-measured convention).
+
+**Real refactors (removed a dead branch instead of testing around it):**
+- **`auth.ts`'s `tailString`** — `value: unknown` narrowed to `value: string`; both real callers
+  (`withProbeTails`) already hold a `string` (`probeAgentAuthStatus` normalizes `stdout`/`stderr` to
+  `''` before either reaches here), so the `typeof value !== 'string'` guard was dead.
+- **`detection.ts`'s `fetchModels`** — `RuntimeListModels.timeoutMs` (`types.ts`) changed from
+  optional to required. Every real def declaring `listModels` (codex, cursor-agent, grok-build,
+  opencode) already sets it explicitly, so the `def.listModels.timeoutMs ?? 5000` fallback was dead
+  for every real def; no test constructs a `listModels` object directly, so the type tightening is
+  a pure coverage-motivated narrowing with no behavior change anywhere in this package or its
+  consumers (checked: `RuntimeListModels` has no external `packages/**` consumer).
+- **`json-event-stream.ts`'s `parseJsonObjectsFromContent`** — removed the `if (!trimmed) return
+  []` early guard. Its only real caller (`connectorToolSelectionErrorMessage`) has already checked
+  `content.includes('CONNECTOR_TOOL_NOT_FOUND')` before calling in, so `value` can never trim to
+  empty; the fallback logic below already produces the same `[]` result for an empty string on its
+  own (verified: `safeParseJson('')` throws inside `JSON.parse` → caught → `null` → not a record;
+  `''.split(/\r?\n/u)` yields `['']` → same outcome), so removing the guard changes nothing for any
+  hypothetical future caller either.
+- **`json-event-stream.ts`'s `todoWriteInputFromItems`** — `items: unknown` narrowed to `items:
+  unknown[]`; all four real call sites already run `Array.isArray(...)` before calling in.
+- **`json-event-stream.ts`'s `emitCursorTextDelta`** — removed the `if (!text) return` guard; its
+  one real call site (`handleCursorEvent`) already returns early on `if (!text) return false;`
+  before ever calling in.
+- **`prompt-budget.ts`'s `looksLikeWindowsPath`** — `p: unknown` narrowed to `p: string`; its one
+  real call site (`checkWindowsDirectExeCommandLineBudget`) already runs `if (typeof resolvedBin
+  !== 'string' || resolvedBin.length === 0) return null;` before calling in.
+- **`defs/antigravity.ts`'s `acquireAntigravityModelLock`** — the `let release: () => void = () =>
+  {};` no-op default replaced with a definite-assignment assertion (`let release!: () => void;`).
+  The ECMAScript spec guarantees a `Promise` executor runs synchronously during construction, so
+  `release = resolve` inside `new Promise((resolve) => { release = resolve; })` has already run by
+  the time the constructor call returns — the `() => {}` default was a real, coverage-instrumented
+  function that could never be invoked.
+- **`providers/model-catalog.ts`'s `listProviderModels`, and `launch.ts`'s
+  `looksLikeCodexNodeWrapper`** — see the phantom-branch finding below; both changed their `catch`
+  block from an early `return` to an assignment + a trailing `return` after the `try/catch/finally`
+  (their `try` blocks keep every one of their own existing early returns unchanged).
+
+**A re-derived, empirically-proven v8/istanbul coverage-instrumentation artifact (not a code
+issue):** `providers/model-catalog.ts:415` and `launch.ts:189` both showed an uncoverable branch at
+the exact column range of their `finally` clause's own opening brace, at 0 hits, regardless of which
+real path a test drove through — including scenarios exercising the try's success path, the try's
+throw-then-caught path, and (in a standalone repro) a throw *from inside the catch block itself*.
+Rather than trust a hunch, this was isolated with a disposable minimal repro (`try { return A } catch
+{ return B } finally { ... }` in a scratch `.ts` file under this package's own `vitest`, coverage
+inspected via the same `coverage-final.json` branchMap technique as the rest of this pass): the
+phantom branch appears if and only if **both** the `try` and the `catch` contain an early `return`
+ahead of a sibling `finally` — changing either side alone (return only in `try`, or return only in
+`catch`) makes it disappear. Real fix applied to both real occurrences: kept every one of `try`'s own
+early returns as direct `return`s (unchanged), and only changed `catch` to assign a `let result: T`
+(uninitialized, no default) and fall through, with a single trailing `return result;` placed after
+the whole `try/catch/finally`. TypeScript accepts `result` as definitely assigned at that trailing
+return because every real path through `try` in both functions already returns or throws — the only
+way to reach the code after `finally` is via `catch`, which assigns unconditionally. No test could
+ever have closed this gap; it isn't a claim carried over from a comment, it's a fresh, disposable,
+reproducible experiment this session ran and then deleted (no repro artifacts committed).
+
+**Two branches remain genuinely, provably unreachable — documented inline (with the real technical
+proof) rather than forced, matching `packages/cli`/`packages/registry`/`packages/memory`'s own
+2026-07-22 established precedent for this category:**
+- **`json-event-stream.ts`'s `stringifyContent`'s `catch { return String(value); }`.** Re-derived,
+  not assumed: this module's only exported entry point (`createJsonEventStreamHandler`) routes every
+  event through `handleLine`'s `obj = JSON.parse(line)`, and all 8 real call sites of
+  `stringifyContent` pass either `obj` itself or a field/subfield of it. A value that came out of
+  `JSON.parse` can only be `null`, a string, a finite number, a boolean, an array, or a plain object
+  — the JSON grammar has no circular-reference or BigInt production — so `JSON.stringify` can never
+  throw on it or any of its nested fields. Kept (not deleted) as protection against a hypothetical
+  future caller that feeds this module data from somewhere other than `JSON.parse`, the same
+  keep-and-document call `packages/cli`'s `defaultReadFile`'s `finish()` guard made for the same
+  reasoning category.
+- **`defs/amr.ts`'s `fetchVelaRemoteModelsWithRetry`'s implicit end-of-function statement.** The
+  function body is a single `for (let attempt = 0; ; attempt += 1) { ... }` — an empty middle clause
+  (unconditionally true) with no `break` anywhere in its body (grepped, confirmed none). The only two
+  ways out are the `return` on a successful parse and the `throw` in the `catch` arm, and the throw
+  is unconditionally forced once `attempt === AMR_MODELS_RETRY_DELAYS_MS.length`
+  (`AMR_MODELS_RETRY_DELAYS_MS` is the literal 2-element `[250, 750]` — so that's guaranteed within
+  3 attempts). The function's implicit end-of-body statement can therefore never execute; v8/istanbul
+  still instruments it because it cannot prove an arbitrary `for(;;)` terminates, but the real
+  control flow genuinely never reaches it.
+
+**Verified, personally, this session:** `pnpm --dir packages/agent-runtime exec tsc --noEmit` —
+clean. `pnpm --dir packages/agent-runtime run test:coverage` — **92 test files, 1712 tests passing,
+1 skipped** (the pre-existing, unrelated `codex-wrapper-unreadable` root-incompatibility skip from
+`launch.test.ts`, per its own inline `CAP_DAC_OVERRIDE` proof — this session re-verified that proof
+empirically too, via a real `fs.openSync` call against a real `chmod 0o111` file as uid 0 on this
+exact host, confirming root really does bypass the read-permission bit here). `pnpm --dir
+packages/agent-runtime run build` — clean. Repo-root `pnpm guard` — clean.

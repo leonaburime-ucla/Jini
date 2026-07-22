@@ -22,6 +22,24 @@ afterEach(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+describe('NoteStoreConfigError', () => {
+  it('sets code/name/message and threads a cause through to the real Error options', () => {
+    const cause = new Error('underlying failure');
+    const error = new NoteStoreConfigError('bad config', 'EBAD', cause);
+    expect(error.name).toBe('NoteStoreConfigError');
+    expect(error.code).toBe('EBAD');
+    expect(error.message).toBe('bad config');
+    expect(error.cause).toBe(cause);
+  });
+
+  it('constructs cleanly with no cause at all (an optional public-API parameter — no real call site in this package omits it, but external consumers may)', () => {
+    const error = new NoteStoreConfigError('bad config', 'EBAD');
+    expect(error.name).toBe('NoteStoreConfigError');
+    expect(error.code).toBe('EBAD');
+    expect(error.cause).toBeUndefined();
+  });
+});
+
 describe('createNoteStore', () => {
   it('dir() joins the configured subdir under dataDir, defaulting to "notes"', () => {
     expect(store.dir(dataDir)).toBe(join(dataDir, 'notes'));
@@ -385,20 +403,17 @@ describe('createNoteStore — filesystem safety hardening', () => {
       expect(() => createNoteStore({ ...config, subdir: 42 as any })).toThrow(/non-empty/);
     });
 
-    // `path.basename(subdir) !== subdir || path.isAbsolute(subdir)` (the
-    // final guard in assertSafeSubdir) is unreachable on this host: every
-    // input that could trigger either half is already excluded by the
-    // separator/`.`/`..` checks above it (POSIX `isAbsolute` requires a
-    // leading `/`; `basename` only differs from its input when a separator
-    // is present). Verified analytically, not just "not covered" — this is
-    // redundant defense-in-depth, most plausibly for platform differences
-    // (e.g. Windows drive-relative paths) this host can't exercise.
-    // `vi.spyOn` cannot stub it either: `node:path`'s exports are
-    // non-configurable here (`TypeError: Cannot redefine property:
-    // basename`), unlike `fs.promises` above — a module-level `vi.mock`
-    // would work but risks destabilizing every other test in this file that
-    // depends on real `path` behavior, for a branch already proven dead.
-    // Left flagged rather than forced.
+    // `assertSafeSubdir`'s final guard was refactored (2026-07-22, audit fix) from the
+    // platform-bound `path.basename`/`path.isAbsolute` to `path.win32.basename`/
+    // `path.win32.isAbsolute` explicitly — the platform-bound version was only reachable on an
+    // actual Windows host (`path.win32.basename('C:foo') === 'foo' !== 'C:foo'`, a real
+    // drive-relative-path ambiguity no `/`/`\`/`.`/`..` check above it catches), so on this
+    // (POSIX) CI host the branch was genuinely dead code, not a padded/skipped test. Using
+    // `path.win32` unconditionally makes the check's outcome identical on every host OS — and
+    // means the branch is now directly testable here without mocking `node:path` at all.
+    it('rejects a Windows drive-relative subdir like "C:foo" — no slash present, so only path.win32-aware parsing catches it', () => {
+      expect(() => createNoteStore({ ...config, subdir: 'C:foo' })).toThrow(/single path segment/);
+    });
   });
 
   describe('symlink containment', () => {

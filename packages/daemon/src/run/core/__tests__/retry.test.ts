@@ -341,4 +341,16 @@ describe('resumableFromProcessExit', () => {
   it('returns false for an ambiguous code-0/no-signal outcome', () => {
     expect(resumableFromProcessExit(0, null)).toBe(false);
   });
+
+  it('threads real sideEffects through to decideSafeRunRetry — userVisibleOutputSeen suppresses an otherwise-retryable signal kill', () => {
+    expect(resumableFromProcessExit(null, 'SIGKILL', { userVisibleOutputSeen: true, toolCallSeen: false })).toBe(false);
+  });
+
+  it('threads real sideEffects through to decideSafeRunRetry — toolCallSeen suppresses an otherwise-retryable signal kill', () => {
+    expect(resumableFromProcessExit(null, 'SIGKILL', { userVisibleOutputSeen: false, toolCallSeen: true })).toBe(false);
+  });
+
+  it('a signal kill with no observed side effects stays retryable when sideEffects is explicitly all-false', () => {
+    expect(resumableFromProcessExit(null, 'SIGKILL', { userVisibleOutputSeen: false, toolCallSeen: false })).toBe(true);
+  });
 });

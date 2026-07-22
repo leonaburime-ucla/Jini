@@ -962,7 +962,10 @@ on every existing cleanup path (rehydrate failure, bind failure, `stop()`) — *
 this claim was wrong when originally written; `stop()` and the bind-failure path only closed
 `eventLog`, leaking `journalEventLog`'s sqlite handle on every normal daemon shutdown. Fixed for
 real in `packages/node-host/src/create-local-node-daemon.ts` (both paths now `Promise.all([eventLog.close(),
-journalEventLog.close()])`) — the claim above is accurate again as of that fix.
+journalEventLog.close()])`) — the claim above is accurate again as of that fix. This exact gap was
+independently found and fixed twice (once directly on `main`, once on a since-merged branch); the
+branch's version additionally added regression assertions (`create-local-node-daemon.test.ts`'s three
+`createdJournal.close` checks) that this merge keeps — see this package's own test suite.
 
 Tests: `packages/daemon/src/continuation/__tests__/journal.test.ts` (4 tests, pure unit),
 `run-start-handler.test.ts` (4 tests, pure unit, fake `AgentExecutor`), a new "gap 1 byte-journal"
@@ -1566,3 +1569,80 @@ Personally run this session: `pnpm --dir packages/daemon exec vitest run --cover
 `pnpm --dir packages/node-host exec vitest run` → **78/78 tests pass** (unchanged count — this
 fix has no new node-host-level test, per the boundary above). `pnpm --dir packages/daemon exec tsc
 --noEmit` and `pnpm --dir packages/node-host exec tsc --noEmit`: both clean.
+## 2026-07-22 addition — two independent retry classifiers reconciled at merge time (audit fix, AUD-002)
+
+A second cloud session, working in parallel on a branch (`fix/audit-6-fixes-20260722`) that forked
+before the paragraph above landed, independently built its **own** answer to the identical gap-4
+problem: `classifyProcessExitFailure` + `defaultClassifyFailure`, both new exports added directly to
+`agent-executor.ts`, with a **materially different policy** — only `signal === 'SIGPIPE'` was
+classified retryable (`upstream_unavailable`/`network_error`); every other signal, including
+`SIGKILL`/`SIGTERM`, was `process_exit`/`signal_killed` and explicitly **not** retryable. Because
+this branch touched a file `main` had not (a different file than the `run/core/retry.ts` location
+above), a raw `git merge` would have combined both silently with no conflict marker at all — two
+same-shaped, contradictorily-behaving classifiers coexisting in the tree, one of them dead code by
+accident of which line happened to get wired last. A deep-dive audit
+(`ADS-memory/reports/audit-fastify-merge-and-six-gap-fixes-2026-07-22.md`, AUD-002) caught this
+before it landed.
+
+**Decision made at merge time: keep this file's `run/core/retry.ts` version; delete the branch's
+`agent-executor.ts` duplicate.** Reasoning: the branch's SIGPIPE-only policy is more conservative
+but misses the single most common real-world signal-kill scenario this classifier exists for — an
+OS/container OOM killer or infra-level eviction sending `SIGKILL` to a healthy process, which is
+presumptively transient and exactly the case worth retrying. The broader "any signal is
+presumptively transient" policy this file already documents does risk retrying a genuine crash
+signal (e.g. `SIGSEGV`) that a retry won't fix, but the blast radius of that miss is small and
+bounded: `DEFAULT_SAFE_RUN_RETRY_MAX_ATTEMPTS = 1`, so the cost of being too permissive here is at
+most one wasted extra attempt, while the cost of the branch's more conservative policy is silently
+never retrying the dominant legitimate case. `agent-executor.ts`'s own `classifyProcessExitFailure`/
+`defaultClassifyFailure` exports and their dedicated tests were removed as part of this merge;
+`FailureClassificationContext`'s `code`/`signal`-only scope note is unaffected (both
+implementations agreed on that boundary — see this file's now-single classifier for the reasoning).
+
+Also merged in from the same branch, independent of the classifier question: real `sideEffects`
+wiring (`userVisibleOutputSeen`/`toolCallSeen`, derived live from the translated agent-event stream
+in all three `wire*Lifecycle` drivers) so two of `decideSafeRunRetry`'s four side-effect-suppression
+guards are now genuinely exercised, not permanently dead code — see `resumableFromProcessExit`'s own
+doc in `retry.ts` for exactly which two, and why `artifactWriteSeen`/`liveArtifactSeen` still
+cannot be (no `'artifact'`/`'live_artifact'` event kind exists anywhere in `@jini/protocol`'s
+`RunAgentEventPayload` union today — a real protocol gap, not an oversight; see this repo's own
+"A2UI full protocol deferred" scope note). `attemptCount` stays a documented, correct `0`: no
+automatic same-run retry loop exists anywhere in this codebase yet (gap 4's `resumable` flag is
+read-only metadata for a host's own later follow-up run, not an auto-retry trigger — see
+`resumableFromProcessExit`'s doc), so every real call to this classifier genuinely is evaluating a
+first and only attempt; a future auto-retry loop would need to supply its own real count.
+
+**Verified, personally, this session**: `pnpm --dir packages/daemon exec tsc --noEmit` clean;
+`pnpm --dir packages/daemon run test:coverage` — all tests pass, `retry.ts` and `agent-executor.ts`
+both 100/100/100/100 after the branch's duplicate export and its 8 dedicated unit tests were
+removed and the 3 `wire*Lifecycle` drivers' new side-effect tracking got its own coverage.
+
+## 2026-07-22 addition — coverage pass: `routines/schedule.ts:219` re-verified genuinely unreachable, not accepted at face value
+
+Per this task's own "no scope cuts for coverage — real refactor first, only document as
+unreachable with the actual proof" standing rule, `nextWallTimeMatching`'s `if (!fallback) return
+null;` at line 219 (the `tzWallToUtcGapFallback` null-safety guard) was re-derived from scratch
+rather than trusted from the inline comment already there:
+
+`tzWallToUtcGapFallback(timezone, ...)` returns `null` only when its own internal
+`tzOffsetMinutes(timezone, ...)` call throws — which happens only when `new
+Intl.DateTimeFormat(..., {timeZone: timezone, ...})` rejects `timezone` as invalid (read
+`tzOffsetMinutes`'s own implementation to confirm this — same construction pattern, wrapped in the
+same try/catch-to-null shape `partsInTimezone` uses). But by the time line 219 is ever reached,
+`partsInTimezone(timezone, probe)` (line 203, this exact same loop iteration) has *already*
+constructed an `Intl.DateTimeFormat` for the identical `timezone` string and succeeded — and
+`Intl`'s timezone validity is a static property of the string, not something that can change
+between two calls microseconds apart in the same synchronous loop body. So `tzWallToUtcGapFallback`
+cannot fail here without `partsInTimezone` having already failed first, which would have
+short-circuited this code path entirely before line 219 is ever reached. Confirmed unreachable
+through this call site, not merely asserted.
+
+**Kept, not deleted**: this is real, correct defensive programming against
+`tzWallToUtcGapFallback`'s actual `Date | null` signature (a general-purpose exported function used
+elsewhere too — deleting the guard here would make this call site silently wrong the moment
+`tzWallToUtcGapFallback`'s own contract or this function's call order ever changes). Its `null`
+path is independently, directly covered by `schedule.test.ts`'s own dedicated test against a
+real invalid timezone string — genuine behavior of that function is tested; only this one
+call site's redundant re-check of an already-proven invariant is unreachable.
+
+No code change; this entry exists because the standing rule requires the *proof*, not just the
+prior claim, to be on record in this file, matching the inline code comment already at that line.

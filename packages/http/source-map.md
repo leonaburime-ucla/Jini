@@ -1502,3 +1502,95 @@ before landing; the doc comment now on that file describes the real, full-parity
 93.45%, pre-existing, already documented above) are both untouched by this pass. `src/fastify/`
 subtree itself: **100% on all four metrics**, every file, including the three new route-pack
 mounting files. Root `pnpm typecheck` and `pnpm guard`: clean.
+
+### Merge note (2026-07-22, later the same day): four more audit-fix sections below merged in from a second, parallel cloud session
+
+The sections immediately below (`delegated-tools.ts` barrel export, `media.ts`, and the
+`runs.ts`/`terminals.ts` coverage pass) were written on a branch (`fix/audit-6-fixes-20260722`) that
+forked from `main` *before* the Fastify-transport-split merge above landed, so they were authored
+against the pre-split flat-file layout. They merged in cleanly with no logical conflict — the
+route-pack files they touch (`delegated-tools.ts`, `runs.ts`, `terminals.ts`) are exactly the ones
+this merge's "Corrected layout" section above kept flat at the package root, not moved into
+`express/`, so every path/import reference below is still accurate post-merge. `media.ts` (new in
+that branch) is likewise flat at the root and barrel-exported the same way. None of these four
+sections needed any correction for the Fastify split; see `node-host/source-map.md`'s own merge note
+for the one piece that did (the six route packs `media.ts` joins are wired Express-only for now,
+deliberately, per this repo's owner's explicit instruction to table Fastify parity for the newly
+merged route packs — tracked as follow-up work, not silently dropped).
+
+## 2026-07-22 addition — export `delegated-tools.ts` from the package barrel (audit fix)
+
+**Gap found by independent audit**: `registerDelegatedToolRoutes` (and its supporting types —
+`DelegatedToolExecuteRequest`, `DelegatedToolExecuteResponse`, `DelegatedToolsHttpDeps`,
+`DelegatedToolsInternalErrorContext`, `delegatedToolExecuteRoute`) were implemented and tested
+(see the entry immediately above — 100/100/100/100) but never re-exported from `src/index.ts`.
+Every other route pack in this package (`memory.ts`, `routines.ts`, `terminals.ts`, `db-ops.ts`,
+`model-proxy.ts`, `agents.ts`, ...) is barrel-exported; this one was not, so no real host importing
+only `@jini/http`'s public surface could reach the MCP-callback bridge — the primary continuation
+path for the ~12 of 24 agent defs that round-trip tool calls through an MCP subprocess rather than
+a native tool-call transport. Fixed by adding the same `export type {...} from './delegated-tools.js'`
+/ `export {...} from './delegated-tools.js'` pair every other route pack already has, placed after
+`model-proxy.ts`'s block. No behavior change to the route itself — it was already correct and
+tested, just unreachable from outside the package.
+
+## 2026-07-22 addition — `media.ts`: a real HTTP caller for `@jini/media`'s dispatch engine (audit fix)
+
+**Gap found by independent audit**: `@jini/media`'s `createMediaDispatchEngine`/
+`createSqliteMediaTaskStore` were real and 100%-tested but had zero callers anywhere outside their
+own package. This package gained `@jini/media` as a new dependency and a new route pack —
+`src/media.ts` — to give them one, following the exact route-pack conventions `memory.ts`/
+`routines.ts` already established (`defineJsonRoute`/`mountJsonRoute`, a `RouteInputContext` parser
+per route, `registerMediaRoutes` mounting all of them).
+
+**Routes**: `POST /api/media/generate` (`requireSameOrigin: true`, `202`), `GET
+/api/media/tasks/:id`, `GET /api/media/tasks?ownerRef=...`, `DELETE /api/media/tasks/:id`
+(`requireSameOrigin: true`). See `media.ts`'s own module doc for the full "request-now, poll-later"
+design and the where-do-bytes-land decision (a base64 `data:` URL stored on `MediaTask.file`, no new
+persistence port invented).
+
+**SEC-005 redaction, matching `delegated-tools.ts`'s established pattern exactly**: a raw error from
+`MediaDispatchEngine.generate()` (which can carry vendor-SDK/network internals, API keys in a
+response body, ...) never reaches an HTTP caller verbatim. Two redaction sites: `POST
+/api/media/generate` itself (a `taskStore.create()` failure, source `media-generate-validate`) and
+the background generation failure path (source `media-generate-dispatch`, recorded onto the task's
+own `error` field with the same redacted `{message, code}` shape a caller would see from the sync
+path). Both call the same injectable `onInternalError` sink (default `console.error`), correlation-
+id-bearing, exactly like `delegated-tools.ts`'s `reportInternalError`.
+
+**Verified, personally, this session**: `pnpm --dir packages/http exec tsc --noEmit`: clean.
+`pnpm --dir packages/http run test:coverage` — **748/748 tests pass** (49 new in `media.test.ts`),
+`media.ts` **100/100/100/100**. Package-wide: 100/99.35/100/100 (the two pre-existing, unrelated
+gaps — `runs.ts:68` and `terminals.ts`'s five lines — are addressed separately; see this task's own
+coverage pass).
+
+## 2026-07-22 addition — genuine 100% branch coverage: runs.ts + terminals.ts (audit fix, coverage pass)
+
+**`runs.ts:68`** (`RunInternalErrorContext.runId?`'s ternary spread): both real call sites
+(`run-start` after a durably-created run's id is already known; `run-stream` against an
+already-parsed path parameter) always had a `runId` in hand — the `?`/ternary was speculative
+flexibility no caller ever exercised. Real refactor, not a padded test: `runId` is now a required
+field/parameter throughout `RunInternalErrorContext`/`reportInternalError`, removing the dead
+branch entirely instead of forcing a fake call site to reach it.
+
+**`terminals.ts`** (93.45% → 100% branch): five real gaps, each closed with a real refactor or test,
+none padded:
+- Lines 165-167 (`terminalCreateRoute.handle`'s `cols`/`rows`/`shell` optional-field spreads into
+  `toolInput`): the existing tests only exercised `.parse()` threading these fields, never
+  `.handle()` itself with them set. New test calls `.handle()` directly with all three populated.
+- Line 209 (`actionResultToApiResult`'s `result.session ? ... : {}`): the `null`-session side is a
+  real race (`write`/`resize`/`kill` finding metadata for an id whose session was concurrently
+  killed — see `@jini/daemon`'s `terminal-session.ts` `currentSnapshot`), not a hypothetical.
+  `actionResultToApiResult` is now exported (matching this same file's `createDeferredEndGate`
+  precedent) and directly unit-tested against a synthetic `{status:'ok', session: null}` result
+  rather than forcing the real race through a full `TerminalSessionManager`.
+- Line 215 (`parseStdinInput`'s `!isRecord` guard): no test ever supplied a non-object body: new
+  `terminalStdinRoute.parse({body: 'not-an-object', ...})` test.
+- Lines 237-238 (`parseResizeInput`'s `!parsedId.ok`/`!isRecord` guards): same gap, new tests for a
+  missing `id` param and a non-object body.
+
+**Verified, personally, this session**: `pnpm --dir packages/http exec tsc --noEmit`: clean.
+`pnpm --dir packages/http run test:coverage` — **755/755 tests pass** (8 new), **genuine
+100/100/100/100 across every file in this package** — not a single uncovered line/branch anywhere.
+`vitest.config.ts`'s committed threshold raised from 98/98/98/98 to 100/100/100/100 to lock this in
+(a regression now fails CI instead of silently sliding under a safety margin). Root `pnpm -r run
+build`: clean. Root `pnpm guard`: clean.

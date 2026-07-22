@@ -352,6 +352,18 @@ describe('createJsonEventStreamHandler (opencode)', () => {
     expect(toolResults).toHaveLength(2);
   });
 
+  it('emits an empty tool_result content when a completed state has no output field', () => {
+    const events = feed('opencode', [
+      {
+        type: 'tool_use',
+        sessionID: 'ses_3',
+        part: { tool: 'bash', callID: 'call_12', state: { input: {}, status: 'completed' } },
+      },
+    ]);
+    const toolResult = events.find((e) => e.type === 'tool_result');
+    expect(toolResult).toEqual({ type: 'tool_result', toolUseId: 'call_12', content: '', isError: false });
+  });
+
   it('emits a tool_use with null input and no tool_result when there is no state part', () => {
     const events = feed('opencode', [
       { type: 'tool_use', sessionID: 'ses_2', part: { tool: 'bash', callID: 'call_10' } },
@@ -445,6 +457,13 @@ describe('createJsonEventStreamHandler (gemini)', () => {
   it('emits an init status with an undefined model when init has no model field', () => {
     const events = feed('gemini', [{ type: 'init' }]);
     expect(events[0]).toEqual({ type: 'status', label: 'initializing', model: undefined });
+  });
+
+  it('emits a null-input tool_use when a gemini tool_use has no parameters field at all', () => {
+    const events = feed('gemini', [
+      { type: 'tool_use', tool_id: 'tool_noparams', tool_name: 'list_dir' },
+    ]);
+    expect(events[0]).toEqual({ type: 'tool_use', id: 'tool_noparams', name: 'list_dir', input: null });
   });
 
   it('falls through to raw for an assistant message with empty content', () => {
@@ -640,6 +659,16 @@ describe('createJsonEventStreamHandler (kimi)', () => {
       },
     ]);
     expect(events).toEqual([{ type: 'tool_use', id: 'call_4', name: 'grep', input: { pattern: 'foo' } }]);
+  });
+
+  it('emits a null-input tool_use when a tool_calls entry has no arguments field at all', () => {
+    const events = feed('kimi', [
+      {
+        role: 'assistant',
+        tool_calls: [{ id: 'call_5', function: { name: 'noop' } }],
+      },
+    ]);
+    expect(events).toEqual([{ type: 'tool_use', id: 'call_5', name: 'noop', input: null }]);
   });
 
   it('falls through to raw when tool_call_id is blank on a tool-role message', () => {
@@ -844,6 +873,24 @@ describe('extractConnectorApiError / connectorToolSelectionErrorMessage (via cod
     expect(events.filter((e) => e.type === 'error')).toHaveLength(0);
   });
 
+  it('falls back to an empty details object when the connector error has no details field at all', () => {
+    const events = feed('codex', [
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd_nodetails',
+          type: 'command_execution',
+          command: 'x',
+          aggregated_output: JSON.stringify({ error: { code: 'CONNECTOR_TOOL_NOT_FOUND' } }),
+          exit_code: 1,
+        },
+      },
+    ]);
+    const error = events.find((e) => e.type === 'error')!;
+    expect(error.message).toContain('the requested connector tool');
+    expect(error.message).toContain('is not allowed.');
+  });
+
   it('scans a multi-line aggregated_output for the connector error, skipping lines that are not JSON objects', () => {
     const events = feed('codex', [
       {
@@ -896,6 +943,11 @@ describe('extractErrorMessage (via opencode error frames)', () => {
   it('prefers a detail string when present', () => {
     const events = feed('opencode', [{ type: 'error', error: { detail: 'plain detail message' } }]);
     expect(events[0]).toMatchObject({ message: 'plain detail message' });
+  });
+
+  it('falls back to a plain string error field when there is no detail/message', () => {
+    const events = feed('opencode', [{ type: 'error', error: { error: 'plain nested error string' } }]);
+    expect(events[0]).toMatchObject({ message: 'plain nested error string' });
   });
 });
 

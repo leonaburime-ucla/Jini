@@ -97,20 +97,38 @@ async function defaultReadFile(path: string, limits: ReadLimits): Promise<string
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
+    // `settled`-guarded: defensive against Node's own documented Readable
+    // contract ever being violated (a stream is only ever supposed to emit
+    // one of 'end'/'error', never both, and `stream.destroy()` with no
+    // error argument — the only way this module calls it — is documented to
+    // suppress any further 'error' from the destroy path itself). Kept as
+    // real protection against a future/third-party stream implementation
+    // bug, not something this module's own real `createReadStream` usage
+    // can trigger — see `source-map.md`'s dated entry for the full
+    // re-verification record (a single terminal event is all this file's
+    // own usage can ever produce).
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       fn();
     };
-    stream.on('data', (chunk: string | Buffer) => {
-      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-      total += buf.length;
+    // `@types/node` types a Readable's 'data' listener as `(chunk: string |
+    // Buffer) => void` unconditionally (accommodating a stream some other
+    // caller configured with an `encoding`), but this stream never sets one
+    // (`limits` has no such field — see `ReadLimits`), so `chunk` is always
+    // really a `Buffer` here — a plain assertion, not a runtime `typeof`
+    // branch (a prior `typeof chunk === 'string' ? ... : ...` ternary here
+    // was dead code given this file's only call site; removed rather than
+    // left uncovered).
+    stream.on('data', (rawChunk: string | Buffer) => {
+      const chunk = rawChunk as Buffer;
+      total += chunk.length;
       if (total > limits.maxBytes) {
         stream.destroy();
         finish(() => reject(new PayloadTooLargeError(`file exceeded the ${limits.maxBytes}-byte limit: ${path}`)));
         return;
       }
-      chunks.push(buf);
+      chunks.push(chunk);
     });
     stream.on('error', (err) => finish(() => reject(err)));
     stream.on('end', () => finish(() => resolve(Buffer.concat(chunks).toString('utf8'))));

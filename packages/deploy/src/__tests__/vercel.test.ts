@@ -119,6 +119,144 @@ describe('VercelDeployTarget.publish', () => {
     ).rejects.toThrow(DeployError);
   });
 
+  it('falls back to `uid` for polling/deploymentId when the create response has no `id` field', async () => {
+    // Vercel's own deployments API has historically used both `id` and `uid` across API
+    // versions/endpoints for the same concept; this covers the `typeof created.uid === 'string'`
+    // fallback side of the nested ternary.
+    const createBody = { uid: 'dpl_uid_only', readyState: 'QUEUED', url: 'demo.vercel.app' };
+    const readyBody = { uid: 'dpl_uid_only', readyState: 'READY', url: 'demo.vercel.app' };
+    const fetchSpy = vi.fn(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse(200, createBody);
+      if (String(input).includes('/v13/deployments/dpl_uid_only')) return jsonResponse(200, readyBody);
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const target = new VercelDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' });
+    expect(result.deploymentId).toBe('dpl_uid_only');
+  });
+
+  it('falls back to a generic "Vercel deployment failed" message when a terminal ERROR state carries no error object at all', async () => {
+    const createBody = { id: 'dpl_noerr', readyState: 'QUEUED', url: 'demo.vercel.app' };
+    const errorBody = { id: 'dpl_noerr', readyState: 'ERROR' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(200, createBody);
+        return jsonResponse(200, errorBody);
+      }),
+    );
+    const target = new VercelDeployTarget({ token: 'tok' });
+    await expect(
+      target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' }),
+    ).rejects.toThrow('Vercel deployment failed.');
+  });
+
+  it('throws DeployError when the poll status check itself (not the initial create) receives a non-ok response', async () => {
+    const createBody = { id: 'dpl_pollfail', readyState: 'QUEUED', url: 'demo.vercel.app' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(200, createBody);
+        return jsonResponse(500, {});
+      }),
+    );
+    const target = new VercelDeployTarget({ token: 'tok' });
+    await expect(
+      target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' }),
+    ).rejects.toThrow('Vercel request failed (500).');
+  });
+
+  it('falls back to `resp.status || 502` when a zero-status network-error response is also non-JSON', async () => {
+    // Response.error() produces a real zero-status (`status: 0`, `type: 'error'`) opaque Response
+    // whose body can't be parsed as JSON, exercising both readVercelJson's catch AND the
+    // `resp.status || 502` fallback (0 is falsy) in the same real call.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.error()));
+    const target = new VercelDeployTarget({ token: 'tok' });
+    await expect(
+      target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' }),
+    ).rejects.toMatchObject({ status: 502 });
+  });
+
+  it('leaves the url already-absolute when a candidate is returned with an explicit https:// prefix', async () => {
+    // deploymentUrl()'s `/^https?:\/\//i.test(url) ? url : \`https://${url}\`` true side: Vercel's
+    // `alias`/`url` fields are usually bare hostnames, but nothing prevents a fully-qualified
+    // value from coming back (or a caller-shaped test double), and this file must not double-prefix it.
+    const createBody = { readyState: 'READY', url: 'https://already-absolute.vercel.app' };
+    const probed: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(200, createBody);
+        probed.push(String(input));
+        return new Response('', { status: 200 });
+      }),
+    );
+    const target = new VercelDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' });
+    expect(result.url).toBe('https://already-absolute.vercel.app');
+    expect(probed[0]).toBe('https://already-absolute.vercel.app/');
+  });
+
+  it("falls back to alias[0] in deploymentUrl()'s own url resolution when the response has no top-level url field", async () => {
+    // deploymentUrl() is called unconditionally for `initialUrl` right after create, independent
+    // of the reachability wait — this covers its `(json?.alias)?.[0]` fallback branch specifically
+    // (as opposed to deploymentUrlCandidates' separate, already-covered `.alias` loop).
+    const createBody = { readyState: 'READY', alias: ['alias-only.vercel.app'] };
+    const probed: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(200, createBody);
+        probed.push(String(input));
+        return new Response('', { status: 200 });
+      }),
+    );
+    const target = new VercelDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' });
+    expect(result.url).toBe('https://alias-only.vercel.app');
+  });
+
+  it('collects a plain-string entry from the `aliases` array (not just object-shaped {domain}/{url} entries)', async () => {
+    const createBody = {
+      readyState: 'READY',
+      aliases: ['plain-string-alias.example'],
+    };
+    const probed: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(200, createBody);
+        probed.push(String(input));
+        return new Response('', { status: 200 });
+      }),
+    );
+    const target = new VercelDeployTarget({ token: 'tok' });
+    await target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' });
+    expect(probed[0]).toBe('https://plain-string-alias.example/');
+  });
+
+  it('falls all the way through to an empty url/no-reachableAt result when neither the create/ready responses nor a fallback url exist', async () => {
+    // Every url-bearing field (`url`, `alias`, `aliases`) is absent from both the create response
+    // and (since there's no id/uid) the "ready" response is the same object — so
+    // deploymentUrlCandidates() is empty, forcing the `[initialUrl]` fallback path
+    // (candidates.length === 0), and deploymentUrl() on both `created`/`ready` also resolves to
+    // ''. This exercises: candidates.length===0 -> [initialUrl]; the full
+    // `link.url || deploymentUrl(ready) || initialUrl` fallback chain bottoming out; and
+    // `reachableAt` staying absent (link-delayed with no candidates never sets it).
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy.mockResolvedValue(jsonResponse(200, { readyState: 'READY' })));
+    const target = new VercelDeployTarget({ token: 'tok' });
+    const result = await target.publish({ files: [{ file: 'index.html', data: 'x' }], projectName: 'demo' });
+    expect(result.url).toBe('');
+    expect(result.status).toBe('link-delayed');
+    expect(result.reachableAt).toBeUndefined();
+    // One create call only — no reachability probe network call, since waitForReachableDeploymentUrl
+    // short-circuits before ever calling fetch when its candidate list is empty.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('skips polling entirely when the create response carries neither an id nor a uid', async () => {
     // ready = created directly (no deploymentId), so this must complete with exactly one fetch call.
     const fetchSpy = vi.fn(async () => jsonResponse(200, { url: 'demo.vercel.app' }));

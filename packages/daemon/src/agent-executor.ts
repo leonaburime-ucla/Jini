@@ -55,16 +55,28 @@
  * ## Invariant
  *
  * `RunLifecycle.start()` already transitions a run to `'running'` before
- * `run()` is ever called. Every failure path in `run()` — unknown
+ * `run()` is ever called. Every *pre-spawn* failure path in `run()` — unknown
  * `agentId`, an unsupported `streamFormat`/prompt-delivery shape, an
  * unresolvable binary, or a spawn error — calls `lifecycle.finish({status:
  * 'failed', resumable: false, code: null, signal: null})` itself before
  * rejecting, so a run can never get stuck `'running'` with no watchdog.
- * `resumable` is always `false` in v1: no `RunRetryFailureSignal` producer
- * exists anywhere in this codebase (OD's ~20-vendor-CLI text-matching
- * failure classifier was deliberately never ported — see
- * `run/core/failure-taxonomy.ts`'s own doc and `source-map.md`), so a
- * blanket "not retryable" default is the only honest answer available.
+ * `resumable` is unconditionally `false` on these paths — there is no spawned
+ * child, hence nothing a classifier could examine (see
+ * `FailureClassificationContext`'s own doc).
+ *
+ * For a run that *did* spawn and then failed, `resumable` is decided by
+ * `classifyFailure` (gap 4 — see `ClassifyFailure`'s own doc), an injectable
+ * port with no default of its own in this module (`undefined` stays
+ * byte-identical to pre-gap-4 behavior — every `'failed'` outcome
+ * resumable:false). OD's ~20-vendor-CLI text-matching failure classifier was
+ * deliberately never ported (see `run/core/failure-taxonomy.ts`'s own doc and
+ * `source-map.md`). The real zero-config classifier lives in `@jini/daemon`'s
+ * `run/core/retry.ts` (`resumableFromProcessExit`/`classifyProcessExitFailure`)
+ * and is wired in by `@jini/node-host`'s `createLocalNodeDaemon` — see that
+ * package's own source-map.md, and `run/core/retry.ts`'s own doc for the
+ * classification policy and its 2026-07-22 merge-time reconciliation against
+ * a second, independently-built (and rejected) classifier that once lived in
+ * this module.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
@@ -106,6 +118,7 @@ import { classifyRunCloseStatus } from './close-status.js';
 import { resolveContinuationTransport } from './continuation/continuation-transport.js';
 import type { RunByteJournal } from './continuation/journal.js';
 import { resultContent } from './delegated-tool-bridge.js';
+import type { RunRetrySideEffectState } from './run/core/index.js';
 import type { ToolExecutor } from './tool-executor.js';
 import type { RunLifecycle } from './run-lifecycle.js';
 
@@ -722,19 +735,36 @@ async function writeMcpJsonForRun(
 /**
  * Gap 4 of the run/chat orchestration Final Recommendation: what
  * `classifyFailure` (see `CreateAgentExecutorOptions.classifyFailure`) is
- * given to decide whether a `'failed'` run is `resumable`. Deliberately
- * minimal — `code`/`signal` are the only signals cheaply available at every
- * one of the three lifecycle-wiring close handlers without new buffering
- * machinery (no stderr/stdout tail is accumulated for this purpose; a host
- * wanting output-pattern-based classification, the way OD's own ~20-vendor
- * text-matching classifier worked, would need its own listener for that —
- * an honest scope limit, not an oversight).
+ * given to decide whether a `'failed'` run is `resumable`. `code`/`signal`
+ * are the only *content-level* signals cheaply available at every one of the
+ * three lifecycle-wiring close handlers without new stderr/stdout buffering
+ * machinery (a host wanting output-pattern-based classification, the way
+ * OD's own ~20-vendor text-matching classifier worked, would need its own
+ * listener for that — an honest scope limit, not an oversight).
+ *
+ * `sideEffects` (2026-07-22) carries the two `RunRetrySideEffectState` fields
+ * every `wire*Lifecycle` driver already tracks live from the translated
+ * agent-event stream it's processing anyway — `userVisibleOutputSeen` (a
+ * non-empty `text_delta`/`thinking_delta`) and `toolCallSeen` (a `tool_use`)
+ * — so `decideSafeRunRetry`'s matching suppression guards are genuinely
+ * exercised, not permanently dead code. Two related fields are deliberately
+ * absent: `cancelRequested` is never included because it's structurally
+ * always `false` by the time a classifier runs at all (a cancelled run's
+ * status already routes to `'cancelled'` before `classifyFailure` is ever
+ * consulted — see each `wire*Lifecycle` close handler); `artifactWriteSeen`/
+ * `liveArtifactSeen` have no real signal to derive them from at all —
+ * `@jini/protocol`'s `RunAgentEventPayload` union (`events.ts`) has no
+ * `'artifact'`/`'live_artifact'` event kind yet (Jini's own generalized
+ * GenUI/artifact surface isn't built — see this repo's "A2UI full protocol
+ * deferred" scope note), unlike OD, which `RunRetrySideEffectState`'s shape
+ * was carried over from.
  */
 export interface FailureClassificationContext {
   readonly runId: string;
   readonly agentId: string;
   readonly code: number | null;
   readonly signal: string | null;
+  readonly sideEffects: Pick<RunRetrySideEffectState, 'userVisibleOutputSeen' | 'toolCallSeen'>;
 }
 
 /**
@@ -812,6 +842,11 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
   // finish()'s sessionRef below. `streamFormat === 'plain'` defs have no structured parser and
   // therefore never populate this — an honest scope limit, not an oversight.
   let capturedSessionId: string | undefined;
+  // Real `FailureClassificationContext.sideEffects` signals (2026-07-22) — see that interface's
+  // own doc for exactly what these two mean and why the other two `RunRetrySideEffectState`
+  // fields aren't tracked here at all.
+  let userVisibleOutputSeen = false;
+  let toolCallSeen = false;
   // Gap 3 (stdin-tool-result injection) — the most recently reported tool_use, cleared once
   // consumed by a turn-end injection decision. See `ContinuationOptions`'s doc for why this is
   // only ever acted on when a host has explicitly allowlisted the tool's name.
@@ -901,6 +936,12 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
             if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
             if (translation.payload.type === 'tool_use') {
               pendingToolUse = { id: translation.payload.id, name: translation.payload.name, input: translation.payload.input };
+              toolCallSeen = true;
+            } else if (
+              (translation.payload.type === 'text_delta' || translation.payload.type === 'thinking_delta') &&
+              translation.payload.delta.length > 0
+            ) {
+              userVisibleOutputSeen = true;
             }
             enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
           } else if (translation.kind === 'error') {
@@ -915,6 +956,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
     if (journal) enqueueEmit(() => journal.record(runId, receivedJournalEntry('stdout', text)));
     enqueueEmit(() => lifecycle.emit(runId, { event: 'stdout', data: { chunk: text } }));
     if (streamFormat === 'plain') {
+      if (text.length > 0) userVisibleOutputSeen = true;
       enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: { type: 'text_delta', delta: text } }));
     } else {
       // Non-null: `streamHandler` is only ever null when `streamFormat === 'plain'` (see its
@@ -962,7 +1004,13 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       const status = classifyRunCloseStatus({ cancelRequested, code, signal });
       const resumable =
         status === 'failed' && classifyFailure !== undefined
-          ? await classifyFailure({ runId, agentId: def.id, code, signal: signal ?? null })
+          ? await classifyFailure({
+              runId,
+              agentId: def.id,
+              code,
+              signal: signal ?? null,
+              sideEffects: { userVisibleOutputSeen, toolCallSeen },
+            })
           : false;
       await lifecycle.finish({
         runId,
@@ -1042,6 +1090,9 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
   let emitQueue: Promise<void> = Promise.resolve();
   // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
   let capturedSessionId: string | undefined;
+  // Real `FailureClassificationContext.sideEffects` signals — see that interface's own doc.
+  let userVisibleOutputSeen = false;
+  let toolCallSeen = false;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -1082,7 +1133,13 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
       const resumable =
         status === 'failed' && classifyFailure !== undefined
-          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          ? await classifyFailure({
+              runId,
+              agentId,
+              code,
+              signal: signal ?? null,
+              sideEffects: { userVisibleOutputSeen, toolCallSeen },
+            })
           : false;
       await lifecycle.finish({
         runId,
@@ -1106,6 +1163,14 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
         const translation = translateAgentRuntimeEvent(payload);
         if (translation.kind === 'agent') {
           if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
+          if (translation.payload.type === 'tool_use') {
+            toolCallSeen = true;
+          } else if (
+            (translation.payload.type === 'text_delta' || translation.payload.type === 'thinking_delta') &&
+            translation.payload.delta.length > 0
+          ) {
+            userVisibleOutputSeen = true;
+          }
           enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
         } else if (translation.kind === 'error') {
           enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
@@ -1162,6 +1227,9 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
   let emitQueue: Promise<void> = Promise.resolve();
   // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
   let capturedSessionId: string | undefined;
+  // Real `FailureClassificationContext.sideEffects` signals — see that interface's own doc.
+  let userVisibleOutputSeen = false;
+  let toolCallSeen = false;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -1202,7 +1270,13 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
       const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
       const resumable =
         status === 'failed' && classifyFailure !== undefined
-          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          ? await classifyFailure({
+              runId,
+              agentId,
+              code,
+              signal: signal ?? null,
+              sideEffects: { userVisibleOutputSeen, toolCallSeen },
+            })
           : false;
       await lifecycle.finish({
         runId,
@@ -1223,6 +1297,14 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
       const translation = translateAgentRuntimeEvent(payload);
       if (translation.kind === 'agent') {
         if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
+        if (translation.payload.type === 'tool_use') {
+          toolCallSeen = true;
+        } else if (
+          (translation.payload.type === 'text_delta' || translation.payload.type === 'thinking_delta') &&
+          translation.payload.delta.length > 0
+        ) {
+          userVisibleOutputSeen = true;
+        }
         enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
       } else if (translation.kind === 'error') {
         enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));

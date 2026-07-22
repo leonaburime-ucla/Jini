@@ -1,5 +1,43 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PayloadTooLargeError, readBodyFromFlags, readPromptFromFlags } from '../prompt.js';
+
+/**
+ * A minimal, manually-triggerable `AbortSignal`-shaped fake: a real `AbortController` always
+ * assigns a real (truthy) `DOMException` to `signal.reason` once aborted on this Node runtime, so
+ * it cannot exercise the `reason ?? new Error(...)` fallback in `prompt.ts`'s default stdin
+ * readers, nor let a test abort strictly *after* reading has already started (a real controller's
+ * `abort()` is synchronous and immediate). This fake controls both independently.
+ */
+function makeFakeSignal(): { signal: AbortSignal; fire: (reason?: unknown) => void } {
+  const listeners: Array<() => void> = [];
+  const state = { aborted: false, reason: undefined as unknown };
+  const signal = {
+    get aborted() {
+      return state.aborted;
+    },
+    get reason() {
+      return state.reason;
+    },
+    addEventListener: (_type: string, cb: () => void) => {
+      listeners.push(cb);
+    },
+    removeEventListener: (_type: string, cb: () => void) => {
+      const i = listeners.indexOf(cb);
+      if (i !== -1) listeners.splice(i, 1);
+    },
+    throwIfAborted: () => {
+      if (state.aborted) throw state.reason;
+    },
+  } as unknown as AbortSignal;
+  return {
+    signal,
+    fire: (reason?: unknown) => {
+      state.aborted = true;
+      state.reason = reason;
+      for (const cb of [...listeners]) cb();
+    },
+  };
+}
 
 describe('readPromptFromFlags', () => {
   it('returns --prompt verbatim when set', async () => {
@@ -107,6 +145,40 @@ describe('readPromptFromFlags', () => {
     }
   });
 
+  it('rejects the default stdin reader when process.stdin emits an error', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {};
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const pending = readPromptFromFlags({ 'prompt-file': '-' });
+      const streamError = new Error('EIO: real io error');
+      fakeStdin.emit('error', streamError);
+      await expect(pending).rejects.toBe(streamError);
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('rejects the default stdin reader with a generic Error when a mid-read abort carries no reason', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {};
+    (fakeStdin as unknown as { pause: () => void }).pause = () => {};
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const { signal, fire } = makeFakeSignal();
+      const pending = readPromptFromFlags({ 'prompt-file': '-' }, { signal });
+      fakeStdin.emit('data', 'partial ');
+      fire(undefined);
+      await expect(pending).rejects.toThrow('stdin read aborted');
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
   it('rejects the default stdin reader once the byte cap is exceeded, mid-stream', async () => {
     const { EventEmitter } = await import('node:events');
     const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
@@ -136,6 +208,48 @@ describe('readPromptFromFlags', () => {
       fakeStdin.emit('data', 'partial ');
       controller.abort();
       await expect(pending).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('rejects the default stdin reader immediately for a signal already aborted before reading starts, never touching process.stdin', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {
+      throw new Error('must not read from stdin when already aborted');
+    };
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const controller = new AbortController();
+      const abortError = new Error('aborted before start');
+      controller.abort(abortError);
+      await expect(readPromptFromFlags({ 'prompt-file': '-' }, { signal: controller.signal })).rejects.toBe(abortError);
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('rejects the default stdin reader with a generic Error when aborted-before-start carries no reason', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fakeStdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+    (fakeStdin as unknown as { setEncoding: (enc: string) => void }).setEncoding = () => {
+      throw new Error('must not read from stdin when already aborted');
+    };
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      // A real `AbortController#abort()` (with no explicit reason) still assigns a real
+      // `DOMException` as `signal.reason` on this Node runtime, so the `?? new Error(...)`
+      // fallback (`limits.signal.reason ?? ...`) can't be reached that way — it exists for any
+      // `AbortSignal`-shaped object whose `reason` is genuinely `undefined` despite `aborted:
+      // true`, which the real class never produces but the type itself doesn't forbid. A minimal
+      // fake signal proves that fallback for real instead of leaving it untested.
+      const fakeSignal = { aborted: true, reason: undefined } as unknown as AbortSignal;
+      await expect(readPromptFromFlags({ 'prompt-file': '-' }, { signal: fakeSignal })).rejects.toThrow(
+        'stdin read aborted',
+      );
     } finally {
       Object.defineProperty(process, 'stdin', { value: original, configurable: true });
     }
@@ -262,6 +376,53 @@ describe('readBodyFromFlags', () => {
       const controller = new AbortController();
       controller.abort();
       await expect(readBodyFromFlags({ 'body-file': '-' }, { signal: controller.signal })).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('registers a real abort listener on the default async-iterator stdin reader, fires and cleans it up on a mid-read abort', async () => {
+    let resumeGen: (() => void) | undefined;
+    const destroy = vi.fn();
+    const fakeStdin = {
+      [Symbol.asyncIterator]: async function* () {
+        yield 'first ';
+        await new Promise<void>((resolve) => {
+          resumeGen = resolve;
+        });
+        yield 'second';
+      },
+      destroy,
+    } as unknown as NodeJS.ReadStream;
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const { signal, fire } = makeFakeSignal();
+      const pending = readBodyFromFlags({ 'body-file': '-' }, { signal });
+      // Let the first chunk flow through the async iterator before the generator parks on the
+      // controlled promise (proves the "not yet aborted" path ran for real, not just abort-before-start).
+      await new Promise((r) => setTimeout(r, 0));
+      fire(new Error('aborted mid-read'));
+      expect(destroy).toHaveBeenCalledWith(expect.any(Error));
+      resumeGen?.();
+      await expect(pending).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+    }
+  });
+
+  it('decodes a real Buffer chunk from the default async-iterator stdin reader (not just the string chunks every other fixture yields)', async () => {
+    const fakeStdin = {
+      [Symbol.asyncIterator]: async function* () {
+        yield Buffer.from('buffered ', 'utf8');
+        yield Buffer.from('bytes', 'utf8');
+      },
+    } as unknown as NodeJS.ReadStream;
+    const original = process.stdin;
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    try {
+      const result = await readBodyFromFlags({ 'body-file': '-' });
+      expect(result).toBe('buffered bytes');
     } finally {
       Object.defineProperty(process, 'stdin', { value: original, configurable: true });
     }

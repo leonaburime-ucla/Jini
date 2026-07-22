@@ -138,17 +138,33 @@ export function classifyProcessExitFailure(code: number | null, signal: string |
  * it does not schedule an automatic in-process retry the way {@link decideSafeRunRetry}'s full
  * `attemptCount`/`sideEffects` machinery is built for. This composes the two: classifies the raw
  * exit info via {@link classifyProcessExitFailure}, then asks {@link decideSafeRunRetry} whether a
- * *first* attempt (`attemptCount: 0`) with *no observed side effects* (side-effect state — whether
- * the run already produced user-visible output/tool calls/artifacts — is not available at this
- * classification point either, the same honestly-scoped limitation as the exit-code-only signal
- * itself) would be safe to retry, and returns that verdict.
+ * *first* attempt (`attemptCount: 0`) would be safe to retry, and returns that verdict.
+ *
+ * `attemptCount: 0` is always correct here, not a stand-in: no automatic same-run retry *loop*
+ * exists anywhere in this codebase (gap 4's `resumable` flag is read-only metadata for a host's own
+ * later follow-up run, never consumed to actually spawn attempt #2 — see this function's own doc
+ * above) — so every real call to this function genuinely is evaluating the first and only attempt
+ * made so far. A future auto-retry loop would need to supply its own real count, not reuse this.
+ *
+ * `sideEffects` (2026-07-22, optional — `agent-executor.ts`'s three `wire*Lifecycle` drivers supply
+ * `userVisibleOutputSeen`/`toolCallSeen`, derived live from the translated agent-event stream each
+ * already processes; see `FailureClassificationContext`'s own doc for why those two specifically,
+ * and why `cancelRequested`/`artifactWriteSeen`/`liveArtifactSeen` aren't threaded through this
+ * call at all) makes two of `decideSafeRunRetry`'s four side-effect-suppression guards genuinely
+ * exercised. Omitting it (`undefined`) preserves this function's original no-observed-side-effects
+ * behavior for any other caller.
  * @complexity O(1).
  */
-export function resumableFromProcessExit(code: number | null, signal: string | null): boolean {
+export function resumableFromProcessExit(
+  code: number | null,
+  signal: string | null,
+  sideEffects?: Pick<RunRetrySideEffectState, 'userVisibleOutputSeen' | 'toolCallSeen'>,
+): boolean {
   const decision = decideSafeRunRetry({
     result: 'failed',
     failure: classifyProcessExitFailure(code, signal),
     attemptCount: 0,
+    ...(sideEffects !== undefined ? { sideEffects } : {}),
   });
   return decision.shouldRetry;
 }

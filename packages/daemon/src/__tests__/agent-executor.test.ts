@@ -2578,6 +2578,36 @@ describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions
     expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
   });
 
+  it('ACP-driven run: sideEffects reflects real tool_use/text_delta events observed before close', async () => {
+    const classifyFailure = vi.fn((_ctx: Parameters<ClassifyFailure>[0]) => true);
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness({ completedSuccessfully: false, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'tool_use', id: 'call-1', name: 'bash', input: {} });
+    attachCalls[0]!.send('agent', { type: 'text_delta', delta: 'hello' });
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    expect(classifyFailure.mock.calls[0]![0].sideEffects).toEqual({ userVisibleOutputSeen: true, toolCallSeen: true });
+  });
+
+  it("ACP-driven run: sideEffects stays false/false when no tool_use/text_delta was observed and an empty delta doesn't count", async () => {
+    const classifyFailure = vi.fn((_ctx: Parameters<ClassifyFailure>[0]) => true);
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness({ completedSuccessfully: false, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'text_delta', delta: '' });
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure.mock.calls[0]![0].sideEffects).toEqual({ userVisibleOutputSeen: false, toolCallSeen: false });
+  });
+
   it('consults the classifier on a failed pi-rpc-driven run', async () => {
     const classifyFailure = vi.fn((ctx: { agentId: string }) => {
       expect(ctx.agentId).toBe('fake-agent');
@@ -2594,6 +2624,22 @@ describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions
     expect(classifyFailure).toHaveBeenCalledTimes(1);
     const events = await collectEvents(lifecycle, run.id);
     expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('pi-rpc-driven run: sideEffects reflects real tool_use/text_delta events observed before close', async () => {
+    const classifyFailure = vi.fn((_ctx: Parameters<ClassifyFailure>[0]) => true);
+    const { lifecycle, executor, child, attachCalls } = createPiRpcHarness({ hasFatalError: true, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'tool_use', id: 'call-1', name: 'bash', input: {} });
+    attachCalls[0]!.send('agent', { type: 'thinking_delta', delta: 'thinking...' });
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    expect(classifyFailure.mock.calls[0]![0].sideEffects).toEqual({ userVisibleOutputSeen: true, toolCallSeen: true });
   });
 
   it('never consults the classifier for a pre-spawn failure (no child ever ran)', async () => {

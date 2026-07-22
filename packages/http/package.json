@@ -16,6 +16,7 @@
     "@jini/agui": "workspace:*",
     "@jini/core": "workspace:*",
     "@jini/daemon": "workspace:*",
+    "@jini/media": "workspace:*",
     "@jini/platform": "workspace:*",
     "@jini/protocol": "workspace:*",
     "express": "^4.21.0",

@@ -9,7 +9,10 @@ import type { DaemonStatusResponse, express as HttpExpress, RunStartContext } fr
 import { readLiveDaemonRegistryRecord, resolveDaemonRegistryPath } from '@jini/sidecar';
 import * as SidecarModule from '@jini/sidecar';
 import * as SqliteModule from '@jini/sqlite';
+import Database from 'better-sqlite3';
 import {
+  buildDaemonDbOperations,
+  classifyRunFailureForRetry,
   createLocalNodeDaemon,
   resolveBoundPort,
   resolveReportHost,
@@ -145,6 +148,76 @@ describe('resolveReportHost', () => {
   });
 });
 
+describe('buildDaemonDbOperations', () => {
+  function makeDb(): { db: Database.Database; file: string } {
+    const dir = makeTempDataDir();
+    const file = join(dir, 'test.db');
+    const db = new Database(file);
+    db.exec('CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT)');
+    db.prepare('INSERT INTO widgets (name) VALUES (?)').run('a');
+    db.prepare('INSERT INTO widgets (name) VALUES (?)').run('b');
+    return { db, file };
+  }
+
+  it('inspect() reports the real schema/table/row-count inventory', async () => {
+    const { db, file } = makeDb();
+    try {
+      const operations = buildDaemonDbOperations(db, file);
+      const report = await operations.inspect();
+      expect(report.kind).toBe('sqlite');
+      expect(report.location).toBe(file);
+      expect(report.tables).toContainEqual({ name: 'widgets', rowCount: 2 });
+      expect(report.sizeBytes).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('verify() reports ok:true against a healthy database', async () => {
+    const { db, file } = makeDb();
+    try {
+      const operations = buildDaemonDbOperations(db, file);
+      const report = await operations.verify(false);
+      expect(report.ok).toBe(true);
+      expect(report.issues).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('vacuum() really shrinks/rewrites the file and reports real before/after sizes', async () => {
+    const { db, file } = makeDb();
+    try {
+      const operations = buildDaemonDbOperations(db, file);
+      const result = await operations.vacuum();
+      expect(result.ok).toBe(true);
+      expect(result.beforeBytes).toBeGreaterThan(0);
+      expect(result.afterBytes).toBeGreaterThan(0);
+      expect(result.reclaimedBytes).toBeGreaterThanOrEqual(0);
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+      // The table survives VACUUM — proves this really ran against the same live database, not a copy.
+      expect(db.prepare('SELECT COUNT(*) as c FROM widgets').get()).toEqual({ c: 2 });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('classifyRunFailureForRetry', () => {
+  // Extracted for direct unit testing (see this function's own doc): a real spawned-process
+  // failure through createLocalNodeDaemon's full run flow would need a real, predictably-failing
+  // agent CLI, which the wiring-site doc explicitly rejects as fragile/non-deterministic. Delegates
+  // entirely to `@jini/daemon`'s `resumableFromProcessExit` — this proves the wiring itself, not a
+  // reimplementation of that function's own policy (already covered by daemon's own test suite).
+  it('delegates to resumableFromProcessExit — a signal-terminated run is presumptively retryable', () => {
+    expect(classifyRunFailureForRetry({ code: null, signal: 'SIGKILL' })).toBe(true);
+  });
+
+  it('a plain nonzero exit is not retryable', () => {
+    expect(classifyRunFailureForRetry({ code: 1, signal: null })).toBe(false);
+  });
+});
+
 describe('createLocalNodeDaemon', () => {
   it('boots on an ephemeral port and reports a URL reflecting the real bound port', async () => {
     const dataDir = makeTempDataDir();
@@ -239,6 +312,140 @@ describe('createLocalNodeDaemon', () => {
     // that the resolver wiring, not the launch outcome, is what's under test.
     expect(allowed.status).not.toBe(404);
     expect([200, 409, 400]).toContain(allowed.status);
+  });
+
+  it('serves GET /api/memory zero-config, with a generic single-bucket note-store rooted at dataDir', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/memory`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { enabled: boolean; entries: unknown[] };
+    expect(body.enabled).toBe(true);
+    expect(body.entries).toEqual([]);
+
+    const created = await fetch(`${daemon.url}/api/memory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'a note', description: 'desc', body: 'hello', type: 'note' }),
+    });
+    expect(created.status).toBe(200);
+  });
+
+  it('serves POST /api/proxy/anthropic/stream zero-config (BYOK — no server-side credentials needed to reach the route)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    // No apiKey in the body: proves the route is mounted and reachable (a validation error, not a
+    // 404) without asserting anything about a real upstream call, which needs a real credential.
+    const res = await fetch(`${daemon.url}/api/proxy/anthropic/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).not.toBe(404);
+  });
+
+  it('serves GET and POST /api/active zero-config, always resolving an unknown resource (denyAllWorkspaceRoots-shaped honest default)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const setRes = await fetch(`${daemon.url}/api/active`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceRef: 'some-resource' }),
+    });
+    expect(setRes.status).toBe(200);
+
+    const getRes = await fetch(`${daemon.url}/api/active`);
+    expect(getRes.status).toBe(200);
+    const body = (await getRes.json()) as { resourceRef: string | null; resourceName: string | null };
+    expect(body.resourceRef).toBe('some-resource');
+    expect(body.resourceName).toBeNull();
+  });
+
+  it('serves POST /api/terminals zero-config, denying every call by default (no resolveWorkspaceRoot configured — the same denyAllWorkspaceRoots default host-tools already uses)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/terminals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceRef: 'some-resource' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('serves POST /api/terminals with resolveWorkspaceRoot configured, but still denies terminal.create by policy (denyAllTerminalCreatePolicy — a real PTY spawn needs an explicit host opt-in)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [makePingPack()],
+      resolveWorkspaceRoot: (req) => (req.resourceRef === 'known-resource' ? dataDir : null),
+    });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/terminals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceRef: 'known-resource' }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('TOOL_OPERATION_DENIED');
+  });
+
+  it('serves GET /api/daemon/db zero-config, denying every call by default (denyAllDaemonDbPolicy)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/daemon/db`);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('TOOL_OPERATION_DENIED');
+  });
+
+  it('serves the media generate -> poll vertical slice zero-config (no credentials configured, so the background generation cleanly fails)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const generateRes = await fetch(`${daemon.url}/api/media/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerRef: 'owner-1', surface: 'image', model: 'dall-e-3' }),
+    });
+    expect(generateRes.status).toBe(202);
+    const { task } = (await generateRes.json()) as { task: { id: string; status: string } };
+    expect(task.status).toBe('queued');
+
+    await vi.waitFor(async () => {
+      const pollRes = await fetch(`${daemon.url}/api/media/tasks/${task.id}`);
+      const polled = (await pollRes.json()) as { task: { status: string } };
+      expect(polled.task.status).toBe('failed');
+    });
+  });
+
+  it('media task store persists across a restart, same as events.db/journal.db (durable, not in-memory)', async () => {
+    const dataDir = makeTempDataDir();
+    const first = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    const generateRes = await fetch(`${first.url}/api/media/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerRef: 'owner-1', surface: 'image', model: 'dall-e-3' }),
+    });
+    const { task } = (await generateRes.json()) as { task: { id: string } };
+    await first.stop();
+
+    const second = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(second);
+    const pollRes = await fetch(`${second.url}/api/media/tasks/${task.id}`);
+    expect(pollRes.status).toBe(200);
   });
 
   it('serves the complete HTTP run vertical slice: create, SSE replay/reconnect, cancel, and durable replay after restart', async () => {
@@ -605,12 +812,18 @@ describe('createLocalNodeDaemon', () => {
       const dataDir = makeTempDataDir();
       const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      // Gap 1's byte-journal (`journal.db`) is the second `createSqliteEventLog` call this
+      // function makes — `stop()` must close it too, not just the main `events.db` log (a
+      // resource leak fixed 2026-07-22; see create-local-node-daemon.ts's `stop()` doc).
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created).toBeDefined();
+      expect(createdJournal).toBeDefined();
 
       await Promise.all([daemon.stop(), daemon.stop()]);
       await daemon.stop();
 
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -663,9 +876,11 @@ describe('createLocalNodeDaemon', () => {
         },
       });
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
 
       await expect(daemon.stop()).rejects.toThrow('onShutdown failed');
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -729,7 +944,11 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow('corrupt durable history');
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      // The journal is constructed before `rehydrate()` runs, so it's already open and must be
+      // closed on this failure path too.
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -759,7 +978,9 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()], port: 70_000 })).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -797,7 +1018,9 @@ describe('createLocalNodeDaemon', () => {
       await expect(createLocalNodeDaemon({ dataDir, packs: [makePingPack()] })).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
       addressSpy.mockRestore();
@@ -824,7 +1047,9 @@ describe('createLocalNodeDaemon', () => {
       ).rejects.toThrow();
 
       const created = spy.mock.results[0]?.value as ReturnType<typeof original>;
+      const createdJournal = spy.mock.results[1]?.value as ReturnType<typeof original>;
       expect(created.close).toHaveBeenCalledTimes(1);
+      expect(createdJournal.close).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }

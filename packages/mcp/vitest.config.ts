@@ -11,31 +11,17 @@ export default defineConfig({
       include: ['src/**'],
       exclude: ['src/**/*.test.ts'],
       thresholds: {
-        // The package-wide aggregate can never actually reach a literal 100 while
-        // `src/core/oauth.ts` (98.77% branches as of the 2026-07-21 `cf20726dc` coverage pass;
-        // pre-existing, untouched by either the 2026-07-21 MCP tool-hosting mechanism addition or
-        // the same-day MCP resource-surface addition below) is included in it — vitest's global
-        // threshold is always computed over every file, regardless of any per-glob override.
-        // Measured 2026-07-21 (resource-surface pass) package-wide honest coverage is
-        // 100/99.74/100/100 (statements/branches/functions/lines); set with a small safety margin
-        // below the branches figure (the only one not already a literal 100), matching
-        // `packages/http/vitest.config.ts`'s identical convention.
+        // Measured 2026-07-22 (audit fix — oauth.ts's last two branch gaps closed for real: a dead
+        // `headers?` optional made required, since all three real internal call sites always
+        // supplied it; `readCappedText`'s real-but-unused `controller` early-abort parameter
+        // exported and directly unit-tested. See oauth.ts's own doc comment and this package's
+        // source-map.md dated entry). The 2026-07-21 note below about oauth.ts's 98.77% branches
+        // keeping the global aggregate under 100 no longer applies — genuine 100/100/100/100 across
+        // every file in this package now, set at the real number, not a margin below it.
         statements: 100,
-        branches: 99.4,
+        branches: 100,
         functions: 100,
         lines: 100,
-        // Every file under `src/server/**` (the 2026-07-21 tool-hosting-mechanism addition —
-        // `daemon-client.ts`, `tool-protocol.ts`, `tool-server.ts`, `tools/run-tools.ts` — plus the
-        // same-day resource-surface addition: `resource-protocol.ts`, `resources/*.ts`, and
-        // `tool-server.ts`'s resource wiring) is held to a literal, no-exceptions 100 as its own
-        // separately-checked threshold set — this is the part of the package this pass is actually
-        // responsible for and it is genuinely at 100/100/100/100.
-        'src/server/**': {
-          statements: 100,
-          branches: 100,
-          functions: 100,
-          lines: 100,
-        },
       },
     },
   },

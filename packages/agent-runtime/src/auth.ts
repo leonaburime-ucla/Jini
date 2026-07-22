@@ -270,8 +270,13 @@ export function classifyAgentServiceFailure(text: string): AgentServiceFailureCo
 // compact when it folds probe output back into its overrides.
 const PROBE_TAIL_BYTES = 400;
 
-function tailString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
+// Both real call sites (`withProbeTails`, immediately below) already hold a
+// `string` — `probeAgentAuthStatus` normalizes `stdout`/`stderr` to `''` via
+// `typeof stdout === 'string' ? stdout : ''` before either ever reaches here
+// — so a `value: unknown` parameter plus a runtime `typeof` guard was dead
+// code for every real caller. Narrowed to `string` to remove the
+// unreachable branch instead of padding a test around it.
+function tailString(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed.length > PROBE_TAIL_BYTES ? trimmed.slice(-PROBE_TAIL_BYTES) : trimmed;

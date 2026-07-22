@@ -166,7 +166,16 @@ function assertSafeSubdir(subdir: string): void {
   if (subdir.includes('/') || subdir.includes('\\') || subdir.includes('\0')) {
     throw new Error(`invalid note store subdir "${subdir}": must not contain path separators`);
   }
-  if (path.basename(subdir) !== subdir || path.isAbsolute(subdir)) {
+  // Checked against `path.win32` unconditionally, not the platform-bound `path` import: a
+  // drive-relative segment like `"C:foo"` has no `/`/`\` (so the check above doesn't catch it),
+  // yet `path.win32.basename` strips the `"C:"` prefix (`path.win32.basename('C:foo') === 'foo'`)
+  // — a real parse-ambiguity `@jini/sqlite`-adjacent code would only see on an actual Windows
+  // host, if this were checked via the platform-bound `path` module instead. Using `path.win32`
+  // explicitly makes this validation's outcome identical on every host OS this daemon might run
+  // on, rather than silently depending on which platform happens to run it (`path.win32` is a
+  // strict superset of `path.posix`'s own separator handling — accepting both `/` and `\` — so
+  // this subsumes the POSIX check too, not just adds a Windows-only one).
+  if (path.win32.basename(subdir) !== subdir || path.win32.isAbsolute(subdir)) {
     throw new Error(`invalid note store subdir "${subdir}": must be a single path segment`);
   }
 }

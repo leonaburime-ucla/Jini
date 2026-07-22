@@ -263,6 +263,22 @@ export {
 export type { ModelProxyHttpDeps, ModelProxyInternalErrorContext } from './model-proxy.js';
 export { registerModelProxyRoutes } from './model-proxy.js';
 
+export type {
+  MediaGenerateResponse,
+  MediaHttpDeps,
+  MediaInternalErrorContext,
+  MediaTaskDeleteResponse,
+  MediaTaskListResponse,
+  MediaTaskResponse,
+} from './media.js';
+export {
+  mediaGenerateRoute,
+  mediaTaskDeleteRoute,
+  mediaTaskGetRoute,
+  mediaTaskListRoute,
+  registerMediaRoutes,
+} from './media.js';
+
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes
 // `(code, message, init)` — same job, different call-site generation, so it is re-exported here

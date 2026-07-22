@@ -245,31 +245,25 @@ genuinely safe with a zero-config, harmless default:
   `resolveWorkspaceRoot?: WorkspaceRootResolver` config field lets a real host wire a working
   resolver in without needing its own `Pack`.
 
+**2026-07-22 update — six of the remaining eight route packs re-investigated and wired in for
+real; this paragraph's own prior claims about them were not taken at face value (per this repo's
+"no scope cuts for coverage / no accepting a prior claim without re-deriving it" standing rule) —
+see this file's own dated entry below for the full reachability analysis, one bullet per route
+pack. `memory.ts`, `terminals.ts`, `model-proxy.ts`, `active-context.ts`, `db-ops.ts`
+(`daemon.db.*`), and `media.ts` (added 2026-07-22, see `packages/http/source-map.md`'s own dated
+entry) are now unconditionally mounted, each with a genuinely safe, harmless zero-config default —
+the same "provably harmless" bar `agents`/`host-tools` already had to clear, not a lowered one.
+
 **Left genuinely NOT wired, with the specific reason each one needs — not a bare "future work"
-note:** `terminals.ts` (needs a live `TerminalSessionManager` — a stateful, node-pty-backed
-subsystem — plus a resolved `Principal` and a `ToolExecutor` bound to a real `ToolRegistry` with
-`terminal.*` tools actually registered; none of those exist zero-config), `memory.ts` (needs a
-frontmatter note-store rooted at a real directory a host chooses), `routines.ts` (needs a
-`RoutineStore` plus the scheduler engine's own persistence), `model-proxy.ts` (needs a
-BYOK-caller-supplied `apiKey`/`model` per request, which the route already handles per-call — but
-optional server-side tool-loop execution, `anthropicExecuteTool`/`openaiExecuteTool`, needs a
-`ToolExecutor` the same way `terminals`/`db-ops` do), `db-ops.ts` (needs a `DaemonDbOperations`
-implementation a host constructs against its own database), `delegated-tools.ts` (needs a
-`resolvePrincipal` callback — deliberately mandatory, no default identity, matching gap 3's own
-human-in-the-loop-authority decision), `active-context.ts` (needs a `resolveResource` callback —
-this preset has no `Project`/`Workspace` noun to resolve a display name from), `cancel-owned-runs.ts`
-(a helper function, not a route pack, invoked by a caller's own shutdown/context-teardown logic —
-never meant to be auto-wired). Every one of these needs a caller-supplied stateful resource or
-security-authority decision a zero-config preset cannot safely default (unlike `agents`/
-`host-tools`, whose defaults are provably harmless: an empty-but-real read, and a deny-everything
-gate). This matches the *established* pattern already on this interface — `continuation`/
-`classifyFailure`/`mcpJsonInjection` in `@jini/daemon`'s `agent-executor.ts` are opt-in for the
-identical reason (see that package's own source-map.md). The honest fix for each of these dozen-
-minus-two is a new optional `CreateLocalNodeDaemonConfig` field mirroring that same pattern (a
-caller-supplied `TerminalSessionManager`, note-store, `RoutineStore`, etc.) — real, scoped,
-individually-testable follow-up tasks, not one that can be safely rushed alongside an already-large
-integration-verification pass. Left here as a precise, actionable list rather than a vague "wire
-the rest of it later" note.
+note:** `routines.ts` (see this file's own dated entry below for the concrete structural blocker —
+`RoutinePersistence`'s deliberately-synchronous contract cannot be satisfied by `RoutineStore`'s
+async CRUD interface without new bridging code), `delegated-tools.ts` (needs a `resolvePrincipal`
+callback — deliberately mandatory, no default identity, matching gap 3's own
+human-in-the-loop-authority decision), `cancel-owned-runs.ts` (a helper function, not a route pack,
+invoked by a caller's own shutdown/context-teardown logic — never meant to be auto-wired). This
+matches the *established* pattern already on this interface — `continuation`/`mcpJsonInjection` in
+`@jini/daemon`'s `agent-executor.ts` are opt-in for the identical reason (see that package's own
+source-map.md).
 
 **Verified, personally, this session:** `pnpm --dir packages/node-host exec tsc --noEmit`: clean.
 `pnpm --dir packages/node-host exec vitest run --coverage`: **65/65 tests pass** (62 pre-existing +
@@ -374,3 +368,124 @@ that section predates the transport switch's own merge.
 work end-to-end against a real booted Fastify-transport daemon — the direct Fastify-transport
 equivalents of this package's own pre-existing Express-transport reachability tests). Coverage:
 **100% on all 4 metrics**, every file. Root `pnpm typecheck` and `pnpm guard`: clean.
+
+## 2026-07-22 addition — real zero-config retry-classifier default wired (`resumableFromProcessExit`)
+
+`createLocalNodeDaemon`'s `createAgentExecutor({lifecycle, journal})` call never supplied a
+`classifyFailure` — `@jini/daemon`'s gap 4 port and `decideSafeRunRetry` (`run/core/retry.ts`) were
+both fully built and tested, but nothing connected them, so every real daemon booted by this preset
+hardcoded `resumable: false` regardless of cause. Fixed by wiring
+`classifyFailure: ({ code, signal, sideEffects }) => resumableFromProcessExit(code, signal,
+sideEffects)` — a third zero-config-safe default alongside `agents`/`host-tools`. See
+`packages/daemon/source-map.md`'s own dated entry for the full classification policy, the real
+`userVisibleOutputSeen`/`toolCallSeen` side-effect wiring, and — importantly — the record of a
+*second*, independently-built classifier (`defaultClassifyFailure`/`classifyProcessExitFailure` in
+`agent-executor.ts`, from a parallel cloud session's branch) that was found and deliberately
+**rejected** at merge time in favor of keeping this one, with the reasoning for that choice.
+
+**Verified, personally, this session**: `pnpm --dir packages/node-host exec tsc --noEmit`: clean.
+`pnpm --dir packages/node-host run test:coverage`: all tests pass, `create-local-node-daemon.ts`
+**100/100/100/100**.
+
+## 2026-07-22 addition — six more route packs wired zero-config-safe, one re-verified genuinely blocked (audit fix)
+
+**Merge note**: this section was written on a branch that forked before the `transport: 'express' |
+'fastify'` switch existed, so its wiring (below) is Express-only by construction — it calls each
+route pack's flat `register*Routes` function directly, not through either of `@jini/http`'s
+`express`/`fastify` namespaces. At merge time, this wiring was placed in `createLocalNodeDaemon`'s
+Express-transport branch specifically, **by explicit instruction to table Fastify parity for these
+six packs for now** rather than build it as part of this merge. A `transport: 'fastify'` daemon
+today therefore does not serve `memory`/`terminals`/`model-proxy`/`active-context`/`db-ops`/`media`
+— only `runs`/`agents`/`host-tools`/`daemon-status` have real Fastify mounting siblings (see
+`@jini/http`'s own source-map.md). This is a known, deliberate, tracked scope gap (matching the
+Fable audit's AUD-004 finding), not silently dropped — a follow-up task should build
+`fastify/{memory,terminals,model-proxy,active-context,db-ops,media}.ts` mounting siblings the same
+way `fastify/runs.ts`/`fastify/agents.ts`/`fastify/host-tools.ts` were built, then move this
+wiring's Express-only placement to run identically in both transport branches.
+
+**Gap found by independent audit**: the six route packs this file's own prior text left
+"genuinely NOT wired" (memory, routines, terminals, model-proxy, db-ops, active-context) were
+accepted at face value by an earlier pass without re-deriving whether each one *actually* lacked a
+safe zero-config default, the same way `agents`/`host-tools` turned out to have one despite
+initially looking like they needed host input. Per this task's own standing instruction not to
+accept that reasoning without checking it, all six (plus `media.ts`, added the same day) were
+re-investigated from the real `HttpDeps` interfaces and factory functions, not from the prior
+doc's summary of them.
+
+**Wired in, each with a real, harmless, provably-safe default:**
+
+- **`memory.ts`** — `@jini/memory`'s `NoteStore` methods take `dataDir` *per call*, not bound to
+  one directory at construction (`createNoteStore(config)`'s `config` only carries the
+  `validTypes`/`defaultType` taxonomy, itself deliberately host-defined-not-derived per that
+  package's own doc). `config.dataDir` — already trusted, already where `events.db`/`journal.db`
+  live — is therefore a real, non-fabricated root, not a guess. `createExtractionLog()`/
+  `createVerifyLog()` take no arguments at all. Wired with `validTypes: ['note']`,
+  `defaultType: 'note'` — the minimal generic single-bucket taxonomy.
+- **`terminals.ts`** — re-investigated after the prior doc claimed "no safe no-op form." That
+  claim didn't hold up: `terminalCreateRoute.handle` calls `resolveWorkspaceRoot` (defaulting to
+  `denyAllWorkspaceRoots`, exactly `host-tools.ts`'s own already-proven-safe default) **before**
+  `ToolExecutor.execute` is ever reached — a real PTY is never spawned unless a host supplies its
+  own `resolveWorkspaceRoot`. Independently, `@jini/daemon`'s `createTerminalToolRegistrations`
+  itself defaults `terminal.create`'s policy to the already-exported `denyAllTerminalCreatePolicy`
+  (deny-by-default, the exact same shape as `db-ops.ts`'s `denyAllDaemonDbPolicy`) — two
+  independent deny-by-default gates, not one. `createTerminalSessionManager()` needs zero
+  arguments (dynamically imports `node-pty` only on an actual spawn attempt, per its own doc).
+  `principal` is the one genuinely mandatory field with no default of its own — filled with a new
+  `LOCAL_DAEMON_PRINCIPAL` constant (`{id: 'local-daemon'}`), justified in its own doc comment:
+  this preset has no multi-tenant identity system anywhere else either (the bearer-token gate is
+  is-authenticated-or-not, not per-caller), so one fixed identity removes no real distinction.
+- **`model-proxy.ts`** — every field of `ModelProxyHttpDeps` is already optional; the routes are
+  BYOK (`apiKey`/`model` supplied per-request in the POST body). `{}` is a fully real, working
+  zero-config default — the prior doc's own claim that "the route already handles [BYOK] per-call"
+  was correct but stopped short of noticing that made the *whole pack* wireable, not just the
+  request path.
+- **`active-context.ts`** — `resolveResource` is mandatory but has an honest, harmless answer this
+  preset can always give: "unknown" (`() => undefined`), the same "no fabricated data" shape
+  `denyAllWorkspaceRoots` already uses. Verified via `resolveResource`'s own doc ("may return
+  `null`/`undefined` if the ref is unknown") and `handleGetActive`'s real handling of that case
+  (`resource?.name ?? null`) — an explicitly designed-for path, not an edge case being abused.
+- **`db-ops.ts`** (`daemon.db.*`) — `DaemonDbHttpDeps.policy` defaults to the already-exported
+  `denyAllDaemonDbPolicy` the exact same way `terminals.ts` does. `DaemonDbOperations`'s own doc
+  names its intended real backing directly: "`@jini/sqlite`'s `inspectSqliteDatabase`/
+  `verifySqliteIntegrity` plus a small `vacuum` wrapper around `db.exec('VACUUM')`" — both already
+  exist and are already exported from `@jini/sqlite`; only the `vacuum` wrapper needed writing
+  (`buildDaemonDbOperations`, new in this file, exported for direct unit testing since the
+  deny-by-default policy means no real HTTP-level test can reach its body — matching this repo's
+  established "extract into a directly-testable pure function" convention for exactly this
+  reachability shape). Built against a **second** `better-sqlite3` connection to the same
+  `events.db` file this preset already owns — safe because both run in WAL mode, which the
+  existing `stop() releases the sqlite file handle` test already proves empirically permits two
+  concurrently open handles on one file in-process. `VACUUM` rewriting a file another connection
+  may be concurrently writing to is a real operational consideration, flagged in
+  `buildDaemonDbOperations`'s own doc — but it's a consideration a host takes on only by
+  consciously supplying a permissive policy in the first place; it is not this zero-config
+  default's own doing.
+
+**Left genuinely NOT wired — re-verified with a real, concrete blocker, not inherited from the
+prior pass's summary:**
+
+- **`routines.ts`** — `RoutineHttpDeps.scheduler: RoutineScheduler` is backed by `@jini/daemon`'s
+  `RoutineService`, whose constructor requires a `RoutinePersistence` — and `RoutinePersistence`'s
+  `list()`/`insertRun()`/`updateRun()`/`getLatestRun()` are **deliberately synchronous** (no
+  `Promise` anywhere in that interface — confirmed by reading `types.ts`'s own doc: "why
+  `RoutinePersistence` deliberately stays synchronous rather than converted to this package's
+  usual async-port convention"). `RoutineStore` (the CRUD side `routines.ts`'s own `store` field
+  needs) is fully `async` (`list(): Promise<...>`, etc. — the package's *usual* convention
+  `RoutinePersistence` explicitly opted out of). `createInMemoryRoutineStore()` structurally
+  cannot satisfy `RoutinePersistence` — its methods return Promises, not the plain synchronous
+  values that interface's own type signature requires — so there is no single zero-config object
+  that is simultaneously a valid `RoutineStore` and a valid `RoutinePersistence`. A real bridge (a
+  second, purpose-built synchronous in-memory `RoutinePersistence` whose writes are also mirrored
+  into the async `RoutineStore` so `lastRun`/history stay visible through the CRUD API) is genuine,
+  scoped, new logic — not a two-line default — and was not attempted in this pass. This is the one
+  route pack in the original six where the prior doc's "needs a `RoutineStore` plus the scheduler
+  engine's own persistence" claim held up under re-investigation.
+
+**Verified, personally, this session**: `pnpm --dir packages/node-host exec tsc --noEmit`: clean.
+`pnpm --dir packages/node-host run test:coverage` — **76/76 tests pass** (11 new: one per newly-
+wired route pack proving its safe-by-default behavior end-to-end against a real booted daemon, plus
+3 direct `buildDaemonDbOperations` unit tests against a real temp sqlite file, plus a media-task-
+store-survives-restart durability test), `create-local-node-daemon.ts` **100/100/100/100**. New
+dependencies added to `package.json`: `@jini/media`, `@jini/memory`, `better-sqlite3` (+
+`@types/better-sqlite3` dev) — `@jini/sqlite` already depended on the latter two transitively; this
+file now imports `Database` directly for the `daemon.db.*` second connection.

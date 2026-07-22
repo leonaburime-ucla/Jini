@@ -82,7 +82,14 @@ let antigravityLockChain: Promise<void> = Promise.resolve();
 
 export async function acquireAntigravityModelLock(): Promise<() => void> {
   const previous = antigravityLockChain;
-  let release: () => void = () => {};
+  // Definite-assignment assertion (`!`), not a `() => {}` fallback default:
+  // the ECMAScript spec guarantees a `Promise` executor runs synchronously,
+  // immediately, during construction — `release = resolve` below has
+  // already run by the time `new Promise(...)` returns, so a fallback
+  // no-op default would be assigned, coverage-instrumented, and never once
+  // invoked. Removing it drops that dead function instead of padding a
+  // test around code that cannot execute.
+  let release!: () => void;
   antigravityLockChain = new Promise<void>((resolve) => {
     release = resolve;
   });
