@@ -20,7 +20,8 @@
  * call themselves) — this file is the Jini equivalent of that role, not an
  * invented-from-scratch design.
  */
-import type { Response } from 'express';
+import type { ServerResponse } from 'node:http';
+import { createApiErrorResponse, type ApiError } from '@jini/protocol';
 
 /** The minimal shape any event needs to flow through an `SseChannel`: an id for `Last-Event-ID` reconnect bookkeeping and a `kind` used as the wire `event:` field. */
 export interface SseEvent {
@@ -120,14 +121,21 @@ export interface SseChannel<E extends SseEvent> {
  * re-end an already-gone response (see {@link SseChannel.end}'s doc for why
  * that distinction doesn't actually need special-casing).
  *
- * @param res - The Express response to stream over. Never read from — only
- * `write`/`status`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')` are used.
+ * @param res - The response to stream over, typed against the raw `node:http` `ServerResponse`
+ * rather than Express's own `Response` — Express's `Response` extends `ServerResponse` directly,
+ * so every existing Express caller still satisfies this signature unchanged, and Fastify's
+ * `reply.raw` is a real `ServerResponse` too, letting a Fastify caller use this same primitive
+ * with no adapter shim. Never read from — only
+ * `write`/`statusCode`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')` are used, all of
+ * which exist identically on the raw type (the one genuinely Express-specific call this function
+ * used to make, `res.status(200)`, is `res.statusCode = 200` here instead — the same assignment
+ * Express's own `.status()` performs internally).
  * @param options - See {@link CreateSseChannelOptions}.
  * @complexity `enqueue`/`open`/`end` are O(1) amortized; a full queue drain is O(events written).
  * @overallScore 100/100
  */
 export function createSseChannel<E extends SseEvent>(
-  res: Response,
+  res: ServerResponse,
   options: CreateSseChannelOptions<E> = {},
 ): SseChannel<E> {
   const maxQueuedEvents = options.maxQueuedEvents ?? DEFAULT_MAX_QUEUED_SSE_EVENTS;
@@ -188,7 +196,7 @@ export function createSseChannel<E extends SseEvent>(
 
   const open = (): void => {
     if (closed || flowing) return;
-    res.status(200);
+    res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
@@ -234,4 +242,18 @@ export function requestedAfterCursor(req: {
   if (header && header.length > 0) return header;
   const query = req.query.afterCursor;
   return typeof query === 'string' && query.length > 0 ? query : null;
+}
+
+/**
+ * Writes an `ApiError`, wrapped in the standard `{ error }` envelope, directly onto a raw
+ * `ServerResponse` — for the narrow window before an `SseChannel` has opened (so no framework
+ * response wrapper, like Express's `res.json()` or a hijacked Fastify `reply.send()`, is safe to
+ * use yet). Every transport's own `sendApiError`/`sendJson` (`response.ts`, `fastify/response.ts`)
+ * produces the identical `createApiErrorResponse(error)` envelope shape — this just writes that
+ * same shape without going through either framework's response helper.
+ */
+export function sendRawApiError(res: ServerResponse, status: number, error: ApiError): void {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(createApiErrorResponse(error)));
 }

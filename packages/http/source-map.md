@@ -1219,3 +1219,286 @@ separate finding for a future pass rather than folded into this one. Package-wid
 remains comfortably above this package's committed threshold (98/98/98/98):
 **100/99.28/100/100** measured this run. `pnpm --dir packages/http exec tsc --noEmit`: clean. Root
 `pnpm guard`: clean (re-run after this change, not assumed still clean from before it).
+
+## 2026-07-19 — Fastify transport split
+
+Everything described above (the "File map" table, the `routes/` classification, and the
+`api-security-middleware.ts`/`route-registration-guard.ts` addition) predates this section and
+described an **Express-only world**. This package is now transport-plural: it ships two
+independent, idiomatically-native transport subtrees plus a small shared root.
+
+### Layout
+
+```
+src/
+  types.ts               shared: Result/route-spec types (framework-agnostic)
+  origin-validation.ts   shared: same-origin/allow-list predicates (framework-agnostic)
+  pack-http.ts           shared: mountPackHttp (app typed `unknown`, never Express-specific)
+  index.ts               shared: root barrel — re-exports the three files above,
+                          plus `export * as express` / `export * as fastify` namespaces
+  express/               every file from the "File map"/"routes/" sections above, unmoved in kind,
+                          moved from src/ root into this subdirectory
+  fastify/               an independent reimplementation of the same nine jobs, native to Fastify's
+                          own hook/plugin model instead of Express's middleware/req/res model
+```
+
+Every symbol a consumer previously imported from the package root (`adapter.ts`, `compat.ts`,
+`daemon-status.ts`, `local-daemon-request.ts`, `origin.ts`, `request.ts`, `response.ts`,
+`route-registration-guard.ts`, `api-security-middleware.ts`) now lives under `express/` — this is a
+breaking import-path change for any pre-existing caller, accepted deliberately since there is
+exactly one caller of this package in the repo (`@jini/node-host`) and it was updated in the same
+change (see that package's own source-map.md).
+
+### `transport?: 'express' | 'fastify'` — the config surface this enables
+
+`@jini/node-host`'s `createLocalNodeDaemon` is the only consumer today; it takes a
+`transport?: 'express' | 'fastify'` option (default `'express'`) and wires the matching namespace
+off this package's barrel (`http.express.*` / `http.fastify.*`) for the route-registration guard,
+the two `/api` security middlewares, and the daemon-status routes. This package itself has no
+opinion on which transport a consumer picks — it just exposes both namespaces.
+
+### Design decision: deliberately duplicated, not a shared interface — with one exception
+
+`express/` and `fastify/`'s nine matching files (`adapter`, `api-security-middleware`, `compat`,
+`daemon-status`, `index`, `local-daemon-request`, `origin`, `request`, `response`,
+`route-registration-guard`) are **independent implementations of the same job, not two adapters
+behind one shared interface.** This was a deliberate choice, not an oversight: Express's
+middleware-chain model (`(req, res, next) => void`, `res.json(...)`, `app.use(...)`) and Fastify's
+hook/plugin model (`onRequest`/`onRoute` hooks, `reply.send(...)`, schema-validated route options)
+are different enough in shape that forcing them behind one abstraction would either leak one
+framework's idioms into the other's native surface, or flatten both down to a lowest-common-
+denominator API that fights each framework's own strengths (Fastify's schema-based validation and
+radix-tree routing, in particular, are not expressible through an Express-shaped adapter without
+losing most of their value). Each subtree is written the way an engineer fluent in that framework
+would write it, and each is independently tested to 100% coverage.
+
+**The one exception: `fastify/daemon-status.ts` reuses `express/daemon-status.ts`'s route-spec
+data directly** — `daemonStatusRoute`/`daemonShutdownRoute` are pure `defineJsonRoute`-shaped
+data plus framework-agnostic `parse`/`handle` functions (see that file's own doc). They never
+reference Express at runtime: `express/daemon-status.ts` only imports `type { Express }` for one
+parameter type, and TypeScript's `verbatimModuleSyntax` erases type-only imports from the compiled
+output entirely — verified there is zero runtime `express` dependency pulled into the `fastify/`
+subtree by this reuse. `fastify/daemon-status.ts`'s own job is only the Fastify-specific mounting
+wrapper (`registerDaemonStatusRoutes`, calling `./adapter.js`'s Fastify `mountJsonRoute`). This is
+the single case where sharing was correct instead of duplication: the route *data* (path, method,
+input parser, pure handler) has no framework opinion in it at all — only the *mounting glue* does,
+and that glue is what actually differs and stays independent per subtree.
+
+### `mountPackHttp` transport-agnosticism does not make a pack's own registrar portable
+
+Documented directly in `pack-http.ts`'s own module doc (see that file) and repeated here since it
+is a frequent point of confusion for pack authors: `mountPackHttp` only ever forwards `app`
+straight through, unmodified, to a pack's own `http(app, services)` registrar. That registrar
+still receives a transport-specific `app` — an Express-shaped handler calling `res.json(...)`
+throws (surfaced as a 500) if mounted on a raw Fastify instance, since Fastify's `reply` has no
+`.json()` method (`reply.send(...)` is the equivalent, which auto-serializes a plain object with a
+200 default status). A pack that must run under both transports should branch on the app shape
+itself, or better, be written against this package's own `defineJsonRoute`/`mountJsonRoute` from
+the matching namespace, which does abstract the difference away. Proven concretely by
+`packages/node-host/src/__tests__/create-local-node-daemon.fastify-transport.test.ts`'s own
+`makePingPack()` fixture doc, which deliberately is NOT the same fixture the Express-transport
+suite uses for exactly this reason.
+
+### Tests
+
+337 tests across 21 test files, 100% coverage on all 4 metrics (statements/branches/functions/lines)
+for both `express/` and `fastify/` subtrees plus the shared root — reverified fresh as part of the
+Part A completion task (2026-07-19): `pnpm --filter @jini/http exec vitest run --coverage
+--coverage.include='src/**'` → 337 passed, 100/100/100/100 across every file. No coverage gaps were
+found in this package itself; the gaps closed in this pass were one layer up, in
+`@jini/node-host`'s integration suite — see that package's own source-map.md.
+
+## 2026-07-19 — SSE primitive + AG-UI run-stream route (Part B.7)
+
+This section fills the "Explicitly deferred: SSE" gap noted above (this package was previously
+JSON-route-only). Unlike `express/`/`fastify/`'s deliberate per-transport duplication, SSE is a
+raw-stream concern both frameworks expose identically underneath: Express's `Response` literally
+extends Node's `http.ServerResponse`; Fastify's `reply.raw`/`request.raw` give you that exact
+underlying `http.ServerResponse`/`http.IncomingMessage` pair directly. Building it once therefore
+turned out to be genuinely less total work than building it twice, not a design compromise.
+
+### New files (shared root)
+
+| File | Job |
+|---|---|
+| `src/sse.ts` | `createSseResponse(req, res, options)` — opens `res` as an SSE stream (writes `text/event-stream`/`no-cache`/`keep-alive` headers immediately), returns an `SseConnection` (`send(data)`/`close()`/`closed`). Arms a keepalive interval (`: ping\n\n` comment lines, default every 15s) so an idle connection survives gaps between events, and wires `req.on('close', ...)` so a client disconnect closes the connection and runs an optional caller-supplied `onClose` cleanup hook exactly once. Typed only against `node:http`'s `IncomingMessage`/`ServerResponse` — no Express or Fastify import anywhere in this file. |
+| `src/run-stream.ts` | `handleRunStreamRequest(req, res, runId, {lifecycle})` — the framework-agnostic core of the AG-UI SSE route: opens the connection via `createSseResponse`, subscribes to `runId` via `@jini/daemon`'s `RunLifecycle.stream`, encodes every delivered event through a fresh `@jini/agui` `createAguiEncoder()`, and forwards each non-null result. Closes the connection once the run's own terminal `'end'` event has been forwarded (nothing follows it, by `RunLifecycle`'s own contract), and unsubscribes from the run if the client disconnects first (wired through `createSseResponse`'s `onClose` hook) so a dropped client never leaves a dangling subscriber. A non-`'ok'` `StreamSubscribeResult` (`unknown-run`/`replay-gap`/`invalid-cursor`) is reported as one `{ error: <kind> }` SSE data event before closing — there is no JSON-status-code channel left once SSE headers are already committed, which is why this differs from a `JsonRouteSpec`'s `Result`-based error path. Also exports `RUN_STREAM_ROUTE_PATH` (`/api/runs/:runId/agui-stream`) as a plain string constant with zero framework coupling, so both transport subtrees' glue files import the identical path from one place rather than each hardcoding it. |
+| `src/express/run-stream.ts` | `registerRunStreamRoute(app, deps)` — the Express-specific sliver: resolves `req.params.runId` and hands `req`/`res` straight through to `handleRunStreamRequest` (Express's `req`/`res` already *are* the raw Node objects the shared handler wants). A few lines, not a reimplementation. |
+| `src/fastify/run-stream.ts` | `registerRunStreamRoute(app, deps)` — the Fastify-specific sliver: calls `reply.hijack()` (tells Fastify this handler owns the raw response and Fastify's own reply lifecycle must not act on it further — see the empirical finding below for why this specific call is load-bearing, not just doc-driven), resolves `request.params.runId`, and hands `request.raw`/`reply.raw` straight through. |
+
+### Empirical finding: `reply.hijack()` is load-bearing, verified by a real server test, not assumed from Fastify's docs
+
+Writing directly to `reply.raw` without calling `reply.hijack()` first is a well-known Fastify
+footgun: Fastify's own reply lifecycle expects the handler to either call `reply.send(...)` or
+return a value for it to serialize, and will otherwise try to act on a response this handler has
+already written to and ended directly — this typically surfaces as either a "reply already sent"
+warning/error, or an attempt to serialize this async handler's `undefined` return value on top of
+an already-ended response. Rather than trusting that reasoning alone,
+`src/fastify/__tests__/run-stream.test.ts` proves it empirically: it boots a real Fastify server on
+an ephemeral port, drives a real run through `emit()`/`finish()`, and reads the actual SSE bytes
+back over a real `fetch()` connection twice in sequence (once for a live event, once for the
+terminal `run.lifecycle` event) — if `hijack()` were wrong or missing, this test would hang, throw,
+or receive a malformed/incomplete response instead of cleanly observing both events and a clean
+close.
+
+### New dependencies: `@jini/daemon` and `@jini/agui`
+
+`@jini/http`'s dependency list grows by two workspace packages this task: `@jini/daemon` (for
+`RunLifecycle`'s type, consumed by `run-stream.ts`) and `@jini/agui` (for `createAguiEncoder`).
+Verified this introduces no dependency cycle before adding either: `@jini/daemon`'s own
+dependencies are `@jini/agent-runtime`/`@jini/core`/`@jini/platform`/`@jini/protocol` (none of
+which depend on `@jini/http`), and `@jini/agui` depends only on `@jini/protocol` — so
+`@jini/http → @jini/daemon`/`@jini/agui` is a new downward edge, not a cycle. This is a real,
+deliberate architectural addition: `@jini/http` was previously "HTTP/SSE transport + route-pack
+registrar" with no dependency on the run/agent kernel at all; it now also depends on
+`@jini/daemon`'s `RunLifecycle` and `@jini/agui`'s encoder specifically to implement the SSE route
+this task's brief asked for in this package. Whether that coupling should eventually move (e.g. the
+route registrar living in `@jini/node-host`, which already depends on both, mounting a purely
+transport-agnostic primitive from `@jini/http`) is a reasonable question for a future architecture
+review — not revisited here since the task brief was explicit that this route belongs in
+`packages/http/src/`, mirroring `daemon-status.ts`'s own registration shape.
+
+### Not wired into `createLocalNodeDaemon`
+
+`@jini/node-host`'s `createLocalNodeDaemon` does not call `registerRunStreamRoute` today — this
+task built the route inside `@jini/http` (as scoped) but did not extend `createLocalNodeDaemon` to
+mount it automatically, since that wiring wasn't part of this task's brief and doing it without
+being asked would be scope creep into a different package's already-tested assembly path. A future
+task can add it the same way `registerDaemonStatusRoutes` is already wired in.
+
+### Tests
+
+11 new tests in `src/__tests__/sse.test.ts` (the primitive, via fake req/res `EventEmitter`/`vi.fn`
+objects — headers, `send`/`close`/idempotent-`close`/send-after-close, the keepalive interval and
+its cadence/default/stop-on-close, client-disconnect-triggers-close, `onClose` firing exactly once
+either way). 7 new tests in `src/__tests__/run-stream.test.ts` (the shared handler, using a real
+`@jini/daemon` `createRunLifecycle`/`createInMemoryEventLog` pair for genuine integration
+confidence rather than a hand-rolled fake lifecycle — plus two fake-lifecycle tests for the
+`replay-gap`/`invalid-cursor` `StreamSubscribeResult` kinds a real in-memory log's own happy paths
+can't produce): text_delta forwarding, close-on-'end', replaying an already-terminal run, unsubscribe-
+on-client-disconnect (proven by checking a post-disconnect `emit()` no longer produces a new
+`res.write` call), and the `unknown-run`/`replay-gap`/`invalid-cursor` error-and-close paths. Plus
+one real-server integration test per transport (`src/express/__tests__/run-stream.test.ts`,
+`src/fastify/__tests__/run-stream.test.ts`) — see the `hijack()` finding above for why the Fastify
+one specifically matters. 357 tests total for the package (was 337 before this addition), 100%
+coverage on all 4 metrics across every file including all four new ones.
+`pnpm --filter @jini/http exec vitest run --coverage --coverage.include='src/**'` → 357 passed,
+100/100/100/100.
+
+## 2026-07-22 — Merging the Fastify transport split into `main`: the actual final architecture (supersedes this file's "Layout"/"breaking import-path change" claims above)
+
+The two sections above were written against `main` as of 2026-07-18/19. By the time this branch
+was actually merged (2026-07-22), `main` had gained ~118 more commits, including a full batch of
+new, Express-only route packs (`runs.ts`, `agents.ts`, `host-tools.ts`, `memory.ts`, `routines.ts`,
+`terminals.ts`, `model-proxy.ts`, `db-ops.ts`, `delegated-tools.ts`, `active-context.ts`) that this
+branch's own "Layout"/"breaking import-path change" description above never accounted for — those
+files all still import `defineJsonRoute`/`mountJsonRoute`/`rawInput`/`sendApiError`/etc. from the
+flat root (`./adapter.js`, `./request.js`, `./response.js`, ...), not from an `express/` subtree.
+
+**What actually landed, and why it differs from the plan above:** rather than moving
+`adapter.ts`/`api-security-middleware.ts`/`compat.ts`/`daemon-status.ts`/`local-daemon-request.ts`/
+`origin.ts`/`request.ts`/`response.ts`/`route-registration-guard.ts` into `express/` (which would
+have broken every one of those ten newer route-pack files' imports, and is exactly what git's own
+rename-detection tried to do automatically during the merge, silently, before this was caught and
+reverted), these nine files stay at the flat root, unchanged, as the single canonical
+implementation. A new file, `src/express-index.ts`, is a thin barrel that re-exports this exact
+same flat implementation (plus `registerRunRoutes`/`registerAgentRoutes`/`registerHostToolsRoutes`)
+under an `express` namespace — mirroring `fastify/index.ts`'s shape so `create-local-node-daemon.ts`
+can pick either namespace symmetrically — without ever duplicating or relocating the underlying
+code. `express/` itself still exists, but now contains only the one file that's genuinely new and
+transport-specific with no flat-root equivalent: `express/run-stream.ts` (the AG-UI SSE mounting
+sliver, exactly as originally built).
+
+**Corrected layout:**
+
+```
+src/
+  types.ts, origin-validation.ts, pack-http.ts     shared, framework-agnostic (unchanged)
+  adapter.ts, api-security-middleware.ts, compat.ts,
+  daemon-status.ts, local-daemon-request.ts, origin.ts,
+  request.ts, response.ts, route-registration-guard.ts   the ONE canonical Express-mounting
+                                                            implementation — flat, not moved
+  runs.ts, agents.ts, host-tools.ts, memory.ts,
+  routines.ts, terminals.ts, model-proxy.ts, db-ops.ts,
+  delegated-tools.ts, active-context.ts                   every route pack — all still import
+                                                            the flat files above directly, zero
+                                                            import-path changes for any of them
+  raw-sse.ts          the branch's original sse.ts primitive (createSseResponse), renamed to avoid
+                       colliding with main's own, independently-built src/sse.ts (createSseChannel
+                       — a different, older, load-bearing primitive runs.ts/terminals.ts/
+                       model-proxy.ts already depend on); see "sse.ts naming collision" below
+  express-index.ts     NEW — thin re-export barrel, `express` namespace, points at the flat files
+                       above (not a copy)
+  express/             now contains only run-stream.ts — the one piece with no flat equivalent
+  fastify/             the independent Fastify-native implementation (see below) — unchanged in
+                       spirit from the section above, but see "Real dual-transport parity" below
+  index.ts             root barrel — every flat file/route-pack above stays exported here exactly
+                       as before this merge (NOT reduced to only framework-agnostic pieces, as the
+                       2026-07-19 section above planned), plus `export * as express`/`export * as
+                       fastify`
+```
+
+**No breaking import-path change, contrary to this file's 2026-07-19 section above:** every
+existing consumer (all ten route packs, `@jini/node-host`) keeps importing from the exact same flat
+paths it always did. The `express`/`fastify` namespaces are additive, opt-in surface for a caller
+that specifically wants to pick a transport (today, only `createLocalNodeDaemon`'s `transport`
+option does).
+
+### `sse.ts` naming collision — two independent, both load-bearing, primitives
+
+This branch's `sse.ts` (`createSseResponse`, a simple `node:http`-typed keepalive/send/close
+primitive, used only by `run-stream.ts`'s AG-UI route) and `main`'s own, independently-built
+`sse.ts` (`createSseChannel`, a bounded-queue/backpressure/cursor-replay primitive, used by
+`runs.ts`'s canonical run-events stream and reused by `terminals.ts`/`model-proxy.ts`) collided at
+the same path with genuinely different, both-real implementations — neither one is a stray/
+duplicate of the other. Resolution: `main`'s `sse.ts`/`createSseChannel` stays unchanged at that
+path (it has more callers and predates this merge on `main`'s own timeline); this branch's version
+was materialized as a new file, `raw-sse.ts`, with its two callers (`run-stream.ts`,
+`raw-sse.test.ts`) updated to the new import path. Both primitives are real, both are 100% tested,
+both stay — this is not a downscoping, just a rename to resolve the collision.
+
+### Real dual-transport parity for `runs`/`agents`/`host-tools` — not left Express-only
+
+Per this repo's standing rule (refactor to make things reachable and tested rather than leaving a
+scope gap), `registerRunRoutes`/`registerAgentRoutes`/`registerHostToolsRoutes` were NOT left
+Express-only despite predating this branch. `runs.ts`/`agents.ts`/`host-tools.ts` already used the
+exact same transport-agnostic `JsonRouteSpec` pattern this branch's own `fastify/` subtree is built
+on (`defineJsonRoute`/pure `parse`/`handle` functions) — only their `register*Routes` mounting
+wrappers were Express-specific. New files `fastify/runs.ts`, `fastify/agents.ts`,
+`fastify/host-tools.ts` mount the exact same spec objects via `fastify/adapter.ts`'s own
+`mountJsonRoute`, with zero route-logic duplication.
+
+**The one genuine complication, resolved for real rather than left as an excuse: SSE run-events
+streaming.** `runs.ts`'s `registerRunEventStream` (the `GET /api/runs/:runId/events` handler) used
+`createSseChannel`, which was typed `import type { Response } from 'express'` — a real
+Fastify-incompatibility, not an assumed one. Investigated directly: `createSseChannel`'s only
+actually-Express-specific call was `res.status(200)` on the `open()` path; every other call
+(`write`/`setHeader`/`flushHeaders`/`end`/`on('close'|'drain')`/`writableEnded`) already exists
+identically on the raw `node:http` `ServerResponse` Express's own `Response` extends. Retyped
+`createSseChannel`'s parameter from `Response` to `ServerResponse` and replaced `res.status(200)`
+with `res.statusCode = 200` (the same assignment Express's own `.status()` performs internally) —
+Express callers are unaffected (`Response` still satisfies `ServerResponse` structurally), and
+Fastify's `reply.raw` now satisfies it too. `handleRunEventStreamRequest` was extracted as a new,
+exported, transport-agnostic core (mirroring `run-stream.ts`'s own `handleRunStreamRequest`
+pattern) taking an already-resolved `runId`/`afterCursor` plus a raw `ServerResponse`; a new
+`sendRawApiError` (in `sse.ts`) handles the pre-SSE-open JSON error path (`unknown-run`/
+`invalid-cursor`/`replay-gap`/internal-error) without going through either framework's own
+response wrapper. `fastify/runs.ts`'s `registerRunEventStream` hijacks the reply
+(`reply.hijack()`, the same load-bearing pattern `fastify/run-stream.ts` already established) and
+calls the identical core function with `reply.raw`. Net result: `transport: 'fastify'` now serves
+`runs`/`agents`/`host-tools` identically to the Express default — not a reduced set.
+
+`create-local-node-daemon.ts`'s doc comment previously (in an earlier, abandoned draft of this
+merge) described these three route packs as staying Express-only "since building real Fastify
+parity is a separate task" — that framing was **wrong per the standing rule** and was corrected
+before landing; the doc comment now on that file describes the real, full-parity state.
+
+### Verification, personally run this session
+
+`pnpm --dir packages/http exec tsc --noEmit`: clean. `pnpm --dir packages/http run test:coverage`:
+**875/875 tests pass**. Coverage: **100% statements/functions/lines** across every file in
+`src/`, `src/express/`, and `src/fastify/`; branches **99.39%** overall — the two sub-100% files
+(`runs.ts` at 98.88%, one pre-existing branch at line 69 unrelated to this merge; `terminals.ts` at
+93.45%, pre-existing, already documented above) are both untouched by this pass. `src/fastify/`
+subtree itself: **100% on all four metrics**, every file, including the three new route-pack
+mounting files. Root `pnpm typecheck` and `pnpm guard`: clean.

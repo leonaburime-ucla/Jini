@@ -1,0 +1,310 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { definePack } from '@jini/core';
+import type { express as HttpExpress } from '@jini/http';
+import { createLocalNodeDaemon, type LocalNodeDaemon } from '../create-local-node-daemon.js';
+
+/**
+ * Smoke coverage for `transport: 'fastify'` — proves the branch added to
+ * `createLocalNodeDaemon` actually boots a real Fastify server (not Express with the flag
+ * silently ignored), by exercising the same handful of request shapes the sibling
+ * `create-local-node-daemon.test.ts` suite already exhaustively covers for the default
+ * (`'express'`/omitted) transport: a caller pack's own route, `GET /api/daemon/status`, a bearer
+ * 401 when a token is configured, and `stop()`. This file intentionally does NOT re-derive every
+ * edge case from that suite (origin-guard branch matrix, onShutdown ordering, etc.) — that logic
+ * lives in the transport-agnostic boot-completion tail both branches share, and is already fully
+ * exercised via the default transport. It DOES independently cover the loopback-vs-non-loopback
+ * 401 branch and Fastify's own `.listen()` rejection paths (EADDRINUSE, invalid port) below,
+ * since those two are the genuine per-transport slivers documented in this module's own
+ * top-of-file doc (`app.listen()`'s API — and therefore its rejection shape — is one of the few
+ * places the two transports do not converge).
+ *
+ * Important finding from writing this suite: `makePingPack()` below is deliberately NOT the same
+ * fixture the sibling suite uses — that one's handler calls Express's `res.json(...)`, which does
+ * not exist on a Fastify `reply` and throws (surfaced by Fastify as a 500) if mounted as-is. This
+ * is expected, not a `mountPackHttp` bug: `mountPackHttp` only ever forwards `app` straight
+ * through, unmodified, to a pack's own `http(app, services)` registrar, so the registrar itself
+ * still receives a transport-specific `app`/response API. A pack that wants to run under both
+ * transports must either branch on the app shape itself or (better) be written against
+ * `@jini/http`'s own `defineJsonRoute`/`mountJsonRoute` from the matching namespace instead of
+ * hand-rolling `app.get(path, handler)` calls the way this test fixture (and OD's own existing
+ * packs, most likely) does today. See this suite's own `makePingPack()` doc for the concrete
+ * before/after.
+ */
+const ENV_KEYS = ['JINI_API_TOKEN', 'JINI_DISABLE_API_AUTH', 'JINI_ALLOWED_ORIGINS', 'JINI_WEB_PORT', 'JINI_BIND_HOST'] as const;
+let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
+
+beforeEach(() => {
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) savedEnv[key] = value;
+    delete process.env[key];
+  }
+});
+
+afterEach(() => {
+  for (const key of ENV_KEYS) delete process.env[key];
+  Object.assign(process.env, savedEnv);
+});
+
+const tempDirs: string[] = [];
+function makeTempDataDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'jini-node-host-fastify-test-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+/** The first routable, non-loopback IPv4 address this machine has, or `null` if none — see the
+ * sibling Express suite's identical helper for the full rationale. Duplicated rather than shared
+ * because these two test files intentionally do not import from each other. */
+function findExternalIPv4Address(): string | null {
+  const ifaces = networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const iface of entries ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const daemonsToStop: LocalNodeDaemon[] = [];
+afterEach(async () => {
+  while (daemonsToStop.length > 0) {
+    const daemon = daemonsToStop.pop();
+    if (daemon) await daemon.stop().catch(() => {});
+  }
+});
+
+/**
+ * A Fastify-shaped ping pack — deliberately NOT the same fixture the sibling
+ * `create-local-node-daemon.test.ts` suite uses for the Express-default transport. That fixture's
+ * handler calls `res.json(...)`, an Express `Response` method with no Fastify equivalent (Fastify's
+ * `reply` has `.send(...)`, which auto-serializes a plain object to JSON with a 200 default status)
+ * — mounting an Express-shaped pack handler on a raw Fastify instance throws inside the handler,
+ * which Fastify's own default error handler turns into a 500. This is expected, not a bug in
+ * `mountPackHttp` (which only ever forwards `app` straight through, unmodified, to the pack's own
+ * registrar) — `mountPackHttp` being transport-agnostic does NOT make an individual pack's
+ * hand-rolled route registration code transport-portable; only packs written against
+ * `@jini/http`'s own `defineJsonRoute`/`mountJsonRoute` (from the matching `express`/`fastify`
+ * namespace) get that portability for free. See this file's own top-of-module doc.
+ */
+function makePingPack() {
+  return definePack({
+    name: 'ping',
+    deps: [],
+    services: () => ({}),
+    http: (app: unknown) => {
+      (app as { get: (path: string, handler: (req: unknown, reply: { send: (b: unknown) => void }) => void) => void }).get(
+        '/api/ping',
+        (_req, reply) => reply.send({ ok: true }),
+      );
+    },
+  });
+}
+
+describe('createLocalNodeDaemon({ transport: "fastify" })', () => {
+  it('boots a real Fastify server on an ephemeral port and reports a URL reflecting the real bound port', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    expect(daemon.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const port = Number(new URL(daemon.url).port);
+    expect(port).toBeGreaterThan(0);
+    const address = daemon.server.address();
+    expect(address && typeof address === 'object' ? address.port : null).toBe(port);
+  });
+
+  it("mounts a caller pack's own route through the Fastify adapter (proves mountPackHttp works identically for both transports)", async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('serves GET /api/daemon/status through the Fastify daemon-status routes', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/daemon/status`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as HttpExpress.DaemonStatusResponse;
+    expect(body).toMatchObject({ ok: true, host: '127.0.0.1', dataDir, shuttingDown: false });
+    expect(typeof body.version).toBe('string');
+    expect(body.port).toBe(Number(new URL(daemon.url).port));
+  });
+
+  it('allows a loopback caller with a correct bearer token when apiToken is configured (Fastify onRequest hook gate)', async () => {
+    process.env.JINI_API_TOKEN = 'integration-secret';
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, { headers: { Authorization: 'Bearer integration-secret' } });
+    expect(res.status).toBe(200);
+  });
+
+  const lanAddress = findExternalIPv4Address();
+  // Same rationale as the Express suite's own `lanAddress`-gated test (see its comment): the
+  // bearer-auth middleware unconditionally exempts loopback peers, so the 401 branch can only be
+  // observed via a real, non-loopback TCP connection. The unit-level loopback/non-loopback branch
+  // already has 100% coverage in packages/http/src/fastify/__tests__/api-security-middleware.test.ts
+  // — this test's job is only to prove the real, assembled Fastify pipeline rejects too.
+  it.skipIf(lanAddress == null)(
+    'rejects a non-loopback caller with 401 when apiToken is configured and no bearer token is sent (Fastify onRequest hook gate)',
+    async () => {
+      process.env.JINI_API_TOKEN = 'integration-secret';
+      const dataDir = makeTempDataDir();
+      const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify', host: '0.0.0.0' });
+      daemonsToStop.push(daemon);
+
+      const port = Number(new URL(daemon.url).port);
+      const res = await fetch(`http://${lanAddress}:${port}/api/ping`);
+      expect(res.status).toBe(401);
+    },
+  );
+
+  it('rejects a disallowed cross-origin POST with 403 (Fastify onRequest origin-guard hook)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/ping`, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example.com' },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('stop() closes the Fastify-backed listener: a post-stop fetch rejects', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+
+    await daemon.stop();
+    await expect(fetch(`${daemon.url}/api/ping`)).rejects.toThrow();
+  });
+
+  it('the POST /api/daemon/shutdown route triggers the same graceful stop() for the Fastify transport', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+
+    const shutdownRes = await fetch(`${daemon.url}/api/daemon/shutdown`, { method: 'POST' });
+    expect(shutdownRes.status).toBe(200);
+    expect(await shutdownRes.json()).toEqual({ ok: true, scheduled: true });
+
+    await vi.waitFor(
+      async () => {
+        await expect(fetch(`${daemon.url}/api/ping`)).rejects.toThrow();
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  // Fastify's `app.listen(...)` is promise-based end to end — unlike Express's `http.Server#listen`
+  // (which throws synchronously for some errors and emits an async `'error'` event for others, per
+  // the sibling suite's own two separate tests for that), Fastify's own `.listen()` always settles
+  // its returned promise for either failure mode, so a single rejection assertion covers both
+  // shapes here. These prove the Fastify branch's `listen` closure (`create-local-node-daemon.ts`'s
+  // `if (config.transport === 'fastify')` arm) actually propagates a real Fastify listen failure
+  // into the shared `failToBind` tail, rather than that tail having only ever been exercised via
+  // the Express branch.
+  it('rejects rather than hanging when a second Fastify instance boots on a port already in use (EADDRINUSE)', async () => {
+    const dataDirA = makeTempDataDir();
+    const daemonA = await createLocalNodeDaemon({ dataDir: dataDirA, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemonA);
+    const fixedPort = Number(new URL(daemonA.url).port);
+
+    const dataDirB = makeTempDataDir();
+    await expect(
+      createLocalNodeDaemon({ dataDir: dataDirB, packs: [makePingPack()], transport: 'fastify', port: fixedPort }),
+    ).rejects.toThrow();
+  });
+
+  it('propagates an out-of-range port from Fastify app.listen() as a rejection', async () => {
+    const dataDir = makeTempDataDir();
+    await expect(
+      createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify', port: 70_000 }),
+    ).rejects.toThrow();
+  });
+
+  // Proves dual-transport parity for real, not just by doc comment: runs/agents/host-tools are
+  // wired into the fastify branch of create-local-node-daemon.ts identically to the express
+  // branch (see this module's own top-of-file doc) — these three tests are the Fastify-transport
+  // equivalents of the sibling Express suite's `GET /api/agents`/`open-in`/run-creation
+  // reachability tests, proving the real assembled Fastify daemon actually serves them, not just
+  // the isolated `@jini/http` fastify-namespace unit tests.
+  it('serves GET /api/agents under the Fastify transport, projecting the real @jini/agent-runtime registry with zero config', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/agents`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agents: Array<{ id: string; name: string }> };
+    expect(body.agents.length).toBeGreaterThan(0);
+    expect(body.agents.find((a) => a.id === 'claude')).toMatchObject({ id: 'claude', name: expect.any(String) });
+  });
+
+  it('serves POST /api/resources/:resourceRef/open-in under the Fastify transport, denying every call by default (denyAllWorkspaceRoots)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/resources/some-resource/open-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: 'vscode' }),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('serves the run creation + status + SSE stream vertical slice under the Fastify transport', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()], transport: 'fastify' });
+    daemonsToStop.push(daemon);
+
+    const created = await fetch(`${daemon.url}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contextRef: 'fastify-transport-context' }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { run: { id: string; state: string } };
+    expect(createdBody.run.state).toBe('running');
+
+    const statusRes = await fetch(`${daemon.url}/api/runs/${createdBody.run.id}`);
+    expect(statusRes.status).toBe(200);
+
+    // No onRunStarted/resolveRunInput is configured, so this run never reaches a terminal 'end'
+    // event and the SSE connection never closes on its own — read only until the buffered replay
+    // of 'start' arrives, then cancel, rather than awaiting the full (never-ending) response body.
+    const streamRes = await fetch(`${daemon.url}/api/runs/${createdBody.run.id}/events`);
+    expect(streamRes.headers.get('content-type')).toContain('text/event-stream');
+    const reader = streamRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let accumulated = '';
+    while (!accumulated.includes('event: start')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      accumulated += decoder.decode(value, { stream: true });
+    }
+    expect(accumulated).toContain('event: start');
+    await reader.cancel();
+  });
+});

@@ -4,8 +4,20 @@
  * JSON-route transport for a `@jini/core` daemon composition: the `Result`/route-spec types,
  * request parsing, response serialization, the same-origin guard, the Express-mounting Adapter,
  * legacy-shaped compat error helpers, a route-pack registrar, generic daemon status/shutdown
- * routes, and a generic active-resource-focus channel. See `source-map.md` for full provenance
- * and scope-decision notes.
+ * routes, and every route pack this package ships (runs, agents, host-tools, memory, routines,
+ * db-ops, terminals, model-proxy, active-context, delegated-tools) — all still exported flat at
+ * this root, unchanged, since that is the load-bearing default surface every existing consumer
+ * (including `@jini/node-host`'s `createLocalNodeDaemon`) already imports from directly.
+ *
+ * The HTTP transport is additionally switchable: `./express/index.js` re-exports this same flat
+ * surface's mounting pieces under an `express` namespace (see the bottom of this file), and
+ * `./fastify/index.js` provides an idiomatically-native Fastify equivalent — request/response
+ * plumbing, the mounting Adapter, the `/api` security middleware, the route-registration guard,
+ * compat error helpers, and the daemon-status routes, all built once, independently, against
+ * `FastifyRequest`/`FastifyReply`/`FastifyInstance`. A consumer that wants explicit transport
+ * selection (as `createLocalNodeDaemon`'s `transport` option does) imports the `express`/`fastify`
+ * namespace; everyone else keeps using the flat root exports exactly as before. See
+ * `source-map.md` for full provenance and scope-decision notes.
  */
 export type {
   Handler,
@@ -16,13 +28,6 @@ export type {
   RouteInputContext,
 } from './types.js';
 export { err, ok } from './types.js';
-
-export { rawInput, validationError } from './request.js';
-
-export { sendApiError, sendJson, statusForError } from './response.js';
-
-export type { OriginContext } from './origin.js';
-export { guardSameOrigin } from './origin.js';
 
 export type {
   ParsedHostHeader,
@@ -45,7 +50,10 @@ export type { AdapterContext } from './adapter.js';
 export { defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export type { CreateSseChannelOptions, SseChannel, SseEvent } from './sse.js';
-export { createSseChannel, DEFAULT_MAX_QUEUED_SSE_EVENTS, requestedAfterCursor } from './sse.js';
+export { createSseChannel, DEFAULT_MAX_QUEUED_SSE_EVENTS, requestedAfterCursor, sendRawApiError } from './sse.js';
+
+export type { CreateSseResponseOptions, SseConnection } from './raw-sse.js';
+export { createSseResponse } from './raw-sse.js';
 
 export type {
   ResolveWorkspaceRootOptions,
@@ -96,12 +104,8 @@ export {
 export type { ApiBearerAuthMiddlewareDeps, ApiOriginGuardMiddlewareDeps } from './api-security-middleware.js';
 export { registerApiBearerAuthMiddleware, registerApiOriginGuardMiddleware } from './api-security-middleware.js';
 
-export type { InstallRouteRegistrationGuardOptions, RouteRegistration } from './route-registration-guard.js';
-export {
-  getRouteRegistrationInventory,
-  guardedRouteKey,
-  installRouteRegistrationGuard,
-} from './route-registration-guard.js';
+export type { RunStreamDeps } from './run-stream.js';
+export { handleRunStreamRequest, RUN_STREAM_ROUTE_PATH } from './run-stream.js';
 
 export {
   isLoopbackHostname,
@@ -260,3 +264,6 @@ export {
   createCompatApiErrorResponse,
   sendApiError as sendCompatApiError,
 } from './compat.js';
+
+export * as express from './express-index.js';
+export * as fastify from './fastify/index.js';

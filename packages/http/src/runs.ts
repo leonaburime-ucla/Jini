@@ -10,7 +10,8 @@ import type { RunLifecycle, StartRunInput, Unsubscribe } from '@jini/daemon';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
 import { validationError } from './request.js';
 import { sendApiError } from './response.js';
-import { createSseChannel, requestedAfterCursor } from './sse.js';
+import { createSseChannel, requestedAfterCursor, sendRawApiError } from './sse.js';
+import type { ServerResponse } from 'node:http';
 import { err, ok, type Result, type RouteInputContext } from './types.js';
 
 /**
@@ -195,16 +196,16 @@ export const runCancelRoute = defineJsonRoute<{ runId: string; reason?: string }
   },
 });
 
-function sendStreamFailure(res: Response, kind: Exclude<Awaited<ReturnType<RunLifecycle['stream']>>, { kind: 'ok' }>): void {
+function sendStreamFailure(res: ServerResponse, kind: Exclude<Awaited<ReturnType<RunLifecycle['stream']>>, { kind: 'ok' }>): void {
   if (kind.kind === 'unknown-run') {
-    sendApiError(res, 404, createApiError('NOT_FOUND', 'run was not found'));
+    sendRawApiError(res, 404, createApiError('NOT_FOUND', 'run was not found'));
     return;
   }
   if (kind.kind === 'invalid-cursor') {
-    sendApiError(res, 400, createApiError('BAD_REQUEST', `invalid replay cursor "${kind.requestedCursor}"`));
+    sendRawApiError(res, 400, createApiError('BAD_REQUEST', `invalid replay cursor "${kind.requestedCursor}"`));
     return;
   }
-  sendApiError(
+  sendRawApiError(
     res,
     409,
     createApiError('CONFLICT', `replay gap after cursor "${kind.requestedCursor}"`, {
@@ -213,7 +214,73 @@ function sendStreamFailure(res: Response, kind: Exclude<Awaited<ReturnType<RunLi
   );
 }
 
-/** `GET /api/runs/:runId/events` — canonical events as SSE, with Last-Event-ID reconnect support. */
+/**
+ * The transport-agnostic core of `GET /api/runs/:runId/events` — canonical events as SSE, with
+ * Last-Event-ID reconnect support. Takes `runId`/`afterCursor` already resolved (each transport's
+ * own request shape differs enough — Express's `req.params`/`.get()` vs Fastify's `request.params`/
+ * `.headers` — that resolving them is cheaper to leave per-transport than to build a third shared
+ * abstraction over both). `res` is typed against the raw `node:http` `ServerResponse` rather than
+ * either framework's own response type: Express's `Response` extends it directly, and a Fastify
+ * caller passes `reply.raw` after `reply.hijack()` (see `fastify/runs.ts`), the same pattern
+ * `run-stream.ts`'s AG-UI handler already established for exactly this reason.
+ */
+export async function handleRunEventStreamRequest(
+  res: ServerResponse,
+  runId: string,
+  afterCursor: string | null,
+  deps: RunHttpDeps,
+): Promise<void> {
+  if (runId.length === 0) {
+    sendRawApiError(res, 400, createApiError('BAD_REQUEST', 'runId must be a non-empty path parameter'));
+    return;
+  }
+
+  // `createSseChannel` (`sse.ts`) owns the bounded queue, backpressure, and client-disconnect
+  // handling that used to be inlined here — see that module's doc for the generalization.
+  const channel = createSseChannel<RunProtocolEvent>(res, { isEndEvent: (event) => event.kind === 'end' });
+
+  let unsubscribeFn: Unsubscribe | null = null;
+  channel.onClose(() => {
+    const stop = unsubscribeFn;
+    unsubscribeFn = null;
+    stop?.();
+  });
+
+  try {
+    const subscribed = await deps.lifecycle.stream(runId, channel.enqueue, { afterCursor });
+    if (subscribed.kind !== 'ok') {
+      // Nothing was ever subscribed, so `abandon()` has nothing to unsubscribe — it only marks
+      // the channel closed. `res` itself is untouched, leaving `sendStreamFailure` free to send
+      // a normal JSON error response instead of an SSE stream.
+      channel.abandon();
+      sendStreamFailure(res, subscribed);
+      return;
+    }
+    if (channel.isClosed()) {
+      // The client already disconnected (or the bounded queue already gave up) while
+      // `stream()` was resolving — unsubscribe immediately instead of leaking it.
+      subscribed.unsubscribe();
+      return;
+    }
+    unsubscribeFn = subscribed.unsubscribe;
+    channel.open();
+  } catch (error) {
+    if (!res.headersSent) {
+      // `channel.open()` never ran (or never got past `flushHeaders`) — abandon without
+      // touching `res`, so the JSON error response below is the only thing written.
+      // Using `channel.end()` here instead would end the response before this write, turning
+      // it into a write-after-end failure.
+      channel.abandon();
+      sendRawApiError(res, 500, reportInternalError(deps, 'run-stream', error, runId));
+      return;
+    }
+    // Headers were already sent (the stream had started, or `open()` partially ran before
+    // throwing) — end the stream itself rather than attempting a second, incompatible response.
+    channel.end();
+  }
+}
+
+/** Express mounting glue for {@link handleRunEventStreamRequest} — resolves `runId`/`afterCursor` from an Express `Request` and hands the request straight through. */
 export function registerRunEventStream(app: Express, deps: RunHttpDeps): void {
   app.get('/api/runs/:runId/events', async (req: Request, res: Response) => {
     const runId = req.params.runId;
@@ -221,50 +288,7 @@ export function registerRunEventStream(app: Express, deps: RunHttpDeps): void {
       sendApiError(res, 400, createApiError('BAD_REQUEST', 'runId must be a non-empty path parameter'));
       return;
     }
-
-    // `createSseChannel` (`sse.ts`) owns the bounded queue, backpressure, and client-disconnect
-    // handling that used to be inlined here — see that module's doc for the generalization.
-    const channel = createSseChannel<RunProtocolEvent>(res, { isEndEvent: (event) => event.kind === 'end' });
-
-    let unsubscribeFn: Unsubscribe | null = null;
-    channel.onClose(() => {
-      const stop = unsubscribeFn;
-      unsubscribeFn = null;
-      stop?.();
-    });
-
-    try {
-      const subscribed = await deps.lifecycle.stream(runId, channel.enqueue, { afterCursor: requestedAfterCursor(req) });
-      if (subscribed.kind !== 'ok') {
-        // Nothing was ever subscribed, so `abandon()` has nothing to unsubscribe — it only marks
-        // the channel closed. `res` itself is untouched, leaving `sendStreamFailure` free to send
-        // a normal JSON error response instead of an SSE stream.
-        channel.abandon();
-        sendStreamFailure(res, subscribed);
-        return;
-      }
-      if (channel.isClosed()) {
-        // The client already disconnected (or the bounded queue already gave up) while
-        // `stream()` was resolving — unsubscribe immediately instead of leaking it.
-        subscribed.unsubscribe();
-        return;
-      }
-      unsubscribeFn = subscribed.unsubscribe;
-      channel.open();
-    } catch (error) {
-      if (!res.headersSent) {
-        // `channel.open()` never ran (or never got past `flushHeaders`) — abandon without
-        // touching `res`, so the JSON error response below is the only thing written.
-        // Using `channel.end()` here instead would end the response before this write, turning
-        // it into a write-after-end failure.
-        channel.abandon();
-        sendApiError(res, 500, reportInternalError(deps, 'run-stream', error, runId));
-        return;
-      }
-      // Headers were already sent (the stream had started, or `open()` partially ran before
-      // throwing) — end the stream itself rather than attempting a second, incompatible response.
-      channel.end();
-    }
+    await handleRunEventStreamRequest(res, runId, requestedAfterCursor(req), deps);
   });
 }
 

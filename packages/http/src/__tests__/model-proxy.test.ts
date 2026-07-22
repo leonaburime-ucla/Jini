@@ -33,6 +33,7 @@ function makeSseRes() {
   const res: any = {
     write: vi.fn((_chunk: string) => true),
     status: vi.fn().mockReturnThis(),
+    statusCode: 0,
     setHeader: vi.fn(),
     flushHeaders: vi.fn(),
     end: vi.fn(() => {
@@ -186,7 +187,7 @@ describe('POST /api/proxy/anthropic/stream', () => {
     const res = makeSseRes();
     await handler()(makeReq(validAnthropicBody), res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.statusCode).toBe(200);
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
     const events = writtenEvents(res);
     expect(events).toContainEqual({ kind: 'text_delta', data: { type: 'text_delta', delta: 'Hello there' } });

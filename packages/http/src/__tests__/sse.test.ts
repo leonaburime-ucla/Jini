@@ -1,4 +1,4 @@
-import type { Response } from 'express';
+import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { createSseChannel, requestedAfterCursor, DEFAULT_MAX_QUEUED_SSE_EVENTS, type SseEvent } from '../sse.js';
 
@@ -11,7 +11,7 @@ function makeRes() {
   const drainListeners: Array<() => void> = [];
   const res = {
     write: vi.fn((_chunk: string) => true),
-    status: vi.fn().mockReturnThis(),
+    statusCode: 0,
     setHeader: vi.fn(),
     flushHeaders: vi.fn(),
     end: vi.fn(() => {
@@ -30,8 +30,8 @@ function makeRes() {
 }
 
 /** The mock above satisfies the narrow surface `createSseChannel` actually calls (`write`/`status`/`setHeader`/`flushHeaders`/`end`/`on`/`writableEnded`) but not Express's full `Response` type — the same cast `runs.test.ts` avoids only by routing calls through an untyped `any` handler map. */
-function asResponse(res: ReturnType<typeof makeRes>): Response {
-  return res as unknown as Response;
+function asResponse(res: ReturnType<typeof makeRes>): ServerResponse {
+  return res as unknown as ServerResponse;
 }
 
 const event = (opaqueCursor: string, kind = 'data', payload?: string): TestEvent =>
@@ -47,7 +47,7 @@ describe('@jini/http — sse — createSseChannel', () => {
 
     channel.open();
 
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.statusCode).toBe(200);
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-cache, no-transform');
     expect(res.setHeader).toHaveBeenCalledWith('Connection', 'keep-alive');
@@ -70,7 +70,7 @@ describe('@jini/http — sse — createSseChannel', () => {
     const channel = createSseChannel<TestEvent>(asResponse(res));
     channel.open();
     channel.open();
-    expect(res.status).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(200);
     expect(res.flushHeaders).toHaveBeenCalledOnce();
   });
 
@@ -202,7 +202,7 @@ describe('@jini/http — sse — createSseChannel', () => {
       expect(channel.isClosed()).toBe(true);
       expect(onClose).toHaveBeenCalledOnce();
       expect(res.end).not.toHaveBeenCalled();
-      expect(res.status).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(0);
     });
 
     it('is idempotent, matching end()', () => {
@@ -219,7 +219,6 @@ describe('@jini/http — sse — createSseChannel', () => {
       const res = makeRes();
       const channel = createSseChannel<TestEvent>(asResponse(res));
       channel.open();
-      res.status.mockClear();
       channel.abandon();
       expect(res.end).not.toHaveBeenCalled();
       expect(channel.isClosed()).toBe(true);

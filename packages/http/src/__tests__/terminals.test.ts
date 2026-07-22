@@ -65,6 +65,7 @@ function makeSseRes() {
   const res = {
     write: vi.fn((_chunk: string) => true),
     status: vi.fn().mockReturnThis(),
+    statusCode: 0,
     setHeader: vi.fn(),
     flushHeaders: vi.fn(),
     end: vi.fn(() => {
@@ -611,7 +612,7 @@ describe('registerTerminalEventStream', () => {
     const res = makeSseRes();
     handler(makeSseReq({ id }), res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.statusCode).toBe(200);
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
     expect(res.flushHeaders).toHaveBeenCalledTimes(1);
     expect(res.end).not.toHaveBeenCalled();

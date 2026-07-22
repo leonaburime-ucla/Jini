@@ -3,6 +3,7 @@ import { createInMemoryEventLog, createRunLifecycle, type RunLifecycle } from '@
 import { RUN_PROTOCOL_VERSION, type RunProtocolEvent } from '@jini/protocol';
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
+  handleRunEventStreamRequest,
   registerRunEventStream,
   registerRunRoutes,
   runCancelRoute,
@@ -51,15 +52,24 @@ function makeSseReq(overrides: { runId?: string; headers?: Record<string, string
   };
 }
 
+/**
+ * `status`/`json` stay mocked (Express-shaped) since `registerRunEventStream`'s own Express
+ * wrapper still calls the real Express `sendApiError` for its own pre-`handleRunEventStreamRequest`
+ * empty-runId check — but `statusCode` is a real, plain, settable property, since the core (a raw
+ * `ServerResponse`-typed function, shared with the eventual Fastify mounting) sets
+ * `res.statusCode = N` directly and writes JSON error bodies via `res.end(...)`, never through
+ * `res.status()`/`res.json()`.
+ */
 function makeSseRes() {
   const closeListeners: Array<() => void> = [];
   const drainListeners: Array<() => void> = [];
   const res = {
     write: vi.fn((_chunk: string) => true),
     status: vi.fn().mockReturnThis(),
+    statusCode: 0,
     setHeader: vi.fn(),
     flushHeaders: vi.fn(),
-    end: vi.fn(() => {
+    end: vi.fn((_body?: string) => {
       res.writableEnded = true;
     }),
     json: vi.fn().mockReturnThis(),
@@ -73,6 +83,12 @@ function makeSseRes() {
     emitDrain: () => drainListeners.forEach((listener) => listener()),
   };
   return res;
+}
+
+/** Parses the JSON body `sendRawApiError` wrote via `res.end(...)` — the raw-`ServerResponse` equivalent of reading a mocked `res.json`'s call args. */
+function jsonEndBody(res: ReturnType<typeof makeSseRes>): unknown {
+  const [raw] = res.end.mock.calls[0]!;
+  return JSON.parse(raw as string);
 }
 
 const adapter = { resolvedPortRef: { current: 7456 } };
@@ -479,18 +495,18 @@ describe('registerRunEventStream', () => {
     expect(streamSpy).not.toHaveBeenCalled();
   });
 
-  it('sends 404 NOT_FOUND when the lifecycle reports unknown-run, without ever calling res.end() first', async () => {
+  it('sends 404 NOT_FOUND when the lifecycle reports unknown-run, with a single clean write (no double-end/write-after-end)', async () => {
     // Regression: `channel.abandon()` (not `channel.end()`) must run here — calling `end()`
-    // would end the response before this JSON body is written, turning it into a
-    // write-after-end failure that this mock's independent `res.json`/`res.end` spies would not
-    // otherwise catch.
+    // would end the response before `sendRawApiError`'s own `res.end(...)` writes this JSON
+    // body, turning it into a write-after-end failure. `res.end` being called exactly once
+    // (by `sendRawApiError` itself) is what proves that didn't happen.
     const deps = makeDeps();
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'never-started' }), res);
-    expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({ error: { code: 'NOT_FOUND', message: 'run was not found' } });
-    expect(res.end).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(404);
+    expect(jsonEndBody(res)).toEqual({ error: { code: 'NOT_FOUND', message: 'run was not found' } });
+    expect(res.end).toHaveBeenCalledTimes(1);
   });
 
   it('sends 400 BAD_REQUEST when the lifecycle reports invalid-cursor', async () => {
@@ -499,8 +515,8 @@ describe('registerRunEventStream', () => {
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: run.id, headers: { 'last-event-id': 'not-a-number' } }), res);
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({
+    expect(res.statusCode).toBe(400);
+    expect(jsonEndBody(res)).toEqual({
       error: { code: 'BAD_REQUEST', message: 'invalid replay cursor "not-a-number"' },
     });
   });
@@ -515,8 +531,8 @@ describe('registerRunEventStream', () => {
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: run.id, headers: { 'last-event-id': '1' } }), res);
-    expect(res.status).toHaveBeenCalledWith(409);
-    const [body] = res.json.mock.calls[0]!;
+    expect(res.statusCode).toBe(409);
+    const body = jsonEndBody(res) as { error: { code: string; details: unknown } };
     expect(body.error.code).toBe('CONFLICT');
     expect(body.error.details).toMatchObject({ oldestAvailableCursor: expect.any(String) });
   });
@@ -571,7 +587,7 @@ describe('registerRunEventStream', () => {
     const res = makeSseRes();
     await handler(makeSseReq({ runId: run.id }), res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.statusCode).toBe(200);
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-cache, no-transform');
     expect(res.setHeader).toHaveBeenCalledWith('Connection', 'keep-alive');
@@ -640,8 +656,8 @@ describe('registerRunEventStream', () => {
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'run-1' }), res);
-    expect(res.status).toHaveBeenCalledWith(500);
-    const [body] = res.json.mock.calls[0]!;
+    expect(res.statusCode).toBe(500);
+    const body = jsonEndBody(res) as { error: { code: string; message: string; requestId: string } };
     expect(body.error.code).toBe('INTERNAL_ERROR');
     expect(body.error.message).toBe('an internal error occurred');
     expect(JSON.stringify(body)).not.toContain('/internal/secret/path');
@@ -653,8 +669,9 @@ describe('registerRunEventStream', () => {
     expect(context.runId).toBe('run-1');
     expect((context.error as Error).message).toContain('/internal/secret/path');
     // Regression: the catch block must abandon (not end) the channel when headers were never
-    // sent, so this JSON error write is the only thing that touches `res`.
-    expect(res.end).not.toHaveBeenCalled();
+    // sent, so `sendRawApiError`'s own single `res.end(...)` write is the only thing that
+    // touches `res` (not a double-write via `channel.end()` first).
+    expect(res.end).toHaveBeenCalledTimes(1);
   });
 
   it('stringifies a non-Error throw from stream() when headers are not yet sent (still redacted per SEC-005)', async () => {
@@ -667,7 +684,7 @@ describe('registerRunEventStream', () => {
     const handler = mount(deps);
     const res = makeSseRes();
     await handler(makeSseReq({ runId: 'run-1' }), res);
-    const [body] = res.json.mock.calls[0]!;
+    const body = jsonEndBody(res) as { error: unknown };
     expect(body.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
     expect(onInternalError.mock.calls[0]![0].error).toBe('raw stream failure');
   });
@@ -727,7 +744,7 @@ describe('registerRunEventStream', () => {
     await handler(makeSseReq({ runId: run.id }), res);
 
     expect(unsubscribe).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(0);
     expect(res.flushHeaders).not.toHaveBeenCalled();
   });
 
@@ -883,6 +900,20 @@ describe('registerRunEventStream', () => {
     expect(res.write).toHaveBeenCalledTimes(2);
     expect(res.write.mock.calls[1]![0]).toContain('event: end');
     expect(res.end).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleRunEventStreamRequest — transport-independent core, called directly', () => {
+  it('rejects an empty runId with a raw 400 before touching the lifecycle, independent of either transport wrapper', async () => {
+    const deps = makeDeps();
+    const streamSpy = vi.spyOn(deps.lifecycle, 'stream');
+    const res = makeSseRes();
+    await handleRunEventStreamRequest(res as any, '', null, deps);
+    expect(res.statusCode).toBe(400);
+    expect(jsonEndBody(res)).toEqual({
+      error: { code: 'BAD_REQUEST', message: 'runId must be a non-empty path parameter' },
+    });
+    expect(streamSpy).not.toHaveBeenCalled();
   });
 });
 

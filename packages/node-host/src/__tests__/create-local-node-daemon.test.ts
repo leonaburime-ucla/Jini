@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { definePack } from '@jini/core';
 import { AgentExecutorToken } from '@jini/daemon';
-import type { DaemonStatusResponse, RunStartContext } from '@jini/http';
+import type { DaemonStatusResponse, express as HttpExpress, RunStartContext } from '@jini/http';
 import { readLiveDaemonRegistryRecord, resolveDaemonRegistryPath } from '@jini/sidecar';
 import * as SidecarModule from '@jini/sidecar';
 import * as SqliteModule from '@jini/sqlite';
@@ -175,7 +175,7 @@ describe('createLocalNodeDaemon', () => {
 
     const res = await fetch(`${daemon.url}/api/daemon/status`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as DaemonStatusResponse;
+    const body = (await res.json()) as HttpExpress.DaemonStatusResponse;
     expect(body).toMatchObject({ ok: true, host: '127.0.0.1', dataDir, shuttingDown: false });
     expect(typeof body.version).toBe('string');
     expect(body.port).toBe(Number(new URL(daemon.url).port));
@@ -675,7 +675,7 @@ describe('createLocalNodeDaemon', () => {
     const dataDir = makeTempDataDir();
     const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
 
-    const statusBefore = (await (await fetch(`${daemon.url}/api/daemon/status`)).json()) as DaemonStatusResponse;
+    const statusBefore = (await (await fetch(`${daemon.url}/api/daemon/status`)).json()) as HttpExpress.DaemonStatusResponse;
     expect(statusBefore.shuttingDown).toBe(false);
 
     const shutdownRes = await fetch(`${daemon.url}/api/daemon/shutdown`, { method: 'POST' });
