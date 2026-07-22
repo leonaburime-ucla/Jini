@@ -25,7 +25,7 @@ import { renderAIHubMixImage, renderAIHubMixTTS } from './providers/aihubmix.js'
 import { renderCustomOpenAIImage, customImageOverridesOpenAIModel } from './providers/custom-image.js';
 import { renderElevenLabsSfx, renderElevenLabsTTS } from './providers/elevenlabs.js';
 import './providers/fishaudio.js';
-import { renderGrokImage, renderXAITTS } from './providers/grok.js';
+import './providers/grok.js';
 import './providers/imagerouter.js';
 import './providers/minimax.js';
 import { renderNanoBananaImage } from './providers/nanobanana.js';
@@ -102,10 +102,6 @@ type Renderer = (ctx: RenderContext, credentials: ProviderCredentials) => Promis
  * vendor's own module for its `mediaVendorRegistry.register(...)` call).
  */
 const ROUTES: Readonly<Record<string, Readonly<Record<string, Renderer>>>> = {
-  grok: {
-    image: renderGrokImage,
-    'audio:speech': renderXAITTS,
-  },
   nanobanana: {
     image: renderNanoBananaImage,
   },
