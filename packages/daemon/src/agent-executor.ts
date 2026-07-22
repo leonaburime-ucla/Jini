@@ -67,7 +67,10 @@
  * blanket "not retryable" default is the only honest answer available.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { promises as fsPromises } from 'node:fs';
+import { join } from 'node:path';
 import { redactSecrets } from '@jini/core';
+import type { Principal, RunRef } from '@jini/core';
 import type { JournalEntry, RunAgentPayload, RunErrorPayload } from '@jini/protocol';
 import {
   applyAgentLaunchEnv,
@@ -100,7 +103,10 @@ import {
   type StopProcessesResult,
 } from '@jini/platform';
 import { classifyRunCloseStatus } from './close-status.js';
+import { resolveContinuationTransport } from './continuation/continuation-transport.js';
 import type { RunByteJournal } from './continuation/journal.js';
+import { resultContent } from './delegated-tool-bridge.js';
+import type { ToolExecutor } from './tool-executor.js';
 import type { RunLifecycle } from './run-lifecycle.js';
 
 /**
@@ -190,11 +196,34 @@ function createStreamHandlerForDef(
  * type values `run()` handles specially rather than passing through (see
  * module doc); `'ignored'` covers anything the 4 parsers never actually
  * produce plus defensively malformed/non-record input.
+ *
+ * `'agent'`'s optional `sessionId` (gap 5, session resume — see
+ * `RunEndPayload.sessionRef`'s doc in `@jini/protocol`) is a daemon-internal
+ * side channel, not part of the `RunAgentPayload` wire payload itself:
+ * OpenCode's `sessionID`/Codex's `thread_id`/Qoder's and Claude's
+ * `session_id` all arrive on a `'status'` event alongside fields
+ * `RunAgentPayload`'s `'status'` variant already models (`label`/`model`/
+ * `ttftMs`/`detail`) but has no room for a session id itself — surfacing it
+ * here lets a lifecycle-wiring function capture it into a local variable and
+ * thread it into its own terminal `finish()` call, without widening the
+ * public wire protocol just to carry a value that only this module reads.
+ *
+ * `'turn-end'`'s optional `stopReason` (gap 3, capability-routed
+ * continuation transport) is the same kind of internal side channel: the
+ * claude-stream parser deliberately emits `stopReason` *after* every
+ * `tool_use` block in the same assistant message has already been
+ * translated (so a caller can decide whether to keep stdin open before
+ * closing it), but v1 (pre-gap-3) discarded it and closed stdin
+ * unconditionally on any `turn-end` — see `packages/daemon/source-map.md`'s
+ * "Design decision 2" note. `wireChildLifecycle` now reads it to decide
+ * whether `stop_reason: 'tool_use'` means "inject a tool result and keep
+ * going" (gap 3, gated — see `ContinuationOptions`) or "close stdin as
+ * before" (the unconditional default when no continuation is configured).
  */
 export type AgentRuntimeEventTranslation =
-  | { readonly kind: 'agent'; readonly payload: RunAgentPayload }
+  | { readonly kind: 'agent'; readonly payload: RunAgentPayload; readonly sessionId?: string }
   | { readonly kind: 'error'; readonly payload: RunErrorPayload }
-  | { readonly kind: 'turn-end' }
+  | { readonly kind: 'turn-end'; readonly stopReason?: string }
   | { readonly kind: 'ignored' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -278,6 +307,7 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
       const model = asOptionalString(rawEvent.model);
       const ttftMs = asOptionalNumber(rawEvent.ttftMs);
       const detail = asOptionalString(rawEvent.detail);
+      const sessionId = asOptionalString(rawEvent.sessionId);
       return {
         kind: 'agent',
         payload: {
@@ -287,6 +317,7 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
           ...(ttftMs !== undefined ? { ttftMs } : {}),
           ...(detail !== undefined ? { detail } : {}),
         },
+        ...(sessionId !== undefined ? { sessionId } : {}),
       };
     }
     case 'text_delta':
@@ -339,11 +370,14 @@ export function translateAgentRuntimeEvent(rawEvent: unknown): AgentRuntimeEvent
         payload: { message, ...(code !== undefined ? { error: { code, message } } : {}) },
       };
     }
-    case 'turn_end':
+    case 'turn_end': {
       // Claude-specific per-turn boundary. Not forwarded as an 'agent'
       // event (no RunAgentPayload variant represents it) — run() reacts to
-      // it directly to close stdin. See module doc.
-      return { kind: 'turn-end' };
+      // it directly to close stdin (or, for gap 3, decide whether to inject
+      // a tool result and keep it open instead). See module doc.
+      const stopReason = asOptionalString(rawEvent.stopReason);
+      return { kind: 'turn-end', ...(stopReason !== undefined ? { stopReason } : {}) };
+    }
     default:
       return { kind: 'ignored' };
   }
@@ -524,6 +558,195 @@ function receivedJournalEntry(channel: 'stdout' | 'stderr', content: string): Jo
   return { content, provenance: { source: 'agent', channel }, trust: 'untrusted' };
 }
 
+/**
+ * Gap 3 (capability-routed continuation transport) — host-owned config for the
+ * `'stdin-injection'` transport (claude/codebuddy only; see
+ * `resolveContinuationTransport`'s doc). **Absent by default, and absent means
+ * zero behavior change**: with no `ContinuationOptions`, every `turn_end`
+ * closes stdin exactly as it always has (v1 behavior, unconditionally).
+ *
+ * `autonomousToolNames` is this task's answer to the debate's Unresolved
+ * Delta (how does the loop distinguish "the agent is continuing
+ * autonomously" from "the agent is waiting on a human"): rather than
+ * inferring intent from the stream, the *host* pre-declares which tool
+ * names are safe to auto-resolve and re-inject without a human in the loop.
+ * A `tool_use` whose name is not in this set is left exactly as it was
+ * before gap 3 — stdin closes, the run proceeds to its normal terminal
+ * state — even though a `stopReason: 'tool_use'` was observed. This sidesteps
+ * building unproven intent-detection: nothing auto-continues unless a host
+ * has explicitly vetted that specific tool as autonomous-safe. A
+ * human-facing "ask the user a question" tool is simply never added to this
+ * set; `packages/chat-core/src/question-form.ts`'s existing text-tag
+ * mechanism (a new `Run` per turn, not mid-turn injection) already covers
+ * that case without needing this transport at all.
+ */
+export interface ContinuationOptions {
+  /** Injected tool results are authorized through this — the same deny-by-default gate every other tool execution path in this codebase uses. No parallel authorization path. */
+  readonly toolExecutor: ToolExecutor;
+  /** The principal an injected tool call is authorized as. */
+  readonly principal: Principal;
+  /** Tool names this host has pre-classified as safe to auto-resolve without human involvement. See this interface's own doc for why this — not stream-inferred intent — is gap 3's answer to the human-in-the-loop pause question. */
+  readonly autonomousToolNames: ReadonlySet<string>;
+}
+
+/**
+ * Gap 3, part 2 (MCP-callback continuation transport — the spawn-time half the spike's own
+ * commit message named as undone: "Item 4 ... NOT done yet"). `resolveContinuationTransport`
+ * already resolves `'mcp-callback'` for every def with `externalMcpInjection !== undefined`, but
+ * nothing in this file ever *acted* on that resolution — `execute_delegated_tool`
+ * (`@jini/mcp`'s `../server/tools/delegated-tool.ts`) only does anything useful once the spawned
+ * CLI's own client actually launches `jini-mcp` as its MCP server subprocess, and the only
+ * `externalMcpInjection` strategy that mechanism is wired for here is `'claude-mcp-json'`
+ * (`claude`/`codebuddy` — see `@jini/agent-runtime`'s `types.ts` doc on the other three
+ * strategies: `'acp-merge'` delivers `mcpServers` through the ACP `session/new` params
+ * `wireAcpLifecycle`/`attachAcpSession` already carry, and `'opencode-env-content'`/
+ * `'mimo-env-content'` deliver through spawn-env content, neither of which needs or wants a
+ * written file — a future task wiring those two would extend `wireAcpLifecycle`'s existing
+ * `envFormat`/`mcpServers` passthrough or `applyAgentLaunchEnv`'s env composition respectively,
+ * not this function).
+ *
+ * **Host-resolved, not this package's to know.** `command`/`daemonUrl` have no default the way
+ * `journal`/`continuation`/`classifyFailure` don't either — there is no "real" install layout or
+ * loopback URL this package could assume on a caller's behalf (matching every other seam on this
+ * interface that defaults to *nothing* rather than a real implementation).
+ */
+export interface McpJsonInjectionOptions {
+  /** Absolute path (or PATH-resolvable name) to the `jini-mcp` bin entry (`packages/mcp/src/bin/serve.ts`) this driver tells the spawned CLI to launch as its own MCP server subprocess. */
+  readonly command: string;
+  /** Extra argv for `command`. @default [] */
+  readonly args?: readonly string[];
+  /** The daemon's own loopback base URL the spawned `jini-mcp` process calls back into via `JINI_DAEMON_URL` (see `packages/mcp/src/bin/serve.ts`'s `DAEMON_URL_ENV_VAR`). */
+  readonly daemonUrl: string;
+  /** Reads an existing `.mcp.json` at the given absolute path so this driver merges rather than clobbers a project's own file. Rejecting (ENOENT or otherwise) is treated as "no existing file" — see `writeMcpJsonForRun`. @default the real `fs.promises.readFile` (utf8) */
+  readonly readFile?: (path: string) => Promise<string>;
+  /** Writes the merged `.mcp.json` content back out. @default the real `fs.promises.writeFile` (utf8) */
+  readonly writeFile?: (path: string, content: string) => Promise<void>;
+}
+
+const JINI_MCP_SERVER_KEY = 'jini';
+
+/** One `.mcp.json` `mcpServers` entry — the shape Claude Code's own config schema expects. */
+interface McpJsonServerEntry {
+  readonly command: string;
+  readonly args: string[];
+  readonly env: { readonly JINI_RUN_ID: string; readonly JINI_DAEMON_URL: string };
+}
+
+/**
+ * Builds this run's `mcpServers.jini` entry — pure, so every field mapping is directly
+ * assertable without touching the filesystem.
+ * @complexity O(1).
+ * @overallScore 100/100
+ */
+export function buildMcpJsonServerEntry(
+  runId: string,
+  options: Pick<McpJsonInjectionOptions, 'command' | 'args' | 'daemonUrl'>,
+): McpJsonServerEntry {
+  return {
+    command: options.command,
+    args: options.args !== undefined ? [...options.args] : [],
+    env: { JINI_RUN_ID: runId, JINI_DAEMON_URL: options.daemonUrl },
+  };
+}
+
+/**
+ * Merges {@link JINI_MCP_SERVER_KEY} into an existing `.mcp.json`'s `mcpServers` map, preserving
+ * every other key and every other registered server untouched. A missing (`existingRaw ===
+ * undefined`), empty, or unparseable-as-a-JSON-object existing file all degrade to "start from an
+ * empty document" rather than throwing — an unparseable project `.mcp.json` is a pre-existing
+ * problem this driver did not create and cannot safely repair, so it is deliberately overwritten
+ * with a fresh, valid file containing just this run's bridge entry rather than left broken or
+ * left blocking the run. Pure — no I/O — so every branch is directly assertable.
+ * @complexity O(1) plus `JSON.parse`/`JSON.stringify`'s own cost on a small config file.
+ * @overallScore 100/100
+ */
+export function mergeMcpJsonContent(existingRaw: string | undefined, serverEntry: McpJsonServerEntry): string {
+  let doc: Record<string, unknown> = {};
+  if (existingRaw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(existingRaw);
+      if (isRecord(parsed)) doc = parsed;
+    } catch {
+      doc = {};
+    }
+  }
+  const existingServers = isRecord(doc.mcpServers) ? doc.mcpServers : {};
+  const mcpServers = { ...existingServers, [JINI_MCP_SERVER_KEY]: serverEntry };
+  return `${JSON.stringify({ ...doc, mcpServers }, null, 2)}\n`;
+}
+
+function defaultReadMcpJsonFile(path: string): Promise<string> {
+  return fsPromises.readFile(path, 'utf8');
+}
+
+function defaultWriteMcpJsonFile(path: string, content: string): Promise<void> {
+  return fsPromises.writeFile(path, content, 'utf8');
+}
+
+/**
+ * Writes (merging, never clobbering — see {@link mergeMcpJsonContent}) `.mcp.json` into `cwd`
+ * before spawn, so Claude Code's own spawn-time config load (confirmed in `@jini/agent-runtime`'s
+ * `defs/claude.ts` doc: "Claude Code auto-loads `.mcp.json` from the project cwd at spawn")
+ * discovers the `jini-mcp` bridge server without this driver needing to pass any CLI flag at all.
+ * A no-op when `mcpJsonInjection` is `undefined` (opt-in, see `CreateAgentExecutorOptions`'s doc)
+ * or `def.externalMcpInjection !== 'claude-mcp-json'` (every other injection strategy delivers
+ * `mcpServers` a different way — see this module's own doc above).
+ * @throws Whatever `writeFile` rejects with — the caller (`run()`) turns that into a pre-spawn
+ * `AGENT_SPAWN_FAILED` failure, matching every other pre-spawn filesystem guard in this file
+ * (`preparePromptFileForAgentFn`'s own try/catch).
+ * @complexity O(1) plus one `readFile`/`writeFile` round trip.
+ * @overallScore 100/100
+ */
+async function writeMcpJsonForRun(
+  cwd: string,
+  runId: string,
+  def: RuntimeAgentDef,
+  mcpJsonInjection: McpJsonInjectionOptions | undefined,
+): Promise<void> {
+  if (mcpJsonInjection === undefined || def.externalMcpInjection !== 'claude-mcp-json') return;
+  const readFileFn = mcpJsonInjection.readFile ?? defaultReadMcpJsonFile;
+  const writeFileFn = mcpJsonInjection.writeFile ?? defaultWriteMcpJsonFile;
+  const filePath = join(cwd, '.mcp.json');
+  let existingRaw: string | undefined;
+  try {
+    existingRaw = await readFileFn(filePath);
+  } catch {
+    // No existing file (ENOENT — the common case) or unreadable for any other reason: both
+    // degrade to "start fresh", matching mergeMcpJsonContent's own doc.
+    existingRaw = undefined;
+  }
+  const serverEntry = buildMcpJsonServerEntry(runId, mcpJsonInjection);
+  await writeFileFn(filePath, mergeMcpJsonContent(existingRaw, serverEntry));
+}
+
+/**
+ * Gap 4 of the run/chat orchestration Final Recommendation: what
+ * `classifyFailure` (see `CreateAgentExecutorOptions.classifyFailure`) is
+ * given to decide whether a `'failed'` run is `resumable`. Deliberately
+ * minimal — `code`/`signal` are the only signals cheaply available at every
+ * one of the three lifecycle-wiring close handlers without new buffering
+ * machinery (no stderr/stdout tail is accumulated for this purpose; a host
+ * wanting output-pattern-based classification, the way OD's own ~20-vendor
+ * text-matching classifier worked, would need its own listener for that —
+ * an honest scope limit, not an oversight).
+ */
+export interface FailureClassificationContext {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly code: number | null;
+  readonly signal: string | null;
+}
+
+/**
+ * Host-owned failure classifier — gap 4. Decides, for one specific
+ * `'failed'` run, whether `RunLifecycle.finish()`'s `resumable` flag should
+ * be `true`. Never consulted for `'succeeded'`/`'cancelled'` outcomes, and
+ * never consulted for a pre-spawn failure (`failBeforeSpawn`'s call sites) —
+ * those represent failures where no child process ever ran, so there is
+ * nothing a classifier could meaningfully examine.
+ */
+export type ClassifyFailure = (context: FailureClassificationContext) => boolean | Promise<boolean>;
+
 interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
   readonly def: RuntimeAgentDef;
@@ -535,6 +758,10 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). `undefined` when a caller configured none — every journal call site below is then a no-op. */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 3's stdin-tool-result injection config. `undefined` means every `turn_end` closes stdin unconditionally — see `ContinuationOptions`'s own doc. */
+  readonly continuation: ContinuationOptions | undefined;
+  /** Gap 4's failure classifier. `undefined` means every `'failed'` outcome stays `resumable: false` — byte-identical to pre-gap-4 behavior. See `ClassifyFailure`'s own doc. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -577,10 +804,18 @@ interface WireChildLifecycleContext extends TerminateChildTreeDeps {
  * @overallScore 100/100
  */
 function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
-  const { runId, def, streamFormat, child, lifecycle, journal } = ctx;
+  const { runId, def, streamFormat, child, lifecycle, journal, continuation, classifyFailure } = ctx;
   let stdinClosed = false;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — the last session/thread id a 'status' event reported, threaded into
+  // finish()'s sessionRef below. `streamFormat === 'plain'` defs have no structured parser and
+  // therefore never populate this — an honest scope limit, not an oversight.
+  let capturedSessionId: string | undefined;
+  // Gap 3 (stdin-tool-result injection) — the most recently reported tool_use, cleared once
+  // consumed by a turn-end injection decision. See `ContinuationOptions`'s doc for why this is
+  // only ever acted on when a host has explicitly allowlisted the tool's name.
+  let pendingToolUse: { id: string; name: string; input: unknown } | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -600,17 +835,78 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
     child.stdin?.end();
   }
 
+  /**
+   * Writes a structured (never string-concatenated — see `ContinuationOptions`'s doc on the
+   * prompt-injection stakes here) tool_result JSONL line, mirroring the shape
+   * `claude-stream.ts`'s own inbound parser already expects on the opposite direction of this
+   * exact wire format. Journals the sent content the same way `writePromptToStdin`'s
+   * `recordSentBytes` does.
+   */
+  function injectToolResultLine(toolUseId: string, content: string, isError: boolean): void {
+    const stdin = child.stdin;
+    if (!stdin) return;
+    const line = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, ...(isError ? { is_error: true } : {}) }] },
+    });
+    stdin.write(`${line}\n`, 'utf8');
+    if (journal) enqueueEmit(() => journal.record(runId, sentJournalEntry(content)));
+  }
+
+  /**
+   * Decides, per `turn_end`, whether to auto-resolve a pending tool_use through the injected
+   * `ToolExecutor` and keep stdin open (gap 3), or close stdin exactly as every version of this
+   * function has always done (the default, and the only behavior when `continuation` is
+   * unconfigured or the pending tool isn't allowlisted).
+   */
+  function handleTurnEnd(stopReason: string | undefined): void {
+    const toolUse = pendingToolUse;
+    const shouldInject =
+      stopReason === 'tool_use' &&
+      toolUse !== undefined &&
+      continuation !== undefined &&
+      resolveContinuationTransport(def) === 'stdin-injection' &&
+      continuation.autonomousToolNames.has(toolUse.name);
+    if (!shouldInject) {
+      closeStdinOnce();
+      return;
+    }
+    pendingToolUse = undefined;
+    enqueueEmit(async () => {
+      const run: RunRef = { id: runId };
+      let content: string;
+      let isError: boolean;
+      try {
+        const result = await continuation.toolExecutor.execute(continuation.principal, run, toolUse.name, toolUse.input);
+        content = resultContent(result);
+        isError = result.status !== 'completed';
+      } catch (error) {
+        content = errorMessage(error);
+        isError = true;
+      }
+      await lifecycle.emit(runId, {
+        event: 'agent',
+        data: { type: 'tool_result', toolUseId: toolUse.id, content, ...(isError ? { isError: true } : {}) },
+      });
+      injectToolResultLine(toolUse.id, content, isError);
+    });
+  }
+
   const streamHandler: StreamHandler | null =
     streamFormat === 'plain'
       ? null
       : createStreamHandlerForDef(def, streamFormat, (rawEvent) => {
           const translation = translateAgentRuntimeEvent(rawEvent);
           if (translation.kind === 'agent') {
+            if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
+            if (translation.payload.type === 'tool_use') {
+              pendingToolUse = { id: translation.payload.id, name: translation.payload.name, input: translation.payload.input };
+            }
             enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
           } else if (translation.kind === 'error') {
             enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
           } else if (translation.kind === 'turn-end') {
-            closeStdinOnce();
+            handleTurnEnd(translation.stopReason);
           }
         });
 
@@ -664,7 +960,18 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = classifyRunCloseStatus({ cancelRequested, code, signal });
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId: def.id, code, signal: signal ?? null })
+          : false;
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -678,6 +985,7 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
 
 interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
+  readonly agentId: string;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
   readonly prompt: string;
@@ -690,6 +998,8 @@ interface WireAcpLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). Covers this wrapper's own raw stdout/stderr forwarding only — the actual ACP prompt delivery happens inside `attachAcpSession`'s own transport, out of this module's direct view, so sent bytes are not journaled on this path (an honestly-scoped v1 gap, not an oversight). */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 4's failure classifier — see `ClassifyFailure`'s own doc. `undefined` means every `'failed'` outcome stays `resumable: false`. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -727,9 +1037,11 @@ function translateAcpError(payload: unknown): RunErrorPayload {
  * success.
  */
 function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
-  const { runId, child, lifecycle, journal } = ctx;
+  const { runId, agentId, child, lifecycle, journal, classifyFailure } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
+  let capturedSessionId: string | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -768,7 +1080,18 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : controller?.completedSuccessfully() ? 'succeeded' : 'failed';
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          : false;
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -782,6 +1105,7 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
       if (event === 'agent') {
         const translation = translateAgentRuntimeEvent(payload);
         if (translation.kind === 'agent') {
+          if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
           enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
         } else if (translation.kind === 'error') {
           enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
@@ -798,6 +1122,7 @@ function wireAcpLifecycle(ctx: WireAcpLifecycleContext): AcpSessionController {
 
 interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
   readonly runId: string;
+  readonly agentId: string;
   readonly child: ChildProcess;
   readonly lifecycle: RunLifecycle;
   readonly prompt: string;
@@ -808,6 +1133,8 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
   readonly cleanupPromptFile: () => Promise<void>;
   /** Gap 1's byte-journal (see `continuation/journal.ts`). Same scope boundary as `WireAcpLifecycleContext.journal`: covers this wrapper's own raw stdout/stderr forwarding only, not the prompt bytes `attachPiRpcSession` sends through its own transport. */
   readonly journal: RunByteJournal | undefined;
+  /** Gap 4's failure classifier — see `ClassifyFailure`'s own doc. `undefined` means every `'failed'` outcome stays `resumable: false`. */
+  readonly classifyFailure: ClassifyFailure | undefined;
 }
 
 /**
@@ -830,9 +1157,11 @@ interface WirePiRpcLifecycleContext extends TerminateChildTreeDeps {
  * multi-turn tool continuation, resumable session ids, etc.).
  */
 function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
-  const { runId, child, lifecycle, journal } = ctx;
+  const { runId, agentId, child, lifecycle, journal, classifyFailure } = ctx;
   let cancelRequested = false;
   let emitQueue: Promise<void> = Promise.resolve();
+  // Gap 5 (session resume) — see wireChildLifecycle's identical local for the full rationale.
+  let capturedSessionId: string | undefined;
 
   function enqueueEmit(task: () => Promise<unknown>): void {
     emitQueue = emitQueue.then(async () => {
@@ -871,7 +1200,18 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
       unsubscribeCancel();
       await ctx.cleanupPromptFile();
       const status = cancelRequested ? 'cancelled' : session?.hasFatalError() ? 'failed' : 'succeeded';
-      await lifecycle.finish({ runId, status, code, signal: signal ?? null, resumable: false });
+      const resumable =
+        status === 'failed' && classifyFailure !== undefined
+          ? await classifyFailure({ runId, agentId, code, signal: signal ?? null })
+          : false;
+      await lifecycle.finish({
+        runId,
+        status,
+        code,
+        signal: signal ?? null,
+        resumable,
+        ...(capturedSessionId !== undefined ? { sessionRef: capturedSessionId } : {}),
+      });
     })();
   });
 
@@ -882,6 +1222,7 @@ function wirePiRpcLifecycle(ctx: WirePiRpcLifecycleContext): PiRpcSession {
     send(_channel, payload) {
       const translation = translateAgentRuntimeEvent(payload);
       if (translation.kind === 'agent') {
+        if (translation.sessionId !== undefined) capturedSessionId = translation.sessionId;
         enqueueEmit(() => lifecycle.emit(runId, { event: 'agent', data: translation.payload }));
       } else if (translation.kind === 'error') {
         enqueueEmit(() => lifecycle.emit(runId, { event: 'error', data: translation.payload }));
@@ -974,6 +1315,32 @@ export interface CreateAgentExecutorOptions {
    * storage this package can default to without a caller-supplied `EventLog` instance.
    */
   readonly journal?: RunByteJournal;
+  /**
+   * Gap 3's stdin-tool-result injection config — see `ContinuationOptions`'s own doc, especially
+   * on why `autonomousToolNames` (not stream-inferred intent) is this task's answer to the
+   * human-in-the-loop pause question.
+   * @default undefined — every `turn_end` closes stdin unconditionally, byte-identical to
+   * pre-gap-3 behavior. Opt-in only, like `journal`: there is no safe default allowlist of
+   * "tools okay to auto-continue without a human" this package can supply on a caller's behalf.
+   */
+  readonly continuation?: ContinuationOptions;
+  /**
+   * Gap 4's failure classifier — see `ClassifyFailure`'s own doc.
+   * @default undefined — every `'failed'` run stays `resumable: false`, byte-identical to
+   * pre-gap-4 behavior. No default classifier exists: OD's own ~20-vendor-CLI text-matching
+   * failure classifier was deliberately never ported (see this module's own doc), so there is no
+   * generic "real" classification logic this package could supply on a caller's behalf.
+   */
+  readonly classifyFailure?: ClassifyFailure;
+  /**
+   * Gap 3, part 2's spawn-time `.mcp.json` injection — see {@link McpJsonInjectionOptions}'s own
+   * doc for the full design (why only `'claude-mcp-json'`-injection defs, why host-resolved).
+   * @default undefined — no `.mcp.json` is written and no filesystem access beyond what already
+   * happened (prompt-file staging) occurs on this path, byte-identical to pre-this-task behavior.
+   * Opt-in only, like `journal`/`continuation`/`classifyFailure`: there is no safe default
+   * `command`/`daemonUrl` this package could assume on a caller's behalf.
+   */
+  readonly mcpJsonInjection?: McpJsonInjectionOptions;
 }
 
 /**
@@ -1006,6 +1373,9 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const stopProcessesFn = options.stopProcesses ?? stopProcesses;
   const onCleanupFailureFn = options.onCleanupFailure ?? defaultCleanupFailureSink;
   const journal = options.journal;
+  const continuation = options.continuation;
+  const classifyFailure = options.classifyFailure;
+  const mcpJsonInjection = options.mcpJsonInjection;
 
   /**
    * Transitions `runId` to `'failed'` (idempotent, never resumable — no
@@ -1121,6 +1491,20 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
 
     const args = def.buildArgs(input.prompt, [], undefined, undefined, runtimeContext);
 
+    // Gap 3, part 2 — write .mcp.json into the managed cwd before spawn, so a 'claude-mcp-json'
+    // def's own spawn-time config load discovers the jini-mcp bridge server. A no-op for every
+    // other def and whenever mcpJsonInjection is unconfigured — see writeMcpJsonForRun's doc.
+    try {
+      await writeMcpJsonForRun(input.cwd, input.runId, def, mcpJsonInjection);
+    } catch (err) {
+      await cleanupPromptFile();
+      return failBeforeSpawn(
+        input.runId,
+        'AGENT_SPAWN_FAILED',
+        `AgentExecutor: could not write .mcp.json for agent "${def.id}": ${errorMessage(err)}`,
+      );
+    }
+
     // Post-buildArgs guard for argv-bound defs whose resolved binary is a
     // Windows .cmd/.bat shim or a direct .exe: a prompt under the raw byte
     // budget can still expand past CreateProcess's command-line cap once
@@ -1167,6 +1551,8 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
             onCleanupFailure: onCleanupFailureFn,
             cleanupPromptFile,
             journal,
+            continuation,
+            classifyFailure,
           });
 
     try {
@@ -1184,6 +1570,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       try {
         wireAcpLifecycle({
           runId: input.runId,
+          agentId: def.id,
           child,
           lifecycle,
           prompt: input.prompt,
@@ -1197,6 +1584,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
           journal,
+          classifyFailure,
         });
       } catch (err) {
         // Unlike the cancellation-listener call sites, we are already in an async function
@@ -1227,6 +1615,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       try {
         wirePiRpcLifecycle({
           runId: input.runId,
+          agentId: def.id,
           child,
           lifecycle,
           prompt: input.prompt,
@@ -1238,6 +1627,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           onCleanupFailure: onCleanupFailureFn,
           cleanupPromptFile,
           journal,
+          classifyFailure,
         });
       } catch (err) {
         // Same discipline as the ACP attach-failure path directly above: await cleanup here

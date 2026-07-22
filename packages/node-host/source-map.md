@@ -198,3 +198,80 @@ vitest run --coverage`.
 
 Adds `@jini/sidecar` (workspace) — `writeDaemonRegistryRecord`/`removeDaemonRegistryRecordIfCurrent`/
 `resolveDaemonRegistryPath`.
+
+## 2026-07-22 addition — wiring audit: is everything this session's parallel-agent batch built actually reachable through `createLocalNodeDaemon`?
+
+The batch of work that landed on `feat/http-routes-and-cli-commands` this session added roughly a
+dozen new `@jini/http` route packs (`terminals.ts`, `memory.ts`, `routines.ts`, `model-proxy.ts`,
+`db-ops.ts`, `delegated-tools.ts`, `active-context.ts`, `agents.ts`, `host-tools.ts`,
+`cancel-owned-runs.ts`) and `@jini/daemon`'s gap-1 byte-journal / gap-3 continuation / gap-4
+failure-classifier / gap-3-part-2 `.mcp.json` injection. This package is the one real entry point a
+host actually calls to boot a working daemon, so "is it built" and "is it reachable" are different
+questions — this section answers the second one honestly, checked by grepping every
+`register*Routes` call site in the whole repo (not just this package), not by re-reading each
+route pack's own claims.
+
+**Confirmed reachable, unconditionally, before this addition:** `registerRunRoutes` and
+`registerDaemonStatusRoutes` — both already hardwired directly in `createLocalNodeDaemon`, not
+behind any pack. Gap 1's byte-journal is unconditionally wired into the zero-config
+`AgentExecutor` this preset already constructs (`createAgentExecutor({ lifecycle, journal })`) —
+every run this preset drives gets byte-journaled, no caller action needed.
+
+**Confirmed NOT reachable, before this addition, from any real entry point in this repo:** every
+one of the dozen route packs named above. A repo-wide grep for each `register*Routes` function
+name found call sites only inside its own defining file, its own tests, and the `@jini/http`
+barrel re-export — zero callers anywhere in `packages/node-host`, `apps/`, `examples/`, or
+`integrations/`. No `Pack` object anywhere wraps any of them either, so even a consumer who wanted
+to opt in via `config.packs` had no example to follow. Built, tested to 100% in isolation, and
+completely orphaned from the one real boot path — exactly the failure mode this task's item 4(c)
+asked to check for.
+
+**Fixed this pass — wired in for real, not just documented:** `registerAgentRoutes` and
+`registerHostToolsRoutes` are now unconditionally mounted in `createLocalNodeDaemon`, alongside
+`registerRunRoutes`/`registerDaemonStatusRoutes`. Both are the only two of the dozen that are
+genuinely safe with a zero-config, harmless default:
+
+- **`GET /api/agents`** — `listAgents` is satisfied by projecting `@jini/agent-runtime`'s own
+  `AGENT_DEFS` registry (`AGENT_DEFS.map(def => ({id: def.id, name: def.name}))`) — read-only, no
+  security-sensitive content (agent *availability*, not capability), no host-specific resource
+  needed. This adds `@jini/agent-runtime` as a new dependency of this package (both are §3-locked
+  packages — no `UNLOCKED.md` entry needed, matching `check-engine-boundaries.ts`'s R7 rule).
+- **`POST /api/resources/:resourceRef/open-in`** (+ `GET /api/editors`) — `HostToolsOpenInDeps`'s
+  `resolveRoot` already defaults to `denyAllWorkspaceRoots` inside `host-tools.ts` itself; mounting
+  it with no resolver configured means the route exists and is reachable but denies every call with
+  `404`, never fabricating a path — safe by construction. A new optional
+  `resolveWorkspaceRoot?: WorkspaceRootResolver` config field lets a real host wire a working
+  resolver in without needing its own `Pack`.
+
+**Left genuinely NOT wired, with the specific reason each one needs — not a bare "future work"
+note:** `terminals.ts` (needs a live `TerminalSessionManager` — a stateful, node-pty-backed
+subsystem — plus a resolved `Principal` and a `ToolExecutor` bound to a real `ToolRegistry` with
+`terminal.*` tools actually registered; none of those exist zero-config), `memory.ts` (needs a
+frontmatter note-store rooted at a real directory a host chooses), `routines.ts` (needs a
+`RoutineStore` plus the scheduler engine's own persistence), `model-proxy.ts` (needs a
+BYOK-caller-supplied `apiKey`/`model` per request, which the route already handles per-call — but
+optional server-side tool-loop execution, `anthropicExecuteTool`/`openaiExecuteTool`, needs a
+`ToolExecutor` the same way `terminals`/`db-ops` do), `db-ops.ts` (needs a `DaemonDbOperations`
+implementation a host constructs against its own database), `delegated-tools.ts` (needs a
+`resolvePrincipal` callback — deliberately mandatory, no default identity, matching gap 3's own
+human-in-the-loop-authority decision), `active-context.ts` (needs a `resolveResource` callback —
+this preset has no `Project`/`Workspace` noun to resolve a display name from), `cancel-owned-runs.ts`
+(a helper function, not a route pack, invoked by a caller's own shutdown/context-teardown logic —
+never meant to be auto-wired). Every one of these needs a caller-supplied stateful resource or
+security-authority decision a zero-config preset cannot safely default (unlike `agents`/
+`host-tools`, whose defaults are provably harmless: an empty-but-real read, and a deny-everything
+gate). This matches the *established* pattern already on this interface — `continuation`/
+`classifyFailure`/`mcpJsonInjection` in `@jini/daemon`'s `agent-executor.ts` are opt-in for the
+identical reason (see that package's own source-map.md). The honest fix for each of these dozen-
+minus-two is a new optional `CreateLocalNodeDaemonConfig` field mirroring that same pattern (a
+caller-supplied `TerminalSessionManager`, note-store, `RoutineStore`, etc.) — real, scoped,
+individually-testable follow-up tasks, not one that can be safely rushed alongside an already-large
+integration-verification pass. Left here as a precise, actionable list rather than a vague "wire
+the rest of it later" note.
+
+**Verified, personally, this session:** `pnpm --dir packages/node-host exec tsc --noEmit`: clean.
+`pnpm --dir packages/node-host exec vitest run --coverage`: **65/65 tests pass** (62 pre-existing +
+3 new tests exercising `GET /api/agents` and both the default-deny and configured-resolver paths of
+`POST /api/resources/:resourceRef/open-in` end-to-end against a real booted daemon on a real
+socket, matching this file's own established "real integration test, not a mock" convention), all
+3 touched/added files **100/100/100/100**. Root `pnpm typecheck` and root `pnpm guard`: both clean.

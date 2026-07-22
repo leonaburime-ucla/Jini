@@ -186,6 +186,26 @@ export {
 } from './memory.js';
 
 export type {
+  RoutineDeleteResponse,
+  RoutineHttpDeps,
+  RoutineListResponse,
+  RoutineResponse,
+  RoutineRunNowResponse,
+  RoutineRunsResponse,
+  RoutineScheduler,
+} from './routines.js';
+export {
+  registerRoutineRoutes,
+  routineCreateRoute,
+  routineDeleteRoute,
+  routineGetRoute,
+  routineListRoute,
+  routineRunNowRoute,
+  routineRunsListRoute,
+  routineUpdateRoute,
+} from './routines.js';
+
+export type {
   CreateDaemonDbToolRegistrationsOptions,
   DaemonDbHttpDeps,
   DaemonDbInternalErrorContext,
@@ -209,6 +229,27 @@ export {
   denyAllDaemonDbPolicy,
   registerDaemonDbRoutes,
 } from './db-ops.js';
+
+export type {
+  TerminalActionResponse,
+  TerminalCreateRequest,
+  TerminalListResponse,
+  TerminalsHttpDeps,
+  TerminalsInternalErrorContext,
+} from './terminals.js';
+export {
+  registerTerminalEventStream,
+  registerTerminalRoutes,
+  terminalCreateRoute,
+  terminalDeleteRoute,
+  terminalKillRoute,
+  terminalListRoute,
+  terminalResizeRoute,
+  terminalStdinRoute,
+} from './terminals.js';
+
+export type { ModelProxyHttpDeps, ModelProxyInternalErrorContext } from './model-proxy.js';
+export { registerModelProxyRoutes } from './model-proxy.js';
 
 // Legacy-shaped compat error helpers (separate code/message/init call shape). `sendApiError`
 // above (from `response.ts`) takes a single `ApiError` object; this compat `sendApiError` takes

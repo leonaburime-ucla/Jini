@@ -148,6 +148,23 @@ export const ResolvedRegistryEntrySchema = z.object({
   backendId: z.string().min(1),
   backendKind: RegistryBackendKindSchema,
   trust: RegistryTrustSchema,
+  /**
+   * Whether at least one of `entry.signatures[]` was cryptographically
+   * verified against the resolving backend's configured trust root.
+   * Additive alongside `trust`, never a replacement for it: `trust` still
+   * reports the backend-configured level exactly as before (config-asserted,
+   * "which backend object a host happened to construct"); `verified` reports
+   * whether that claim also has cryptographic backing. A backend with no
+   * trust root configured (the default, unchanged from before this field
+   * existed) always resolves entries with `verified: false` — this field
+   * never throws and never changes what `trust` means. See
+   * `@jini/registry`'s `trust.ts` for the verifier.
+   */
+  verified: z.boolean().default(false),
+  /** Present only when `verified` is `true` — the verified signature's OIDC issuer. */
+  verifiedIssuer: z.string().optional(),
+  /** Present only when `verified` is `true` — the verified signature's signer identity. */
+  verifiedSubject: z.string().optional(),
   entry: RegistryEntrySchema,
   version: RegistryVersionSchema,
   source: z.string().min(1),

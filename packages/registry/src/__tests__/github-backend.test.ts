@@ -1,7 +1,28 @@
+import { sign } from 'node:crypto';
 import type { RegistryManifest } from '@jini/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { GithubRegistryBackend, type GithubRegistryClient } from '../github-backend.js';
+import { canonicalRegistrySigningPayload, type RegistryTrustRoot } from '../trust.js';
+
+// Self-signed test CA (chains to itself), matching `trust.test.ts`'s fixture.
+const SELF_SIGNED_CA_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIBkjCCATegAwIBAgIUK0avUXJe13wKID2ScGCeLXHryxswCgYIKoZIzj0EAwIw
+HTEbMBkGA1UEAwwSVGVzdCBUcnVzdCBSb290IENBMCAXDTI2MDcyMjA0MTE0NloY
+DzIxMjYwNjI4MDQxMTQ2WjAdMRswGQYDVQQDDBJUZXN0IFRydXN0IFJvb3QgQ0Ew
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQsZHk8F8ScSaJGOG0tAW7SSkBEEjOm
+q0kh74AkGQuKczmIOU2EndCHzCydqrMjX+DRhQSj7WSEAmMKyV7s594mo1MwUTAd
+BgNVHQ4EFgQU+r4ExVmN9YMomT3H7izT/GPBfUswHwYDVR0jBBgwFoAU+r4ExVmN
+9YMomT3H7izT/GPBfUswDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBG
+AiEAjMZ3lNIJhM1605xWipWZEJVcGrS/yTuMAhfzvypOkA0CIQDpU8fpu6b50Eiz
+34W2FiMqCxQrKGm/+Xe2RnIbqsqw+w==
+-----END CERTIFICATE-----`;
+
+const SELF_SIGNED_CA_KEY_PEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIFwuaGm+4pIT8qwcOOS4YrejKVuubs3Rhl0dZxmZY5ijoAoGCCqGSM49
+AwEHoUQDQgAELGR5PBfEnEmiRjhtLQFu0kpARBIzpqtJIe+AJBkLinM5iDlNhJ3Q
+h8wsnaqzI1/g0YUEo+1khAJjCsle7OfeJg==
+-----END EC PRIVATE KEY-----`;
 
 const manifest: RegistryManifest = {
   specVersion: '1.0.0',
@@ -52,6 +73,37 @@ describe('GithubRegistryBackend', () => {
     const client: GithubRegistryClient = { async readManifest() { return manifest; } };
     const backend = await GithubRegistryBackend.create({ id: 'unlabeled', owner: 'acme', repo: 'registry', client });
     expect(backend.trust).toBe('restricted');
+  });
+
+  it('accepts an optional trustRoot constructor option and wires it into resolve()’s signature verification', async () => {
+    const signedManifest: RegistryManifest = {
+      ...manifest,
+      entries: [
+        {
+          ...manifest.entries[0]!,
+          signatures: [
+            {
+              kind: 'github-oidc',
+              issuer: 'https://token.actions.githubusercontent.com',
+              certificate: SELF_SIGNED_CA_CERT_PEM,
+              signedAt: '2026-08-01T00:00:00Z',
+              signature: sign('sha256', Buffer.from(canonicalRegistrySigningPayload(manifest.entries[0]!), 'utf8'), SELF_SIGNED_CA_KEY_PEM).toString('base64'),
+            },
+          ],
+        },
+      ],
+    };
+    const client: GithubRegistryClient = { async readManifest() { return signedManifest; } };
+
+    const withoutTrustRoot = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client });
+    await expect(withoutTrustRoot.resolve('vendor/example')).resolves.toMatchObject({ verified: false });
+
+    const trustRoot: RegistryTrustRoot = { githubOidc: { caCertificates: [SELF_SIGNED_CA_CERT_PEM] } };
+    const withTrustRoot = await GithubRegistryBackend.create({ id: 'official', owner: 'acme', repo: 'registry', client, trustRoot });
+    await expect(withTrustRoot.resolve('vendor/example')).resolves.toMatchObject({
+      verified: true,
+      verifiedIssuer: 'https://token.actions.githubusercontent.com',
+    });
   });
 
   it('honors an explicit ref/manifestPath', async () => {

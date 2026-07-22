@@ -29,6 +29,8 @@ describe('@jini/mcp public barrel', () => {
       // server: resource surface + kernel resource defs
       'resourcesToList', 'buildResourceIndex', 'handleResourceRead', 'KERNEL_RESOURCES',
       'activeContextResource',
+      // server: gap 3's MCP-callback delegated-tool-execution def
+      'createExecuteDelegatedToolTool',
     ] as const;
     for (const n of names) {
       expect(mcp[n as keyof typeof mcp], `missing export: ${n}`).toBeDefined();

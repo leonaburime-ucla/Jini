@@ -105,12 +105,31 @@ describe('@jini/platform — terminal — spawnHelperCandidatePaths', () => {
     ).toEqual([]);
   });
 
-  it('uses the real require.resolve-based default resolver, which returns empty when node-pty is not installed', () => {
-    // This package deliberately does not depend on node-pty (see the module
-    // docblock), so the default resolver's `require.resolve('node-pty')`
-    // throws in this test environment, exercising the same not-installed
-    // path a real non-node-pty consumer hits.
-    expect(spawnHelperCandidatePaths({ platform: 'linux' })).toEqual([]);
+  it('uses the real require.resolve-based default resolver, whichever way it resolves in this workspace', () => {
+    // This package deliberately does not depend on node-pty (see the module docblock) — but
+    // whether `require.resolve('node-pty')` actually throws from this file depends on the test
+    // runner's own module resolution and on which sibling packages currently declare node-pty as
+    // a real dependency (e.g. @jini/daemon, added 2026-07-21), not on anything this package or
+    // this test controls. Verified directly, not assumed: a plain `node -e
+    // "require.resolve('node-pty')"` run from this package's own directory still throws (real
+    // production Node resolution is unaffected by a sibling package's dependency) — only
+    // vitest/Vite's broader test-time resolver can differ. Rather than hardcoding an outcome that
+    // depends on ambient workspace composition (and silently going stale — exactly the kind of
+    // now-false "not installed" assumption that used to make this test fail outright once
+    // @jini/daemon added node-pty), this asserts the real default resolver's behavior is
+    // internally consistent in whichever state actually holds right now.
+    const result = spawnHelperCandidatePaths({ platform: 'linux' });
+    if (result.length === 0) {
+      // The common case for this package: node-pty is not resolvable, the graceful-degradation
+      // path the adjacent injected-throw test above also covers, exercised here via the real
+      // resolver instead of a fake one.
+      return;
+    }
+    // node-pty happens to be resolvable through the test runner's own resolution right now — real
+    // coverage of the default resolver's success path, previously never exercised for real.
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatch(/spawn-helper$/);
+    expect(result[1]).toMatch(/spawn-helper$/);
   });
 
   it('derives the two candidate paths from a resolved package entry point', () => {

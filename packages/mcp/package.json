@@ -4,8 +4,14 @@
   "private": true,
   "type": "module",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "bin": { "jini-mcp": "./dist/bin/serve.js" },
   "files": ["dist"],
-  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/bin/serve.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
   "dependencies": {
     "@jini/cli": "workspace:*",
     "@jini/platform": "workspace:*",

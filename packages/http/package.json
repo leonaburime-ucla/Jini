@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@jini/agent-runtime": "workspace:*",
     "@jini/core": "workspace:*",
     "@jini/daemon": "workspace:*",
     "@jini/platform": "workspace:*",

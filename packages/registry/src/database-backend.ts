@@ -19,6 +19,7 @@ import {
   type RegistryYankOutcome,
 } from '@jini/protocol';
 import { assertValidPublishRequest, StaticRegistryBackend } from './static-backend.js';
+import type { RegistryTrustRoot } from './trust.js';
 
 type SqliteDb = Database.Database;
 
@@ -26,6 +27,8 @@ export interface DatabaseRegistryBackendOptions {
   id: string;
   trust?: RegistryTrust;
   db: SqliteDb;
+  /** Optional `github-oidc` signature trust root — see `StaticRegistryBackendOptions.trustRoot`'s doc comment for what configuring (or omitting) this does. */
+  trustRoot?: RegistryTrustRoot | undefined;
 }
 
 export class DatabaseRegistryBackend extends StaticRegistryBackend {
@@ -38,6 +41,7 @@ export class DatabaseRegistryBackend extends StaticRegistryBackend {
       kind: 'db',
       trust: options.trust ?? 'restricted',
       manifest: manifestFromDb(options.db, options.id),
+      trustRoot: options.trustRoot,
     });
     this.db = options.db;
   }

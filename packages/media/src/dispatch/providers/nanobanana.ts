@@ -13,9 +13,23 @@
  * not route through `openai-compatible.ts`'s OpenAI-images helpers; only
  * its genuinely vendor-agnostic utilities (`truncate`, `sniffImageExt`,
  * `withRequestInit`) are reused.
+ *
+ * 2026-07-21: migrated onto the generic vendor-adapter dispatch engine
+ * (`vendor-adapter.ts`/`vendor-registry.ts`). External behavior is
+ * unchanged (verified against `nanobanana.test.ts`, which asserts URL/
+ * body/header/error-message/providerNote shape and passes unmodified) —
+ * only the internal implementation moved into a registered
+ * `VendorAdapter`. Not routed through `response-parsers.ts`'s factories:
+ * this Gemini `candidates[].content.parts[].inlineData.data` shape has no
+ * other current consumer with byte-for-byte identical error messages (see
+ * `aihubmix.ts`'s own Gemini-native branch, which throws differently-
+ * tagged errors), so it correctly stays a bespoke `parseResponse`.
  */
 import { sniffImageExt, truncate, withRequestInit } from '../openai-compatible.js';
 import type { ProviderCredentials, RenderContext, RenderResult } from '../types.js';
+import { dispatchVendorRequest, requireApiKey } from '../vendor-adapter.js';
+import type { VendorAdapter, VendorRequest } from '../vendor-adapter.js';
+import { mediaVendorRegistry } from '../vendor-registry.js';
 
 const NANOBANANA_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
 const NANOBANANA_DEFAULT_MODEL = 'gemini-3.1-flash-image-preview';
@@ -77,46 +91,63 @@ function inlineImageBytesFromGenerateContent(data: unknown): Buffer {
 
 const NO_CREDENTIAL_MESSAGE = 'no Nano Banana credential — configure an API key or set GOOGLE_API_KEY / GEMINI_API_KEY.';
 
-export async function renderNanoBananaImage(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
-  if (!credentials.apiKey) {
-    throw new Error(NO_CREDENTIAL_MESSAGE);
-  }
-  const baseUrl = (credentials.baseUrl || NANOBANANA_DEFAULT_BASE_URL).replace(/\/$/, '');
-  const wireModel = (credentials.model || ctx.wireModel || NANOBANANA_DEFAULT_MODEL).trim();
-  const aspectRatio = nanoBananaAspectFor(ctx.aspect);
-  const body = {
-    contents: [{ parts: [{ text: ctx.prompt || 'A high-quality reference image.' }] }],
-    generationConfig: {
-      responseModalities: ['IMAGE'],
-      imageConfig: {
-        aspectRatio,
-        imageSize: NANOBANANA_DEFAULT_IMAGE_SIZE,
-      },
-    },
-  };
+interface NanoBananaImageMeta {
+  readonly wireModel: string;
+  readonly aspectRatio: string;
+}
 
-  const resp = await fetch(
-    `${baseUrl}/v1beta/models/${encodeURIComponent(wireModel)}:generateContent`,
-    withRequestInit(ctx, {
-      method: 'POST',
-      headers: nanoBananaHeaders(baseUrl, credentials.apiKey),
-      body: JSON.stringify(body),
-    }),
-  );
-  const text = await resp.text();
-  if (!resp.ok) {
-    throw new Error(`nano-banana image ${resp.status}: ${truncate(text, 240)}`);
-  }
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`nano-banana image non-JSON response: ${truncate(text, 200)}`);
-  }
-  const bytes = inlineImageBytesFromGenerateContent(data);
-  return {
-    bytes,
-    providerNote: `nano-banana/${wireModel} · ${aspectRatio} · ${NANOBANANA_DEFAULT_IMAGE_SIZE} · ${bytes.length} bytes`,
-    suggestedExt: sniffImageExt(bytes),
-  };
+const nanoBananaImageAdapter: VendorAdapter<NanoBananaImageMeta> = {
+  requireCredential: requireApiKey(NO_CREDENTIAL_MESSAGE),
+
+  buildRequest(ctx: RenderContext, credentials: ProviderCredentials): VendorRequest<NanoBananaImageMeta> {
+    const apiKey = credentials.apiKey!; // requireCredential already validated this.
+    const baseUrl = (credentials.baseUrl || NANOBANANA_DEFAULT_BASE_URL).replace(/\/$/, '');
+    const wireModel = (credentials.model || ctx.wireModel || NANOBANANA_DEFAULT_MODEL).trim();
+    const aspectRatio = nanoBananaAspectFor(ctx.aspect);
+    const body = {
+      contents: [{ parts: [{ text: ctx.prompt || 'A high-quality reference image.' }] }],
+      generationConfig: {
+        responseModalities: ['IMAGE'],
+        imageConfig: {
+          aspectRatio,
+          imageSize: NANOBANANA_DEFAULT_IMAGE_SIZE,
+        },
+      },
+    };
+
+    return {
+      url: `${baseUrl}/v1beta/models/${encodeURIComponent(wireModel)}:generateContent`,
+      init: withRequestInit(ctx, {
+        method: 'POST',
+        headers: nanoBananaHeaders(baseUrl, apiKey),
+        body: JSON.stringify(body),
+      }),
+      meta: { wireModel, aspectRatio },
+    };
+  },
+
+  async parseResponse(resp: Response, _ctx: RenderContext, request: VendorRequest<NanoBananaImageMeta>): Promise<RenderResult> {
+    const text = await resp.text();
+    if (!resp.ok) {
+      throw new Error(`nano-banana image ${resp.status}: ${truncate(text, 240)}`);
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`nano-banana image non-JSON response: ${truncate(text, 200)}`);
+    }
+    const bytes = inlineImageBytesFromGenerateContent(data);
+    return {
+      bytes,
+      providerNote: `nano-banana/${request.meta.wireModel} · ${request.meta.aspectRatio} · ${NANOBANANA_DEFAULT_IMAGE_SIZE} · ${bytes.length} bytes`,
+      suggestedExt: sniffImageExt(bytes),
+    };
+  },
+};
+
+mediaVendorRegistry.register('nanobanana', 'image', nanoBananaImageAdapter);
+
+export async function renderNanoBananaImage(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
+  return dispatchVendorRequest(nanoBananaImageAdapter, ctx, credentials);
 }

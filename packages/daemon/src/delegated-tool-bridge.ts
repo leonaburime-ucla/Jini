@@ -55,7 +55,12 @@ export function serializeDelegatedToolOutput(output: unknown): string {
   }
 }
 
-function resultContent(result: ToolExecutionResult): string {
+/**
+ * Maps a `ToolExecutionResult`'s status to the string a delegated-tool caller (this bridge, or
+ * gap 3's stdin-tool-result injector in `agent-executor.ts`) reports back as the tool's visible
+ * output/failure reason. Exported so both real callers share one mapping rather than drifting.
+ */
+export function resultContent(result: ToolExecutionResult): string {
   switch (result.status) {
     case 'completed':
       return serializeDelegatedToolOutput(result.output);

@@ -17,5 +17,15 @@ describe('@jini/cli barrel', () => {
     expect(typeof jiniCli.renderUsage).toBe('function');
     expect(typeof jiniCli.CommandRegistry).toBe('function');
     expect(jiniCli.CommandRegistryToken).toBeDefined();
+    expect(typeof jiniCli.registerRunCommands).toBe('function');
+    expect(typeof jiniCli.runGetCommand).toBe('function');
+    expect(typeof jiniCli.registerDaemonCommands).toBe('function');
+    expect(typeof jiniCli.registerVersionCommand).toBe('function');
+    expect(typeof jiniCli.versionCommand).toBe('function');
+    expect(typeof jiniCli.createLocalDaemonDiscovery).toBe('function');
+  });
+
+  it('does not export main.ts (the bootable-binary side effect stays out of the library barrel)', () => {
+    expect('main' in jiniCli).toBe(false);
   });
 });

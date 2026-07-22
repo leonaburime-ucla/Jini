@@ -829,3 +829,147 @@ Propagated through both barrel layers (`agent-protocol/pi-rpc/index.ts` → `age
 → root `index.ts`), closing an asymmetry rather than introducing a new export pattern. No behavior
 change — pure type re-exports, `pnpm --filter @jini/agent-runtime exec vitest run`: 1648/1648 tests,
 unaffected.
+
+## 2026-07-21 addition — Anthropic + OpenAI proxy wire-adapter/turn-runners (`feat/http-routes-and-cli-commands`)
+
+Implements the placement decision in `ADS-memory/reports/proposals/
+PROP-http-route-packs-chat-model-proxy-2026-07-21.md`: that proposal read OD's `apps/daemon/src/
+routes/chat.ts` (2267 lines) directly and found it "genuinely the largest reusable surface" this
+repo's route-pack audits ever found, but concluded the provider-specific wire-protocol knowledge
+inside it (Anthropic Messages API / OpenAI Chat Completions SSE parsing, tool-call-fragment
+accumulation, the role-marker-guard contamination loop) belongs in `@jini/agent-runtime` —
+extending its existing `providers/` (`model-catalog.ts`'s BYOK pattern), stream-parser
+(`claude-stream.ts`/`copilot-stream.ts`/`qoder-stream.ts`), and `role-marker-guard.ts` precedent —
+not `@jini/http`, which has zero AI-provider knowledge anywhere else in its surface. This task
+implements the `@jini/agent-runtime` half of that split; `packages/http/source-map.md`'s own dated
+section documents the thin route-registration half.
+
+**Not a port.** This task did not have direct access to the OD `chat.ts` source — only the proposal
+document's extracted findings (route inventory, the confirmed OpenRouter product-identity leak's
+exact line, the confirmed duplicate-`end`-event bug's exact mechanism). Per this repo's established
+"verify against real API docs, don't guess from memory" convention (`packages/deploy/src/netlify.ts`'s
+precedent, cited directly in the task brief), both turn-runners were built fresh against each
+provider's real, current public API docs (Anthropic: `platform.claude.com/docs/en/build-with-claude/
+streaming`, `.../api/messages-streaming`, fetched and read in full, including the tool-use and
+extended-thinking streaming examples; OpenAI: `developers.openai.com/api/docs/guides/
+function-calling` for the `tools`/`tool_calls`/tool-result-message shapes — the newer Responses-API
+docs pages did not carry the legacy Chat Completions `chat.completion.chunk` streaming shape, so that
+delta-accumulation format was implemented against this package's own already-verified working
+knowledge of the long-stable, widely-documented format instead, cross-checked against the
+`tool_calls`/`arguments`-fragment shape the fetched function-calling doc did confirm).
+
+**New files** (`src/providers/`):
+- **`sse-decode.ts`** — `decodeSseStream()`, a from-scratch, independently-tested SSE *frame*
+  decoder (event:/data: line framing, blank-line record boundaries, CRLF tolerance, multi-line
+  `data:` joining, a trailing unterminated record flushed at stream end) for an INBOUND provider
+  response body. Deliberately not `@jini/http`'s `sse.ts` — that is the OUTBOUND channel to a
+  browser client (bounded queue, backpressure, replay); this has none of that, it only turns bytes
+  into `{event, data}` records so a turn-runner can `JSON.parse` each one. 100/100/100/100, 15 tests.
+- **`turn-end-guard.ts`** — `createTurnEndGuard()`, the extracted, directly-testable fix for the
+  confirmed duplicate-`end`-event bug (see below). 100/100/100/100, 3 tests.
+- **`anthropic-messages.ts`** — `runAnthropicToolTurn()`: builds the Messages API request
+  (`model`/`max_tokens`/`system`/`temperature`/`tools`/`messages`, `stream: true`), decodes the
+  response via `sse-decode.ts`, reduces `content_block_start`/`content_block_delta`/
+  `content_block_stop`/`message_delta`/`message_stop`/`error` events into a generic
+  `AnthropicTurnEvent` stream (`status`/`text_delta`/`tool_use`/`tool_result`/`usage`/
+  `fabricated_role_marker`/`error`/`end`), and runs the tool-execution loop (append the assistant's
+  `tool_use` blocks + a `tool_result` user turn, re-request) when a caller supplies `executeTool`.
+  100/100/100/100, 18 tests.
+- **`openai-chat.ts`** — `runOpenAiToolTurn()`: the OpenAI Chat Completions mirror. Builds the
+  request (`stream: true`, `stream_options: {include_usage: true}`), accumulates
+  `choices[0].delta.tool_calls[]` fragments by index (`id`/`function.name` arrive once, on first
+  appearance; `function.arguments` arrives incrementally and is concatenated), stops at the
+  `data: [DONE]` sentinel, and runs the equivalent tool loop (`role: 'assistant'` with `tool_calls`,
+  then one `role: 'tool'` message per result). 100/100/100/100, 20 tests.
+
+**Scope for this pass** (per the proposal's own recommendation — "likely Anthropic and OpenAI...
+deferring Azure/Google/Ollama as mechanical repeats once the pattern is proven"): only these two
+providers' native APIs. **Azure/Google/Ollama/OpenRouter are NOT built this round** — each is
+expected to be a mechanical sibling file following `anthropic-messages.ts`/`openai-chat.ts`'s exact
+shape (request builder, `sse-decode.ts`-based response reducer, `turn-end-guard.ts`-guarded event
+stream) once picked up, not a design problem. Not forgotten — flagged here explicitly per the task
+brief's instruction.
+
+**Extended thinking is out of scope.** Neither Anthropic option type sends a `thinking` request
+parameter, so Anthropic never emits `thinking`/`signature_delta` content blocks in response (opt-in
+per the docs) — there is nothing to parse. A future pass can add it following `claude-stream.ts#emitSafeText`'s
+precedent (thinking passed through unguarded; only the user-visible text channel is policed).
+
+**Bug 1 fixed — product-identity leak (confirmed at chat.ts's OpenRouter header construction,
+`'HTTP-Referer': 'https://opendesign.dev'` / `'X-Title': 'Open Design'`).** OpenRouter itself is out
+of scope this pass, but the fix generalizes: both `AnthropicTurnOptions`/`OpenAiTurnOptions` accept
+an `extraHeaders?: Record<string, string>` field, merged onto the outbound request's headers — the
+*only* way any caller/gateway-identifying header reaches the provider. Nothing in either module ever
+hardcodes a product or gateway identity string; `pnpm guard`'s R5-neutrality check (product-identity
+string scan) passes over both files. Proven directly: `anthropic-messages.test.ts`/`openai-chat.test.ts`'s
+"merges caller-supplied extraHeaders verbatim" cases assert `HTTP-Referer`/`X-Title` are `undefined`
+by default and equal exactly what the caller supplied when set — never a hardcoded value.
+
+**Bug 2 fixed — duplicate-`end`-event bug (confirmed: OD's `runTurn`/`runAnthropicToolTurn` each had
+≥2 independent `sse.send('end', {})` call sites — role-marker-guard contamination and normal turn
+completion — with no `ended`-flag guard, unlike their sibling non-tool-loop streamers in the same
+file).** Fixed via `turn-end-guard.ts#createTurnEndGuard`, not a local `let ended` closure in each
+file — extracted per this repo's "no scope cuts for coverage — extract instead" rule: both
+turn-runners are structured so every call site that can reach `emitEnd` is already immediately
+followed by `break`/`return` (traced and documented inline at each call site in both files), which
+makes the guard's own "already ended, no-op" branch structurally unreachable through either
+turn-runner's *own* integration tests — not because the guard is unneeded (a future call site added
+without an immediate `break` would silently regress without it, and the task explicitly requires
+guarding "before every ... call"), but because a *correctly*-written caller never exercises the
+redundant path. `turn-end-guard.test.ts` proves the mechanism directly (call `emitEnd` four times
+with different reasons; assert `onEvent` fired exactly once, with the first reason). Each
+turn-runner's own test file additionally proves the fix at the integration level: a single mocked
+SSE response body carries both a contamination-triggering delta AND a subsequent normal
+`message_delta`(Anthropic)/`finish_reason: 'stop'`(OpenAI) completion that, absent the fix, would
+independently trigger a second `end`; both assert exactly one `{type: 'end', reason: 'contaminated'}`
+reaches `onEvent` and the `usage` event after it is never reached (proving the stream read itself
+stops at contamination, not just that a second event was suppressed after the fact).
+
+**Two other structurally-dead branches identified and removed during the coverage pass** (not
+security-relevant, unlike the `turn-end-guard` case above — ordinary redundant re-checks), each with
+an inline reachability-proof comment at the removal site rather than a suppressed/faked test, per
+this repo's Phase 6.5 convention: (1) a `guard.contaminated` pre-check immediately before calling
+`guard.feedText` in both files' `content_block_delta`/`delta.content` handling — dead because the
+only way `contaminated` becomes true is the `break` two lines later, so a later iteration can never
+observe it already true; `feedText` itself already no-ops once contaminated regardless. (2) a
+top-of-loop `isEnded()`/`hasEnded()` re-check in both `runSingle*Request` functions — dead by the
+same reasoning, traced across every `emitEnd` call site in each function (four pre-loop early
+returns plus the in-loop contaminated/error branches, each immediately followed by `return`/`break`).
+`openai-chat.ts` keeps one *legitimate*, still-tested use of `hasEnded()` — after its loop, gating
+whether pending `tool_use` events should still be emitted, since a contaminating delta can arrive on
+a later chunk than the one that already set `finish_reason: 'tool_calls'` (a real, adversarial-input
+reachable ordering, not structurally impossible — see openai-chat.test.ts's dedicated case).
+
+**Tool execution is caller-injected, not built in.** `AnthropicToolExecutor`/`OpenAiToolExecutor` are
+optional; with none supplied, a turn still streams back any `tool_use`/`tool_calls` the model
+requests (so a caller can act on them itself) but the turn-runner does not attempt a server-side
+tool loop — matching `packages/deploy/source-map.md`'s "deferred real `ToolExecutor` wiring"
+precedent. If a supplied executor throws, the exception is *not* caught inside either turn-runner
+(no defensive try/catch was added — this mirrors the rest of this package's "let it propagate, the
+caller decides" posture rather than inventing a new error-recovery contract); `packages/http/
+source-map.md`'s `model-proxy.ts` section documents how the HTTP layer handles that rejection
+(SEC-005-style redaction, still ending the SSE connection exactly once).
+
+**SSRF defense in depth, reused not reinvented.** Both turn-runners call this package's own
+`connection-guard.ts#validateBaseUrl` (the synchronous scheme-allowlist + internal-IP-hostname-blocklist
+check `model-catalog.ts` already established) before ever issuing a request, rejecting a
+caller-supplied `baseUrl` pointed at loopback/RFC1918/link-local/CGNAT space. Deliberately the
+*synchronous* check only (not `validateBaseUrlResolved`'s DNS-resolving companion) — no new async
+DNS-lookup injection seam was added this pass; a follow-up could upgrade to the resolved check
+following `model-catalog.ts`'s exact `dnsLookup`-injection precedent if BYOK gateway hostnames prove
+to need it.
+
+**Barrel:** both new modules re-exported from `providers/index.ts` (and, via that, `src/index.ts`'s
+existing `export * from './providers/index.js'`) — no name collisions with any existing export
+(checked via a full `export (interface|type|const|function)` name scan across every file in
+`src/providers/` and `src/`).
+
+**Package-wide re-verification:** `pnpm --dir packages/agent-runtime typecheck` — clean.
+`pnpm --dir packages/agent-runtime test:coverage` — 91 test files, 1704 tests, all passing;
+package-wide coverage 99.96%/99.65%/99.8%/99.96% (statements/branches/functions/lines), all four new
+files individually at 100/100/100/100.
+
+**Deferred, mechanical follow-ups (not built this pass):** Azure/Google/Ollama/OpenRouter proxy
+turn-runners (see "Scope for this pass" above); wiring a real `ToolExecutor`-backed
+`executeTool` for either provider; extended thinking support for Anthropic; upgrading the SSRF
+guard to the DNS-resolved variant.

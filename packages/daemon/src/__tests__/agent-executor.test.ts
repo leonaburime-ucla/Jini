@@ -12,17 +12,51 @@ import {
   type PiRpcSession,
   type RuntimeAgentDef,
 } from '@jini/agent-runtime';
+import type { Principal, RunRef } from '@jini/core';
 import type { JournalEntry } from '@jini/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
 import { createRunLifecycle, type RunLifecycle } from '../run-lifecycle.js';
 import { createRunByteJournal, type RunByteJournal } from '../continuation/journal.js';
+import type { ToolExecutionResult, ToolExecutor } from '../tool-executor.js';
 import {
   AgentExecutorError,
+  buildMcpJsonServerEntry,
   createAgentExecutor,
   isSupportedStreamFormat,
+  mergeMcpJsonContent,
   translateAgentRuntimeEvent,
   type AgentExecutor,
+  type ClassifyFailure,
+  type ContinuationOptions,
+  type McpJsonInjectionOptions,
 } from '../agent-executor.js';
+
+const TEST_PRINCIPAL: Principal = { id: 'test-principal' };
+
+/** A fake `ToolExecutor` whose `execute` is fully caller-controlled — no real tool registry needed for gap 3's injection tests. */
+function createFakeToolExecutor(
+  executeImpl: (toolId: string, input: unknown) => Promise<ToolExecutionResult> | ToolExecutionResult,
+): { toolExecutor: ToolExecutor; calls: Array<{ principal: Principal; run: RunRef; toolId: string; input: unknown }> } {
+  const calls: Array<{ principal: Principal; run: RunRef; toolId: string; input: unknown }> = [];
+  return {
+    calls,
+    toolExecutor: {
+      async execute(principal: Principal, run: RunRef, toolId: string, input: unknown) {
+        calls.push({ principal, run, toolId, input });
+        return executeImpl(toolId, input);
+      },
+      async resumeConfirmation() {
+        throw new Error('not used in these tests');
+      },
+      async cancel() {
+        throw new Error('not used in these tests');
+      },
+      getAuditRecord() {
+        return undefined;
+      },
+    } as unknown as ToolExecutor,
+  };
+}
 
 /** Records every `record()` call in order, alongside a real `createRunByteJournal` so read-back is also exercised. */
 function createSpyJournal(): { journal: RunByteJournal; calls: Array<{ runId: string; entry: JournalEntry }> } {
@@ -139,6 +173,12 @@ interface HarnessOptions {
   preparePromptFileForAgent?: typeof preparePromptFileForAgent;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 3's stdin-tool-result injection config — omitted by default, matching `CreateAgentExecutorOptions.continuation`'s own opt-in default. */
+  continuation?: ContinuationOptions;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
+  /** Gap 3 part 2's spawn-time `.mcp.json` injection — omitted by default, matching `CreateAgentExecutorOptions.mcpJsonInjection`'s own opt-in default. */
+  mcpJsonInjection?: McpJsonInjectionOptions;
 }
 
 interface Harness {
@@ -212,6 +252,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.continuation !== undefined ? { continuation: options.continuation } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
+    ...(options.mcpJsonInjection !== undefined ? { mcpJsonInjection: options.mcpJsonInjection } : {}),
   });
 
   return { lifecycle, executor, child, spawnCalls, stopProcessesCalls, onCleanupFailure };
@@ -801,6 +844,56 @@ describe('createAgentExecutor — real default collaborators', () => {
       consoleErrorSpy.mockRestore();
     }
   });
+
+  it('mcpJsonInjection with no readFile/writeFile override touches the real filesystem (defaultReadMcpJsonFile/defaultWriteMcpJsonFile)', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jini-mcp-json-'));
+    try {
+      const eventLog = createInMemoryEventLog();
+      const lifecycle = createRunLifecycle({ eventLog });
+      const def = createFakeDef({ id: 'claude', externalMcpInjection: 'claude-mcp-json' });
+      const child = createFakeChild(6100);
+      const fakeSpawn = (() => {
+        queueMicrotask(() => child.emit('spawn'));
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof nodeSpawn;
+
+      const executor = createAgentExecutor({
+        lifecycle,
+        getAgentDef: (id: string) => (def.id === id ? def : null),
+        resolveAgentLaunch: () =>
+          ({
+            selectedPath: '/fake/claude-bin',
+            pathResolvedPath: '/fake/claude-bin',
+            configuredOverridePath: null,
+            launchPath: '/fake/claude-bin',
+            launchKind: 'selected',
+            childPathPrepend: [],
+            diagnostic: null,
+          }) as AgentLaunchResolution,
+        applyAgentLaunchEnv: (env) => env,
+        spawn: fakeSpawn,
+        listProcessSnapshots: async () => [],
+        stopProcesses: async () => ({ alreadyStopped: false, forcedPids: [], matchedPids: [], remainingPids: [], stoppedPids: [] }),
+        // command/args/daemonUrl only — readFile/writeFile deliberately omitted so this exercises
+        // the real fs.promises defaults, not a fake.
+        mcpJsonInjection: { command: '/usr/bin/jini-mcp', daemonUrl: 'http://127.0.0.1:4242' },
+      });
+
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+      await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: tmpDir });
+
+      const written = JSON.parse(await fs.readFile(path.join(tmpDir, '.mcp.json'), 'utf8'));
+      expect(written).toEqual({
+        mcpServers: {
+          jini: { command: '/usr/bin/jini-mcp', args: [], env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' } },
+        },
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('AgentExecutorError', () => {
@@ -846,8 +939,22 @@ describe('translateAgentRuntimeEvent', () => {
     });
   });
 
-  it('translates status carrying only sessionId (dropped — no RunAgentPayload field for it)', () => {
+  it('translates status carrying a sessionId onto the translation result, not into the RunAgentPayload wire shape (gap 5 — session resume)', () => {
     expect(translateAgentRuntimeEvent({ type: 'status', label: 'initializing', sessionId: 'sess-1' })).toEqual({
+      kind: 'agent',
+      payload: { type: 'status', label: 'initializing' },
+      sessionId: 'sess-1',
+    });
+  });
+
+  it('omits sessionId from the translation result when the raw status event has none', () => {
+    const translation = translateAgentRuntimeEvent({ type: 'status', label: 'initializing' });
+    expect(translation).toEqual({ kind: 'agent', payload: { type: 'status', label: 'initializing' } });
+    expect(translation).not.toHaveProperty('sessionId');
+  });
+
+  it('ignores a non-string sessionId rather than propagating a malformed value', () => {
+    expect(translateAgentRuntimeEvent({ type: 'status', label: 'initializing', sessionId: 12345 })).toEqual({
       kind: 'agent',
       payload: { type: 'status', label: 'initializing' },
     });
@@ -976,8 +1083,15 @@ describe('translateAgentRuntimeEvent', () => {
     });
   });
 
-  it('routes turn_end to the turn-end kind with no payload', () => {
-    expect(translateAgentRuntimeEvent({ type: 'turn_end', stopReason: 'end_turn' })).toEqual({ kind: 'turn-end' });
+  it('routes turn_end to the turn-end kind, carrying stopReason through (gap 3 — capability-routed continuation transport)', () => {
+    expect(translateAgentRuntimeEvent({ type: 'turn_end', stopReason: 'end_turn' })).toEqual({
+      kind: 'turn-end',
+      stopReason: 'end_turn',
+    });
+  });
+
+  it('routes turn_end to the turn-end kind with no stopReason when the raw event carries none', () => {
+    expect(translateAgentRuntimeEvent({ type: 'turn_end' })).toEqual({ kind: 'turn-end' });
   });
 });
 
@@ -1008,6 +1122,8 @@ interface AcpHarnessOptions {
   stopProcessesRejects?: unknown;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
 }
 
 interface AcpHarness {
@@ -1094,6 +1210,7 @@ function createAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -1392,6 +1509,8 @@ interface PiRpcHarnessOptions {
   stopProcessesRejects?: unknown;
   /** Gap 1's byte-journal — omitted by default, matching `CreateAgentExecutorOptions.journal`'s own opt-in default. */
   journal?: RunByteJournal;
+  /** Gap 4's failure classifier — omitted by default, matching `CreateAgentExecutorOptions.classifyFailure`'s own opt-in default. */
+  classifyFailure?: ClassifyFailure;
 }
 
 interface PiRpcHarness {
@@ -1469,6 +1588,7 @@ function createPiRpcHarness(options: PiRpcHarnessOptions = {}): PiRpcHarness {
     },
     onCleanupFailure,
     ...(options.journal !== undefined ? { journal: options.journal } : {}),
+    ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
   });
 
   return { lifecycle, executor, child, attachCalls, abort, stopProcessesCalls, onCleanupFailure };
@@ -2096,5 +2216,583 @@ describe('AgentExecutor — gap 1 byte-journal (CreateAgentExecutorOptions.journ
       { runId: run.id, entry: { content: 'raw pi stderr', provenance: { source: 'agent', channel: 'stderr' }, trust: 'untrusted' } },
     ]);
     expect(calls.some((call) => call.entry.content === 'pi prompt')).toBe(false);
+  });
+});
+
+describe('AgentExecutor — gap 5 session resume (RunEndPayload.sessionRef)', () => {
+  it('threads a captured ACP session id through to the terminal end event as sessionRef', async () => {
+    const { lifecycle, executor, child, attachCalls } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'status', label: 'initializing', sessionId: 'acp-sess-1' });
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'acp-sess-1' });
+  });
+
+  it('threads a captured pi-rpc session id through to the terminal end event as sessionRef', async () => {
+    const { lifecycle, executor, child, attachCalls } = createPiRpcHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    attachCalls[0]!.send('agent', { type: 'status', label: 'initializing', sessionId: 'pi-sess-1' });
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'pi-sess-1' });
+  });
+
+  it('omits sessionRef from the terminal end event when no session id was ever reported (ACP)', async () => {
+    const { lifecycle, executor, child } = createAcpHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'do the thing', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).not.toHaveProperty('sessionRef');
+  });
+
+  it('keeps the most recently reported session id when multiple status events arrive (child-driven path)', async () => {
+    const def = createFakeDef({ streamFormat: 'json-event-stream', eventParser: 'codex' });
+    const { lifecycle, executor, child } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-first' })}\n`);
+    child.stdout.emit('data', `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-second' })}\n`);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    const endEvent = events.find((e) => e.kind === 'end');
+    expect(endEvent?.payload).toMatchObject({ sessionRef: 'thread-second' });
+  });
+});
+
+describe('AgentExecutor — gap 3 capability-routed continuation (stdin-tool-result injection)', () => {
+  function streamJsonDef(overrides: Partial<RuntimeAgentDef> = {}): RuntimeAgentDef {
+    return createFakeDef({ streamFormat: 'claude-stream-json', promptInputFormat: 'stream-json', ...overrides });
+  }
+
+  function toolUseTurnEnd(toolUseId: string, name: string, input: unknown, stopReason: string): string {
+    return `${JSON.stringify({
+      type: 'assistant',
+      message: { id: 'm1', content: [{ type: 'tool_use', id: toolUseId, name, input }], stop_reason: stopReason },
+    })}\n`;
+  }
+
+  it('closes stdin on a tool_use turn_end exactly as before when no continuation is configured (default, unchanged behavior)', async () => {
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef() });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('closes stdin on a tool_use turn_end when continuation is configured but the tool name is not allowlisted', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['other_tool']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('closes stdin on a non-tool_use turn_end even when continuation is configured and the tool would have been allowlisted', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } })}\n`,
+    );
+    await flushAsync();
+
+    expect(child.stdin!.end).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('auto-resolves an allowlisted tool_use through the injected ToolExecutor, keeps stdin open, and injects a structured tool_result JSONL line', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor((toolId, input) => {
+      expect(toolId).toBe('Bash');
+      expect(input).toEqual({ command: 'ls' });
+      return { executionId: 'exec-1', status: 'completed', output: 'file1.txt\nfile2.txt' };
+    });
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(calls).toEqual([{ principal: TEST_PRINCIPAL, run: { id: run.id }, toolId: 'Bash', input: { command: 'ls' } }]);
+    expect(child.stdin!.end).not.toHaveBeenCalled();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file1.txt\nfile2.txt' }] },
+    });
+
+    const events = await collectEvents(lifecycle, run.id);
+    const toolResultEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'tool_result');
+    expect(toolResultEvent?.payload).toMatchObject({ type: 'tool_result', toolUseId: 'tu-1', content: 'file1.txt\nfile2.txt' });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('injects an isError tool_result JSONL line when the injected tool execution is denied by policy', async () => {
+    const { toolExecutor } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'denied' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'rm -rf /' }, 'tool_use'));
+    await flushAsync();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'Tool execution denied by policy.', is_error: true }],
+      },
+    });
+
+    const events = await collectEvents(lifecycle, run.id);
+    const toolResultEvent = events.find((e) => e.kind === 'agent' && (e.payload as RunAgentPayload).type === 'tool_result');
+    expect(toolResultEvent?.payload).toMatchObject({ type: 'tool_result', toolUseId: 'tu-1', isError: true });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('injects an isError tool_result JSONL line when the injected ToolExecutor.execute() itself throws', async () => {
+    const { toolExecutor } = createFakeToolExecutor(() => {
+      throw new Error('registry lookup failed');
+    });
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    const injectedLine = child.stdin!.writes.at(-1)!;
+    expect(JSON.parse(injectedLine.trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'registry lookup failed', is_error: true }] },
+    });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('journals the injected tool_result content as trusted, host-sent stdin bytes (gap 1 coverage of the new write path)', async () => {
+    const { journal, calls: journalCalls } = createSpyJournal();
+    const { toolExecutor } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), journal, continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    const sentCalls = journalCalls.filter((call) => call.entry.provenance.source === 'host');
+    expect(sentCalls.at(-1)?.entry).toEqual({ content: 'ok', provenance: { source: 'host', channel: 'stdin' }, trust: 'trusted' });
+
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('still resolves the injected tool through ToolExecutor but no-ops the stdin write when child.stdin is unexpectedly absent', async () => {
+    const { toolExecutor, calls } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'completed', output: 'ok' }));
+    const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+    const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), omitStdin: true, continuation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'ls' }, 'tool_use'));
+    await flushAsync();
+
+    expect(calls).toHaveLength(1);
+    child.emit('close', 0, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+  });
+
+  it('does not inject through the mcp-callback-primary transport (claude/codebuddy resolve to mcp-callback, not stdin-injection) even when a def is otherwise eligible', () => {
+    // resolveContinuationTransport itself is exhaustively tested in continuation-transport.test.ts;
+    // this just documents, at the agent-executor integration level, that createFakeDef's
+    // synthetic def (no externalMcpInjection) is what makes 'stdin-injection' reachable in these
+    // tests at all — a real claude/codebuddy def would resolve to 'mcp-callback' instead, and gap
+    // 3's MCP-callback spike (not this stdin path) is what drives those in production.
+    const def = streamJsonDef();
+    expect(def.externalMcpInjection).toBeUndefined();
+  });
+});
+
+describe('AgentExecutor — gap 4 failure classifier (CreateAgentExecutorOptions.classifyFailure)', () => {
+  it('stays resumable:false on a failed run when no classifier is configured (default, unchanged behavior) — child-driven path', async () => {
+    const { lifecycle, executor, child } = createHarness();
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('failed');
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+
+  it('never consults the classifier for a succeeded run', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const def = createFakeDef({ streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 0, null);
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('succeeded');
+    expect(classifyFailure).not.toHaveBeenCalled();
+  });
+
+  it('never consults the classifier for a cancelled run', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const def = createFakeDef({ streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    await lifecycle.cancel({ runId: run.id });
+    child.emit('close', null, 'SIGTERM');
+    await runPromise;
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('cancelled');
+    expect(classifyFailure).not.toHaveBeenCalled();
+  });
+
+  it('consults the classifier on a failed child-driven run and honors a synchronous true result', async () => {
+    const classifyFailure = vi.fn((ctx: { runId: string; agentId: string; code: number | null; signal: string | null }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      expect(ctx.code).toBe(1);
+      expect(ctx.signal).toBeNull();
+      return true;
+    });
+    const { lifecycle, executor, child } = createHarness({ classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('honors an asynchronous (Promise-returning) classifier and a false result', async () => {
+    const classifyFailure = vi.fn(async () => false);
+    const { lifecycle, executor, child } = createHarness({ classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+
+  it('consults the classifier on a failed ACP-driven run', async () => {
+    const classifyFailure = vi.fn((ctx: { agentId: string }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      return true;
+    });
+    const { lifecycle, executor, child } = createAcpHarness({ completedSuccessfully: false, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('consults the classifier on a failed pi-rpc-driven run', async () => {
+    const classifyFailure = vi.fn((ctx: { agentId: string }) => {
+      expect(ctx.agentId).toBe('fake-agent');
+      return true;
+    });
+    const { lifecycle, executor, child } = createPiRpcHarness({ hasFatalError: true, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    child.emit('close', 1, null);
+    await runPromise;
+    await lifecycle.waitForTerminal(run.id);
+
+    expect(classifyFailure).toHaveBeenCalledTimes(1);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: true });
+  });
+
+  it('never consults the classifier for a pre-spawn failure (no child ever ran)', async () => {
+    const classifyFailure = vi.fn(() => true);
+    const { lifecycle, executor } = createHarness({ def: null, classifyFailure });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' })).rejects.toMatchObject({
+      code: 'AGENT_NOT_FOUND',
+    });
+
+    expect(classifyFailure).not.toHaveBeenCalled();
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ resumable: false });
+  });
+});
+
+describe('buildMcpJsonServerEntry', () => {
+  it('defaults args to an empty array when omitted', () => {
+    expect(buildMcpJsonServerEntry('run-1', { command: '/usr/bin/jini-mcp', daemonUrl: 'http://127.0.0.1:4242' })).toEqual({
+      command: '/usr/bin/jini-mcp',
+      args: [],
+      env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+    });
+  });
+
+  it('copies (does not alias) a supplied args array', () => {
+    const args = ['--flag'];
+    const entry = buildMcpJsonServerEntry('run-1', { command: 'jini-mcp', args, daemonUrl: 'http://127.0.0.1:4242' });
+    expect(entry.args).toEqual(['--flag']);
+    expect(entry.args).not.toBe(args);
+  });
+});
+
+describe('mergeMcpJsonContent', () => {
+  const entry = { command: 'jini-mcp', args: [], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://d' } };
+
+  it('produces a fresh document when no existing content is given', () => {
+    expect(JSON.parse(mergeMcpJsonContent(undefined, entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('preserves unrelated top-level keys and other registered servers', () => {
+    const existing = JSON.stringify({ someOtherKey: true, mcpServers: { other: { command: 'other-bin', args: [], env: {} } } });
+    const merged = JSON.parse(mergeMcpJsonContent(existing, entry));
+    expect(merged).toEqual({
+      someOtherKey: true,
+      mcpServers: { other: { command: 'other-bin', args: [], env: {} }, jini: entry },
+    });
+  });
+
+  it('overwrites a pre-existing "jini" entry rather than merging into it', () => {
+    const existing = JSON.stringify({ mcpServers: { jini: { command: 'stale', args: ['--old'], env: {} } } });
+    const merged = JSON.parse(mergeMcpJsonContent(existing, entry));
+    expect(merged.mcpServers.jini).toEqual(entry);
+  });
+
+  it('starts fresh when the existing content is not valid JSON', () => {
+    expect(JSON.parse(mergeMcpJsonContent('{not json', entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('starts fresh when the existing content parses to a JSON array, not an object', () => {
+    expect(JSON.parse(mergeMcpJsonContent('[1,2,3]', entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('starts fresh when the existing document has a non-object "mcpServers" field', () => {
+    const existing = JSON.stringify({ mcpServers: 'not-an-object' });
+    expect(JSON.parse(mergeMcpJsonContent(existing, entry))).toEqual({ mcpServers: { jini: entry } });
+  });
+
+  it('emits pretty-printed JSON terminated by a trailing newline', () => {
+    const content = mergeMcpJsonContent(undefined, entry);
+    expect(content.endsWith('\n')).toBe(true);
+    expect(content).toContain('\n  "mcpServers"');
+  });
+});
+
+describe('AgentExecutor — gap 3 part 2 spawn-time .mcp.json injection (CreateAgentExecutorOptions.mcpJsonInjection)', () => {
+  function createMcpFsSpies(existing: string | undefined = undefined): {
+    mcpJsonInjection: McpJsonInjectionOptions;
+    readCalls: string[];
+    writeCalls: Array<{ path: string; content: string }>;
+  } {
+    const readCalls: string[] = [];
+    const writeCalls: Array<{ path: string; content: string }> = [];
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      args: ['--quiet'],
+      daemonUrl: 'http://127.0.0.1:4242',
+      readFile: async (path: string) => {
+        readCalls.push(path);
+        if (existing === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return existing;
+      },
+      writeFile: async (path: string, content: string) => {
+        writeCalls.push({ path, content });
+      },
+    };
+    return { mcpJsonInjection, readCalls, writeCalls };
+  }
+
+  it('spawns normally with no .mcp.json read/write attempted when mcpJsonInjection is unconfigured, even for a claude-mcp-json def', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('does not write .mcp.json for a def whose externalMcpInjection is not claude-mcp-json, even when configured', async () => {
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'acp-merge' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(readCalls).toEqual([]);
+    expect(writeCalls).toEqual([]);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('does not write .mcp.json for a claude-mcp-json def when externalMcpInjection is simply absent', async () => {
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies();
+    const def = createFakeDef();
+    const { lifecycle, executor } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(readCalls).toEqual([]);
+    expect(writeCalls).toEqual([]);
+  });
+
+  it('reads, merges, and writes .mcp.json into the run cwd before spawn for a configured claude-mcp-json def', async () => {
+    const existing = JSON.stringify({ mcpServers: { other: { command: 'x', args: [], env: {} } } });
+    const { mcpJsonInjection, readCalls, writeCalls } = createMcpFsSpies(existing);
+    const def = createFakeDef({ id: 'claude', externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work/proj' });
+
+    expect(readCalls).toEqual(['/work/proj/.mcp.json']);
+    expect(writeCalls).toHaveLength(1);
+    expect(writeCalls[0]!.path).toBe('/work/proj/.mcp.json');
+    const written = JSON.parse(writeCalls[0]!.content);
+    expect(written).toEqual({
+      mcpServers: {
+        other: { command: 'x', args: [], env: {} },
+        jini: {
+          command: '/usr/bin/jini-mcp',
+          args: ['--quiet'],
+          env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+        },
+      },
+    });
+    // The write happens strictly before spawn, not merely before this assertion.
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('treats a rejecting readFile (e.g. ENOENT — no existing file) as "start fresh", not a failure', async () => {
+    const { mcpJsonInjection, writeCalls } = createMcpFsSpies(undefined);
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(writeCalls).toHaveLength(1);
+    expect(JSON.parse(writeCalls[0]!.content)).toEqual({
+      mcpServers: {
+        jini: {
+          command: '/usr/bin/jini-mcp',
+          args: ['--quiet'],
+          env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+        },
+      },
+    });
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('fails the run before spawn (never a bare throw) when writeFile rejects', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'claude-mcp-json' });
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      daemonUrl: 'http://127.0.0.1:4242',
+      readFile: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+      writeFile: async () => {
+        throw new Error('EACCES: permission denied');
+      },
+    };
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' })).rejects.toMatchObject({
+      code: 'AGENT_SPAWN_FAILED',
+    });
+
+    expect(spawnCalls).toHaveLength(0);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ status: 'failed', resumable: false });
   });
 });

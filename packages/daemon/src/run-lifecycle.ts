@@ -68,6 +68,8 @@ export interface FinishRunInput {
    * the researched source).
    */
   readonly resumable: boolean;
+  /** Gap 5 (session resume) — see `RunEndPayload.sessionRef`'s doc in `@jini/protocol`. Threaded straight through to the durable `'end'` entry; this module has no opinion on what it means. */
+  readonly sessionRef?: string;
 }
 
 export interface ResumeRunResult {
@@ -439,6 +441,7 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
         signal: finishInput.signal,
         status: TERMINAL_OUTCOME_TO_END_STATUS[finishInput.status],
         resumable: finishInput.resumable,
+        ...(finishInput.sessionRef !== undefined ? { sessionRef: finishInput.sessionRef } : {}),
       };
       const endEntry = await eventLog.append({ runId: finishInput.runId, event: 'end', data: endPayload });
       record.terminalEndEntry = endEntry;

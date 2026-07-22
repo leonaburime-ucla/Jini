@@ -18,5 +18,12 @@ export * from './usage.js';
 export * from './command-registry.js';
 export * from './run-command.js';
 export * from './daemon-command.js';
+export * from './version-command.js';
 export * from './local-daemon-discovery.js';
 export * from './tokens.js';
+// NOTE: `main.ts` (the bootable `jini` binary, wired via `package.json`'s `"bin"` field) is
+// deliberately NOT re-exported here. This barrel is imported as a plain library dependency;
+// `main.ts` parses `process.argv` and may call `process.exit` as a side effect of being
+// imported for real (guarded so that merely importing its named `main` export does not trigger
+// that side effect — see `main.ts`'s own module doc) — bundling it into this barrel would mean
+// `import '@jini/cli'` could start behaving like a CLI invocation.

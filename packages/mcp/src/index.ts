@@ -120,6 +120,10 @@ export {
 } from './server/index.js';
 export type { McpResourceDef, McpResourceReadResult } from './server/index.js';
 
+// ── server: gap 3's MCP-callback delegated-tool-execution def ──────────────
+export { createExecuteDelegatedToolTool } from './server/index.js';
+export type { CreateExecuteDelegatedToolToolOptions } from './server/index.js';
+
 // ── agent-install: register an MCP server into external agents ──────────────
 export {
   AGENT_SLUGS,

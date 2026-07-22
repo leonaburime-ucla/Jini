@@ -35,44 +35,69 @@
  * ("lefarcen + codex P2 on PR #1309") as a known review note rather than a
  * silent bug, and calls `openaiSizeFor(ctx.model, ctx.aspect)` unchanged —
  * this port keeps that exact call and behavior.
+ *
+ * 2026-07-21: migrated onto the generic vendor-adapter dispatch engine
+ * (`vendor-adapter.ts`/`vendor-registry.ts`). External behavior is
+ * unchanged (verified against `volcengine.test.ts`, which asserts
+ * URL/body/error-message/providerNote shape and passes unmodified) — only
+ * the internal implementation moved into a registered `VendorAdapter`. Not
+ * routed through `response-parsers.ts`'s factories — reuses
+ * `openai-compatible.ts`'s `parseOpenAICompatibleJson`/
+ * `bytesFromOpenAICompatibleData` helpers directly, same as before this
+ * pass (see `imagerouter.ts`'s module doc for the identical reasoning).
  */
 import { buildOpenAIImageUrl, bytesFromOpenAICompatibleData, openaiSizeFor, parseOpenAICompatibleJson, withRequestInit } from '../openai-compatible.js';
 import type { ProviderCredentials, RenderContext, RenderResult } from '../types.js';
+import { dispatchVendorRequest, requireApiKey } from '../vendor-adapter.js';
+import type { VendorAdapter, VendorRequest } from '../vendor-adapter.js';
+import { mediaVendorRegistry } from '../vendor-registry.js';
 
 const NO_CREDENTIAL_MESSAGE = 'no Volcengine Ark credential — configure an API key or set ARK_API_KEY.';
 
-export async function renderVolcengineImage(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
-  if (!credentials.apiKey) {
-    throw new Error(NO_CREDENTIAL_MESSAGE);
-  }
-  const baseUrl = (credentials.baseUrl || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/$/, '');
-  const body: Record<string, unknown> = {
-    model: ctx.wireModel,
-    prompt: ctx.prompt || 'A high-quality reference image.',
-    response_format: 'b64_json',
-    // openaiSizeFor branches on the catalog id (gpt-image-* vs dall-e-*
-    // accept different size enums), so it must see the pre-alias catalog
-    // model, not the post-alias wire name — matching `openai.ts`'s own
-    // `renderOpenAIImage` (which carries the same origin-code comment).
-    size: openaiSizeFor(ctx.model, ctx.aspect),
-  };
+const volcengineImageAdapter: VendorAdapter = {
+  requireCredential: requireApiKey(NO_CREDENTIAL_MESSAGE),
 
-  const resp = await fetch(
-    buildOpenAIImageUrl(baseUrl, false),
-    withRequestInit(ctx, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${credentials.apiKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    }),
-  );
-  const data = await parseOpenAICompatibleJson(resp, 'volcengine image');
-  const bytes = await bytesFromOpenAICompatibleData(data, 'volcengine image', ctx.requestInit);
-  return {
-    bytes,
-    providerNote: `volcengine/${ctx.wireModel} · ${ctx.aspect} · ${bytes.length} bytes`,
-    suggestedExt: '.png',
-  };
+  buildRequest(ctx: RenderContext, credentials: ProviderCredentials): VendorRequest {
+    const apiKey = credentials.apiKey!; // requireCredential already validated this.
+    const baseUrl = (credentials.baseUrl || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/$/, '');
+    const body: Record<string, unknown> = {
+      model: ctx.wireModel,
+      prompt: ctx.prompt || 'A high-quality reference image.',
+      response_format: 'b64_json',
+      // openaiSizeFor branches on the catalog id (gpt-image-* vs dall-e-*
+      // accept different size enums), so it must see the pre-alias catalog
+      // model, not the post-alias wire name — matching `openai.ts`'s own
+      // `renderOpenAIImage` (which carries the same origin-code comment).
+      size: openaiSizeFor(ctx.model, ctx.aspect),
+    };
+
+    return {
+      url: buildOpenAIImageUrl(baseUrl, false),
+      init: withRequestInit(ctx, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }),
+      meta: undefined,
+    };
+  },
+
+  async parseResponse(resp: Response, ctx: RenderContext): Promise<RenderResult> {
+    const data = await parseOpenAICompatibleJson(resp, 'volcengine image');
+    const bytes = await bytesFromOpenAICompatibleData(data, 'volcengine image', ctx.requestInit);
+    return {
+      bytes,
+      providerNote: `volcengine/${ctx.wireModel} · ${ctx.aspect} · ${bytes.length} bytes`,
+      suggestedExt: '.png',
+    };
+  },
+};
+
+mediaVendorRegistry.register('volcengine', 'image', volcengineImageAdapter);
+
+export async function renderVolcengineImage(ctx: RenderContext, credentials: ProviderCredentials): Promise<RenderResult> {
+  return dispatchVendorRequest(volcengineImageAdapter, ctx, credentials);
 }

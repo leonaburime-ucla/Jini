@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMediaDispatchEngine } from '../engine.js';
+import { createMediaDispatchEngine, lookupRoute } from '../engine.js';
+import type { Renderer } from '../engine.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('lookupRoute', () => {
+  // The production ROUTES table in engine.ts is empty — every vendor it
+  // used to hold has migrated onto mediaVendorRegistry (see engine.ts's
+  // module doc) — so these tests exercise lookupRoute directly against a
+  // locally-constructed ROUTES-shaped table instead, proving every branch
+  // of its `routes[providerId]?.[routeKey]` lookup without needing a real,
+  // currently-nonexistent ROUTES-only vendor.
+  const renderer: Renderer = async () => ({ bytes: Buffer.alloc(0), providerNote: 'x' });
+
+  it('finds a renderer registered for a known providerId + routeKey', () => {
+    expect(lookupRoute({ acme: { image: renderer } }, 'acme', 'image')).toBe(renderer);
+  });
+
+  it('returns undefined for an unknown providerId', () => {
+    expect(lookupRoute({}, 'acme', 'image')).toBeUndefined();
+  });
+
+  it('returns undefined for a known providerId but unregistered routeKey', () => {
+    expect(lookupRoute({ acme: { image: renderer } }, 'acme', 'audio:speech')).toBeUndefined();
+  });
 });
 
 describe('createMediaDispatchEngine — validation', () => {

@@ -358,3 +358,201 @@ package's own logic.
 100/100/100/100 statements/branches/functions/lines (up from
 100/99.68/100/100), above the package's configured 99% threshold gate.
 `pnpm --dir packages/registry exec tsc --noEmit` clean.
+
+## 2026-07-21 — signature/trust verification (`github-oidc`)
+
+Implements the proposal above
+(`ADS-memory/reports/proposals/PROP-registry-signature-trust-verification-2026-07-21.md`)
+per human/architect sign-off on its four open questions. Kept in its own
+commit, separate from the concrete `GithubApiRegistryClient` work below
+(a different, independent gap this doc's hardening passes also flagged) —
+see that section's own header for why the two aren't conflated.
+
+**Decisions, as given (not re-litigated):** (1) v1 supports exactly one
+`RegistrySignatureSchema.kind` — `github-oidc`; `cosign`/`minisign`/`custom`
+are recognized and always report "unsupported kind, cannot verify", never
+silently pass, never throw. (2) Per-entry verified trust is **additive**
+alongside the existing backend-level `trust` field, never replacing/
+narrowing it. (3) The trust-root/allowlist is a constructor option on each
+backend, matching how `trust` itself already is one. (4) Built now, zero
+behavior change for a backend that doesn't configure a trust root.
+
+**New file `src/trust.ts`** — the verifier. Exports `RegistryTrustRoot`
+(`{ githubOidc?: GithubOidcTrustRoot }`, an envelope keyed by signature kind
+so future `cosign`/`minisign` roots can be added without a breaking rename),
+`GithubOidcTrustRoot` (`{ caCertificates: string[]; allowedIssuers?:
+string[]; allowedIdentities?: Array<string | RegExp> }`),
+`verifyRegistrySignature(entry, signature, trustRoot)` and
+`verifyRegistryEntrySignatures(entry, trustRoot)` (tries every signature,
+returns the first that verifies or the last failure), and
+`canonicalRegistrySigningPayload(entry)` (this package's own convention for
+what a `github-oidc` signature's bytes must cover — `@jini/protocol`'s wire
+schema doesn't define one — exported so a future signing tool computes the
+identical string this verifier checks).
+
+**What `github-oidc` verification actually does, researched (not guessed)
+against GitHub's real docs and empirically against `node:crypto`'s real
+behavior** (WebFetch/WebSearch against `docs.github.com`'s OpenID Connect
+and REST attestations pages, plus direct `openssl`+`node -e` experiments —
+see `trust.ts`'s module doc comment for the full citation trail):
+
+- A raw GitHub Actions OIDC **ID token** (`iss:
+  https://token.actions.githubusercontent.com`, a JWT verifiable via
+  `token.actions.githubusercontent.com/.well-known/jwks`) was considered and
+  rejected as the thing this verifier checks: that token's `exp` is
+  minutes-scoped, but a registry entry is resolved and re-checked long after
+  it was signed — a stored raw ID token would already be expired by the
+  time anyone checks it. This is exactly why GitHub's own durable-provenance
+  mechanism ("Artifact Attestations") is Sigstore-style **keyless signing**:
+  the short-lived ID token is used once, at signing time, to obtain a
+  short-lived Fulcio-issued X.509 certificate whose SAN encodes the OIDC
+  identity; that certificate's public key then verifies a signature that
+  stays checkable indefinitely. `RegistrySignatureSchema`'s own shape
+  (`signature` + `certificate` + `issuer`/`subject`/`signedAt`) already
+  matches this model far better than a bearer token would, so `kind:
+  'github-oidc'` here means a Sigstore/Fulcio-style keyless signature,
+  cryptographically verified end to end.
+- What's real: (1) the certificate chains — via `X509Certificate#checkIssued`
+  **and** `#verify` (an actual signature check, not just a DN-string match)
+  — to a host-configured CA in `GithubOidcTrustRoot.caCertificates`, walking
+  through any bundled intermediate certs in `signature.certificate` (multiple
+  concatenated PEM blocks, leaf first); (2) `signature.signature` (base64) is
+  a real `node:crypto` `verify('sha256', ...)` check against
+  `canonicalRegistrySigningPayload(entry)`, using the leaf certificate's own
+  public key; (3) the certificate's `subjectAltName` URI (e.g.
+  `https://github.com/OWNER/REPO/.github/workflows/WORKFLOW.yml@REF`, the
+  real shape GitHub Artifact Attestations certs use) is checked against
+  `allowedIdentities` when configured — this is the cert-bound identity, not
+  the signature's self-reported `subject` field, so a signer can't lie about
+  who it is via that field alone.
+- What's explicitly **not** implemented in v1 (documented in `trust.ts`'s
+  module doc comment, matching this repo's convention of stating scope
+  limits plainly rather than silently under-delivering): no Sigstore Rekor
+  transparency-log inclusion-proof verification (this module trusts the
+  signature's self-reported `signedAt` against the certificate's validity
+  window, not an independent timestamp authority); no Sigstore public-good
+  root/TUF auto-discovery or any hardcoded root (the host supplies
+  `caCertificates` explicitly — no network call is made by this module at
+  all); no revocation checking (CRL/OCSP); no Fulcio custom-OID
+  (`1.3.6.1.4.1.57264.1.1`) extension parsing (Node's `X509Certificate` has
+  no public API for arbitrary extension OIDs without a hand-rolled ASN.1
+  parser — identity comes from the SAN URI instead, which `X509Certificate`
+  does expose natively).
+- `allowedIssuers` (default `['https://token.actions.githubusercontent.com']`)
+  checks the signature's self-reported `issuer` field — a declarative /
+  operator-bookkeeping check, not cryptographically bound to the
+  certificate; the cryptographic trust boundary is `caCertificates` +
+  the SAN identity check, documented as such so a future reader doesn't
+  mistake it for a stronger guarantee than it is.
+
+**Schema change (`@jini/protocol`, decision 2 — see that package's own
+source-map.md addendum below):** `ResolvedRegistryEntrySchema` gains
+`verified: z.boolean().default(false)`, `verifiedIssuer?: string`,
+`verifiedSubject?: string` — additive, defaulted, never thrown on missing
+input; `trust` is completely untouched.
+
+**Backend wiring:** `StaticRegistryBackendOptions`/`GithubRegistryBackendOptions`/
+`DatabaseRegistryBackendOptions` each gain an optional `trustRoot?:
+RegistryTrustRoot`; `GithubRegistryBackend`/`DatabaseRegistryBackend` just
+pass theirs through to `super()`. `StaticRegistryBackend.resolve()` (the one
+place all three backends compute a `ResolvedRegistryEntry`) calls
+`verifyRegistryEntrySignatures(entry, this.trustRoot)` and stamps
+`verified`/`verifiedIssuer`/`verifiedSubject` onto the result — a backend
+with no `trustRoot` configured always gets `verified: false` without
+attempting any cryptographic work (decision 4, unchanged default).
+
+**Tests:** `src/__tests__/trust.test.ts` (37 tests) — a self-contained
+`openssl`-generated CA + leaf certificate pair (checked into the test file
+as PEM constants, not fetched from any real CA; no network call anywhere in
+this file), covering: end-to-end verify, multi-hop chain (leaf issued by a
+bundled intermediate), every kind/config/field-missing/malformed-cert/
+wrong-chain/expired-window/identity-mismatch/bad-signature failure path, and
+an Ed25519 certificate proving the outer `try`/`catch` around `node:crypto`'s
+`verify('sha256', ...)` is genuinely reachable (an Ed25519 key throws for an
+explicit 'sha256' digest — verified empirically before writing the test, not
+assumed). Small wiring tests added to
+`static-backend.test.ts`/`github-backend.test.ts`/`database-backend.test.ts`
+proving the constructor option reaches `resolve()`.
+
+One documented, intentionally-not-covered branch: `trust.ts`'s
+`certIssuedAndSignedBy`'s `catch { return false; }` (defense-in-depth for
+this module's "never throw" contract) — empirically, `X509Certificate#verify()`
+was checked across EC/RSA/Ed25519 issuer-key combinations during this
+module's construction and consistently returned `false` rather than
+throwing (unlike the standalone `crypto.verify()` function used elsewhere in
+the same file, which does throw for an incompatible key/digest pairing —
+that one *is* covered, via the Ed25519 test above). Kept rather than
+deleted, and documented rather than silently left unexplained, matching
+`@jini/deploy`'s `netlify.ts`/`github-pages.ts` precedent for this repo.
+
+## 2026-07-21 — concrete `GithubApiRegistryClient`
+
+Closes the "no concrete `GithubRegistryClient` HTTP implementation exists"
+gap this doc's hardening passes both flagged and explicitly deferred (see
+"Observed, not fixed" above). Independent of, and kept in a separate commit
+from, the signature-verification work in the section above — different
+files, different concern (a real HTTP client vs. a cryptographic verifier),
+even though both were scoped in the same task.
+
+**New file `src/github-client.ts`** — a real `GithubRegistryClient`
+implementation (the interface `github-backend.ts` already defined but no
+concrete implementation existed for, confirmed via repo-wide grep before
+this task and re-confirmed in this doc's own prior "Observed, not fixed"
+section above). Built directly against GitHub's REST API docs (fetched via
+WebFetch this session, not recalled from memory):
+
+- `readManifest(owner, repo, ref, path)` — `GET
+  /repos/{owner}/{repo}/contents/{path}?ref={ref}` (the Contents API).
+  Verified against GitHub's own documented size tiers: ≤1MB returns inline
+  `content`/`encoding: "base64"`; 1-100MB returns `encoding: "none"` with
+  empty `content` (requiring the raw media type or Git Trees API instead);
+  >100MB isn't supported by this endpoint at all. A registry manifest is a
+  JSON index, expected well under 1MB, so this implementation reads the
+  standard base64 response and throws a clear, attributable error for the
+  oversized case rather than silently misreading it.
+- `createPublishPullRequest(request)` — the Git Data API flow (create
+  blob(s) → a tree layered on the base commit's tree → a commit → a branch
+  ref) followed by an actual `POST /repos/{owner}/{repo}/pulls` call.
+  Mirrors the blob/tree/commit/ref mechanics `@jini/deploy`'s
+  `github-pages.ts` already verified against the same Git Data API docs
+  (written fresh for this package — no cross-package dependency added, this
+  package does not gain a dependency on `@jini/deploy`), extended with the
+  Pulls API call that file didn't need (it force-pushes a branch directly;
+  this one opens a PR against `baseRef`, matching `GithubPublishMutation`'s
+  shape). Branch-already-exists (`409`) falls back to a `force: true` PATCH
+  update, matching `github-pages.ts`'s own "last publish wins" reasoning for
+  a retried/racing publish. PR-already-exists (a `422` whose message says
+  so) falls back to looking up and returning the existing open PR's URL,
+  matching `netlify.ts`'s `ensureNetlifySite` create-then-recover-on-conflict
+  shape for a different provider's analogous race.
+- No token is required for `readManifest` (GitHub's Contents API supports
+  anonymous reads of a public repo, subject to its lower unauthenticated
+  rate limit) but `createPublishPullRequest` throws immediately, before any
+  network call, when constructed without one — matching
+  `NetlifyDeployTarget.publish()`/`GitHubPagesDeployTarget.publish()`'s own
+  "throw immediately on missing token" convention rather than silently
+  downgrading behavior.
+
+**Tests:** `src/__tests__/github-client.test.ts` (37 tests), `fetch` mocked
+at the HTTP-client boundary via `vi.stubGlobal('fetch', ...)` — the exact
+pattern `@jini/deploy`'s `netlify.test.ts` established (no real network call
+anywhere in this file) — covering every guard/error path in both methods
+(oversized file, non-file/directory path, malformed JSON, missing sha/tree/
+commit/html_url fields, branch-conflict recovery, PR-already-exists
+recovery and its own failure/not-found sub-cases, custom `apiUrl` override
+for GitHub Enterprise Server).
+
+**Also:** added a `test:coverage` script to `package.json` (this package had
+`test` but not `test:coverage`, unlike `@jini/deploy`) since this task's
+process required running it.
+
+**Verification:** `pnpm --dir packages/protocol build` clean (registry
+depends on protocol's dist). `pnpm --dir packages/registry typecheck` clean
+under this repo's `exactOptionalPropertyTypes: true`. `pnpm --dir
+packages/registry test:coverage` — 183/183 tests pass, package-wide
+aggregate 99.76/99.61/100/99.76 statements/branches/functions/lines (up from
+the prior pass's 100/100/100/100 on a smaller file set — the drop is
+entirely the one documented unreachable `catch` branch above), still above
+the package's configured 99% threshold gate on every metric. `pnpm --dir
+packages/protocol exec vitest run` — 11/11 passing (2 new assertions on the
+additive schema fields). `pnpm guard` (repo root) clean.

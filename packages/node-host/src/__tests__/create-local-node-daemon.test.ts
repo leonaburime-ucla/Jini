@@ -182,6 +182,65 @@ describe('createLocalNodeDaemon', () => {
     expect(typeof body.pid).toBe('number');
   });
 
+  it('serves GET /api/agents, projecting the real @jini/agent-runtime registry with zero config', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/agents`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agents: Array<{ id: string; name: string }> };
+    expect(body.agents.length).toBeGreaterThan(0);
+    expect(body.agents.find((a) => a.id === 'claude')).toMatchObject({ id: 'claude', name: expect.any(String) });
+    // Every entry is a plain {id, name} projection, never a full RuntimeAgentDef (no bin/buildArgs/etc leaking through).
+    for (const agent of body.agents) {
+      expect(Object.keys(agent).sort()).toEqual(['id', 'name']);
+    }
+  });
+
+  it('serves POST /api/resources/:resourceRef/open-in, denying every call by default (denyAllWorkspaceRoots) with no resolveWorkspaceRoot configured', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });
+    daemonsToStop.push(daemon);
+
+    const res = await fetch(`${daemon.url}/api/resources/some-resource/open-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: 'vscode' }),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('serves POST /api/resources/:resourceRef/open-in for real once resolveWorkspaceRoot is configured (still 409 CONFLICT when the editor is not installed, proving the resolver actually ran)', async () => {
+    const dataDir = makeTempDataDir();
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [makePingPack()],
+      resolveWorkspaceRoot: (req) => (req.resourceRef === 'known-resource' ? dataDir : null),
+    });
+    daemonsToStop.push(daemon);
+
+    const denied = await fetch(`${daemon.url}/api/resources/unknown-resource/open-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: 'vscode' }),
+    });
+    expect(denied.status).toBe(404);
+
+    const allowed = await fetch(`${daemon.url}/api/resources/known-resource/open-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: 'vscode' }),
+    });
+    // Not 404: the resolver ran and returned a real directory. Whether vscode is actually
+    // installed on this test machine is unknowable and irrelevant to what this test proves — only
+    // that the resolver wiring, not the launch outcome, is what's under test.
+    expect(allowed.status).not.toBe(404);
+    expect([200, 409, 400]).toContain(allowed.status);
+  });
+
   it('serves the complete HTTP run vertical slice: create, SSE replay/reconnect, cancel, and durable replay after restart', async () => {
     const dataDir = makeTempDataDir();
     let completedRunId = '';
