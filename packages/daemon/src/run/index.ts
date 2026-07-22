@@ -22,6 +22,8 @@ export {
   MAX_RETRY_BACKOFF_DELAY_MS,
   computeRetryBackoffMs,
   decideSafeRunRetry,
+  classifyProcessExitFailure,
+  resumableFromProcessExit,
 } from './core/index.js';
 export type {
   RunResult,

@@ -235,6 +235,14 @@ export {
 } from './db-ops.js';
 
 export type {
+  DelegatedToolExecuteRequest,
+  DelegatedToolExecuteResponse,
+  DelegatedToolsHttpDeps,
+  DelegatedToolsInternalErrorContext,
+} from './delegated-tools.js';
+export { delegatedToolExecuteRoute, registerDelegatedToolRoutes } from './delegated-tools.js';
+
+export type {
   TerminalActionResponse,
   TerminalCreateRequest,
   TerminalListResponse,

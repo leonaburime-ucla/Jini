@@ -54,6 +54,7 @@ import {
   createRunByteJournal,
   createRunLifecycle,
   EventLogToken,
+  resumableFromProcessExit,
   RunLifecycleToken,
   type ResolveRunInput,
 } from '@jini/daemon';
@@ -304,8 +305,19 @@ export async function createLocalNodeDaemon(
   // spawn, so every caller gets a working AgentExecutor with no additional
   // wiring. ACP agents intentionally still require a host-injected permission
   // policy before any native tool request can proceed; that fail-closed
-  // authority decision has no safe zero-config default.
-  const agentExecutor = createAgentExecutor({ lifecycle: runLifecycle, journal });
+  // authority decision has no safe zero-config default. `classifyFailure` DOES
+  // get a real zero-config default (`resumableFromProcessExit`, 2026-07-22) —
+  // unlike ToolExecutorToken/ACP permissions, marking a failed run's
+  // `resumable` flag from its raw exit code/signal has a safe, real answer
+  // with no caller input needed (an OS-signal-terminated process is treated as
+  // resumable, a plain non-zero exit is not — see that function's own doc for
+  // the full reasoning); every real run now gets a genuine resumable
+  // classification instead of the previous hardcoded `resumable: false`.
+  const agentExecutor = createAgentExecutor({
+    lifecycle: runLifecycle,
+    journal,
+    classifyFailure: ({ code, signal }) => resumableFromProcessExit(code, signal),
+  });
 
   const kernelBindings = bindings()
     .bind(EventLogToken, eventLog)
@@ -373,13 +385,14 @@ export async function createLocalNodeDaemon(
             // Intentionally swallowed — see the try's own comment.
           }
         }
-        // A caller-supplied `onShutdown` failing must never leak the durable EventLog's open
-        // sqlite file handle — `finally` guarantees the close still runs, then the original
-        // rejection (if any) propagates to whoever is awaiting `stop()`.
+        // A caller-supplied `onShutdown` failing must never leak either durable EventLog's open
+        // sqlite file handle (the main one, or gap-1's byte-journal one) — `finally` guarantees
+        // both closes still run, then the original rejection (if any) propagates to whoever is
+        // awaiting `stop()`.
         try {
           await config.onShutdown?.();
         } finally {
-          await eventLog.close();
+          await Promise.all([eventLog.close(), journalEventLog.close()]);
         }
       })();
     }
@@ -476,9 +489,9 @@ export async function createLocalNodeDaemon(
 
   return await new Promise<LocalNodeDaemon>((resolve, reject) => {
     const failToBind = (error: unknown) => {
-      // Best-effort: a failed boot must not leave the sqlite file handle this call already opened
-      // dangling open.
-      void eventLog.close().finally(() => reject(error));
+      // Best-effort: a failed boot must not leave either sqlite file handle this call already
+      // opened (the main EventLog, or gap-1's byte-journal one) dangling open.
+      void Promise.all([eventLog.close(), journalEventLog.close()]).finally(() => reject(error));
     };
 
     listen()

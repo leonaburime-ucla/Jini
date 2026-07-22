@@ -5,8 +5,10 @@ import {
   RATE_LIMIT_RETRY_BASE_DELAY_MS,
   SAFE_RUN_RETRY_STRATEGY,
   TRANSIENT_RETRY_BASE_DELAY_MS,
+  classifyProcessExitFailure,
   computeRetryBackoffMs,
   decideSafeRunRetry,
+  resumableFromProcessExit,
 } from '../retry.js';
 import type {
   RunFailureCategory,
@@ -218,12 +220,15 @@ describe('decideSafeRunRetry — transient category/detail/stage matrix', () => 
     'session_resume_expired',
     'stream_error',
     'fatal_rpc_error',
+    // signal_killed added 2026-07-22: an OS-signal-terminated process (OOM-kill, infra eviction)
+    // was never the agent's own choice to fail — see classifyProcessExitFailure's own doc.
+    'signal_killed',
   ])('retries a transient process_exit %s', (detail) => {
     expect(retryable('process_exit', detail).shouldRetry).toBe(true);
   });
 
-  it('suppresses a non-transient process_exit detail', () => {
-    expect(retryable('process_exit', 'signal_killed')).toMatchObject({
+  it('suppresses a non-transient process_exit detail (the agent process exited on its own, not via an external signal)', () => {
+    expect(retryable('process_exit', 'exit_nonzero')).toMatchObject({
       retrySuppressedReason: 'non_retryable_category',
     });
   });
@@ -285,5 +290,55 @@ describe('decideSafeRunRetry — success path and input normalization', () => {
     expect(negative).toMatchObject({ retryMaxAttempts: 0, retrySuppressedReason: 'attempt_limit_reached' });
     const nan = decideSafeRunRetry({ result: 'failed', attemptCount: 0, maxAttempts: Number.NaN, failure: transient() });
     expect(nan).toMatchObject({ retryMaxAttempts: 0, retrySuppressedReason: 'attempt_limit_reached' });
+  });
+});
+
+describe('classifyProcessExitFailure', () => {
+  it('classifies a signal-terminated process as retryable process_exit/signal_killed', () => {
+    expect(classifyProcessExitFailure(null, 'SIGKILL')).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'signal_killed',
+      retryable: true,
+    });
+    expect(classifyProcessExitFailure(null, 'SIGTERM')).toMatchObject({ failure_detail: 'signal_killed', retryable: true });
+  });
+
+  it('a signal takes precedence over a code when Node somehow reports both', () => {
+    expect(classifyProcessExitFailure(1, 'SIGKILL')).toMatchObject({ failure_detail: 'signal_killed', retryable: true });
+  });
+
+  it('classifies a plain non-zero exit code (no signal) as non-retryable process_exit/exit_nonzero', () => {
+    expect(classifyProcessExitFailure(1, null)).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'exit_nonzero',
+      retryable: false,
+    });
+    expect(classifyProcessExitFailure(127, null)).toMatchObject({ failure_detail: 'exit_nonzero', retryable: false });
+  });
+
+  it('classifies code 0 with no signal (an ambiguous "failed" outcome with no actual failing exit info) as non-retryable process_exit/terminated_unknown', () => {
+    expect(classifyProcessExitFailure(0, null)).toEqual({
+      failure_category: 'process_exit',
+      failure_detail: 'terminated_unknown',
+      retryable: false,
+    });
+  });
+
+  it('classifies null code and null signal as non-retryable process_exit/terminated_unknown', () => {
+    expect(classifyProcessExitFailure(null, null)).toMatchObject({ failure_detail: 'terminated_unknown', retryable: false });
+  });
+});
+
+describe('resumableFromProcessExit', () => {
+  it('returns true for a signal-terminated process (routes through decideSafeRunRetry, first attempt)', () => {
+    expect(resumableFromProcessExit(null, 'SIGKILL')).toBe(true);
+  });
+
+  it('returns false for a plain non-zero exit code', () => {
+    expect(resumableFromProcessExit(1, null)).toBe(false);
+  });
+
+  it('returns false for an ambiguous code-0/no-signal outcome', () => {
+    expect(resumableFromProcessExit(0, null)).toBe(false);
   });
 });

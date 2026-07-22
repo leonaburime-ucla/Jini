@@ -212,4 +212,9 @@ describe('@jini/http barrel', () => {
     expect(HttpBarrel.daemonDbVacuumRoute.path).toBe('/api/daemon/db/vacuum');
     expect(HttpBarrel.DB_INSPECT_TOOL_ID).toBe('daemon.db.inspect');
   });
+
+  it('re-exports the delegated-tools route (the MCP-callback bridge)', () => {
+    expect(typeof HttpBarrel.registerDelegatedToolRoutes).toBe('function');
+    expect(HttpBarrel.delegatedToolExecuteRoute.path).toBe('/api/delegated-tool-calls');
+  });
 });

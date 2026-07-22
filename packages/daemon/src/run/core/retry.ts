@@ -110,6 +110,49 @@ export type RunRetryPolicyDecision =
       retrySuppressedReason: RunRetrySuppressedReason;
     };
 
+/**
+ * Classifies a terminated child process's raw `code`/`signal` into the `process_exit` category
+ * this module's own policy understands — the only signal cheaply available to
+ * `@jini/daemon`'s `ClassifyFailure` port (see `agent-executor.ts`'s `FailureClassificationContext`
+ * doc for why richer signal, like a detected 429 or protocol error, isn't available there without
+ * new stderr/stdout buffering machinery this pass deliberately does not add).
+ * @param code - The child process's exit code, or `null` if it was terminated by a signal.
+ * @param signal - The OS signal that terminated the child, or `null` if it exited normally.
+ * @returns A `RunRetryFailureSignal` suitable for {@link decideSafeRunRetry}.
+ * @complexity O(1).
+ */
+export function classifyProcessExitFailure(code: number | null, signal: string | null): RunRetryFailureSignal {
+  if (signal !== null) {
+    return { failure_category: 'process_exit', failure_detail: 'signal_killed', retryable: true };
+  }
+  if (code !== null && code !== 0) {
+    return { failure_category: 'process_exit', failure_detail: 'exit_nonzero', retryable: false };
+  }
+  return { failure_category: 'process_exit', failure_detail: 'terminated_unknown', retryable: false };
+}
+
+/**
+ * `@jini/daemon`'s `ClassifyFailure` port needs a plain `boolean`, not a full
+ * {@link RunRetryPolicyDecision} — gap 4 only sets a failed run's `resumable` flag (informational
+ * metadata a host reads for its own later follow-up run, see `RunEndPayload.sessionRef`'s own doc),
+ * it does not schedule an automatic in-process retry the way {@link decideSafeRunRetry}'s full
+ * `attemptCount`/`sideEffects` machinery is built for. This composes the two: classifies the raw
+ * exit info via {@link classifyProcessExitFailure}, then asks {@link decideSafeRunRetry} whether a
+ * *first* attempt (`attemptCount: 0`) with *no observed side effects* (side-effect state — whether
+ * the run already produced user-visible output/tool calls/artifacts — is not available at this
+ * classification point either, the same honestly-scoped limitation as the exit-code-only signal
+ * itself) would be safe to retry, and returns that verdict.
+ * @complexity O(1).
+ */
+export function resumableFromProcessExit(code: number | null, signal: string | null): boolean {
+  const decision = decideSafeRunRetry({
+    result: 'failed',
+    failure: classifyProcessExitFailure(code, signal),
+    attemptCount: 0,
+  });
+  return decision.shouldRetry;
+}
+
 function normalizeAttemptCount(attemptCount: number): number {
   if (!Number.isFinite(attemptCount) || attemptCount < 0) return 0;
   return Math.floor(attemptCount);
@@ -150,11 +193,17 @@ function transientSuppressedReason(
       : 'unsafe_failure_stage';
   }
   if (category === 'process_exit') {
+    // `signal_killed` added 2026-07-22 (gap 4's real default classifier — see `classifyProcessExitFailure`
+    // below): a process terminated by an OS signal (SIGKILL/SIGTERM/etc) was never the agent's own
+    // choice to fail — an OOM-kill or an infra-level eviction is the common real-world cause, and
+    // both are presumptively transient. A plain non-zero exit code, by contrast, is the agent's own
+    // process deciding to fail (a config problem, a deterministic bug) and is not retried here.
     return detail === 'agent_protocol_error' ||
       detail === 'qoder_stop_sequence' ||
       detail === 'session_resume_expired' ||
       detail === 'stream_error' ||
-      detail === 'fatal_rpc_error'
+      detail === 'fatal_rpc_error' ||
+      detail === 'signal_killed'
       ? null
       : 'non_retryable_category';
   }

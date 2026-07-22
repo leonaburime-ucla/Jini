@@ -958,7 +958,11 @@ when supplied and `onRunStarted` is not, a default `RunStartHandler` is built vi
 `createDefaultRunStartHandler` and wired as `RunHttpDeps.onStarted`. `onRunStarted` always wins when
 both are supplied (a host that wants full control shouldn't have to fight the default). Neither supplied
 preserves prior behavior exactly (no driver attached). `journalEventLog` is closed alongside `eventLog`
-on every existing cleanup path (rehydrate failure, bind failure, `stop()`).
+on every existing cleanup path (rehydrate failure, bind failure, `stop()`) — **correction, 2026-07-22:**
+this claim was wrong when originally written; `stop()` and the bind-failure path only closed
+`eventLog`, leaking `journalEventLog`'s sqlite handle on every normal daemon shutdown. Fixed for
+real in `packages/node-host/src/create-local-node-daemon.ts` (both paths now `Promise.all([eventLog.close(),
+journalEventLog.close()])`) — the claim above is accurate again as of that fix.
 
 Tests: `packages/daemon/src/continuation/__tests__/journal.test.ts` (4 tests, pure unit),
 `run-start-handler.test.ts` (4 tests, pure unit, fake `AgentExecutor`), a new "gap 1 byte-journal"
@@ -1511,3 +1515,54 @@ as an executable check instead of documentation. Rejected alternatives: vendorin
 burden for a native addon this package doesn't own) and pinning an older `node-pty` version that
 might ship a Linux prebuild (checked — no version in this package's supported range ships one;
 Linux users of `node-pty` upstream are documented to be expected to build from source).
+
+## 2026-07-22 addition — gap 4's retry classifier gets a real zero-config default (`resumableFromProcessExit`)
+
+Confirmed by tonight's audit: `ClassifyFailure`/gap 4 was fully built and unit-tested, but
+`@jini/node-host`'s `createLocalNodeDaemon` — the one real host-assembly entry point in this repo —
+never supplied one to `createAgentExecutor`, so every real run still got hardcoded
+`resumable: false`. Fixed for real, not just wired-through-to-a-stub: `packages/daemon/src/run/core/retry.ts`
+gains `classifyProcessExitFailure(code, signal)` (maps the raw exit info this package's own
+`FailureClassificationContext` deliberately limits itself to — see that interface's own doc for why
+richer signal isn't available without new stderr/stdout buffering — into a `process_exit`
+`RunRetryFailureSignal`) and `resumableFromProcessExit(code, signal)` (composes that classification
+with `decideSafeRunRetry`, called with `attemptCount: 0` since gap 4's `resumable` flag is
+informational metadata for a host's own later follow-up run, not the same thing as
+`decideSafeRunRetry`'s full same-run-automatic-retry scheduling — see that function's own doc for
+the distinction).
+
+**A real policy decision, not just plumbing:** `decideSafeRunRetry`'s existing `process_exit`
+retryable-detail allowlist (`agent_protocol_error`/`qoder_stop_sequence`/`session_resume_expired`/
+`stream_error`/`fatal_rpc_error`) had zero real callers before this fix (confirmed by tonight's
+audit) and none of those details are derivable from bare exit code/signal — routing
+`classifyFailure` through it unmodified would have been wiring that *looks* real but always
+evaluates to `false`, the exact kind of "relocated the same shortcut" outcome the standing rule
+warns against. Extended the allowlist with one new, real, defensible case instead:
+`signal_killed` — a process terminated by an OS signal (SIGKILL from an OOM-kill, an infra-level
+eviction, etc.) was never the agent's own choice to fail, unlike a plain non-zero exit code (the
+agent's own process deciding to fail — a config problem, a deterministic bug — where blind retry is
+unlikely to help). Safe to extend since nothing else in the repo called `decideSafeRunRetry` before
+this pass (confirmed), so this couldn't regress any other consumer's behavior.
+
+`createLocalNodeDaemon`'s `createAgentExecutor(...)` call now passes
+`classifyFailure: ({ code, signal }) => resumableFromProcessExit(code, signal)` — every real run
+gets a genuine classification instead of the previous hardcoded `false`.
+
+**Verification, and its one honest boundary.** `classifyProcessExitFailure`/`resumableFromProcessExit`
+are 100% unit-tested (`packages/daemon/src/run/core/__tests__/retry.test.ts`), as is
+`agent-executor.ts`'s own `classifyFailure` invocation contract (already covered by
+`agent-executor.test.ts`'s existing 131 tests, unchanged by this pass). The one-line wiring call
+itself in `create-local-node-daemon.ts` is type-checked (a real type error would fire if
+`ClassifyFailure`'s signature and `resumableFromProcessExit`'s didn't match) but **not** independently
+re-proven via a live spawned-process integration test end to end through `createLocalNodeDaemon`'s
+public API — doing so would require either a real, predictably-failing agent CLI installed in every
+dev/CI environment (fragile, non-deterministic) or new test-only spawn-injection hooks added solely
+for this test, which felt like a worse trade than being honest about the boundary: two independently
+100%-tested pure functions, composed via one type-checked line, is the real verification state —
+not "fully proven end to end," and this paragraph exists so that distinction isn't lost.
+
+Personally run this session: `pnpm --dir packages/daemon exec vitest run --coverage
+--coverage.include='src/run/core/**'` → **500 tests pass**, `retry.ts` **100/100/100/100**.
+`pnpm --dir packages/node-host exec vitest run` → **78/78 tests pass** (unchanged count — this
+fix has no new node-host-level test, per the boundary above). `pnpm --dir packages/daemon exec tsc
+--noEmit` and `pnpm --dir packages/node-host exec tsc --noEmit`: both clean.
