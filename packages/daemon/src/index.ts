@@ -19,3 +19,4 @@ export * from './agent-executor.js';
 export * from './tokens.js';
 export * from './legacy-data-migration.js';
 export * from './run/index.js';
+export * from './continuation/index.js';

@@ -265,6 +265,64 @@ describe('createLocalNodeDaemon', () => {
     expect(replayed.map((event) => event.event)).toEqual(['start', 'agent', 'end']);
   });
 
+  it('resolveRunInput, when supplied with no onRunStarted, builds a default RunStartHandler that drives the real zero-config AgentExecutor', async () => {
+    const dataDir = makeTempDataDir();
+    const resolveRunInputCalls: unknown[] = [];
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [],
+      resolveRunInput: (ctx) => {
+        resolveRunInputCalls.push(ctx);
+        // No agent named this is registered anywhere — proves the resolved input really reached
+        // the real zero-config AgentExecutor (AGENT_NOT_FOUND is that executor's own rejection),
+        // without needing to spawn a real subprocess for a happy-path assertion.
+        return { agentId: 'no-such-agent', prompt: 'hi', cwd: dataDir };
+      },
+    });
+    daemonsToStop.push(daemon);
+
+    const response = await fetch(`${daemon.url}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contextRef: 'resolve-run-input-context', agentId: 'whatever-the-request-says' }),
+    });
+
+    expect(resolveRunInputCalls).toEqual([{ runId: expect.any(String), contextRef: 'resolve-run-input-context', agentId: 'whatever-the-request-says' }]);
+    // runStartRoute.handle() catches the rejecting onStarted, finishes the run failed, and
+    // returns a generic internal-error response rather than the raw AgentExecutorError.
+    expect(response.status).toBe(500);
+    const runId = (resolveRunInputCalls[0] as { runId: string }).runId;
+    expect(await (await fetch(`${daemon.url}/api/runs/${runId}`)).json()).toMatchObject({ run: { state: 'failed' } });
+  });
+
+  it('onRunStarted takes precedence over resolveRunInput when both are supplied', async () => {
+    const dataDir = makeTempDataDir();
+    const resolveRunInputCalls: unknown[] = [];
+    const onRunStarted = async ({ run, lifecycle }: RunStartContext) => {
+      await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+    };
+    const daemon = await createLocalNodeDaemon({
+      dataDir,
+      packs: [],
+      onRunStarted,
+      resolveRunInput: (ctx) => {
+        resolveRunInputCalls.push(ctx);
+        return { agentId: 'unused', prompt: 'unused', cwd: dataDir };
+      },
+    });
+    daemonsToStop.push(daemon);
+
+    const response = await fetch(`${daemon.url}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contextRef: 'precedence-context' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ started: true, run: { state: 'succeeded' } });
+    expect(resolveRunInputCalls).toEqual([]);
+  });
+
   it("mounts a caller pack's own route (proves mountPackHttp ordering)", async () => {
     const dataDir = makeTempDataDir();
     const daemon = await createLocalNodeDaemon({ dataDir, packs: [makePingPack()] });

@@ -899,3 +899,80 @@ regressions in `run-lifecycle.ts`/`delegated-tool-bridge.ts`'s own pre-existing,
 `pnpm --dir packages/node-host exec vitest run --coverage` (a real downstream consumer of
 `createAgentExecutor`'s default binding): 52/52, 100% on all 4 metrics, unaffected. `pnpm guard`: clean.
 `grep -rInE 'Open Design|OD_|open-design' packages/daemon/src`: empty.
+
+## 2026-07-22 addition — run/chat orchestration gap 1: default wiring + byte-journal
+
+Implements gap 1 of the run/chat orchestration swarm-consensus Final Recommendation
+(`ADS-memory/reports/swarm-consensus/runs/20260722T023000Z-consensus-report.md`) — "the observability
+floor every later increment depends on." Locked by that debate: no new package; land as increments in
+`@jini/daemon`, a small `@jini/protocol` addition, and `@jini/node-host` preset wiring.
+
+**`@jini/protocol`**: new `journal.ts` — `JournalEntry{content, provenance, trust}` exactly as the
+debate specified. `provenance` is a discriminated union (`{source:'host',channel:'stdin'}` /
+`{source:'agent',channel:'stdout'|'stderr'}`) rather than a bare string, so a future consumer can
+narrow on it without parsing. `trust` exists for gap 3 (not yet built): a byte the host composed is
+`'trusted'`, a byte a child agent produced is `'untrusted'` by definition — the debate's Final
+Recommendation requires structured/JSON-escaped framing (never raw string concatenation) when a later
+increment injects a tool result back into a child's input, given the prompt-injection stakes on that
+exact path.
+
+**`@jini/daemon/src/continuation/`** (new module, the exact path the debate proposed):
+- `journal.ts` — `RunByteJournal`/`createRunByteJournal(eventLog)`, a thin projection over the existing
+  `EventLog` port. Deliberately takes its own `EventLog` *instance*, not the one `RunLifecycle` already
+  uses: that log's `stream()` replays every entry it holds to SSE subscribers as a `RunProtocolEvent`,
+  and a `'journal'` entry has no corresponding protocol-event kind — sharing the instance would either
+  leak raw (possibly untrusted) agent bytes into the public run-event stream or force widening
+  `RunProtocolEvent` itself. A dedicated instance reuses the exact same port/durability guarantees (for
+  `@jini/node-host`, the same `@jini/sqlite` adapter) without touching run-protocol vocabulary.
+- `run-start-handler.ts` — `ResolveRunInput`/`createDefaultRunStartHandler({agentExecutor,
+  resolveRunInput})`. Fills a real gap: `@jini/http`'s `POST /api/runs` durably starts a run and, absent
+  a host-supplied `onStarted`, nothing ever drives an actual `AgentExecutor.run()` — the run sits
+  `'running'` forever with no attached driver. `resolveRunInput` has no generic default (unlike
+  `resolveDaemonUrl`'s optional `discover`): prompt/skill/memory composition is gap 2, and gap 2 stays
+  host-owned *permanently* per the debate's Final Recommendation item 5, so there is no sensible
+  kernel-supplied fallback. The returned handler's parameter type (`RunStartDriverContext`) is a
+  structural subset of `@jini/http`'s `RunStartContext` — `@jini/daemon` cannot import `@jini/http`
+  (wrong-direction edge; `@jini/http` already imports `@jini/daemon`), so a real `RunStartContext` value
+  satisfies the narrower type structurally instead.
+
+**`agent-executor.ts`**: new optional `journal?: RunByteJournal` on `CreateAgentExecutorOptions` — opt-in
+only (unlike every other seam on that interface, which defaults to a real implementation), since there
+is no generic "real" journal storage this package can default to without a caller-supplied `EventLog`.
+Threaded into all three lifecycle-wiring functions (`wireChildLifecycle`/`wireAcpLifecycle`/
+`wirePiRpcLifecycle`) and `writePromptToStdin`. Records every byte at the same choke points the module
+already had in hand pre-translation: the 6 `child.stdout`/`child.stderr` `'data'` handlers (received,
+`trust:'untrusted'`) and `writePromptToStdin`'s two write branches (sent, `trust:'trusted'`) via a new
+`StdinCloseHandle.recordSentBytes` method. Journal writes are queued through each function's own
+existing per-run FIFO `enqueueEmit` — the same ordering/error-isolation discipline already used for
+`lifecycle.emit()` calls, not a new mechanism. **Honest scope boundary**: ACP and pi-rpc's own prompt
+delivery happens inside `attachAcpSession`/`attachPiRpcSession`'s own transport, out of this module's
+direct view — their sent bytes are not journaled in v1 (their received stdout/stderr, which this module
+does own, is). Documented on `WireAcpLifecycleContext.journal`/`WirePiRpcLifecycleContext.journal`, not
+silently dropped.
+
+**`@jini/node-host`**: `createLocalNodeDaemon` always constructs a dedicated durable byte-journal
+(`createSqliteEventLog(join(dataDir, 'journal.db'))` — a second sqlite file, separate from
+`events.db`) and wires it into the zero-config `AgentExecutor` unconditionally — gap 1 is "the
+observability floor," not opt-in, for this preset. New `resolveRunInput?: ResolveRunInput` config field:
+when supplied and `onRunStarted` is not, a default `RunStartHandler` is built via
+`createDefaultRunStartHandler` and wired as `RunHttpDeps.onStarted`. `onRunStarted` always wins when
+both are supplied (a host that wants full control shouldn't have to fight the default). Neither supplied
+preserves prior behavior exactly (no driver attached). `journalEventLog` is closed alongside `eventLog`
+on every existing cleanup path (rehydrate failure, bind failure, `stop()`).
+
+Tests: `packages/daemon/src/continuation/__tests__/journal.test.ts` (4 tests, pure unit),
+`run-start-handler.test.ts` (4 tests, pure unit, fake `AgentExecutor`), a new "gap 1 byte-journal"
+`describe` block in `agent-executor.test.ts` (6 tests, covering sent/received journaling across all
+three lifecycle paths — child/ACP/pi-rpc — plus the no-journal-configured default and the raw-prompt-
+not-wire-frame assertion for `stream-json` defs), and two new tests in
+`packages/node-host/src/__tests__/create-local-node-daemon.test.ts` (real HTTP integration: the default
+handler reaching a real `AGENT_NOT_FOUND` rejection proves the wiring without spawning a subprocess;
+`onRunStarted` precedence over `resolveRunInput`). `packages/daemon`: 313/313 tests, 100% on all 4
+coverage metrics for every new/touched file. `packages/node-host`: 62/62 tests, 100% on all 4 metrics.
+`packages/protocol`: clean typecheck (types-only addition, no dedicated test file — matches
+`events.ts`/`errors.ts`'s precedent). `pnpm guard`: clean.
+
+Not yet built (gaps 5/3/4, per the debate's locked MVP sequencing — this addition is gap 1 only):
+session-resume capture, capability-routed continuation transport, retry-classifier port. The
+human-in-the-loop pause question (debate's one Unresolved Delta) is also not addressed here — it's
+scoped for gap 3's design, not gap 1's.
