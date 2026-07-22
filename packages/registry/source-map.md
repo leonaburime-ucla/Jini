@@ -556,3 +556,24 @@ entirely the one documented unreachable `catch` branch above), still above
 the package's configured 99% threshold gate on every metric. `pnpm --dir
 packages/protocol exec vitest run` — 11/11 passing (2 new assertions on the
 additive schema fields). `pnpm guard` (repo root) clean.
+
+## 2026-07-22 addition — `trust.ts:337-338` empirically re-verified unreachable (audit fix)
+
+Per this task's own "no scope cuts for coverage — re-derive, don't trust the prior claim" standing
+rule, `certIssuedAndSignedBy`'s `catch { return false; }` (the only remaining uncovered branch in
+this package) was independently re-tested rather than accepted from the code comment already
+there. Generated fresh RSA-2048, P-256, P-384, and Ed25519 self-signed certs via a real local
+`openssl` (3.0.13) and called `X509Certificate#verify()` across all 9 cross-type combinations plus
+same-key self-verification for each — **zero throws**, every call returned a clean boolean, on this
+repo's actual Node (v22.22.2) runtime. Went further than the original claim: also confirmed
+`verify()` *can* throw a `TypeError`, but only for a malformed argument shape (a non-`KeyObject`,
+or a private key passed where a public key is required) — and `certIssuedAndSignedBy`'s only call
+site (`chainToTrustedRoot`) never passes anything but `issuer.publicKey`, a real `X509Certificate`
+getter, so that throw mode is structurally unreachable through this module's actual call graph, not
+just empirically unobserved. Doc comment on `certIssuedAndSignedBy` updated with the full
+re-verification record. No code change — the branch is genuinely, provably unreachable; this entry
+and the code comment are the record the standing rule requires in place of a forced test.
+
+**Verified, personally, this session**: `pnpm --dir packages/registry exec tsc --noEmit`: clean.
+`pnpm --dir packages/registry run test:coverage`: 183/183 tests pass, same 99.76/99.61/100/99.76
+aggregate as before (unchanged — no test was added or removed, only the doc record).

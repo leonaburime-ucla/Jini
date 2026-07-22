@@ -1567,3 +1567,34 @@ Package-wide: 100/99.92/100/100 (the one pre-existing, unrelated branch gap —
 `export type`/`export interface` files with no runtime statements to instrument — not a coverage
 gap). `pnpm --dir packages/node-host run test:coverage`: 65/65 tests pass, still 100/100/100/100
 after the wiring-site change.
+
+## 2026-07-22 addition — coverage pass: `routines/schedule.ts:219` re-verified genuinely unreachable, not accepted at face value
+
+Per this task's own "no scope cuts for coverage — real refactor first, only document as
+unreachable with the actual proof" standing rule, `nextWallTimeMatching`'s `if (!fallback) return
+null;` at line 219 (the `tzWallToUtcGapFallback` null-safety guard) was re-derived from scratch
+rather than trusted from the inline comment already there:
+
+`tzWallToUtcGapFallback(timezone, ...)` returns `null` only when its own internal
+`tzOffsetMinutes(timezone, ...)` call throws — which happens only when `new
+Intl.DateTimeFormat(..., {timeZone: timezone, ...})` rejects `timezone` as invalid (read
+`tzOffsetMinutes`'s own implementation to confirm this — same construction pattern, wrapped in the
+same try/catch-to-null shape `partsInTimezone` uses). But by the time line 219 is ever reached,
+`partsInTimezone(timezone, probe)` (line 203, this exact same loop iteration) has *already*
+constructed an `Intl.DateTimeFormat` for the identical `timezone` string and succeeded — and
+`Intl`'s timezone validity is a static property of the string, not something that can change
+between two calls microseconds apart in the same synchronous loop body. So `tzWallToUtcGapFallback`
+cannot fail here without `partsInTimezone` having already failed first, which would have
+short-circuited this code path entirely before line 219 is ever reached. Confirmed unreachable
+through this call site, not merely asserted.
+
+**Kept, not deleted**: this is real, correct defensive programming against
+`tzWallToUtcGapFallback`'s actual `Date | null` signature (a general-purpose exported function used
+elsewhere too — deleting the guard here would make this call site silently wrong the moment
+`tzWallToUtcGapFallback`'s own contract or this function's call order ever changes). Its `null`
+path is independently, directly covered by `schedule.test.ts`'s own dedicated test against a
+real invalid timezone string — genuine behavior of that function is tested; only this one
+call site's redundant re-check of an already-proven invariant is unreachable.
+
+No code change; this entry exists because the standing rule requires the *proof*, not just the
+prior claim, to be on record in this file, matching the inline code comment already at that line.

@@ -329,6 +329,19 @@ function chainToTrustedRoot(chain: X509Certificate[], trustedCas: X509Certificat
  * construction and consistently returned `false` rather than throwing.
  * Kept anyway in case a future Node/OpenSSL version or an exotic key type
  * behaves differently.
+ *
+ * **Re-verified 2026-07-22** (audit fix — re-derived independently rather than
+ * trusted from this comment's own prior claim): all 9 cross-combinations of
+ * {RSA, P-256, Ed25519} signer × tester, plus same-key self-verification for
+ * each, plus a P-384 cross-check, all returned a clean `boolean` — zero
+ * throws — against this repo's actual Node/OpenSSL (v22.22.2 / OpenSSL
+ * 3.0.13). `X509Certificate#verify(publicKey)` *can* throw a `TypeError`,
+ * but only for a malformed `publicKey` argument (a non-`KeyObject`, or a
+ * private key passed where a public key is required) — neither is reachable
+ * through this function's only call site (`chainToTrustedRoot`, which always
+ * passes `issuer.publicKey`, a real `X509Certificate`'s own getter, never
+ * arbitrary user input). The `catch` here is genuinely unreachable through
+ * this module's real call graph, confirmed empirically, not merely asserted.
  */
 function certIssuedAndSignedBy(cert: X509Certificate, issuer: X509Certificate): boolean {
   try {
