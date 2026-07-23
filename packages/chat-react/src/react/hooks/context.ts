@@ -12,7 +12,7 @@
  * unit-tested standalone (no `<JiniChatProvider>` mounted) — mirrors
  * `@jini/ui`'s `useI18n`/`useT` passthrough convention, reimplemented
  * locally here since `@jini/chat-react` cannot depend on `@jini/ui` (not an
- * allowed dependency per `docs/jini-port/recon/r4b-webui-design.md` §1).
+ * allowed dependency per `foundry/docs/jini-port/recon/r4b-webui-design.md` §1).
  */
 import { createContext, useContext } from 'react';
 import type { AnalyticsAdapter, I18nAdapter, ProjectContextValue } from '../../slots.js';

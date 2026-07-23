@@ -1,8 +1,8 @@
 # Todo
 
 Lightweight cross-cutting backlog — not the formal ledger (that's
-`docs/jini-port/extraction-plan.md` §8 for engine port tasks, and
-`docs/jini-port/refactor-roadmap.md` for status). This file is for things
+`foundry/docs/jini-port/extraction-plan.md` §8 for engine port tasks, and
+`foundry/docs/jini-port/refactor-roadmap.md` for status). This file is for things
 worth remembering that don't fit neatly into either, including items that
 live in Open Design's own repo rather than Jini's.
 
@@ -56,6 +56,6 @@ live in Open Design's own repo rather than Jini's.
     handling / stale-state-on-retry test gate *before* starting this
     extraction, not after discovering the bugs the hard way. Related,
     still-pending task: making that same test-category checklist a standing
-    requirement in `docs/jini-port/skills/fixing-open-design.md`/`-web.md`
+    requirement in `foundry/docs/jini-port/skills/fixing-open-design.md`/`-web.md`
     for future ports (tracked separately in this session's task list, not
     yet done).

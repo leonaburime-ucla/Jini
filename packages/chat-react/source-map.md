@@ -12,7 +12,7 @@ branches, both public OPEN draft PRs:
   `apps/web/src/features/chat-composer/`.
 
 Plus the near-clean presentational leaves cited by
-`docs/jini-port/recon/r4b-webui-design.md` §1, read from the chat-pane-slice
+`foundry/docs/jini-port/recon/r4b-webui-design.md` §1, read from the chat-pane-slice
 checkout's `apps/web/src/components/` (unchanged by that branch's own
 decomposition, so identical across both source branches):
 `ToolCard.tsx` (582 lines), `QuestionForm.tsx` (725 lines — r4b's "890" line
@@ -20,8 +20,8 @@ count is stale; the real file is 725), `QuestionsPanel.tsx` (521 lines),
 `NextStepActions.tsx` (1,069 lines), plus `runtime/tool-renderers.ts` (124
 lines) and `runtime/todos.ts` (162 lines).
 
-Per `docs/jini-port/extraction-plan.md` §3 and
-`docs/jini-port/recon/r4b-webui-design.md` §1/§2/§4: `@jini/chat-react` is
+Per `foundry/docs/jini-port/extraction-plan.md` §3 and
+`foundry/docs/jini-port/recon/r4b-webui-design.md` §1/§2/§4: `@jini/chat-react` is
 the headless-hooks + presentational-components + slot-interface layer built
 on `@jini/chat-core`'s framework-free vocabulary. See that doc for the full
 target API surface this package implements.
@@ -42,7 +42,7 @@ target API surface this package implements.
    `docs/adr/0001-centralize-daemon-startup.md` exists; no `features/memory`
    anywhere in either tree; no `apps/web/AGENTS.md`; no
    `check-web-slice-boundaries.ts` anywhere in `scripts/`). Also checked
-   Jini's own vendored `integrations/open-design/reference/` snapshot (a
+   Jini's own vendored `foundry/integrations/open-design/reference/` snapshot (a
    *later*, 2026-07-16 cutoff vs. these branches' 2026-07-10) — same result:
    `MemorySection.tsx` exists only as a flat, not-yet-sliced component under
    `components-original/`/`od-web-src.orig/components/`, never as a
@@ -74,7 +74,7 @@ target API surface this package implements.
      `features/chat-composer/index.ts`.
    - Both orchestrators are themselves imported by `AssistantMessage.tsx`/
      `ProjectView`-shaped OD product code, which is out of this task's scope
-     (product-specific, stays in `integrations/open-design/` if/when that
+     (product-specific, stays in `foundry/integrations/open-design/` if/when that
      adapter needs it).
 4. **OD-only seam that stays behind** (verified via each slice's
    `dependencies.ts`/`ports.ts`, not inferred): AMR/Vela billing login status
@@ -86,7 +86,7 @@ target API surface this package implements.
    PostHog analytics call-site (`trackQuestionsFormClick`,
    `trackNextStepActionClick`, ...). All of this is OD product policy or a
    third-party editor integration, not generic chat UI — it stays behind in
-   `integrations/open-design/` (or a future OD-side wrapper around this
+   `foundry/integrations/open-design/` (or a future OD-side wrapper around this
    package's slots) rather than being lifted.
 
 ## File map
@@ -139,7 +139,7 @@ target API surface this package implements.
   driven by that state today.
 - **OD's exact AMR/Vela billing, design-toolbox, brand-browser, comments/
   annotation, MCP-catalogue, and Lexical-editor widgets** all stay behind in
-  `integrations/open-design/` (see Reference Preflight §4) — none of them
+  `foundry/integrations/open-design/` (see Reference Preflight §4) — none of them
   were ported, by design.
 
 ## `features/model-picker/` (2026-07-18)
@@ -155,13 +155,13 @@ UI by design (see `packages/ui/README.md`).
 **Reference preflight**: source cloned fresh from
 `leonaburime-ucla/open-design` at commit
 `0b88ef56144b5a42dc427c1292ae22676d698a34` (2026-07-18, `main`) — not the
-frozen `integrations/open-design/reference/` snapshot. Read in full:
+frozen `foundry/integrations/open-design/reference/` snapshot. Read in full:
 `apps/web/src/components/InlineModelSwitcher.tsx` (1,105 lines) and its
 siblings `modelOptions.tsx` (310), `providerModelsCache.ts` (43),
 `agentModelSelection.ts` (29), `AgentDiagnosticRow.tsx` (133),
 `AgentPicker.tsx` (74); `NewProjectPanel.tsx`'s `MediaModelCards` (3,059-line
 file, function at line 2525). Confirmed by direct read (not just citing
-`docs/jini-port/recon/r6-god-component-internals.md` §1.13/§3 and
+`foundry/docs/jini-port/recon/r6-god-component-internals.md` §1.13/§3 and
 `r5-components-sweep.md` §4) that both files independently implement the same
 "group models by provider, badge each provider's credential/integration
 status, search-filter, click to select" shape — `r6`'s cross-cutting pattern

@@ -1,6 +1,5 @@
 /**
- * R1: packages/@jini/** must not import apps/**, integrations/**, examples/**, automation/**,
- *     AI-Dev-Shop/**.
+ * R1: packages/@jini/** must not import foundry/**, examples/**, or AI-Dev-Shop/**.
  * R2: engine packages import each other only by package name (no deep paths) — a relative
  *     import must not escape its own package's `src/`, and a bare `@jini/<name>/<subpath>`
  *     import is forbidden except the specifically-gated `@jini/core/internal` subpath.
@@ -16,7 +15,7 @@
  *
  * Deliberately a regex-based MVP over `scripts/lib/walk-imports.ts`, not a full
  * `ts.resolveModuleName` AST pass — per the debate's own convergence that this is sufficient
- * for v0. See docs/jini-port/extraction-plan.md §7 (guardrails) and §12 C-series.
+ * for v0. See foundry/docs/jini-port/extraction-plan.md §7 (guardrails) and §12 C-series.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -24,7 +23,7 @@ import { extractImports, listSourceFiles, REPO_ROOT, stripComments } from './lib
 
 export type Violation = { rule: string; file: string; reason: string };
 
-const FORBIDDEN_TOP_LEVEL_DIRS = ['apps', 'integrations', 'examples', 'automation', 'AI-Dev-Shop'];
+const FORBIDDEN_TOP_LEVEL_DIRS = ['foundry', 'examples', 'AI-Dev-Shop'];
 
 const PRODUCT_IDENTITY_STRINGS = [
   'Open Design',

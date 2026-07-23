@@ -1,9 +1,9 @@
 /**
- * Patch canary — milestone 1 gate O (docs/jini-port/extraction-plan.md §4.3, §8 task 1).
+ * Patch canary — milestone 1 gate O (foundry/docs/jini-port/extraction-plan.md §4.3, §8 task 1).
  *
  * OD stays a consumer synced via `git format-patch` (locked decision #4). This harness proves
  * an upstream OD daemon patch still applies once its paths are rewritten onto this repo's
- * mirrored layout (`apps/daemon/...` -> `integrations/open-design/daemon/...`), and is the
+ * mirrored layout (`apps/daemon/...` -> `foundry/integrations/open-design/daemon/...`), and is the
  * mechanical piece a future CI gate can build on top of: run this against an incoming upstream
  * patch, and cross-check every touched path against `sync-ownership.manifest.json` to fail CI
  * on any `delegated-to-jini` path whose `@jini/*` counterpart hasn't also been fixed.
@@ -14,7 +14,7 @@
  *      the patch file, applies it to `<repo>` via `git apply`, and prints `PATCH_CANARY_OK` on
  *      success.
  *
- * See `integrations/open-design/sync-ownership.test.ts` for the exact, authoritative spec this
+ * See `foundry/integrations/open-design/sync-ownership.test.ts` for the exact, authoritative spec this
  * file must satisfy.
  */
 import { execFileSync } from 'node:child_process';
@@ -24,11 +24,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const UPSTREAM_DAEMON_PREFIX = 'apps/daemon';
-const MIRRORED_DAEMON_PREFIX = 'integrations/open-design/daemon';
+const MIRRORED_DAEMON_PREFIX = 'foundry/integrations/open-design/daemon';
 
 /**
- * Rewrites an upstream OD path onto this repo's mirrored `integrations/open-design/daemon/`
- * layout, e.g. `apps/daemon/src/routes/health.ts` -> `integrations/open-design/daemon/src/routes/health.ts`.
+ * Rewrites an upstream OD path onto this repo's mirrored `foundry/integrations/open-design/daemon/`
+ * layout, e.g. `apps/daemon/src/routes/health.ts` -> `foundry/integrations/open-design/daemon/src/routes/health.ts`.
  * Paths outside `apps/daemon/` are returned unchanged (not every upstream patch is daemon-scoped).
  */
 export function transformUpstreamPath(upstreamPath: string): string {

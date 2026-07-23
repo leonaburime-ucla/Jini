@@ -1,6 +1,6 @@
 # Unlocked package admission manifest
 
-Every `packages/*` directory NOT in `docs/jini-port/extraction-plan.md` §3's locked 14-package
+Every `packages/*` directory NOT in `foundry/docs/jini-port/extraction-plan.md` §3's locked 14-package
 set must have an entry here. This is the package-admission manifest the 2026-07-19 swarm-consensus
 architecture debate recommended (`ADS-memory/reports/swarm-consensus/runs/2026-07-19T1632-consensus-report.md`)
 after finding 9 packages had been added ad hoc, without the Coordinator/Software-Architect
@@ -56,7 +56,7 @@ every entry; see the "Promotion" section below for what changes that.
     "consumers": [],
     "lockedPackagesMayImport": false,
     "signOff": "PENDING",
-    "note": "Greenfield, no OD source. Own source-map.md states: 'This package currently has NO identified consumer.' Named aspirational future consumers (Zana, Tovu-Runner) per docs/jini-port/recon/r5b-consumers-matrix.md, but neither is confirmed today. Highest-priority candidate for archival if not promoted soon."
+    "note": "Greenfield, no OD source. Own source-map.md states: 'This package currently has NO identified consumer.' Named aspirational future consumers (Zana, Tovu-Runner) per foundry/docs/jini-port/recon/r5b-consumers-matrix.md, but neither is confirmed today. Highest-priority candidate for archival if not promoted soon."
   },
   "@jini/desktop-host": {
     "status": "incubating",

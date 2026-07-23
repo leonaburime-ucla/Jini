@@ -4,14 +4,14 @@
  * A generic row of "what next" suggestion buttons rendered after a
  * completed assistant turn. Heavily pruned from OD's
  * `components/NextStepActions.tsx` (1,069 lines) per
- * `docs/jini-port/recon/r4b-webui-design.md` §1's explicit directive for
+ * `foundry/docs/jini-port/recon/r4b-webui-design.md` §1's explicit directive for
  * this file ("prune OD actions"): the OD original hardcodes ~20 product-
  * specific prompt catalogs (design-system refine/audit, brand-extraction
  * continue/AI-optimize, plan-generate-from-doc, project-continue, ...), a
  * design-toolbox action registry, and PostHog click tracking. None of that
  * is generic — every OD prompt catalog is a host concern now: a host
  * supplies its own `NextStepAction[]` (e.g. OD's adapter in
- * `integrations/open-design/` re-hosts its exact prompt catalogs against
+ * `foundry/integrations/open-design/` re-hosts its exact prompt catalogs against
  * this same component). className/structure kept close to the original's
  * action-row shape; every user-facing string wrapped in `useT()`.
  */

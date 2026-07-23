@@ -37,7 +37,7 @@ export async function runGuardSelfTest(): Promise<SelfTestFailure[]> {
 
   try {
     // R1: relative import escaping into a forbidden top-level dir.
-    write(root, 'packages/core/src/bad-r1.ts', `import { x } from '../../../apps/foo.js';\nexport { x };\n`);
+    write(root, 'packages/core/src/bad-r1.ts', `import { x } from '../../../examples/reference-web/foo.js';\nexport { x };\n`);
     // R2: deep cross-package relative reach, and a deep bare @jini/<name>/<subpath> import.
     write(root, 'packages/core/src/bad-r2-relative.ts', `import { x } from '../../daemon/src/foo.js';\nexport { x };\n`);
     write(root, 'packages/http/src/bad-r2-deep.ts', `import { x } from '@jini/daemon/dist/foo.js';\nexport { x };\n`);
@@ -90,12 +90,12 @@ export async function runGuardSelfTest(): Promise<SelfTestFailure[]> {
       ].join('\n'),
     );
 
-    // R3: protocol importing another @jini/* package, and protocol reaching into integrations/.
+    // R3: protocol importing another @jini/* package, and protocol reaching into foundry/.
     write(root, 'packages/protocol/src/bad-r3-jini-import.ts', `import { x } from '@jini/core';\nexport { x };\n`);
     write(
       root,
       'packages/protocol/src/bad-r3-boundary.ts',
-      `import { x } from '../../../integrations/foo.js';\nexport { x };\n`,
+      `import { x } from '../../../foundry/integrations/foo.js';\nexport { x };\n`,
     );
     write(root, 'packages/protocol/src/ok-protocol.ts', `export const wireType = 1;\n`);
 
@@ -106,7 +106,7 @@ export async function runGuardSelfTest(): Promise<SelfTestFailure[]> {
       violations.some((v) => v.rule === rule && v.file.endsWith(fileSuffix));
 
     const expectations: Array<[boolean, string]> = [
-      [has(engineViolations, 'R1-boundary', 'bad-r1.ts'), 'R1 should catch a relative import escaping into apps/'],
+      [has(engineViolations, 'R1-boundary', 'bad-r1.ts'), 'R1 should catch a relative import escaping into foundry/'],
       [has(engineViolations, 'R2-deep-path', 'bad-r2-relative.ts'), 'R2 should catch a relative import reaching into another package'],
       [has(engineViolations, 'R2-deep-path', 'bad-r2-deep.ts'), 'R2 should catch a deep bare @jini/<name>/<subpath> import'],
       [has(engineViolations, 'R5-neutrality', 'bad-r5-string.ts'), 'R5 should catch a product-identity string'],
@@ -119,7 +119,7 @@ export async function runGuardSelfTest(): Promise<SelfTestFailure[]> {
       [!engineViolations.some((v) => v.file.endsWith('ok-bare.ts')), 'R2 must NOT flag an ordinary bare @jini/<name> import'],
       [!engineViolations.some((v) => v.file.endsWith('ok-provenance-comment.ts')), 'R1/R2/R5 must NOT flag a provenance-citing doc comment as a live import or product-identity string'],
       [has(protocolViolations, 'R3-protocol-purity', 'bad-r3-jini-import.ts'), 'R3 should catch protocol importing another @jini/* package'],
-      [has(protocolViolations, 'R3-protocol-purity', 'bad-r3-boundary.ts'), 'R3 should catch protocol reaching into integrations/'],
+      [has(protocolViolations, 'R3-protocol-purity', 'bad-r3-boundary.ts'), 'R3 should catch protocol reaching into foundry/'],
       [!protocolViolations.some((v) => v.file.endsWith('ok-protocol.ts')), 'R3 must NOT flag ordinary protocol-local code'],
     ];
 

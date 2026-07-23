@@ -1,6 +1,6 @@
 /**
  * Jini repo guard — aggregates the boundary + neutrality checks.
- * Run via `pnpm guard`. See docs/jini-port/extraction-plan.md §7 (guardrails) and §12 C-series.
+ * Run via `pnpm guard`. See foundry/docs/jini-port/extraction-plan.md §7 (guardrails) and §12 C-series.
  *
  * STATUS (2026-07-19 hardening pass): `checkEngineBoundaries` and `checkProtocolPurity` are
  * real (R1/R2/R3/R5/R6/R7 — see their own module docs), replacing the literal `return []`
@@ -36,7 +36,7 @@ async function main() {
   const results = [
     await checkEngineBoundaries(),
     await checkProtocolPurity(),
-    // TODO: vocabulary-firewall check (automation/** must not import engine domain types) —
+    // TODO: vocabulary-firewall check (foundry/automation/** must not import engine domain types) —
     // genuinely unimplemented, not covered by either check above (both are scoped to packages/).
     // TODO: residual-JS allowlist — genuinely unimplemented; scope not yet specified precisely
     // enough to build without guessing.

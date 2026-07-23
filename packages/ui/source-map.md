@@ -1,9 +1,9 @@
 # `@jini/ui` — provenance
 
-Origin: `integrations/open-design/reference/web-src-directories/` (vendored
+Origin: `foundry/integrations/open-design/reference/web-src-directories/` (vendored
 snapshot of OD's `apps/web/src/{runtime,providers,state,lib,media,analytics,
-styles,i18n,observability,utils}`), per `docs/jini-port/ui-extraction-plan.md`
-and `docs/jini-port/recon/r4-webui.md`.
+styles,i18n,observability,utils}`), per `foundry/docs/jini-port/ui-extraction-plan.md`
+and `foundry/docs/jini-port/recon/r4-webui.md`.
 
 If you are adding a new section to this file, append it below rather than
 rewriting the whole document — multiple tasks land content here in parallel
@@ -16,10 +16,10 @@ reconciles it).
 
 Scope: `web-src-directories/{i18n,observability,utils}/` per the Programmer
 dispatch for this task (read-only source; real consumer check done against
-`integrations/open-design/reference/components-original/`, falling back to
-`integrations/open-design/reference/od-web-src.orig/` where a consumer
+`foundry/integrations/open-design/reference/components-original/`, falling back to
+`foundry/integrations/open-design/reference/od-web-src.orig/` where a consumer
 wasn't in the smaller snapshot). Covers this porting task only — see
-`docs/jini-port/ui-extraction-plan.md` for the separate components/
+`foundry/docs/jini-port/ui-extraction-plan.md` for the separate components/
 features-bucket work (not touched here), and the next section below for the
 parallel runtime/providers/state/lib/media/analytics/styles sweep.
 
@@ -67,7 +67,7 @@ buffering). That's the single seam that needed genericizing — replaced
 everywhere with an injectable `SafetyEventReporter` callback (`ports.ts`),
 defaulting to a no-op, same "context/callback + host-injected adapter"
 shape as the i18n feature and the analytics-adapter pattern already
-documented in `docs/jini-port/recon/r4-webui.md` §5c.
+documented in `foundry/docs/jini-port/recon/r4-webui.md` §5c.
 
 Beyond that one shared seam, each file's own genericity read as claimed in
 the task brief (boot timing / white-screen / stuck-run / long-task do read
@@ -90,7 +90,7 @@ required by the brief:
 ### Utils (`src/utils/`)
 
 New slot on this package (README.md updated), per
-`docs/jini-port/ui-extraction-plan.md`'s bucket-A note that this directory
+`foundry/docs/jini-port/ui-extraction-plan.md`'s bucket-A note that this directory
 doesn't exist yet and these are non-component pure/small-stateful helpers.
 All 19 origin files were routed individually by checking real consumers via
 `components-original/` (falling back to the fuller `od-web-src.orig/` tree
@@ -168,7 +168,7 @@ across `packages/ui/src/**` for `@open-design/*` specifiers and the
 
 `src/features/byok-config/`, `mcp-config/`, `rich-text-input/`,
 `workspace-tabs/`, and the flat-group `src/react/components/` bucket (Icon.tsx,
-Toast.tsx, etc.) from `docs/jini-port/ui-extraction-plan.md` are untouched —
+Toast.tsx, etc.) from `foundry/docs/jini-port/ui-extraction-plan.md` are untouched —
 explicitly out of scope per this task's brief.
 
 ---
@@ -185,10 +185,10 @@ what was actually ported.
 | Jini file | Origin | Transform |
 |---|---|---|
 | `src/utils/zip.ts` | `runtime/zip.ts` | Verbatim (already zero-dependency, zero OD refs) — minimal stored-mode ZIP encoder. Comment wording lightly reworded (dropped the OD-specific "Download as ZIP button" framing). |
-| `src/utils/sse.ts` | `providers/sse.ts` | Verbatim logic (`parseSseFrame`) — already confirmed generic by `docs/jini-port/recon/r4-webui.md` §1c. Comment reworded to describe the generic transport-agnostic use (not OD's specific daemon SSE contract). |
+| `src/utils/sse.ts` | `providers/sse.ts` | Verbatim logic (`parseSseFrame`) — already confirmed generic by `foundry/docs/jini-port/recon/r4-webui.md` §1c. Comment reworded to describe the generic transport-agnostic use (not OD's specific daemon SSE contract). |
 | `src/utils/copy-to-clipboard.ts` | `lib/copy-to-clipboard.ts` | Verbatim. Dropped the comment's reference to OD's `FileViewer.tsx`/issue #451 provenance. |
 | `src/utils/appearance.ts` | `state/appearance.ts` | Generified: dropped the `AppTheme` import from OD's `../types` (replaced with a local `AppearanceTheme = 'light' \| 'dark'` union — same two values the function actually branches on). `DEFAULT_ACCENT_COLOR` changed from OD's brand accent (`#c96442`) to a neutral default (`#2563eb`, previously the second swatch) since a shared package should not ship one consumer's brand color as the default; `#c96442` kept as a swatch option. Everything else (CSS custom-property names, `color-mix` formula, `normalizeAccentColor`/`resolveAccentColor`/`applyAppearanceToDocument` logic) is verbatim. |
-| `src/utils/dom-subscriptions.ts` | `providers/dom/chat-pane.dom.ts` (`subscribeOutsideClickOrEscape`, `subscribeWindowEvent`, `subscribeVisibleFocusOrVisibilityChange`, `scheduleInterval`, `scheduleTimeout`, `openExternalUrl`, `getDocumentBody`) + `providers/dom/chat-composer.dom.ts` (`getViewportSize`) | Verbatim logic. These two origin files were headed "DOM bridges owned exclusively by the chat-pane/chat-composer slice," but the specific functions ported have zero chat/composer/pane-specific logic in their bodies (pure window/document event-subscription primitives) — re-verified against real usage before lifting, same check `docs/jini-port/ui-extraction-plan.md`'s §A footnotes call out for `composer-detail-position.ts` etc. Functions left behind in the origin files (`readComposerDraft`/`writeComposerDraft`, `openDesignSystemPickerTrigger`, `subscribeComposerPortalRect`, `subscribeComposerLayerHeight`) are domain-specific (composer draft persistence, a composer-specific trigger selector, composer/pane rect-tracking tied to layout assumptions) and were left for `@jini/chat-react`. |
+| `src/utils/dom-subscriptions.ts` | `providers/dom/chat-pane.dom.ts` (`subscribeOutsideClickOrEscape`, `subscribeWindowEvent`, `subscribeVisibleFocusOrVisibilityChange`, `scheduleInterval`, `scheduleTimeout`, `openExternalUrl`, `getDocumentBody`) + `providers/dom/chat-composer.dom.ts` (`getViewportSize`) | Verbatim logic. These two origin files were headed "DOM bridges owned exclusively by the chat-pane/chat-composer slice," but the specific functions ported have zero chat/composer/pane-specific logic in their bodies (pure window/document event-subscription primitives) — re-verified against real usage before lifting, same check `foundry/docs/jini-port/ui-extraction-plan.md`'s §A footnotes call out for `composer-detail-position.ts` etc. Functions left behind in the origin files (`readComposerDraft`/`writeComposerDraft`, `openDesignSystemPickerTrigger`, `subscribeComposerPortalRect`, `subscribeComposerLayerHeight`) are domain-specific (composer draft persistence, a composer-specific trigger selector, composer/pane rect-tracking tied to layout assumptions) and were left for `@jini/chat-react`. |
 
 All five files have real unit tests (`*.test.ts` alongside each). None of
 `copyToClipboard`/`applyAppearanceToDocument`/`dom-subscriptions.ts` had a
@@ -222,7 +222,7 @@ list (~110 files). Summary of the routing decisions:
 - **`features/byok-config` territory** (out of scope this task, owned by
   another task per the dispatch brief): `state/apiProtocols.ts` is the exact
   OD-specific data (`SUGGESTED_MODELS_BY_PROTOCOL`, `API_KEY_PLACEHOLDERS`,
-  etc.) `docs/jini-port/ui-extraction-plan.md` §B already flags as the
+  etc.) `foundry/docs/jini-port/ui-extraction-plan.md` §B already flags as the
   residue a `ProviderCatalogPort` needs to abstract away; `lib/
   resolve-finalize-request.ts` and `providers/connection-test.ts`/
   `provider-models.ts` are the BYOK finalize/connection-test transport this
@@ -282,7 +282,7 @@ across `packages/ui/src/**`.
 
 ## Section: ui-extraction-plan.md §A — flat-group items (2026-07-17)
 
-Scope: `docs/jini-port/ui-extraction-plan.md` section A only (13 components,
+Scope: `foundry/docs/jini-port/ui-extraction-plan.md` section A only (13 components,
 1 hook, 3 utils). Run via a cloud routine, testing whether frontend/component
 porting (as opposed to prior backend-milestone cloud runs) works through this
 mechanism — see the honesty note at the end of this section for what that
@@ -421,11 +421,11 @@ doing frontend/component porting rather than a backend milestone:
 
 ## Section: `features/connectors/` — ConnectorsBrowser.tsx canary (2026-07-17)
 
-Source: `integrations/open-design/reference/components-original/ConnectorsBrowser.tsx`
+Source: `foundry/integrations/open-design/reference/components-original/ConnectorsBrowser.tsx`
 (1,573 lines) + the two pure helpers it imported from `EntryView.tsx`
 (`isTrustedConnectorCallbackOrigin`, `sortConnectorsForSearch`/
 `getConnectorSearchScore`/`sortConnectorsForDisplay`). Per
-`docs/jini-port/god-components-extraction-plan.md` §0 — the canary for the
+`foundry/docs/jini-port/god-components-extraction-plan.md` §0 — the canary for the
 broader god-component extraction plan; several more components are queued
 behind it pending how this one went. Per r6 §1.15: **FULL SLICE**, the
 cleanest full-file candidate in the whole sweep — nearly the entire file is
@@ -591,7 +591,7 @@ localizes, not just that `t()` calls compile. 145 connectors tests now (was
 144), all green.
 
 Also caught and fixed while re-verifying: `types.ts`'s provenance comment
-cited the vendored reference path literally (`integrations/open-design/...`),
+cited the vendored reference path literally (`foundry/integrations/open-design/...`),
 which is a real, unfixed purity-guard leak the original session's "clean,
 zero matches" self-report missed — reworded per the same convention
 `@jini/deploy`'s source-map already documents. A pre-existing, unrelated
@@ -649,7 +649,7 @@ replaces the prior test 1:1).
 ### Honesty note — is this pattern ready to scale to the rest of the list?
 
 Mostly yes, with two caveats worth flagging before dispatching the next
-items in `docs/jini-port/god-components-extraction-plan.md` §1:
+items in `foundry/docs/jini-port/god-components-extraction-plan.md` §1:
 
 - **The plan doc under-specifies what needs generifying** — this is now the
   *second* time (after the i18n/utils task's `ExportDiagnosticsButton`/
@@ -681,11 +681,11 @@ process reminders for the next session, not blockers.
 ## Section: `features/progress-card/` — the progress/status card pattern (2026-07-17)
 
 Source: `WorkspaceActivityCard` + `GenerationStatusCard` in
-`integrations/open-design/reference/components-original/DesignSystemFlow.tsx`
+`foundry/integrations/open-design/reference/components-original/DesignSystemFlow.tsx`
 (lines 3076–3369 of 5,439), plus their two upstream helper modules
 (`runtime/todos.ts`, `runtime/file-ops.ts` + `runtime/tool-events.ts`'s
 `dedupeToolUsesById`). Per
-`docs/jini-port/god-components-extraction-plan.md` §1 item 2 and r6 §1.5:
+`foundry/docs/jini-port/god-components-extraction-plan.md` §1 item 2 and r6 §1.5:
 the *same* "progress bar + status icon + todo/step list" shape,
 independently reimplemented twice against two different data shapes
 (`ChatMessage.events`/`AgentEvent` vs. `DesignSystemGenerationJob`). Flagged
@@ -835,7 +835,7 @@ copy verbatim to explain why it was excluded (the same class of mistake
 above). Reworded to describe the exclusion without repeating the branded
 string. Re-run after the fix: **clean, zero matches.**
 
-**Vendored path literal** (`integrations/open-design/reference`) in any
+**Vendored path literal** (`foundry/integrations/open-design/reference`) in any
 comment: **clean, zero matches** on both the first pass and re-check.
 
 ### i18n verification
@@ -909,7 +909,7 @@ generic), this pattern's OD-specific parts (the two orchestrators, job
 useModalWindowDragGuard (2026-07-17)
 
 Three files verified reusable (by direct reading) in
-`integrations/open-design/reference/od-web-src.orig/`:
+`foundry/integrations/open-design/reference/od-web-src.orig/`:
 
 | Jini file | Origin | What changed |
 |---|---|---|
@@ -953,8 +953,8 @@ new source files + their tests: clean, zero matches.
 
 ## Section: `features/browser-chrome/` — DesignBrowserPanel.tsx partial slice (2026-07-17)
 
-Source: `integrations/open-design/reference/components-original/DesignBrowserPanel.tsx`
-(3,654 lines). Per `docs/jini-port/god-components-extraction-plan.md`'s Section B row —
+Source: `foundry/integrations/open-design/reference/components-original/DesignBrowserPanel.tsx`
+(3,654 lines). Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s Section B row —
 `features/browser-chrome/` (embeddable webview/iframe browser tab) — and r6 §1.12
 ("PARTIAL, larger yield than expected"): unlike the connectors canary, this is
 explicitly **not** a full-file slice. Only the navigation-stack/address/history/
@@ -1298,12 +1298,12 @@ across 62 files package-wide (the toolbox branch's own `useDismissOnOutsideOrEsc
 
 ## Section: `features/sketch-editor/` — SketchEditor.tsx's Excalidraw shim (2026-07-17)
 
-Source: `integrations/open-design/reference/components-original/SketchEditor.tsx`
+Source: `foundry/integrations/open-design/reference/components-original/SketchEditor.tsx`
 (1,088 lines) + the two pure helpers it imported (`sketch-model.ts`'s
 `sanitizeExcalidrawAppState`/`emptySketchScene`/`sketchSceneHasContent`,
 `sketch-colors.ts`'s theme-aware default stroke color). Per
-`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §B row
-and `docs/jini-port/recon/r6-god-component-internals.md` §1.22: "near-FULL
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §B row
+and `foundry/docs/jini-port/recon/r6-god-component-internals.md` §1.22: "near-FULL
 SLICE — strongest find among the small files," ~60-70% of the file is a
 reusable Excalidraw-integration shim. Target was `packages/ui/src/features/sketch-editor/`
 rather than `@jini/renderers-react` — that package's README/source-map didn't
@@ -1457,8 +1457,8 @@ its own canvas primitives):
 
 ## Section: `features/asset-grid/` — LibrarySection.tsx redo (2026-07-17)
 
-Source: `integrations/open-design/reference/components-original/LibrarySection.tsx`
-(1,401 lines), read in full. Per `docs/jini-port/god-components-extraction-plan.md`'s
+Source: `foundry/integrations/open-design/reference/components-original/LibrarySection.tsx`
+(1,401 lines), read in full. Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s
 Consolidation map (section B, "Own feature"): `features/asset-grid/` (generic
 `AssetGrid<TAsset>`) ← `LibrarySection.tsx` — "rubber-band multi-select (the
 single cleanest generic core in the whole sweep, per §1.16), facets,
@@ -1483,7 +1483,7 @@ at the time) still uses the old flat layout and was read only for its
 internal ports+dependencies+hooks+components+barrel discipline, not its
 exact paths. `features/progress-card/`, named as a second structural
 reference in this task's own dispatch prompt, **does not exist in this
-checkout** — despite `docs/jini-port/god-components-extraction-plan.md` and
+checkout** — despite `foundry/docs/jini-port/god-components-extraction-plan.md` and
 `packages/ui/README.md` both describing it as "✅ landed, PR #1." Flagging
 this discrepancy rather than silently working around it; `features/connectors/`
 alone was sufficient as the structural precedent.
@@ -1736,7 +1736,7 @@ identity) is also clean. Two doc comments cite the bare original filename
 `LibrarySection.tsx` by name (in `AssetGrid.tsx` and
 `useRubberBandDrag.ts`) — this is provenance, not a vendored-path leak (the
 connectors canary's own caught mistake was citing the full
-`integrations/open-design/...` path literally; neither of these comments
+`foundry/integrations/open-design/...` path literally; neither of these comments
 does that, and citing a bare source filename matches the connectors
 package's own shipped precedent, e.g. `rules.ts`'s "Pure logic ported from
 OD's `ConnectorsBrowser.tsx`" docblock).
@@ -1814,7 +1814,7 @@ placed inside `src/`. Dev-only; no runtime dependency added.
 ## Section: `features/viewer-shell/` — media-viewer shell extraction (2026-07-17)
 
 Source: a vendored OD file-viewer god-component's media-viewer shell family
-(the specific pieces named in `docs/jini-port/god-components-extraction-plan.md`'s
+(the specific pieces named in `foundry/docs/jini-port/god-components-extraction-plan.md`'s
 consolidation map row for this target — the file itself stays vendored,
 14,275 lines, and is not otherwise touched). Per that doc's own r6-derived
 verdict, this is a **PARTIAL** extraction of a **PARTIAL** file: only the
@@ -1903,7 +1903,7 @@ Read side by side:
 
 ### The `CommentSidePanel` generic-type gap the recon doc didn't call out
 
-`docs/jini-port/god-components-extraction-plan.md` (quoting r6 §1.1)
+`foundry/docs/jini-port/god-components-extraction-plan.md` (quoting r6 §1.1)
 describes `CommentSidePanel`/`CommentSideDock` as "already prop-abstracted
 ... only `PreviewComment`'s type is OD-specific — textbook generic-shape-OD-
 type-parameter." Reading the full component surfaced two more real gaps a
@@ -2007,7 +2007,7 @@ translated text actually renders.
 `grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"`
 across `packages/ui/src/features/viewer-shell/`: clean, zero matches.
 A second, stricter pass for the literal vendored reference path
-(`grep -rn "components-original\|integrations/open-design"`) is also clean
+(`grep -rn "components-original\|foundry/integrations/open-design"`) is also clean
 — every doc comment in this feature describes provenance as "the source
 component" rather than citing the vendored file path literally, per the
 connectors addendum's warning about exactly this leak.
@@ -2071,8 +2071,8 @@ matcher-type augmentation.
 
 ## Section: `features/settings-dialog/` shell + 6 tabs — `SettingsDialog.tsx` (2026-07-17)
 
-Source: `integrations/open-design/reference/components-original/SettingsDialog.tsx`
-(8,538 lines) — item 5 in `docs/jini-port/god-components-extraction-plan.md`'s
+Source: `foundry/integrations/open-design/reference/components-original/SettingsDialog.tsx`
+(8,538 lines) — item 5 in `foundry/docs/jini-port/god-components-extraction-plan.md`'s
 priority list, resolving the exact Consolidation-map row: `features/settings-dialog/`
 (shell) + `features/settings-dialog/tabs/{appearance,notifications,language,
 instructions,integrations}`. Per r6 §1.3: 8 of the file's 17 real tabs were
@@ -2149,7 +2149,7 @@ Ran across every new file: no orphaned `useState`/`useRef` found (`IntegrationsT
 
 ## Section: `features/tab-strip/` — WorkspaceTabsBar.tsx + FileWorkspace.tsx `Tab` consolidation (2026-07-18)
 
-Source: `WorkspaceTabsBar.tsx` (1,220 lines, the app's top-level workspace tab bar) and `FileWorkspace.tsx`'s inline `Tab` component (line ~5413 of 5,709, one project's file/terminal/browser/sketch tab strip) — both read in full from a fresh clone of the real OD fork (`https://github.com/leonaburime-ucla/open-design.git`, `main` @ `0b88ef56144b5a42dc427c1292ae22676d698a34`), not the frozen `integrations/open-design/reference/` snapshot. Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A `features/tab-strip/` row and r6 §3's "Draggable/reorderable tab-strip item" cross-file finding: r6 confirms these are two **independent, divergent** implementations of the same interaction — not shared even within OD's own codebase — so this task designs one generic primitive rather than porting either verbatim. Checked existing `packages/ui/src/features/` (`viewer-shell`, `browser-chrome`, `asset-grid`, etc.) and `src/components/` for an existing tab-strip/drag-reorder primitive first, per the audit-findings note in the dispatch brief about an undetected duplicate shipped previously — none found; `viewer-shell`'s `useCommentReorder` is a different domain (reordering a comment list, not a tab strip).
+Source: `WorkspaceTabsBar.tsx` (1,220 lines, the app's top-level workspace tab bar) and `FileWorkspace.tsx`'s inline `Tab` component (line ~5413 of 5,709, one project's file/terminal/browser/sketch tab strip) — both read in full from a fresh clone of the real OD fork (`https://github.com/leonaburime-ucla/open-design.git`, `main` @ `0b88ef56144b5a42dc427c1292ae22676d698a34`), not the frozen `foundry/integrations/open-design/reference/` snapshot. Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A `features/tab-strip/` row and r6 §3's "Draggable/reorderable tab-strip item" cross-file finding: r6 confirms these are two **independent, divergent** implementations of the same interaction — not shared even within OD's own codebase — so this task designs one generic primitive rather than porting either verbatim. Checked existing `packages/ui/src/features/` (`viewer-shell`, `browser-chrome`, `asset-grid`, etc.) and `src/components/` for an existing tab-strip/drag-reorder primitive first, per the audit-findings note in the dispatch brief about an undetected duplicate shipped previously — none found; `viewer-shell`'s `useCommentReorder` is a different domain (reordering a comment list, not a tab strip).
 
 ### What the two sources actually shared vs. differed on
 
@@ -2202,7 +2202,7 @@ jsdom has no `DragEvent` constructor (a known jsdom gap). `@testing-library/dom`
 
 ### Purity grep
 
-`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` across every file under `features/tab-strip/`: **clean, zero matches.** The stricter self-imposed pass (`grep -rn "od-\|open-design\.ai\|openDesignDesktop"`) surfaced one hit — `types.ts`'s doc comment referencing `docs/jini-port/god-components-extraction-plan.md` by filename, where `god-components` contains the substring `od-` (`g` + `od-` + `components`) — reviewed and confirmed a false positive (a doc-filename reference, not a product-identity string), not a fix. No `od-`-prefixed CSS class names were introduced (this feature ships zero CSS, matching `Toast.tsx`/`connectors`/`viewer-shell` precedent — visual styling was explicitly out of scope, only `jini-tab-strip*` bare class hooks are emitted).
+`grep -rn "Open Design\|OD_\|--od-stamp\|/tmp/open-design\|@open-design/"` across every file under `features/tab-strip/`: **clean, zero matches.** The stricter self-imposed pass (`grep -rn "od-\|open-design\.ai\|openDesignDesktop"`) surfaced one hit — `types.ts`'s doc comment referencing `foundry/docs/jini-port/god-components-extraction-plan.md` by filename, where `god-components` contains the substring `od-` (`g` + `od-` + `components`) — reviewed and confirmed a false positive (a doc-filename reference, not a product-identity string), not a fix. No `od-`-prefixed CSS class names were introduced (this feature ships zero CSS, matching `Toast.tsx`/`connectors`/`viewer-shell` precedent — visual styling was explicitly out of scope, only `jini-tab-strip*` bare class hooks are emitted).
 
 ### Coverage / vitest config change
 
@@ -2222,10 +2222,10 @@ Source: `DesignSystemsTab.tsx` (1,282 lines) in the real OD fork, commit
 `0b88ef56144b5a42dc427c1292ae22676d698a34` on `main`
 (`https://github.com/leonaburime-ucla/open-design.git`, cloned fresh for this
 task per the skill's cloud-dispatch preflight — not the vendored
-`integrations/open-design/reference/` snapshot). Per
-`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A
+`foundry/integrations/open-design/reference/` snapshot). Per
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A
 row `features/list-detail-panel/` and
-`docs/jini-port/recon/r6-god-component-internals.md` §1.18/§4's
+`foundry/docs/jini-port/recon/r6-god-component-internals.md` §1.18/§4's
 "Master-detail (list+preview) navigator" cross-file pattern.
 
 ### Shared-shape verification (the task's own required first step)
@@ -2353,13 +2353,13 @@ exact kind of end-to-end proof).
 - Purity grep (product-identity strings + `od-` class prefix): clean, see above.
 ## Section: flat atoms — `scrollWorkspaceTabsWithWheel` + `DesignSystemFlow` color math (2026-07-18)
 
-Scope: two small, independent bucket-A atoms from `docs/jini-port/god-components-extraction-plan.md`'s
+Scope: two small, independent bucket-A atoms from `foundry/docs/jini-port/god-components-extraction-plan.md`'s
 Consolidation map §C ("Flat `components/`/`hooks/`/`utils/`"), dispatched narrower than the task's
 original scope — `FileViewer.tsx`'s `CodeWithLines`/`JsonPanel` were pulled out to a future
 `FileViewer.tsx` full-read session (per `todo.md`) rather than done here.
 
 Source: fresh clone of `leonaburime-ucla/open-design` at commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
-(2026-07-02), not the vendored `integrations/open-design/reference/` snapshot. Both source files
+(2026-07-02), not the vendored `foundry/integrations/open-design/reference/` snapshot. Both source files
 (`apps/web/src/components/FileWorkspace.tsx`, 5,709 lines; `apps/web/src/components/DesignSystemFlow.tsx`,
 5,439 lines) were read in full around their target regions, not sampled, to confirm the exact
 generic/OD-specific boundary before extracting.
@@ -2371,7 +2371,7 @@ Ported near-verbatim (logic unchanged) from `FileWorkspace.tsx:5536-5558` (`scro
 `Pick<HTMLDivElement, ...>`/`Pick<WheelEvent, ...>` shapes, zero OD types, zero product strings.
 Renamed `scrollWorkspaceTabsWithWheel` → `scrollTabsWithWheel`: "Workspace" named OD's specific
 `FileWorkspace` tab strip, not a generic concept — the function itself works for any horizontal,
-overflowing tab strip (this is also the shape `docs/jini-port/god-components-extraction-plan.md`'s
+overflowing tab strip (this is also the shape `foundry/docs/jini-port/god-components-extraction-plan.md`'s
 still-open `features/tab-strip/` consolidation target would want, per the Consolidation map §A). Shipped
 as a plain exported function in `src/utils/` (matching `dom-subscriptions.ts`'s precedent for DOM-event
 utilities that aren't themselves React hooks), not `src/hooks/` — despite the plan doc's own §C listing
@@ -2436,11 +2436,11 @@ across both new source files and both new test files: **clean, zero matches.**
   unchanged, no boundary violations introduced.
 ## Section: bucket-A flat atoms — NewProjectPanel / PluginsView / EntryShell (2026-07-18)
 
-Scope: `docs/jini-port/god-components-extraction-plan.md` Section C's flat-atom
+Scope: `foundry/docs/jini-port/god-components-extraction-plan.md` Section C's flat-atom
 row for three god-files' small presentational components (not the files'
 larger stateful bodies, which stay OD-specific). Cloud-dispatch preflight:
 source repo `leonaburime-ucla/open-design`, commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
-(cloned fresh to `/tmp/od-source`, not the vendored `integrations/open-design/reference/`
+(cloned fresh to `/tmp/od-source`, not the vendored `foundry/integrations/open-design/reference/`
 snapshot); destination `packages/ui/src/react/components/`; task branch
 `feature/jini-ui-flat-atoms-onboarding-plugins`; validation commands
 `pnpm --filter @jini/ui typecheck`, `pnpm --filter @jini/ui exec vitest run --coverage`,
@@ -2455,7 +2455,7 @@ function into a new file" port for each one, not a vertical-slice refactor.
 
 ### Choice-card overlap check (required by this task's dispatch prompt)
 
-r6 (`docs/jini-port/recon/r6-god-component-internals.md` line ~136) flags a
+r6 (`foundry/docs/jini-port/recon/r6-god-component-internals.md` line ~136) flags a
 "choice-card shape, maybe three times" concern between `EntryShell.tsx`'s
 `OnboardingChoiceCard` and `NewProjectPanel.tsx`'s `OptionCards<T>`/
 `FidelityCard`. Before shipping `OptionCards<T>`, searched this repo
@@ -2531,14 +2531,14 @@ anywhere in this batch.
 
 ## Section: flat atoms — `DesignKitView.tsx` + `home-hero/EdgeAutoScroll.tsx` (2026-07-18)
 
-Scope: `docs/jini-port/god-components-extraction-plan.md`'s Section C (bucket-A
+Scope: `foundry/docs/jini-port/god-components-extraction-plan.md`'s Section C (bucket-A
 flat atoms, not `features/` folders) for the two items listed for this batch:
 `DesignKitView.tsx`'s `BrandLogo`/`HeaderActionsMenu`/`useBrandFonts`/
 `designMd*` utilities, and `HomeHero.tsx`'s already-isolated
 `home-hero/EdgeAutoScroll.tsx`. Source: a fresh clone of the real
 `leonaburime-ucla/open-design` fork (commit `0b88ef56144b5a42dc427c1292ae22676d698a34`,
 `main`, 2026-07-02), per the cloud-dispatch preflight — not the vendored
-`integrations/open-design/reference/` snapshot. Both source files were read
+`foundry/integrations/open-design/reference/` snapshot. Both source files were read
 in full before extracting anything, per the batch instruction.
 
 ### What shipped
@@ -2672,9 +2672,9 @@ in both passes.
 
 Source: `apps/web/src/components/NewAutomationModal.tsx` (1,165 lines in the
 real clone at `leonaburime-ucla/open-design`, commit at dispatch time —
-**not** `integrations/open-design/reference/`'s frozen snapshot, per this
+**not** `foundry/integrations/open-design/reference/`'s frozen snapshot, per this
 task's mandate to clone the real fork), per
-`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map
 Section B rows for `features/schedule-picker/` and
 `features/mention-autocomplete/`, and recon `r6-god-component-internals.md`
 §1.19. Two separate `features/<domain>/` slices, both under the NEW
@@ -2731,7 +2731,7 @@ The origin wires `onKeyDown={handlePromptKeyDown}` (Escape closes the mention) a
 
 ### The mention-autocomplete 3-way overlap (flagged per the task brief, not resolved here)
 
-`docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" list (~line 148) names three "type a trigger character, get a filtered picker" shapes: `QuickSwitcher.tsx` (Cmd-K fuzzy file/tab switcher), this file's `@`-mention/capability picker (now shipped as `MentionAutocomplete`), and `composer/*`'s Lexical `@mention` system (`MentionNode.ts` + siblings). Read all three at dispatch time to check this:
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" list (~line 148) names three "type a trigger character, get a filtered picker" shapes: `QuickSwitcher.tsx` (Cmd-K fuzzy file/tab switcher), this file's `@`-mention/capability picker (now shipped as `MentionAutocomplete`), and `composer/*`'s Lexical `@mention` system (`MentionNode.ts` + siblings). Read all three at dispatch time to check this:
 
 - **`QuickSwitcher.tsx`** (`apps/web/src/components/QuickSwitcher.tsx` in the real clone): a full-screen Cmd-K-style modal overlay with a single always-visible search input (no inline trigger-character detection — it's already open when mounted), fuzzy-scored ranked results (`scoreMatch`/`scoreWorkspaceContextMatch`, prefix/substring/full-text tiers), arrow-key + Enter keyboard navigation with a `cursor` index and `nextCursor` wraparound, and a recents-first empty-query ordering (`quickSwitcherRecents`). **Not the same component shape as `MentionAutocomplete`**: no inline-textarea trigger detection, no tabbed multi-category grouping, no removable-chips multi-select, and a fundamentally different selection model (arrow-key cursor + Enter, not click/mousedown-to-pick with a chip trail). Both are "type text, get filtered results," but `MentionAutocomplete`'s defining shape (trigger character *inside* a text field, multi-category tabs, persistent multi-select chips) doesn't match `QuickSwitcher`'s (an already-open single-purpose fuzzy-match palette with keyboard-cursor selection). **Conclusion: do not fold `QuickSwitcher.tsx` into `features/mention-autocomplete/`** — it's a distinct shape (closer to a generic "command palette" primitive) and should get its own extraction if/when it's prioritized.
 - **`composer/*`'s Lexical `@mention` system** (`apps/web/src/components/composer/MentionNode.ts` + siblings, referenced but not fully read in this dispatch — out of this task's file scope): per r5's own characterization ("generic Lexical rich-text/mention editor primitive," target `features/rich-text-input/`), this is a *contenteditable rich-text* mention system built on the Lexical editor framework, rendering mentions as atomic inline nodes inside a WYSIWYG document model — a fundamentally different implementation substrate than `MentionAutocomplete`'s plain `<textarea>` + string-splicing approach. They likely share only the shallow "type `@`, see a filtered list" *interaction pattern*, not a reusable component-level shape — a plain textarea can't host a Lexical node tree, so `MentionAutocomplete` cannot become `features/rich-text-input/`'s implementation, and shouldn't try to.
@@ -2739,7 +2739,7 @@ The origin wires `onKeyDown={handlePromptKeyDown}` (Escape closes the mention) a
 
 ### The `features/progress-card/` discrepancy (flagged per the task brief)
 
-`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map (line ~100) and its §1 priority list (line ~267) both describe `features/progress-card/` as "✅ landed"/"already shipped." **This is not true in this repo as of this dispatch (2026-07-18, branch `extract/schedule-picker-and-mention-autocomplete` off `origin/main` at `e3110ac`)**: `packages/ui/src/features/progress-card/` does not exist — confirmed via `ls packages/ui/src/features/` (lists `asset-grid, browser-chrome, connectors, i18n, observability, settings-dialog, sketch-editor, viewer-shell` only) and via `find`/`ls` directly on the path (no such file or directory). This task did not attempt to reconcile or re-land it — it's out of scope for the schedule-picker/mention-autocomplete extraction — but is recorded here per the task brief's explicit instruction not to let a doc claim stand unverified. A future task should either land `features/progress-card/` for real or correct the plan doc's two claims.
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map (line ~100) and its §1 priority list (line ~267) both describe `features/progress-card/` as "✅ landed"/"already shipped." **This is not true in this repo as of this dispatch (2026-07-18, branch `extract/schedule-picker-and-mention-autocomplete` off `origin/main` at `e3110ac`)**: `packages/ui/src/features/progress-card/` does not exist — confirmed via `ls packages/ui/src/features/` (lists `asset-grid, browser-chrome, connectors, i18n, observability, settings-dialog, sketch-editor, viewer-shell` only) and via `find`/`ls` directly on the path (no such file or directory). This task did not attempt to reconcile or re-land it — it's out of scope for the schedule-picker/mention-autocomplete extraction — but is recorded here per the task brief's explicit instruction not to let a doc claim stand unverified. A future task should either land `features/progress-card/` for real or correct the plan doc's two claims.
 
 ### i18n
 
@@ -2766,7 +2766,7 @@ Source: a real design-tool origin project's web tree, branch
 `refactor/web-memory-slice` @ commit `d695f1e0f2b85a032aa7ce4895a3eb764cb1b65d`,
 file `apps/web/src/components/DesignFilesPanel.tsx` (1,731 lines), read in
 full and re-verified line-by-line while porting each piece (per
-`docs/jini-port/skills/fixing-open-design-web.md`'s standing instruction —
+`foundry/docs/jini-port/skills/fixing-open-design-web.md`'s standing instruction —
 never invent behavior from a summary). Task brief: extract a generic
 `AssetTreeBrowser<TFile>` + `FilePreviewPane<TFile>` UI feature into
 `packages/ui/src/features/asset-tree-browser/`. This had never been
@@ -2997,7 +2997,7 @@ retry) as a standard requirement for future async-heavy ports is tracked as a
 
 ### Where it landed, and why (`packages/ui/src/features/memory/`, not `chat-react`)
 
-Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map and
+Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map and
 `packages/ui/README.md`'s scope boundary: Memory is a settings/data-management
 surface (saved facts/preferences, an editable index, connector-sourced
 suggestions) — the same shape as the already-shipped `features/connectors/` and
@@ -3267,7 +3267,7 @@ used in the connectors canary section above.
   having run `pnpm -r run build`) — the same set of pre-existing breakages
   every prior section in this file has already documented. `@jini/ui` itself,
   `@jini/core`, `@jini/protocol`, `@jini/platform`, `@jini/sidecar`,
-  `@jini/chat-core`, and `automation/project-runner` all typecheck clean.
+  `@jini/chat-core`, and `foundry/automation/project-runner` all typecheck clean.
 - Purity grep (`Open Design`/`OD_`/`--od-stamp`/`/tmp/open-design`/
   `@open-design/`/`open-design.ai`/`openDesignDesktop`, plus the stricter
   lowercase `od-`/`composio` self-imposed pass) across every file in
@@ -3286,7 +3286,7 @@ used in the connectors canary section above.
 
 Two independent OD file-staging zones, both read in full from the real fork
 (`git clone https://github.com/leonaburime-ucla/open-design.git`, not this
-repo's frozen `integrations/open-design/reference/` snapshot):
+repo's frozen `foundry/integrations/open-design/reference/` snapshot):
 
 - `apps/web/src/components/DesignSystemAssetDropzone.tsx` (564 lines) — a
   rich, kind-aware thumbnail grid over staged `File[]`: native drag/drop
@@ -3529,13 +3529,13 @@ Explicit tests cover all 4 categories against both:
 ## Section: `html-viewer` — classification of `HtmlViewer` + `FileVersionManagerModal` (2026-07-18)
 
 **Preflight.** Source: the real OD fork cloned fresh for this task at
-`/tmp/od-source` (NOT the frozen `integrations/open-design/reference/`
+`/tmp/od-source` (NOT the frozen `foundry/integrations/open-design/reference/`
 snapshot), commit `0b88ef56144b5a42dc427c1292ae22676d698a34`
 (2026-07-02), file `apps/web/src/components/FileViewer.tsx`, **12,652
 lines in this checkout** — differs from the 14,275/14,495-line figures
 cited elsewhere in this repo's docs; those figures describe a different
 point in the file's history, not this session's ground truth. Per
-`docs/jini-port/god-components-extraction-plan.md`'s Consolidation map,
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map,
 this file is filed under "B. Own feature," `features/viewer-shell/`
 ✅ done, with `HtmlViewer`/`FileVersionManagerModal` filed under "D.
 Confirmed OD-specific — do not attempt." This task's brief explicitly
@@ -3545,7 +3545,7 @@ current source, done by two independent deep-read passes (not sampled,
 not extrapolated), specifically checking the "plausible generic
 candidates" a partial read had flagged earlier the same night.
 
-**Correction to `docs/jini-port/recon/r6-god-component-internals.md` §1.1's
+**Correction to `foundry/docs/jini-port/recon/r6-god-component-internals.md` §1.1's
 line counts**, found by both passes independently: `HtmlViewer` is
 **6,076 real lines** (5248–11323), not ~7,110; `FileVersionManagerModal` is
 **583 real lines** (2549–3131, plus 40 lines of directly-adjacent
@@ -3855,7 +3855,7 @@ real, defensible generic shape the classification described — none
 
 Source: `apps/web/src/components/EditorIcon.tsx` (168 lines, real clone at
 `leonaburime-ucla/open-design` commit `0b88ef56144b5a42dc427c1292ae22676d698a34`),
-per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps"
+per `foundry/docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps"
 list ("Icon-by-key renderer, twice") and this task's own brief. That doc's
 row flags an unresolved question — whether `EditorIcon` should become a data
 config registered under `Icon.tsx`'s existing lookup rather than its own
@@ -4170,7 +4170,7 @@ verified stable across 5 consecutive full-package `test:coverage` runs afterward
 - `pnpm guard` (repo root): `[guard] ok` — clean, no boundary violations introduced.
 ## Section: `features/source-config-list/` — generic `SourceConfigList<TSource>` (2026-07-18)
 
-Per `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A row
+Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map §A row
 `features/source-config-list/`, and r6 §3's cross-cutting pattern table: "URL/OAuth source
 add + trust/status + list + per-item test/refresh/remove" is the single most-repeated shape
 in the entire 23-file god-component sweep — appears in at least 6 places. This task ships the
@@ -4515,7 +4515,7 @@ per the task's own instruction, a rules-level opportunity only, never a UI-level
 ## Section: `features/resource-dashboard/` — DesignsTab.tsx + TasksView.tsx "resource-dashboard shell, twice" (2026-07-18)
 
 Part B of a two-part scheduled task (Part A shipped `features/source-config-list/`, section
-above). Per `docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" section:
+above). Per `foundry/docs/jini-port/god-components-extraction-plan.md`'s "5 more overlaps" section:
 
 > **Resource-dashboard shell, twice, both directly Run-vocabulary-relevant**: `DesignsTab.tsx`'s
 > dashboard shell (§1.17 — sub-tabs, search, bulk-actions, a **config-driven status-kanban** whose
@@ -4967,7 +4967,7 @@ interface-only, no runtime declarations.)
 
 Source: `leonaburime-ucla/open-design`, branch `main` @
 `0b88ef56144b5a42dc427c1292ae22676d698a34` (real clone at `/tmp/od-source`,
-per this task's mandate — not `integrations/open-design/reference/`'s
+per this task's mandate — not `foundry/integrations/open-design/reference/`'s
 frozen snapshot), `apps/web/src/components/composer/` (last touched at
 `31d98634c3676ad1e991d5d003a8e3728c273de`): `LexicalComposerInput.tsx`
 (809 lines), `MentionNode.ts` (237 lines), `CaretFloatingLayer.tsx`
@@ -5073,7 +5073,7 @@ Source: `apps/web/src/components/IframeKeepAlivePool.tsx` (403 lines, real
 clone at `leonaburime-ucla/open-design` commit
 `0b88ef56144b5a42dc427c1292ae22676d698a34`), per this task's own brief: "cap
 N mounted iframes, LRU-evict inactive ones, park the rest off-DOM," confirmed
-by `docs/jini-port/god-components-extraction-plan.md`'s Consolidation map to
+by `foundry/docs/jini-port/god-components-extraction-plan.md`'s Consolidation map to
 recur 3 times across OD's own codebase (`FileWorkspace.tsx`'s inline
 browser-webview cache is the still-open third occurrence, explicitly
 deferred there until this canonical implementation existed) — this task is
@@ -5278,7 +5278,7 @@ A full-screen Cmd/Ctrl+P file-and-tab palette: substring+prefix fuzzy scoring,
 arrow-key cursor navigation with wraparound, IME-composition-aware key
 handling, recents-first empty-query ordering.
 
-**Not re-litigated, per the task brief:** `docs/jini-port/god-components-
+**Not re-litigated, per the task brief:** `foundry/docs/jini-port/god-components-
 extraction-plan.md`'s "5 more overlaps" list names `QuickSwitcher.tsx` as
 one of three "type a trigger character, get a filtered picker" shapes,
 alongside `MentionAutocomplete` (already shipped) and the Lexical `@mention`
@@ -5519,7 +5519,7 @@ mines its two remaining pieces named in the task brief.
 
 A generic "proposed change review" widget: a diff/proposed-body preview with
 accept/reject actions, plus a status-badged revision history list. Per
-`docs/jini-port/god-components-extraction-plan.md`'s `features/progress-
+`foundry/docs/jini-port/god-components-extraction-plan.md`'s `features/progress-
 card/` row, r6 flagged these as "conceptually related" to the progress-card
 family ("status-badged... progress bar + status icon") but "not confirmed
 identical, still worth evaluating together before extracting either" — this

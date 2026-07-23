@@ -3,7 +3,7 @@
 Origin: `leonaburime-ucla/open-design`, branch `main`, commit
 `ab453241247865ebb2cd9259b37286282506fe65` (2026-07-02), cloned fresh into
 `/tmp/od-source` for this task (the in-repo
-`integrations/open-design/reference/` snapshot is a frozen extraction-time
+`foundry/integrations/open-design/reference/` snapshot is a frozen extraction-time
 copy and is explicitly unreliable for structural claims per that directory's
 own `README.md`).
 
@@ -560,7 +560,7 @@ review. Nothing found in this pass changes that reasoning or the facts it rests 
 `@jini/node-host`'s `createLocalNodeDaemon` (the actual generic analog) remains, by
 extraction-plan §2.4's own design, "a composition preset a consumer calls from code," not a CLI
 subcommand — a `jini daemon start` would need to hardcode a concrete `dataDir`/port/host
-composition decision that only a specific product (or `apps/reference-web`) actually owns, which
+composition decision that only a specific product (or `examples/reference-web`) actually owns, which
 is precisely the kind of product-shaped decision this package's own `source-map.md` has
 consistently kept out of `@jini/cli` (see the `daemon db`, `config`, and `memory` OD-verdict rows
 above for the same pattern elsewhere). No new evidence surfaced to suggest this verdict should

@@ -315,7 +315,7 @@ export interface LocalNodeDaemon {
  * the compile-time proof.
  *
  * **Why two overloads instead of one generic signature with `BoundIds extends string =
- * KernelBoundIds`:** that single-signature shape is what `docs/jini-port/extraction-plan.md`'s
+ * KernelBoundIds`:** that single-signature shape is what `foundry/docs/jini-port/extraction-plan.md`'s
  * task brief for this file literally shows, but it does not actually work — empirically verified
  * against this repo's own TypeScript (5.9.3, `strict`): when a type parameter both (a) has a
  * default and (b) is referenced inside a conditional type in the same parameter position where it

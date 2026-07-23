@@ -1,7 +1,7 @@
 /**
  * @jini/renderers-react — the artifact renderer registry + sandboxed
- * srcDoc host. See `docs/jini-port/extraction-plan.md` §3 and
- * `docs/jini-port/recon/r4b-webui-design.md` §1 ("@jini/artifacts-react —
+ * srcDoc host. See `foundry/docs/jini-port/extraction-plan.md` §3 and
+ * `foundry/docs/jini-port/recon/r4b-webui-design.md` §1 ("@jini/artifacts-react —
  * RendererRegistry", the pre-lock name for this package) for the design
  * this targets, and `source-map.md` for exact provenance.
  */

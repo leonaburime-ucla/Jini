@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sunday List</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="board">
+      <header>
+        <span class="eyebrow">A tiny Jini sample</span>
+        <h1>Sunday list</h1>
+        <p>Keep the week light. Pick three things that matter.</p>
+      </header>
+      <form id="task-form">
+        <label for="task">New task</label>
+        <div class="input-row">
+          <input id="task" name="task" autocomplete="off" placeholder="Write the next small thing…" />
+          <button type="submit">Add</button>
+        </div>
+      </form>
+      <ul id="tasks">
+        <li><label><input type="checkbox" checked /> Make coffee slowly</label></li>
+        <li><label><input type="checkbox" /> Water the window plants</label></li>
+        <li><label><input type="checkbox" /> Sketch one new idea</label></li>
+      </ul>
+      <footer><span id="remaining">2 things left</span><span>Built to be changed</span></footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

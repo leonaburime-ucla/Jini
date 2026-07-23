@@ -76,7 +76,7 @@ core: `brands`, `design-systems`, `connectors`, `critique`, `figma`, `genui`,
 `prompts`, the entire `apps/web` product UI (`ProjectView`, `FileViewer`,
 `DesignSystemFlow`, `HomeHero`, …), 114K of `i18n` translation data, and vendor
 telemetry (`langfuse`). If a consumer wants these, they belong in an adapter like
-`integrations/open-design/`, never in `@jini/*`.
+`foundry/integrations/open-design/`, never in `@jini/*`.
 
 ## Bottom line
 

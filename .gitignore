@@ -8,12 +8,16 @@ coverage/
 .env
 .env.local
 
+# Local Jini daemon state and browser automation snapshots
+.jini/
+.playwright-mcp/
+
 # Claude Code harness-local session state (worktrees, one-time init flags)
 .claude/
 
 # project-runner local execution state (leases/sandboxes are ephemeral; ledger tasks are committed)
-automation/project-runner/leases/
-automation/project-runner/.sandbox/
+foundry/automation/project-runner/leases/
+foundry/automation/project-runner/.sandbox/
 
 # heavy local graph indexes are never committed (see extraction-plan §H)
 **/graphify-out/

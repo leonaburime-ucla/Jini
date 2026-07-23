@@ -91,7 +91,7 @@ figma, genui, langfuse, …) are absent by design and stay out of the neutral en
 ## D. Dependency-ordered build plan → runnable full generic daemon
 
 Product 🟦 modules are excluded (they belong in a consumer/adapter like
-`integrations/open-design`, per the repo's neutrality boundary). Each phase is
+`foundry/integrations/open-design`, per the repo's neutrality boundary). Each phase is
 checkpointed: commit + push after each unit, not just at phase end.
 
 - **Phase 0 — Triage + assembly spine (prove it boots).**

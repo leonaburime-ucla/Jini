@@ -1,6 +1,6 @@
 /**
  * R3: packages/protocol/** must not import any OD DTO / prompts / analytics / design-systems /
- * anything under integrations/**, apps/**, examples/**, automation/**, or AI-Dev-Shop/**.
+ * anything under foundry/**, examples/**, or AI-Dev-Shop/**.
  * Enforces the downward-only edge @od/* -> @jini/protocol. Additionally: `@jini/protocol` is
  * extraction-plan.md §3's foundational leaf ("pure wire types") — it must not import ANY other
  * `@jini/*` package either, or it stops being a dependency-free base for the rest of the graph.
@@ -12,7 +12,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { Violation } from './check-engine-boundaries.js';
 import { extractImports, listSourceFiles, REPO_ROOT } from './lib/walk-imports.js';
 
-const FORBIDDEN_TOP_LEVEL_DIRS = ['apps', 'integrations', 'examples', 'automation', 'AI-Dev-Shop'];
+const FORBIDDEN_TOP_LEVEL_DIRS = ['foundry', 'examples', 'AI-Dev-Shop'];
 
 export interface CheckProtocolPurityOptions {
   /** Treat this directory as the repo root for both scanning and path classification. */

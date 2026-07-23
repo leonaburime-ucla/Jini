@@ -1,7 +1,6 @@
 packages:
   - packages/*
-  - integrations/open-design
-  - apps/*
+  - foundry/integrations/open-design
   - examples/*
-  - automation/project-runner
+  - foundry/automation/project-runner
 # AI-Dev-Shop is a vendored toolkit (not a workspace package); ADS-memory is project data.

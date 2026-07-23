@@ -2,6 +2,12 @@
 
 This is the project-owned AI Dev Shop workspace. Commit retained project artifacts here so teammates and future agents can see the same durable context.
 
+For the authoritative Jini architecture, porting decisions, and project entry point, read
+`foundry/docs/jini-port/START-HERE.md` and then
+`foundry/docs/jini-port/extraction-plan.md`. Treat `foundry/docs/` as the
+repository's extended project-information library; use this workspace for durable decisions,
+evidence, reports, and curated memory.
+
 - `governance/`: project rules and the live constitution
 - `knowledge/`: stable project memory, learnings, notes, and memory-store entries
 - `sessions/`: session summaries (date, participants, models, Q&A, decisions)

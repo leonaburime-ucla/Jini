@@ -16,7 +16,7 @@ independent opinion on whether the architecture, as currently shaped, should be 
 everything — it is a targeted check for load-bearing structural risks that the team may be
 too close to see.
 
-**Framing note:** the repo's own entry-point doc (`docs/jini-port/START-HERE.md`) states
+**Framing note:** the repo's own entry-point doc (`foundry/docs/jini-port/START-HERE.md`) states
 "Architecture status: LOCKED... Do NOT relitigate it — extend it." That lock was set by the
 project's own prior multi-model debate process (see below) 3 days ago (2026-07-16). The human
 owner is deliberately choosing to re-open a critical review now, specifically because the
@@ -187,8 +187,8 @@ build their own UI.
 | Path | Why it matters |
 |---|---|
 | `AGENTS.md` (repo root) | Directory guide, stated hard boundaries, current package list + status annotations |
-| `docs/jini-port/START-HERE.md` | Says architecture is LOCKED; points to extraction-plan.md as authority |
-| `docs/jini-port/extraction-plan.md` | The locked architecture, decision log, and the §12 whole-system corrections (C1-C9) |
+| `foundry/docs/jini-port/START-HERE.md` | Says architecture is LOCKED; points to extraction-plan.md as authority |
+| `foundry/docs/jini-port/extraction-plan.md` | The locked architecture, decision log, and the §12 whole-system corrections (C1-C9) |
 | `scripts/guard.ts`, `scripts/check-engine-boundaries.ts`, `scripts/check-protocol-purity.ts` | The only automated enforcement that exists today; guard.ts admits it's a skeleton |
 | `packages/http/src/{express,fastify}/` | The new (overnight, unmerged) transport-pluggability split |
 | `packages/node-host/src/create-local-node-daemon.ts` | The composition-preset "zero-interface boot," now transport-switchable |
@@ -214,7 +214,7 @@ build their own UI.
   further, or moving a kernel port, in-flight branches could need rebasing).
 - Whether `project-runner` (the automation execution runtime, explicitly "the one thing to
   build" per extraction-plan.md §12 C6) has been started at all — AGENTS.md says it "lives in"
-  `automation/project-runner/` but the plan says it "does not exist in any repo" as of
+  `foundry/automation/project-runner/` but the plan says it "does not exist in any repo" as of
   2026-07-16; not verified for this packet.
 - Whether the ad hoc packages (`deploy`, `registry`, `memory`, `media`,
   `capability-providers`) have real consumers lined up, or are being built purely speculatively
@@ -224,8 +224,8 @@ build their own UI.
 
 | Source | Notes |
 |---|---|
-| `docs/jini-port/extraction-plan.md` | Primary architecture authority, read in full for this packet |
-| `docs/jini-port/START-HERE.md` | Read in full for this packet |
+| `foundry/docs/jini-port/extraction-plan.md` | Primary architecture authority, read in full for this packet |
+| `foundry/docs/jini-port/START-HERE.md` | Read in full for this packet |
 | `AGENTS.md` | Read in full (auto-loaded every session) |
 | Direct repo inspection (git log, git worktree list, file finds, `guard.ts` contents, CI config search) | Performed live for this packet, 2026-07-19 |
 | `packages/http` + `packages/node-host` test runs | 337 + 57 tests passing, run live for this packet |

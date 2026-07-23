@@ -29,7 +29,7 @@ describe('CredentialStatusBadge', () => {
    * Proves the i18n wiring actually works — mounts under a real translated
    * dictionary rather than only exercising the unconfigured passthrough
    * case, per the i18n policy in
-   * `docs/jini-port/god-components-extraction-plan.md`.
+   * `foundry/docs/jini-port/god-components-extraction-plan.md`.
    */
   it('renders translated copy when an I18nAdapter with a real dictionary is wired in', () => {
     const dict: Record<string, string> = { Configured: 'Konfiguriert' };

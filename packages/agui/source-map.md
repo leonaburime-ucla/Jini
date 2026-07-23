@@ -9,7 +9,7 @@ full; `encode.ts` (207 lines) was inlined as a structural summary (the switch's 
 case's field mapping, in comments) rather than the literal file body — see the "encode.ts — why
 this is a rewrite, not a port" section below for what that means for this port's fidelity.
 
-Per `docs/jini-port/extraction-plan.md` §12 C2: split the run/chat event family (generic, →
+Per `foundry/docs/jini-port/extraction-plan.md` §12 C2: split the run/chat event family (generic, →
 `@jini/protocol`) from the pipeline/genui family (product-specific, must not enter the kernel).
 This port follows that split for the five event kinds with no generic meaning going in — but see
 "Generalization attempt" below, which supersedes a flat drop for four of those five.

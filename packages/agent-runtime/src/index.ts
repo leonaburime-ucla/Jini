@@ -1,7 +1,7 @@
 /**
  * @module @jini/agent-runtime
  *
- * Public barrel. See `docs/jini-port/extraction-plan.md` for the target
+ * Public barrel. See `foundry/docs/jini-port/extraction-plan.md` for the target
  * architecture and `source-map.md` for full provenance.
  *
  * This barrel merges two independently-ported trees:

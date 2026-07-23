@@ -2,7 +2,7 @@
 
 Origin: `leonaburime-ucla/open-design`'s `packages/metatool` on `main`
 (cloned fresh to `/tmp/od-source`; 2 `src` files, ~195 LOC). Per
-`docs/jini-port/recon/r2-packages.md` §13: "build-metadata hash/check/write
+`foundry/docs/jini-port/recon/r2-packages.md` §13: "build-metadata hash/check/write
 mechanics for repo-local tool build outputs (`meta.json`). OD coupling: NONE
 (grep: 0 od-concept files)... likely not needed by an engine."
 
@@ -31,7 +31,7 @@ it into any other package to justify its existence — it's fine for it to
 sit unused for now." No other `@jini/*` package imports `@jini/metatool`,
 and none was added to. Its plausible future use (per the origin package's
 own description: "checking freshness of built tool dist outputs") is for a
-project-runner-style build-cache mechanism `automation/project-runner`
+project-runner-style build-cache mechanism `foundry/automation/project-runner`
 might eventually want — but that's speculation, not a decision made here.
 
 ## Not ported (build tooling, not package content)

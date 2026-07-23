@@ -7,7 +7,7 @@
  * (`ComposerPlusItem[]`, `leadingAccessories`, the mention popover) are
  * generalized from OD's `ChatComposer.tsx` decomposition
  * (`ComposerPlusMenu`/`LibraryPicker`/`SessionModeToggle`-equivalent) per
- * `docs/jini-port/recon/r4b-webui-design.md` §2/§3 — this component renders
+ * `foundry/docs/jini-port/recon/r4b-webui-design.md` §2/§3 — this component renders
  * the slots a host supplies; it does not itself know what a "library
  * picker" or "session mode" is.
  */

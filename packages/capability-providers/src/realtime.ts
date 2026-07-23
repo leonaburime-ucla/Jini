@@ -1,7 +1,7 @@
 /**
  * `RealtimeProvider` — a swappable pub/sub port (live updates pushed to
  * subscribers). Speculative port-design exploration (see `source-map.md`) —
- * no OD source; named in `docs/jini-port/recon/r5b-consumers-matrix.md` §3.3
+ * no OD source; named in `foundry/docs/jini-port/recon/r5b-consumers-matrix.md` §3.3
  * as part of the Zana/Tovu-convergent capability set (Supabase Realtime is
  * Zana's reference adapter).
  *
