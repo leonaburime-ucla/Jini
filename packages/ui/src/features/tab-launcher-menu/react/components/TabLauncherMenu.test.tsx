@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { TabLauncherMenu, type TabLauncherMenuProps } from './TabLauncherMenu.js';
@@ -159,5 +159,122 @@ describe('TabLauncherMenu', () => {
     expect(screen.getByPlaceholderText('Rechercher des fichiers…')).toBeInTheDocument();
     expect(screen.getByText('Ouvrir un fichier')).toBeInTheDocument();
     expect(screen.getByText('Tous les fichiers')).toBeInTheDocument();
+  });
+});
+
+describe('TabLauncherMenu 4-pattern hook override test suite', () => {
+  const dummyAnchor = document.createElement('button');
+
+  it('Pattern 1 — State 1: Closed menu state (no position) via hook override', () => {
+    const customHook = () => ({
+      position: null,
+      containerRef: { current: null },
+      query: '',
+      setQuery: vi.fn(),
+      kindFilter: '*',
+      setKindFilter: vi.fn(),
+      presentKinds: [],
+      actions: [],
+      fileResults: [],
+      tabResults: [],
+      selected: 0,
+      setSelected: vi.fn(),
+      selectFile: vi.fn(),
+      selectTab: vi.fn(),
+      runAction: vi.fn(),
+      handleInputKeyDown: vi.fn(),
+    });
+
+    render(
+      <TabLauncherMenu
+        files={files}
+        anchor={dummyAnchor}
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        useTabLauncherMenu={customHook as any}
+      />,
+    );
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Pattern 2 — State 2: Open menu with file results state via hook override', () => {
+    const customHook = () => ({
+      position: { top: 100, left: 100 },
+      containerRef: { current: null },
+      query: 'apple',
+      setQuery: vi.fn(),
+      kindFilter: '*',
+      setKindFilter: vi.fn(),
+      presentKinds: ['image'],
+      actions: [],
+      fileResults: [files[0]!],
+      tabResults: [],
+      selected: 0,
+      setSelected: vi.fn(),
+      selectFile: vi.fn(),
+      selectTab: vi.fn(),
+      runAction: vi.fn(),
+      handleInputKeyDown: vi.fn(),
+    });
+
+    render(
+      <TabLauncherMenu
+        files={files}
+        anchor={dummyAnchor}
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        useTabLauncherMenu={customHook as any}
+      />,
+    );
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('apple.png')).toBeInTheDocument();
+  });
+
+  it('Pattern 3 — State 3: Empty results match state via hook override', () => {
+    const customHook = () => ({
+      position: { top: 100, left: 100 },
+      containerRef: { current: null },
+      query: 'nonexistent',
+      setQuery: vi.fn(),
+      kindFilter: '*',
+      setKindFilter: vi.fn(),
+      presentKinds: [],
+      actions: [],
+      fileResults: [],
+      tabResults: [],
+      selected: 0,
+      setSelected: vi.fn(),
+      selectFile: vi.fn(),
+      selectTab: vi.fn(),
+      runAction: vi.fn(),
+      handleInputKeyDown: vi.fn(),
+    });
+
+    render(
+      <TabLauncherMenu
+        files={files}
+        anchor={dummyAnchor}
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        useTabLauncherMenu={customHook as any}
+      />,
+    );
+
+    expect(screen.getByText('No files match')).toBeInTheDocument();
+  });
+
+  it('Pattern 4 — State 4: Dynamic search input transition walkthrough using React useState inside test harness', () => {
+    render(<Harness />);
+
+    const input = screen.getByRole('textbox');
+    expect(screen.getByText('apple.png')).toBeInTheDocument();
+    expect(screen.getByText('index.html')).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'apple' } });
+
+    expect(screen.getByText('apple.png')).toBeInTheDocument();
+    expect(screen.queryByText('index.html')).toBeNull();
   });
 });
