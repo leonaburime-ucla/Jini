@@ -1,0 +1,393 @@
+/**
+ * @module providers/google-messages
+ *
+ * Google Generative Language (Gemini) `streamGenerateContent` wire adapter +
+ * tool-loop turn-runner. Sibling of `anthropic-messages.ts`/`openai-chat.ts`
+ * — see those modules' headers for the shared design rationale (package
+ * placement, `extraHeaders` never carrying a hardcoded product-identity
+ * string, the `turn-end-guard.ts` fix for a duplicate-`end`-event class of
+ * bug). Reuses this package's existing `providers/google.ts` URL helpers
+ * (`googleStreamGenerateContentUrl`) rather than rebuilding URL-building
+ * logic — see that module's own doc.
+ *
+ * **Verified against Google's real, current public API docs** (per this
+ * repo's "verify against real API docs, don't guess from memory"
+ * convention — see `anthropic-messages.ts`'s header for the precedent).
+ * Two things worth flagging for a future maintainer:
+ *
+ * 1. **Two REST APIs coexist as of this writing.** Google's docs now lead
+ *    with a newer `interactions` API (`POST /v1beta/interactions`,
+ *    `input`/`previous_interaction_id`/`function_result` shaped) alongside
+ *    the classic `generateContent`/`streamGenerateContent` API
+ *    (`contents: [{role, parts}]`, `functionCall`/`functionResponse`
+ *    parts). This adapter deliberately targets the **classic** API — it is
+ *    what `providers/google.ts#googleStreamGenerateContentUrl` already
+ *    builds a URL for, and what this task's spec calls for. Confirmed via
+ *    `ai.google.dev/api/generate-content` (Content/Part/GenerateContent
+ *    Request/Response field names) and a live web search returning a
+ *    real-world function-calling exchange showing the exact
+ *    `{ functionResponse: { name, response, id } }` shape sent back with
+ *    `role: 'user'` (not `role: 'function'` — there is no `function` role
+ *    in the classic Content schema; `role` is `'user' | 'model' | 'system'`
+ *    only).
+ * 2. **No `finishReason` value means "the model wants a tool call."**
+ *    Unlike Anthropic (`stop_reason: 'tool_use'`) and OpenAI
+ *    (`finish_reason: 'tool_calls'`), Gemini's documented `finishReason`
+ *    enum (`STOP`, `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`,
+ *    `OTHER`) has no tool-call-specific member — a function call is simply
+ *    a `functionCall` part inside an otherwise normal (often
+ *    `finishReason: 'STOP'`) candidate. `runGoogleToolTurn`'s tool-loop
+ *    continuation predicate is therefore `toolCalls.length > 0`, not a
+ *    `finishReason` comparison — the one structural place this adapter
+ *    cannot mirror `anthropic-messages.ts`/`openai-chat.ts` byte-for-byte.
+ *
+ * **Scope for this pass:** text + function-call parts and the tool-
+ * execution loop only. `inlineData`/`fileData` parts (multimodal input/
+ * output) and `promptFeedback`'s per-category safety ratings are out of
+ * scope — a blocked prompt (`promptFeedback.blockReason` present, no
+ * candidates) is still surfaced as an `error` event rather than silently
+ * hanging, but the detailed safety-rating breakdown is not modeled.
+ */
+import { createRoleMarkerGuard } from '../role-marker-guard.js';
+import { redactSecrets, validateBaseUrl } from './connection-guard.js';
+import { googleStreamGenerateContentUrl } from './google.js';
+import { decodeSseStream } from './sse-decode.js';
+import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
+
+export interface GoogleTextPart {
+  readonly text: string;
+}
+
+export interface GoogleFunctionCallPart {
+  readonly functionCall: {
+    readonly name: string;
+    readonly args: unknown;
+    readonly id?: string;
+  };
+}
+
+export interface GoogleFunctionResponsePart {
+  readonly functionResponse: {
+    readonly name: string;
+    readonly response: unknown;
+    readonly id?: string;
+  };
+}
+
+export type GooglePart = GoogleTextPart | GoogleFunctionCallPart | GoogleFunctionResponsePart;
+
+export interface GoogleContent {
+  readonly role: 'user' | 'model';
+  readonly parts: readonly GooglePart[];
+}
+
+export interface GoogleFunctionDeclaration {
+  readonly name: string;
+  readonly description?: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+export interface GoogleToolDef {
+  readonly functionDeclarations: readonly GoogleFunctionDeclaration[];
+}
+
+export interface GoogleToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly input: unknown;
+}
+
+export interface GoogleToolResult {
+  readonly content: string;
+  readonly isError?: boolean;
+}
+
+/** Host-owned tool execution — same "the collaborator is always supplied" convention as `anthropic-messages.ts#AnthropicToolExecutor`. */
+export type GoogleToolExecutor = (call: GoogleToolCall) => Promise<GoogleToolResult>;
+
+/** Why a `runGoogleToolTurn` call ended its event stream. */
+export type GoogleTurnEndReason = TurnEndReason;
+
+export type GoogleTurnEvent =
+  | { readonly type: 'status'; readonly label: string }
+  | { readonly type: 'text_delta'; readonly delta: string }
+  | { readonly type: 'tool_use'; readonly id: string; readonly name: string; readonly input: unknown }
+  | { readonly type: 'tool_result'; readonly toolUseId: string; readonly content: string; readonly isError: boolean }
+  | { readonly type: 'usage'; readonly usage: Record<string, unknown> | null }
+  | { readonly type: 'fabricated_role_marker'; readonly marker: string; readonly messageId: string }
+  | { readonly type: 'error'; readonly message: string; readonly code?: string }
+  | { readonly type: 'end'; readonly reason: GoogleTurnEndReason };
+
+export interface GoogleTurnOptions {
+  readonly apiKey: string;
+  /** Defaults to `https://generativelanguage.googleapis.com`. Overridable for BYOK-compatible gateways. */
+  readonly baseUrl?: string;
+  readonly model: string;
+  readonly system?: string;
+  readonly contents: readonly GoogleContent[];
+  readonly tools?: readonly GoogleToolDef[];
+  readonly temperature?: number;
+  readonly maxOutputTokens?: number;
+  /** Same bound and rationale as `AnthropicTurnOptions.maxToolTurns`. Defaults to 8. */
+  readonly maxToolTurns?: number;
+  readonly executeTool?: GoogleToolExecutor;
+  readonly onEvent: (event: GoogleTurnEvent) => void;
+  readonly signal?: AbortSignal;
+  /** Caller-supplied extra headers — see `anthropic-messages.ts#AnthropicTurnOptions.extraHeaders`'s doc for why this exists and what it fixes. */
+  readonly extraHeaders?: Record<string, string>;
+}
+
+export interface GoogleTurnResult {
+  readonly finishReason: string | null;
+  readonly toolTurns: number;
+}
+
+const DEFAULT_GOOGLE_BASE_URL = 'https://generativelanguage.googleapis.com';
+const DEFAULT_MAX_TOOL_TURNS = 8;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Builds the streaming request URL, attaching `apiKey` as the `?key=` query param — Google's REST auth convention (see `google.ts#googleProviderModelsUrl`'s identical pattern). */
+function googleRequestUrl(baseUrl: string | undefined, model: string, apiKey: string): string {
+  const url = new URL(googleStreamGenerateContentUrl(baseUrl ?? DEFAULT_GOOGLE_BASE_URL, model));
+  url.searchParams.set('key', apiKey);
+  return url.toString();
+}
+
+function googleHeaders(options: GoogleTurnOptions): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    ...(options.extraHeaders ?? {}),
+  };
+}
+
+function googleRequestBody(options: GoogleTurnOptions, contents: readonly GoogleContent[]): Record<string, unknown> {
+  const generationConfig: Record<string, unknown> = {
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+    ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
+  };
+  return {
+    contents,
+    ...(options.system !== undefined ? { systemInstruction: { parts: [{ text: options.system }] } } : {}),
+    ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
+    ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {}),
+  };
+}
+
+function extractGoogleErrorDetail(rawText: string): string {
+  try {
+    const parsed: unknown = JSON.parse(rawText);
+    if (isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string') {
+      return parsed.error.message;
+    }
+  } catch {
+    // Non-JSON error body — fall through to the raw text below.
+  }
+  return rawText.trim().slice(0, 500);
+}
+
+interface SingleRequestOutcome {
+  readonly finishReason: string | null;
+  readonly toolCalls: readonly GoogleToolCall[];
+  readonly text: string;
+}
+
+/** Runs exactly one Gemini `streamGenerateContent` request and reduces its SSE events into a single outcome. Mirrors `anthropic-messages.ts#runSingleAnthropicRequest`'s `emitEnd` contract — see that function's doc. */
+async function runSingleGoogleRequest(
+  options: GoogleTurnOptions,
+  contents: readonly GoogleContent[],
+  emitEnd: (reason: GoogleTurnEndReason) => void,
+): Promise<SingleRequestOutcome> {
+  const { onEvent } = options;
+
+  const baseUrlCheck = validateBaseUrl(options.baseUrl ?? DEFAULT_GOOGLE_BASE_URL);
+  if (baseUrlCheck.error) {
+    onEvent({ type: 'error', message: baseUrlCheck.error });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  let response: { ok: boolean; status: number; body: AsyncIterable<Uint8Array | string> | null; text(): Promise<string> };
+  try {
+    response = (await fetch(googleRequestUrl(options.baseUrl, options.model, options.apiKey), {
+      method: 'POST',
+      headers: googleHeaders(options),
+      body: JSON.stringify(googleRequestBody(options, contents)),
+      ...(options.signal ? { signal: options.signal } : {}),
+    })) as unknown as typeof response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    onEvent({ type: 'error', message: redactSecrets(message, [options.apiKey]) });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    onEvent({
+      type: 'error',
+      message: redactSecrets(extractGoogleErrorDetail(rawText), [options.apiKey]),
+      code: String(response.status),
+    });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+  if (!response.body) {
+    onEvent({ type: 'error', message: 'Google response had no body' });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  onEvent({ type: 'status', label: 'requesting' });
+
+  const guard = createRoleMarkerGuard('google-turn');
+  const toolCalls: GoogleToolCall[] = [];
+  let fullText = '';
+  let finishReason: string | null = null;
+  let usage: Record<string, unknown> | null = null;
+
+  frameLoop: for await (const frame of decodeSseStream(response.body)) {
+    // No re-check of an "ended" flag at the top of this loop: every `emitEnd(...)` call site below
+    // (the promptFeedback block-reason branch and the contamination branch) is immediately followed
+    // by `break frameLoop` — same reachability proof as `anthropic-messages.ts#runSingleAnthropicRequest`.
+    let data: unknown;
+    try {
+      data = JSON.parse(frame.data);
+    } catch {
+      continue; // tolerate a malformed/empty keep-alive frame
+    }
+    if (!isRecord(data)) continue;
+
+    if (isRecord(data.usageMetadata)) {
+      usage = data.usageMetadata;
+      onEvent({ type: 'usage', usage });
+    }
+
+    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    const candidate = candidates[0];
+
+    if (!candidate) {
+      if (isRecord(data.promptFeedback) && typeof data.promptFeedback.blockReason === 'string') {
+        onEvent({ type: 'error', message: `prompt blocked: ${data.promptFeedback.blockReason}`, code: data.promptFeedback.blockReason });
+        emitEnd('error');
+        break frameLoop;
+      }
+      continue;
+    }
+    if (!isRecord(candidate)) continue;
+
+    if (typeof candidate.finishReason === 'string') {
+      finishReason = candidate.finishReason;
+    }
+
+    const content = isRecord(candidate.content) ? candidate.content : null;
+    const parts = content && Array.isArray(content.parts) ? content.parts : [];
+
+    for (const rawPart of parts) {
+      if (!isRecord(rawPart)) continue;
+
+      if (typeof rawPart.text === 'string' && rawPart.text.length > 0) {
+        // No `guard.contaminated` pre-check here: the only way it becomes true is the
+        // `emitEnd('contaminated'); break frameLoop;` a few lines below, which exits the outer
+        // frame loop immediately — see `anthropic-messages.ts#runSingleAnthropicRequest`'s
+        // identical reachability proof.
+        const safe = guard.feedText(rawPart.text);
+        if (safe.length > 0) {
+          fullText += safe;
+          onEvent({ type: 'text_delta', delta: safe });
+        }
+        if (guard.contaminated) {
+          const warn = guard.warningEvent();
+          if (warn) onEvent(warn);
+          emitEnd('contaminated');
+          break frameLoop;
+        }
+        continue;
+      }
+
+      if (isRecord(rawPart.functionCall)) {
+        const fc = rawPart.functionCall;
+        const name = typeof fc.name === 'string' ? fc.name : null;
+        if (name) {
+          const id = typeof fc.id === 'string' && fc.id.length > 0 ? fc.id : `call_${toolCalls.length}`;
+          const call: GoogleToolCall = { id, name, input: fc.args ?? {} };
+          toolCalls.push(call);
+          onEvent({ type: 'tool_use', id: call.id, name: call.name, input: call.input });
+        }
+      }
+    }
+  }
+
+  return { finishReason, toolCalls, text: fullText };
+}
+
+/**
+ * Runs a full Gemini `streamGenerateContent` turn, including the
+ * tool-execution loop when `options.executeTool` is supplied and the model
+ * requests a function call. See `anthropic-messages.ts#runAnthropicToolTurn`'s
+ * doc for the shared event-stream/`ended`-flag contract this mirrors — with
+ * one deliberate structural difference: the loop-continuation predicate is
+ * `toolCalls.length > 0`, not a `finishReason` comparison (see module doc,
+ * point 2, for why Gemini's `finishReason` enum cannot be used here).
+ */
+export async function runGoogleToolTurn(options: GoogleTurnOptions): Promise<GoogleTurnResult> {
+  const maxToolTurns = options.maxToolTurns ?? DEFAULT_MAX_TOOL_TURNS;
+
+  const endGuard = createTurnEndGuard<GoogleTurnEvent>(options.onEvent, (reason) => ({ type: 'end', reason }));
+  const emitEnd = endGuard.emitEnd;
+
+  let contents = options.contents.slice();
+  let toolTurns = 0;
+  let lastFinishReason: string | null = null;
+
+  while (true) {
+    const outcome = await runSingleGoogleRequest(options, contents, emitEnd);
+    lastFinishReason = outcome.finishReason;
+
+    if (endGuard.hasEnded()) break;
+
+    if (outcome.toolCalls.length === 0) {
+      emitEnd('stop');
+      break;
+    }
+    if (!options.executeTool) {
+      // Pending tool calls were already emitted as `tool_use` events above;
+      // with no executor to run them, the turn ends here rather than
+      // silently retrying forever.
+      emitEnd('stop');
+      break;
+    }
+    if (toolTurns >= maxToolTurns) {
+      emitEnd('max_tool_turns');
+      break;
+    }
+    toolTurns += 1;
+
+    const modelParts: GooglePart[] = [
+      ...(outcome.text ? [{ text: outcome.text } as const] : []),
+      ...outcome.toolCalls.map((call) => ({ functionCall: { name: call.name, args: call.input, id: call.id } }) as const),
+    ];
+    const functionResponseParts: GooglePart[] = [];
+    for (const call of outcome.toolCalls) {
+      const result = await options.executeTool(call);
+      options.onEvent({ type: 'tool_result', toolUseId: call.id, content: result.content, isError: result.isError ?? false });
+      functionResponseParts.push({
+        functionResponse: {
+          name: call.name,
+          id: call.id,
+          response: { content: result.content, ...(result.isError !== undefined ? { isError: result.isError } : {}) },
+        },
+      });
+    }
+
+    contents = [
+      ...contents,
+      { role: 'model', parts: modelParts },
+      { role: 'user', parts: functionResponseParts },
+    ];
+  }
+
+  return { finishReason: lastFinishReason, toolTurns };
+}

@@ -8,11 +8,15 @@
  * own daemon-coupled implementation, not generic material, and was left
  * unported.
  *
- * `sse-decode.ts` / `anthropic-messages.ts` / `openai-chat.ts` (2026-07-21)
- * are the one exception to "ported": built fresh against each provider's
- * real public API docs rather than lifted from OD's `chat.ts` (this task
- * did not have direct access to that file) — see each module's own header
- * and `source-map.md`'s dated section for the full rationale.
+ * `sse-decode.ts` / `anthropic-messages.ts` / `openai-chat.ts` (2026-07-21),
+ * and `google-messages.ts` / `azure-chat.ts` / `ollama-chat.ts`
+ * (2026-07-22), are the one exception to "ported": built fresh against
+ * each provider's real public API docs rather than lifted from OD's
+ * `chat.ts` (this task did not have direct access to that file for the
+ * 2026-07-21 pass; the 2026-07-22 pass did read the real OD source for
+ * Azure's api-version default — see `azure-chat.ts`'s header) — see each
+ * module's own header and `source-map.md`'s dated sections for the full
+ * rationale.
  */
 export * from './types.js';
 export * from './token-params.js';
@@ -23,6 +27,9 @@ export * from './model-catalog.js';
 export * from './sse-decode.js';
 export * from './anthropic-messages.js';
 export * from './openai-chat.js';
+export * from './google-messages.js';
+export * from './azure-chat.js';
+export * from './ollama-chat.js';
 export * from './elevenlabs.js';
 export * from './pkce.js';
 export * from './oauth-provider.js';

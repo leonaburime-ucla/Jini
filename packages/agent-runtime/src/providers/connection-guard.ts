@@ -203,7 +203,7 @@ function escapeRegExp(value: string): string {
  */
 export function redactSecrets(
   text: string,
-  exactSecrets: Array<string | undefined | null> = [],
+  exactSecrets: ReadonlyArray<string | undefined | null> = [],
 ): string {
   if (typeof text !== 'string' || text.length === 0) return '';
   let redacted = text

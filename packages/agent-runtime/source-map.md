@@ -1112,3 +1112,85 @@ clean. `pnpm --dir packages/agent-runtime run test:coverage` — **92 test files
 empirically too, via a real `fs.openSync` call against a real `chmod 0o111` file as uid 0 on this
 exact host, confirming root really does bypass the read-permission bit here). `pnpm --dir
 packages/agent-runtime run build` — clean. Repo-root `pnpm guard` — clean.
+
+## 2026-07-22 addition — Google/Azure/Ollama proxy wire-adapter/turn-runners (closes the "mechanical repeats" gap flagged above)
+
+Picks up exactly the item the 2026-07-21 section above flagged as deferred, not forgotten:
+"Azure/Google/Ollama... expected to be a mechanical sibling file following `anthropic-messages.ts`/
+`openai-chat.ts`'s exact shape... once picked up." This task's own scope note explicitly excluded
+OpenRouter (still open/deferred — see `packages/http/source-map.md`'s dated entry for the current
+status of that decision).
+
+**Step 0 — `openai-chat.ts` refactor (pure internal extraction, no behavior change).** The internal
+SSE-decode-and-reduce loop (`runSingleOpenAiRequest`'s ~150-line body) was extracted into a new
+exported `runOpenAiCompatibleRequest(init: OpenAiCompatibleRequestInit)`, parameterized over
+`url`/`headers`/`body`/`signal`/`redactSecretsList`/`guardMessageId`/`providerLabel` instead of
+hardcoding OpenAI's own endpoint-building inside it. `runSingleOpenAiRequest` is now a thin wrapper
+(base-URL SSRF validation, then OpenAI's own URL/header/body builders, then delegate) — confirmed
+byte-identical externally-observable behavior via `openai-chat.test.ts` (unchanged, still passing
+against the refactored implementation per `tsc --noEmit`; this session could not execute the test
+runner — see the task's standing restriction — so the "behavior unchanged" claim rests on the
+mechanical nature of the extraction, traced line-by-line, not a green test run). Also widened
+`connection-guard.ts#redactSecrets`'s `exactSecrets` parameter from `Array<...>` to
+`ReadonlyArray<...>` — a strictly backward-compatible widening needed because `[options.apiKey]`
+literals passed through the new `OpenAiCompatibleRequestInit.redactSecretsList` field are inferred
+as `readonly` in some call sites.
+
+**New files** (`src/providers/`):
+- **`google-messages.ts`** — `runGoogleToolTurn()`. Targets the *classic* `generateContent`/
+  `streamGenerateContent` REST API (`contents: [{role, parts}]`), not the newer `interactions` API
+  Google's docs now lead with — confirmed via `ai.google.dev/api/generate-content` (Content/Part/
+  GenerateContentResponse field names) and a live web search surfacing a real function-calling
+  exchange (`{ functionResponse: { name, response, id } }` sent back with `role: 'user'` — there is
+  no `role: 'function'` in the classic schema). Reuses `providers/google.ts#googleStreamGenerateContentUrl`
+  for URL-building (auth is `?key={apiKey}`, matching `googleProviderModelsUrl`'s established
+  pattern in the same file — no separate auth header). One deliberate structural deviation from
+  `anthropic-messages.ts`/`openai-chat.ts`'s shape, documented in the module's own header: Gemini's
+  documented `finishReason` enum (`STOP`/`MAX_TOKENS`/`SAFETY`/`RECITATION`/`LANGUAGE`/`OTHER`) has
+  no tool-call-specific member, so the tool-loop continuation predicate is `toolCalls.length > 0`,
+  not a `finishReason` comparison. A `promptFeedback.blockReason`-with-no-candidates response
+  (blocked prompt) is surfaced as an `error` event rather than silently hanging; per-category safety
+  ratings are out of scope. 24 tests in `__tests__/google-messages.test.ts`.
+- **`azure-chat.ts`** — `runAzureToolTurn()`. Delegates to the newly-extracted
+  `runOpenAiCompatibleRequest` — Azure OpenAI's chat-completions JSON body/response is byte-identical
+  to plain OpenAI's, only the URL and auth header differ. URL:
+  `{baseUrl}/openai/deployments/{model}/chat/completions?api-version={apiVersion}`; `apiVersion`
+  defaults to `'2024-10-21'`, confirmed against the real OD predecessor's own azure chat-completions
+  proxy route (`apps/daemon/src/routes/chat.ts`'s `[proxy:azure]` handler — read directly in the
+  sibling `/Users/la/Desktop/Programming/OSS-Repos/open-design` checkout on this machine, not
+  guessed). Auth: `api-key: {apiKey}` header, not `Authorization: Bearer` (also confirmed against
+  that source). `baseUrl` is a **required** field — every Azure OpenAI resource has its own
+  endpoint, so there is no sane global default. OD's source additionally branches on a
+  versioned-`/openai/v1`-path URL variant and retries with `max_completion_tokens` on a 400 from an
+  older deployment; both deliberately not carried forward — this task's approved scope was the one
+  documented, stable shape ("byte-identical to OpenAI, only URL/auth differ"), not a full port of
+  OD's retry heuristics. 12 tests in `__tests__/azure-chat.test.ts`.
+- **`ollama-chat.ts`** — `runOllamaToolTurn()`. Also delegates to `runOpenAiCompatibleRequest`,
+  targeting Ollama's OpenAI-compatible `/v1/chat/completions` endpoint (not Ollama's native
+  `/api/chat` wire format). `baseUrl` defaults to `http://localhost:11434` — a deliberate
+  local-first design call, safe under the shared SSRF guard because `connection-guard.ts#validateBaseUrl`
+  already carves out loopback addresses for exactly this reason (see that module's own doc: "Loopback
+  is intentionally allowed... for local LLM servers like Ollama"). `apiKey` is optional and, when
+  omitted, no `authorization` header is sent at all (not even a bare `Bearer`) — the one field where
+  this provider's options/validation deliberately diverges from every other provider in this
+  package. 17 tests in `__tests__/ollama-chat.test.ts`.
+
+**Barrel**: `providers/index.ts` now also re-exports `google-messages.js`/`azure-chat.js`/
+`ollama-chat.js`.
+
+**Bug-fix precedents inherited, not re-derived**: both confirmed OD bugs from the 2026-07-21 section
+above (the OpenRouter product-identity header leak, the duplicate-`end`-event bug) apply identically
+to all three new providers — `extraHeaders` is the only way a caller-identity header reaches any of
+these three outbound requests (proven per-provider in each test file's "merges caller-supplied
+extraHeaders verbatim" case), and all three reuse `turn-end-guard.ts#createTurnEndGuard` rather than
+a local `let ended` closure.
+
+**Verified this session:** `pnpm --dir packages/agent-runtime exec tsc --noEmit` — clean (across all
+three new provider files, their three new test files, the `openai-chat.ts` refactor, and the
+`connection-guard.ts` widening). `pnpm --dir packages/agent-runtime run build` — clean. Repo-root
+`npx tsx scripts/check-engine-boundaries.ts` and `npx tsx scripts/guard.ts` — both clean. Test files
+were written to this package's existing `vi.stubGlobal('fetch', ...)` + hand-built raw-SSE-fixture
+convention (mirroring `anthropic-messages.test.ts`/`openai-chat.test.ts` exactly) but **not
+executed** — this session operated under a standing restriction on running the test runner (an
+unresolved incident from a prior session); `tsc --noEmit` passing on the test files (real imports,
+real exported type names, no `any`-typed escape hatches) is the available signal in its place.

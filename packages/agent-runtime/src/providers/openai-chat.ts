@@ -145,39 +145,59 @@ interface PendingToolCall {
   argsJson: string;
 }
 
-interface SingleRequestOutcome {
+/** Shared return shape for one reduced OpenAI-compatible streaming request — exported so every OpenAI-compatible provider turn-runner (`azure-chat.ts`, `ollama-chat.ts`) can type its own internal single-request helper against it without re-declaring an identical interface. */
+export interface OpenAiCompatibleRequestOutcome {
   readonly finishReason: string | null;
   readonly toolCalls: readonly OpenAiToolCall[];
   readonly text: string;
 }
 
-/** Runs exactly one OpenAI Chat Completions streaming request and reduces its SSE events into a single outcome. Mirrors `anthropic-messages.ts#runSingleAnthropicRequest`'s `emitEnd` contract — see that function's doc. */
-async function runSingleOpenAiRequest(
-  options: OpenAiTurnOptions,
-  messages: readonly OpenAiMessageParam[],
-  emitEnd: (reason: OpenAiTurnEndReason) => void,
-  hasEnded: () => boolean,
-): Promise<SingleRequestOutcome> {
-  const { onEvent } = options;
+/** Injected parameters for {@link runOpenAiCompatibleRequest}. Every OpenAI-compatible provider builds its own URL/headers/body (its own auth scheme, its own base-URL default and SSRF validation) and hands the finished request to this shared reducer — see that function's doc for why. */
+export interface OpenAiCompatibleRequestInit {
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  readonly body: Record<string, unknown>;
+  readonly signal?: AbortSignal;
+  /** Secrets to strip out of any error message surfaced to the caller (e.g. the request's API key) — forwarded verbatim to `redactSecrets`'s `exactSecrets` parameter. */
+  readonly redactSecretsList: ReadonlyArray<string | undefined | null>;
+  /** Role-marker guard message id — distinguishes each provider's stream in guard telemetry (`'openai-turn'`, `'azure-turn'`, `'ollama-turn'`). */
+  readonly guardMessageId: string;
+  /** Human-readable provider name used in the "response had no body" fallback error message (e.g. `'OpenAI'`, `'Azure OpenAI'`, `'Ollama'`). */
+  readonly providerLabel: string;
+  readonly onEvent: (event: OpenAiTurnEvent) => void;
+  readonly emitEnd: (reason: OpenAiTurnEndReason) => void;
+  readonly hasEnded: () => boolean;
+}
 
-  const baseUrlCheck = validateBaseUrl(options.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
-  if (baseUrlCheck.error) {
-    onEvent({ type: 'error', message: baseUrlCheck.error });
-    emitEnd('error');
-    return { finishReason: null, toolCalls: [], text: '' };
-  }
+/**
+ * Runs exactly one OpenAI-compatible (Chat Completions JSON wire format)
+ * streaming HTTP request and reduces its SSE events into a single outcome.
+ * Extracted so this ~150-line SSE-reduction loop has exactly one
+ * implementation shared by every OpenAI-compatible provider turn-runner in
+ * this package: `runOpenAiToolTurn` itself (below), plus
+ * `azure-chat.ts#runAzureToolTurn` and `ollama-chat.ts#runOllamaToolTurn` —
+ * both target byte-identical chat-completions JSON, differing only in URL
+ * and auth. Callers own their own base-URL SSRF validation
+ * (`validateBaseUrl`) and URL/header/body construction *before* calling
+ * this function — it only knows how to run *a* request against whatever
+ * URL/headers/body it is handed, and has no opinion on any provider's
+ * defaults. Mirrors `anthropic-messages.ts#runSingleAnthropicRequest`'s
+ * `emitEnd` contract — see that function's doc.
+ */
+export async function runOpenAiCompatibleRequest(init: OpenAiCompatibleRequestInit): Promise<OpenAiCompatibleRequestOutcome> {
+  const { onEvent, emitEnd, hasEnded } = init;
 
   let response: { ok: boolean; status: number; body: AsyncIterable<Uint8Array | string> | null; text(): Promise<string> };
   try {
-    response = (await fetch(openAiRequestUrl(options.baseUrl), {
+    response = (await fetch(init.url, {
       method: 'POST',
-      headers: openAiHeaders(options),
-      body: JSON.stringify(openAiRequestBody(options, messages)),
-      ...(options.signal ? { signal: options.signal } : {}),
+      headers: init.headers,
+      body: JSON.stringify(init.body),
+      ...(init.signal ? { signal: init.signal } : {}),
     })) as unknown as typeof response;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    onEvent({ type: 'error', message: redactSecrets(message, [options.apiKey]) });
+    onEvent({ type: 'error', message: redactSecrets(message, init.redactSecretsList) });
     emitEnd('error');
     return { finishReason: null, toolCalls: [], text: '' };
   }
@@ -186,21 +206,21 @@ async function runSingleOpenAiRequest(
     const rawText = await response.text();
     onEvent({
       type: 'error',
-      message: redactSecrets(extractOpenAiErrorDetail(rawText), [options.apiKey]),
+      message: redactSecrets(extractOpenAiErrorDetail(rawText), init.redactSecretsList),
       code: String(response.status),
     });
     emitEnd('error');
     return { finishReason: null, toolCalls: [], text: '' };
   }
   if (!response.body) {
-    onEvent({ type: 'error', message: 'OpenAI response had no body' });
+    onEvent({ type: 'error', message: `${init.providerLabel} response had no body` });
     emitEnd('error');
     return { finishReason: null, toolCalls: [], text: '' };
   }
 
   onEvent({ type: 'status', label: 'requesting' });
 
-  const guard = createRoleMarkerGuard('openai-turn');
+  const guard = createRoleMarkerGuard(init.guardMessageId);
   const toolCalls = new Map<number, PendingToolCall>();
   let fullText = '';
   let finishReason: string | null = null;
@@ -294,6 +314,34 @@ async function runSingleOpenAiRequest(
   }
 
   return { finishReason, toolCalls: resolvedToolCalls, text: fullText };
+}
+
+/** Validates `options.baseUrl`, then delegates to {@link runOpenAiCompatibleRequest} with OpenAI's own URL/header/body builders. Thin wrapper kept so `runOpenAiToolTurn`'s per-iteration call site stays unchanged by the extraction. */
+async function runSingleOpenAiRequest(
+  options: OpenAiTurnOptions,
+  messages: readonly OpenAiMessageParam[],
+  emitEnd: (reason: OpenAiTurnEndReason) => void,
+  hasEnded: () => boolean,
+): Promise<OpenAiCompatibleRequestOutcome> {
+  const baseUrlCheck = validateBaseUrl(options.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+  if (baseUrlCheck.error) {
+    options.onEvent({ type: 'error', message: baseUrlCheck.error });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  return runOpenAiCompatibleRequest({
+    url: openAiRequestUrl(options.baseUrl),
+    headers: openAiHeaders(options),
+    body: openAiRequestBody(options, messages),
+    ...(options.signal ? { signal: options.signal } : {}),
+    redactSecretsList: [options.apiKey],
+    guardMessageId: 'openai-turn',
+    providerLabel: 'OpenAI',
+    onEvent: options.onEvent,
+    emitEnd,
+    hasEnded,
+  });
 }
 
 /**
