@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useI18n } from '../../../i18n/index.js';
 import { useCopyToClipboard, ViewportToggleGroup, type ViewportPreset } from '../../../viewer-shell/index.js';
 import { defaultVersionManagerDependencies } from '../../dependencies.js';
@@ -23,6 +23,8 @@ export interface VersionManagerModalProps<TVersion extends VersionRecord> {
    *  clipboard — a real host supplies its own transport. */
   dependencies?: VersionManagerDependencies<TVersion>;
   viewportPresets?: ViewportPreset[];
+  /** Custom hook override for dependency injection / testing. */
+  useVersionManager?: typeof useVersionManager;
 }
 
 /**
@@ -40,9 +42,10 @@ export function VersionManagerModal<TVersion extends VersionRecord>({
   onRestored,
   dependencies = defaultVersionManagerDependencies as unknown as VersionManagerDependencies<TVersion>,
   viewportPresets,
+  useVersionManager: useVersionManagerHook = useVersionManager,
 }: VersionManagerModalProps<TVersion>) {
   const { t, locale } = useI18n();
-  const controller = useVersionManager(dependencies, {
+  const controller = useVersionManagerHook(dependencies, {
     fileRef,
     currentContent,
     onRestored,
@@ -89,9 +92,20 @@ export function VersionManagerModal<TVersion extends VersionRecord>({
   // single-listener if/else priority chain to two independently-scoped
   // listeners plus this modal-level one; see source-map.md for why this is
   // a disclosed, behavior-preserving-in-practice simplification.
+  //
+  // `promptOpenRef` is how the modal knows "to let Escape reach the modal
+  // itself": `VersionPromptPopover` is mounted once (unconditionally) and
+  // registers its own document `keydown` listener only while it holds
+  // itself open, so this modal-level listener — added once at mount,
+  // always earlier in the document's listener order than any popover
+  // listener it later attaches on open — reads the ref synchronously
+  // before the popover's own handler has run and closes itself. A plain
+  // `event.stopPropagation()` in the popover wouldn't help here since its
+  // listener always fires *after* this one for that reason.
+  const promptOpenRef = useRef(false);
   const handleEscape = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !promptOpenRef.current) onClose();
     },
     [onClose],
   );
@@ -148,6 +162,9 @@ export function VersionManagerModal<TVersion extends VersionRecord>({
                   disabled={!selectedVersion}
                   copied={copied}
                   onCopy={(text) => void copy(text)}
+                  onOpenChange={(open) => {
+                    promptOpenRef.current = open;
+                  }}
                 />
               </div>
             </div>
