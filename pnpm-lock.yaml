@@ -228,6 +228,9 @@ importers:
       '@jini/agui':
         specifier: workspace:*
         version: link:../agui
+      '@jini/capability-providers':
+        specifier: workspace:*
+        version: link:../capability-providers
       '@jini/core':
         specifier: workspace:*
         version: link:../core

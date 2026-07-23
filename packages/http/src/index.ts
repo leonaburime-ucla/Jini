@@ -268,6 +268,55 @@ export {
 export type { ModelProxyHttpDeps, ModelProxyInternalErrorContext } from './model-proxy.js';
 export { registerModelProxyRoutes } from './model-proxy.js';
 
+export type { HealthHttpDeps, HealthReadinessResult, LivenessResponse, ReadinessResponse, VersionResponse } from './health.js';
+export {
+  apiHealthRoute,
+  apiReadyRoute,
+  apiVersionInfoRoute,
+  healthRoute,
+  readyRoute,
+  registerHealthRoutes,
+  versionInfoRoute,
+} from './health.js';
+
+export type {
+  ConnectorsAuthSessionResponse,
+  ConnectorsAuthUserResponse,
+  ConnectorsAuthVerifyResponse,
+  ConnectorsChargeResponse,
+  ConnectorsDbQueryResponse,
+  ConnectorsDbRecordResponse,
+  ConnectorsHttpDeps,
+  ConnectorsInternalErrorContext,
+  ConnectorsOkResponse,
+  ConnectorsStorageGetResponse,
+  ConnectorsStorageListResponse,
+  ConnectorsStorageMetaResponse,
+} from './connectors.js';
+export {
+  connectorsAuthSessionRoute,
+  connectorsAuthSignInRoute,
+  connectorsAuthSignOutRoute,
+  connectorsAuthSignUpRoute,
+  connectorsDbDeleteRoute,
+  connectorsDbGetRoute,
+  connectorsDbInsertRoute,
+  connectorsDbQueryRoute,
+  connectorsDbUpdateRoute,
+  connectorsPaymentsChargeRoute,
+  connectorsPaymentsGetRoute,
+  connectorsPaymentsRefundRoute,
+  connectorsRealtimePublishRoute,
+  connectorsStorageDeleteRoute,
+  connectorsStorageGetRoute,
+  connectorsStorageListRoute,
+  connectorsStoragePutRoute,
+  registerConnectorsRoutes,
+} from './connectors.js';
+
+export type { ResearchHttpDeps, ResearchInternalErrorContext, ResearchSearchResponse, ResearchSource } from './research.js';
+export { registerResearchRoutes, researchSearchRoute } from './research.js';
+
 export type {
   MediaGenerateResponse,
   MediaHttpDeps,

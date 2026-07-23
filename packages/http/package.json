@@ -14,6 +14,7 @@
   "dependencies": {
     "@jini/agent-runtime": "workspace:*",
     "@jini/agui": "workspace:*",
+    "@jini/capability-providers": "workspace:*",
     "@jini/core": "workspace:*",
     "@jini/daemon": "workspace:*",
     "@jini/media": "workspace:*",
