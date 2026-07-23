@@ -79,15 +79,22 @@
  * start then complete) must pass the same concrete `pending`/`listenerRef` across both calls, the
  * same way a real mounted server does.
  *
- * **SEC-005 throughout**: every thrown error (listener bind failure, token-exchange failure, token
- * read/write failure, the `x_search` upstream call) is converted to a redacted, correlation-id-
- * bearing generic `INTERNAL_ERROR` before reaching the caller — the stored bearer token is never
- * echoed back, and `redactSecrets` (reused from `@jini/agent-runtime`'s `connection-guard.ts`,
- * already this package's `research.ts` precedent) strips it out of any upstream error text before
- * it is even logged to the host's own sink. The one deliberate exception: `completeOAuthPkce`'s own
- * "state not found or expired" / "state mismatch" validation errors (thrown before any network
- * call, carrying no secret) are surfaced verbatim as `BAD_REQUEST` — a legitimate client-correctable
- * error, not an internal failure to redact.
+ * **SEC-005 throughout**: every thrown error (listener bind failure, token-exchange/refresh
+ * failure, token read/write failure, the `x_search` upstream call) is converted to a redacted,
+ * correlation-id-bearing generic `INTERNAL_ERROR` before reaching the caller — the HTTP *response*
+ * never carries the raw error regardless of source. For the two paths that actually touch an
+ * untrusted upstream response body — token exchange/refresh (`handleListenerCallback`/
+ * `xaiOauthCompleteRoute`) and `callXaiSearch` (which sends this file's own just-issued bearer
+ * token as a header, the highest-risk path) — `redactSecrets` (reused from `@jini/agent-runtime`'s
+ * `connection-guard.ts`, already this package's `research.ts` precedent) additionally strips any
+ * Bearer/api-key-shaped text out of the message before it is even logged to the host's own sink
+ * (`redactError`/`callXaiSearch`'s own inline redaction), belt-and-braces beyond the generic-message
+ * substitution the caller already gets. Purely local failures (a listener-bind `EADDRINUSE`, an
+ * `fs` read/write error) carry no upstream text and are passed through to the sink unredacted — the
+ * generic response substitution alone already satisfies SEC-005 for those. The one deliberate
+ * exception: `completeOAuthPkce`'s own "state not found or expired" / "state mismatch" validation
+ * errors (thrown before any network call, carrying no secret) are surfaced verbatim as
+ * `BAD_REQUEST` — a legitimate client-correctable error, not an internal failure to redact.
  */
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
@@ -216,6 +223,12 @@ async function stopListener(listenerRef: { current: OAuthCallbackListener | null
   }
 }
 
+/** Redacts any Bearer/api-key/`key=`-shaped secret out of a thrown value's message before it reaches the internal-error sink — belt-and-braces even on paths (token exchange/refresh) that don't send a bearer header of our own, since the upstream error body is otherwise passed through verbatim. Matches `callXaiSearch`'s own redaction; kept as a separate helper since those two paths have no exact-secret value in common to pass as `redactSecrets`' second argument. */
+function redactError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(redactSecrets(message));
+}
+
 async function persistToken(resolved: ResolvedXaiHttpDeps, tokenResp: OAuthTokenResponse): Promise<void> {
   const stored: StoredOAuthToken = {
     accessToken: tokenResp.access_token,
@@ -251,7 +264,7 @@ async function handleListenerCallback(resolved: ResolvedXaiHttpDeps, outcome: OA
     });
     await persistToken(resolved, tokenResp);
   } catch (error) {
-    resolved.onInternalError({ source: 'oauth-start', correlationId: randomUUID(), error });
+    resolved.onInternalError({ source: 'oauth-start', correlationId: randomUUID(), error: redactError(error) });
   }
 }
 
@@ -388,7 +401,7 @@ export const xaiOauthCompleteRoute = defineJsonRoute<XaiOauthCompleteRequest, Xa
         return err(validationError(message));
       }
       const correlationId = randomUUID();
-      resolved.onInternalError({ source: 'oauth-complete', correlationId, error });
+      resolved.onInternalError({ source: 'oauth-complete', correlationId, error: redactError(error) });
       return err(createApiError('INTERNAL_ERROR', 'an internal error occurred', { requestId: correlationId }));
     }
   },
