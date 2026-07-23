@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createElectronDesktopHost } from '../create-electron-desktop-host.js';
-import { createFakeBrowserWindowFactory, createFakeElectronApp, createFakeElectronProtocol, createFakeElectronShell } from '../testing.js';
+import {
+  createFakeBrowserWindowFactory,
+  createFakeElectronApp,
+  createFakeElectronDialog,
+  createFakeElectronProtocol,
+  createFakeElectronShell,
+} from '../testing.js';
 
 function fakeSurfaces() {
   const { factory } = createFakeBrowserWindowFactory();
@@ -9,6 +15,7 @@ function fakeSurfaces() {
     createBrowserWindow: factory,
     protocol: createFakeElectronProtocol(),
     shell: createFakeElectronShell(),
+    dialog: createFakeElectronDialog(),
   };
 }
 
@@ -26,6 +33,9 @@ describe('createElectronDesktopHost', () => {
     expect(host.ports.renderService.exportArtifact).toBeTypeOf('function');
     expect(host.ports.shell.openExternal).toBeTypeOf('function');
     expect(host.ports.shell.openPath).toBeTypeOf('function');
+    expect(host.ports.shell.dirExists).toBeTypeOf('function');
+    expect(host.ports.shell.recentDirs).toBeTypeOf('function');
+    expect(host.ports.shell.openFolderDialog).toBeTypeOf('function');
   });
 
   it('accepts port overrides', () => {

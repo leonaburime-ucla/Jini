@@ -5,13 +5,15 @@ import { createElectronWindowLifecyclePort } from './electron-window-lifecycle.j
 import { createElectronProtocolHandlerPort } from './electron-protocol.js';
 import { createElectronRenderService } from './electron-render-service.js';
 import { createElectronShellPort } from './electron-shell.js';
-import type { ElectronAppLike, ElectronBrowserWindowFactory, ElectronProtocolLike, ElectronShellLike } from './electron-surfaces.js';
+import type { ElectronAppLike, ElectronBrowserWindowFactory, ElectronDialogLike, ElectronProtocolLike, ElectronShellLike } from './electron-surfaces.js';
 
 export interface ElectronDesktopHostSurfaces {
   app: ElectronAppLike;
   createBrowserWindow: ElectronBrowserWindowFactory;
   protocol: ElectronProtocolLike;
   shell: ElectronShellLike;
+  /** Backs `ShellPort.openFolderDialog` (2026-07-22 addition — see `shell.ts`'s module doc). */
+  dialog: ElectronDialogLike;
 }
 
 export function createElectronDesktopHost(
@@ -24,7 +26,7 @@ export function createElectronDesktopHost(
     protocolHandler: overrides.protocolHandler ?? createElectronProtocolHandlerPort(surfaces.protocol),
     sidecarLauncher: overrides.sidecarLauncher ?? createNodeSidecarLauncher(),
     renderService: overrides.renderService ?? createElectronRenderService(surfaces.createBrowserWindow),
-    shell: overrides.shell ?? createElectronShellPort(surfaces.shell),
+    shell: overrides.shell ?? createElectronShellPort({ shell: surfaces.shell, app: surfaces.app, dialog: surfaces.dialog }),
   };
   return { backend: 'electron', ports };
 }

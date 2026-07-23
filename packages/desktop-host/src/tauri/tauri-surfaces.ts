@@ -45,6 +45,29 @@ export interface TauriShellApi {
   openPath(path: string): Promise<void>;
 }
 
+/** A `@tauri-apps/plugin-fs` `FileInfo`'s relevant subset — `isDirectory` is a plain boolean property on the real plugin's returned struct (a JSON-esque value crossing the Rust/JS boundary), not a method the way Node's `fs.Stats.isDirectory()` is. */
+export interface TauriFileInfo {
+  readonly isDirectory: boolean;
+}
+
+/** Structural subset of `@tauri-apps/plugin-fs` this package's `ShellPort.dirExists` backs. No real `@tauri-apps/plugin-fs` import — see module doc. */
+export interface TauriFsApi {
+  /** Real plugin: `exists(path)`. */
+  exists(path: string): Promise<boolean>;
+  /** Real plugin: `stat(path)`. */
+  stat(path: string): Promise<TauriFileInfo>;
+}
+
+export interface TauriOpenDialogOptions {
+  readonly directory?: boolean;
+  readonly defaultPath?: string;
+}
+
+/** Structural subset of `@tauri-apps/plugin-dialog` this package's `ShellPort.openFolderDialog` backs. Real plugin: `open(options)` resolves `null` on cancel, a single `string` for a single selection, or `string[]` when `multiple: true` is requested (this port never sets `multiple`, but the return type still reflects the plugin's real signature). */
+export interface TauriDialogApi {
+  open(options: TauriOpenDialogOptions): Promise<string | string[] | null>;
+}
+
 export interface TauriChildProcessLike {
   pid: number | undefined;
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;

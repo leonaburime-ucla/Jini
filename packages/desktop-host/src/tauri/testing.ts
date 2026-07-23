@@ -1,6 +1,9 @@
 /** Fake Tauri surfaces for tests — never a real `@tauri-apps/*` import (see `tauri-surfaces.ts`). */
 import type {
   TauriChildProcessLike,
+  TauriDialogApi,
+  TauriFileInfo,
+  TauriFsApi,
   TauriShellApi,
   TauriSidecarCommandApi,
   TauriSingleInstanceApi,
@@ -72,6 +75,33 @@ export function createFakeTauriShellApi(): TauriShellApi & { openedUrls: string[
       openedPaths.push(path);
     },
   };
+}
+
+/** `directories`/`files` are absolute-path allow-lists the fake checks `exists`/`stat` against — no real filesystem I/O, matching this module's own "never a real @tauri-apps/* import" convention (and, transitively, no real `node:fs` either). */
+export function createFakeTauriFsApi(seed: { directories?: string[]; files?: string[] } = {}): TauriFsApi {
+  const directories = new Set(seed.directories ?? []);
+  const files = new Set(seed.files ?? []);
+  return {
+    async exists(path: string) {
+      return directories.has(path) || files.has(path);
+    },
+    async stat(path: string): Promise<TauriFileInfo> {
+      return { isDirectory: directories.has(path) };
+    },
+  };
+}
+
+export function createFakeTauriDialogApi(script: { openResult?: string | string[] | null } = {}): TauriDialogApi & {
+  lastOpenOptions: unknown;
+} {
+  const fake = {
+    lastOpenOptions: undefined as unknown,
+    async open(options: unknown) {
+      fake.lastOpenOptions = options;
+      return script.openResult ?? null;
+    },
+  };
+  return fake;
 }
 
 export interface FakeTauriSidecarScript {

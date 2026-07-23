@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createTauriDesktopHost } from '../create-tauri-desktop-host.js';
 import { NotImplementedError } from '../not-implemented.js';
 import {
+  createFakeTauriDialogApi,
+  createFakeTauriFsApi,
   createFakeTauriShellApi,
   createFakeTauriSidecarCommandApi,
   createFakeTauriSingleInstanceApi,
@@ -15,6 +17,8 @@ function fakeSurfaces() {
     createWindow: factory,
     shell: createFakeTauriShellApi(),
     sidecarCommands: createFakeTauriSidecarCommandApi(),
+    fs: createFakeTauriFsApi(),
+    dialog: createFakeTauriDialogApi(),
   };
 }
 
@@ -29,6 +33,9 @@ describe('createTauriDesktopHost', () => {
     expect(host.ports.sidecarLauncher.launch).toBeTypeOf('function');
     expect(host.ports.renderService.renderToPdf).toBeTypeOf('function');
     expect(host.ports.shell.openExternal).toBeTypeOf('function');
+    expect(host.ports.shell.dirExists).toBeTypeOf('function');
+    expect(host.ports.shell.recentDirs).toBeTypeOf('function');
+    expect(host.ports.shell.openFolderDialog).toBeTypeOf('function');
   });
 
   it('the narrow-slice ports actually work end to end', async () => {
@@ -39,9 +46,10 @@ describe('createTauriDesktopHost', () => {
     await host.ports.shell.openExternal('https://example.test');
   });
 
-  it('renderService and protocolHandler are honest NotImplementedError stubs, not fakes', async () => {
+  it('renderService, protocolHandler, and shell.recentDirs are honest NotImplementedError stubs, not fakes', async () => {
     const host = createTauriDesktopHost(fakeSurfaces());
     await expect(host.ports.renderService.renderToPdf('<html></html>')).rejects.toBeInstanceOf(NotImplementedError);
     expect(() => host.ports.protocolHandler.registerSchemeProxy('jini', 'http://127.0.0.1:0')).toThrow(NotImplementedError);
+    await expect(host.ports.shell.recentDirs()).rejects.toBeInstanceOf(NotImplementedError);
   });
 });

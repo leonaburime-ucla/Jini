@@ -14,6 +14,10 @@ export interface ElectronAppLike {
   requestSingleInstanceLock(): boolean;
   quit(): void;
   on(event: 'second-instance', listener: () => void): void;
+  /** Real Electron: `app.getRecentDocuments()` — the OS-tracked recently-opened list (macOS Dock menu / Windows Jump List). Backs `ShellPort.recentDirs`. */
+  getRecentDocuments(): string[];
+  /** Real Electron: `app.addRecentDocument(path)`. Not called by anything in this package yet — declared alongside `getRecentDocuments` for interface symmetry with Electron's real API (a host wiring its own "open recent" UI can call it directly against the real `app` module without needing a port method here). */
+  addRecentDocument(path: string): void;
 }
 
 export interface ElectronNavigationEvent {
@@ -82,4 +86,19 @@ export interface ElectronShellLike {
   /** Resolves to the empty string on success, an error message otherwise — matches Electron's real `shell.openPath` contract. */
   openPath(path: string): Promise<string>;
   openExternal(url: string): Promise<void>;
+}
+
+export interface ElectronOpenDialogOptions {
+  readonly properties?: readonly string[];
+  readonly defaultPath?: string;
+}
+
+export interface ElectronOpenDialogResult {
+  readonly canceled: boolean;
+  readonly filePaths: readonly string[];
+}
+
+/** Structural subset of Electron's real `dialog` module this package's Tauri-sibling `ShellPort.openFolderDialog` backs. Matches `dialog.showOpenDialog`'s real documented contract (`canceled`/`filePaths`). */
+export interface ElectronDialogLike {
+  showOpenDialog(options: ElectronOpenDialogOptions): Promise<ElectronOpenDialogResult>;
 }

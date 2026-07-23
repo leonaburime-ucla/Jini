@@ -5,13 +5,17 @@ import { createTauriProtocolHandlerPort } from './tauri-protocol.js';
 import { createTauriSidecarLauncher } from './tauri-sidecar.js';
 import { createTauriRenderService } from './tauri-render-service.js';
 import { createTauriShellPort } from './tauri-shell.js';
-import type { TauriShellApi, TauriSidecarCommandApi, TauriSingleInstanceApi, TauriWindowFactory } from './tauri-surfaces.js';
+import type { TauriDialogApi, TauriFsApi, TauriShellApi, TauriSidecarCommandApi, TauriSingleInstanceApi, TauriWindowFactory } from './tauri-surfaces.js';
 
 export interface TauriDesktopHostSurfaces {
   singleInstance: TauriSingleInstanceApi;
   createWindow: TauriWindowFactory;
   shell: TauriShellApi;
   sidecarCommands: TauriSidecarCommandApi;
+  /** Backs `ShellPort.dirExists` (2026-07-22 addition — see `shell.ts`'s module doc). */
+  fs: TauriFsApi;
+  /** Backs `ShellPort.openFolderDialog` (2026-07-22 addition — see `shell.ts`'s module doc). */
+  dialog: TauriDialogApi;
 }
 
 /**
@@ -31,7 +35,7 @@ export function createTauriDesktopHost(
     protocolHandler: overrides.protocolHandler ?? createTauriProtocolHandlerPort(),
     sidecarLauncher: overrides.sidecarLauncher ?? createTauriSidecarLauncher(surfaces.sidecarCommands),
     renderService: overrides.renderService ?? createTauriRenderService(),
-    shell: overrides.shell ?? createTauriShellPort(surfaces.shell),
+    shell: overrides.shell ?? createTauriShellPort({ shell: surfaces.shell, fs: surfaces.fs, dialog: surfaces.dialog }),
   };
   return { backend: 'tauri', ports };
 }

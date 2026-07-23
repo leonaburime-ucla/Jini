@@ -4,16 +4,19 @@ import type {
   ElectronBrowserWindowFactory,
   ElectronBrowserWindowLike,
   ElectronBrowserWindowOptions,
+  ElectronDialogLike,
+  ElectronOpenDialogResult,
   ElectronProtocolLike,
   ElectronShellLike,
   ElectronWebContentsLike,
 } from './electron-surfaces.js';
 
-export function createFakeElectronApp(options: { lockGranted?: boolean } = {}): ElectronAppLike & {
+export function createFakeElectronApp(options: { lockGranted?: boolean; recentDocuments?: string[] } = {}): ElectronAppLike & {
   quitCalled: boolean;
   emitSecondInstance(): void;
 } {
   let secondInstanceListener: (() => void) | null = null;
+  const recentDocuments = options.recentDocuments ?? [];
   const app = {
     quitCalled: false,
     requestSingleInstanceLock: () => options.lockGranted ?? true,
@@ -26,8 +29,27 @@ export function createFakeElectronApp(options: { lockGranted?: boolean } = {}): 
     emitSecondInstance() {
       secondInstanceListener?.();
     },
+    getRecentDocuments() {
+      return recentDocuments;
+    },
+    addRecentDocument(path: string) {
+      recentDocuments.unshift(path);
+    },
   };
   return app;
+}
+
+export function createFakeElectronDialog(script: { openDialogResult?: ElectronOpenDialogResult } = {}): ElectronDialogLike & {
+  lastShowOpenDialogOptions: unknown;
+} {
+  const fake = {
+    lastShowOpenDialogOptions: undefined as unknown,
+    async showOpenDialog(options: unknown) {
+      fake.lastShowOpenDialogOptions = options;
+      return script.openDialogResult ?? { canceled: true, filePaths: [] };
+    },
+  };
+  return fake;
 }
 
 export interface FakeWindowScript {
