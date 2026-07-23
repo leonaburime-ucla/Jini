@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../../../i18n/index.js';
@@ -223,5 +223,139 @@ describe('VersionManagerModal', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
     expect(dependencies.clipboard.copyText).toHaveBeenCalledWith('make it blue');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument());
+  });
+
+  it('pressing Escape while the Prompt popover is open closes only the popover, not the modal', async () => {
+    const onClose = vi.fn();
+    const v1 = makeVersion({ id: 'v1', version: 1, current: true, prompt: 'make it blue' });
+    const dependencies = createDeps({ versions: [v1] });
+    render(
+      <VersionManagerModal fileRef={FILE_REF} currentContent="<p>x</p>" onClose={onClose} onRestored={vi.fn()} dependencies={dependencies} />,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Prompt' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Prompt' }));
+    expect(screen.getByRole('region')).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByRole('region')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Version history' })).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('VersionManagerModal with useVersionManager hook override', () => {
+  it('renders with injected hook controller state 1 (empty versions / searching)', () => {
+    const mockSetSearch = vi.fn();
+    const customHook = () => ({
+      versions: [],
+      visibleVersions: [],
+      versionById: new Map(),
+      selectedVersion: null,
+      selectedId: null,
+      selectVersion: vi.fn(),
+      prefetchVersion: vi.fn(),
+      restoredFrom: vi.fn(() => null),
+      loading: false,
+      loadingContent: false,
+      error: null,
+      search: 'nonexistent',
+      setSearch: mockSetSearch,
+      showSearch: true,
+      selectedContent: null,
+      previewDocument: '',
+      frameReady: true,
+      markFrameLoaded: vi.fn(),
+      restoring: false,
+      restoreDisabled: true,
+      restore: vi.fn(),
+      openInNewTab: null,
+      viewportPresets: [{ id: 'desktop', label: 'Desktop', width: 1280, height: 800 }],
+      viewport: 'desktop',
+      setViewport: vi.fn(),
+      describeVersion: vi.fn(() => ''),
+    });
+
+    render(
+      <VersionManagerModal
+        fileRef={FILE_REF}
+        currentContent="<p>hello</p>"
+        onClose={vi.fn()}
+        onRestored={vi.fn()}
+        useVersionManager={customHook as any}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByText('0 versions')).toBeInTheDocument();
+    // Exercises `showSearch: true`: the search box only renders at all when
+    // the controller says to show it.
+    expect(screen.getByRole('searchbox')).toHaveValue('nonexistent');
+  });
+
+  it('renders with injected hook controller state 2 (selected non-current version with prompt and restore button)', () => {
+    const mockSelectVersion = vi.fn();
+    const mockRestore = vi.fn();
+    const v2: any = {
+      id: 'v2',
+      fileId: 'file-1',
+      version: 2,
+      createdAt: '2026-07-22T10:00:00Z',
+      source: 'ai',
+      current: false,
+      prompt: 'Injected Prompt text',
+    };
+
+    const customHook = () => ({
+      versions: [v2],
+      visibleVersions: [v2],
+      versionById: new Map([['v2', v2]]),
+      selectedVersion: v2,
+      selectedId: 'v2',
+      selectVersion: mockSelectVersion,
+      prefetchVersion: vi.fn(),
+      restoredFrom: vi.fn(() => null),
+      loading: false,
+      loadingContent: false,
+      error: null,
+      search: '',
+      setSearch: vi.fn(),
+      showSearch: false,
+      selectedContent: '<h1>Injected Content</h1>',
+      previewDocument: '<h1>Injected Content</h1>',
+      frameReady: true,
+      markFrameLoaded: vi.fn(),
+      restoring: false,
+      restoreDisabled: false,
+      restore: mockRestore,
+      openInNewTab: null,
+      viewportPresets: [{ id: 'mobile', label: 'Mobile', width: 375, height: 667 }],
+      viewport: 'mobile',
+      setViewport: vi.fn(),
+      describeVersion: vi.fn(() => ''),
+    });
+
+    render(
+      <VersionManagerModal
+        fileRef={FILE_REF}
+        currentContent="<h1>Injected Content</h1>"
+        onClose={vi.fn()}
+        onRestored={vi.fn()}
+        useVersionManager={customHook as any}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Prompt' })).toBeEnabled();
+    const restoreBtn = screen.getByRole('button', { name: 'Restore this version' });
+    expect(restoreBtn).toBeInTheDocument();
+    fireEvent.click(restoreBtn);
+
+    expect(screen.getByRole('dialog', { name: 'Restore this version?' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    expect(mockRestore).toHaveBeenCalledTimes(1);
   });
 });
