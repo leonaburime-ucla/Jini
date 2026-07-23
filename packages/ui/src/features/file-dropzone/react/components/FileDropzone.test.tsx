@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -257,5 +257,91 @@ describe('FileDropzone', () => {
       'aria-label',
       'Ajouter des fichiers — glisser-déposer, coller',
     );
+  });
+});
+
+describe('FileDropzone 4-pattern hook override test suite', () => {
+  it('Pattern 1 — State 1: Idle state via useFileDropzone hook override', () => {
+    const customDropzoneHook = () => ({
+      inputRef: { current: null },
+      dragOver: false,
+      openPicker: vi.fn(),
+      onZoneDragEnter: vi.fn(),
+      onZoneDragOver: vi.fn(),
+      onZoneDragLeave: vi.fn(),
+      onZoneDrop: vi.fn(),
+      onInputClick: vi.fn(),
+      onInputChange: vi.fn(),
+    });
+
+    render(<FileDropzone onFiles={vi.fn()} useFileDropzone={customDropzoneHook as any} />);
+
+    const zone = screen.getByTestId('file-dropzone-zone');
+    expect(zone).not.toHaveClass('is-drag-over');
+  });
+
+  it('Pattern 2 — State 2: Active drag-over state via useFileDropzone hook override', () => {
+    const customDropzoneHook = () => ({
+      inputRef: { current: null },
+      dragOver: true,
+      openPicker: vi.fn(),
+      onZoneDragEnter: vi.fn(),
+      onZoneDragOver: vi.fn(),
+      onZoneDragLeave: vi.fn(),
+      onZoneDrop: vi.fn(),
+      onInputClick: vi.fn(),
+      onInputChange: vi.fn(),
+    });
+
+    render(<FileDropzone onFiles={vi.fn()} useFileDropzone={customDropzoneHook as any} />);
+
+    const zone = screen.getByTestId('file-dropzone-zone');
+    expect(zone).toHaveClass('is-drag-over');
+  });
+
+  it('Pattern 3 — State 3: Staged files thumbnail grid via useFileDropzonePreviews hook override', () => {
+    const demoFile = new File(['content'], 'demo.png', { type: 'image/png' });
+    const customPreviewsHook = () => ({
+      previewUrls: new Map([[demoFile, 'blob:demo']]),
+      fontFamilies: new Map(),
+      textSnippets: new Map(),
+    });
+
+    const { container } = render(
+      <FileDropzone
+        onFiles={vi.fn()}
+        files={[demoFile]}
+        useFileDropzonePreviews={customPreviewsHook as any}
+      />,
+    );
+
+    expect(screen.getByText('demo.png')).toBeInTheDocument();
+    // The caption renders regardless of preview state — assert on the
+    // actual thumbnail `<img>` src too, so a broken/unwired previews hook
+    // (e.g. one that never reaches the thumbnail grid) would fail this test.
+    const thumb = container.querySelector('img.jini-file-dropzone__thumb');
+    expect(thumb).toHaveAttribute('src', 'blob:demo');
+  });
+
+  it('Pattern 4 — State 4: Dynamic staged names state transition walkthrough using React useState inside test harness', () => {
+    function DynamicDropzoneHarness() {
+      const [names, setNames] = useState<string[]>([]);
+      return (
+        <div>
+          <button type="button" onClick={() => setNames(['doc.pdf'])}>
+            Stage file
+          </button>
+          <FileDropzone onFiles={vi.fn()} names={names} onRemoveName={() => setNames([])} />
+        </div>
+      );
+    }
+
+    render(<DynamicDropzoneHarness />);
+
+    expect(screen.queryByText('doc.pdf')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stage file' }));
+
+    expect(screen.getByText('doc.pdf')).toBeInTheDocument();
   });
 });
