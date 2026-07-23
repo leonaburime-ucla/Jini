@@ -250,3 +250,12 @@ This addition does not change the package's sign-off status from the
 Architect sign-off before promotion. Adding real adapters closes the "only
 interfaces + toy stubs" gap the original scope constraint left open, but
 does not by itself create a consumer or grant lock-in.
+
+## 2026-07-22 note — first wiring-level consumer
+
+Wired by `@jini/http`'s new `connectors.ts` route pack as of 2026-07-22 — still zero *bound*
+provider instances by default (`@jini/node-host`'s zero-config default leaves all 5 slots
+unconfigured), so this doesn't change the sign-off/promotion status above, but the package is no
+longer completely unwired from the rest of the codebase. See `packages/http/source-map.md`'s own
+2026-07-22 dated section for the full route inventory and the boundary-checker mechanism that lets
+a locked package (`@jini/http`) `import type` from this still-`"incubating"` one today.

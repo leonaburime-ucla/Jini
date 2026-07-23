@@ -66,12 +66,15 @@ import {
   registerAgentRoutes,
   registerApiBearerAuthMiddleware,
   registerApiOriginGuardMiddleware,
+  registerConnectorsRoutes,
   registerDaemonDbRoutes,
   registerDaemonStatusRoutes,
+  registerHealthRoutes,
   registerHostToolsRoutes,
   registerMediaRoutes,
   registerMemoryRoutes,
   registerModelProxyRoutes,
+  registerResearchRoutes,
   registerRunRoutes,
   registerTerminalRoutes,
   type DaemonDbOperations,
@@ -580,12 +583,38 @@ export async function createLocalNodeDaemon(
     env,
   };
 
+  // `health.ts`: reuses `dbOpsConnection` — the same raw `better-sqlite3` handle
+  // `daemonDbRoutesDeps` above already operates through (see that block's own comment on why a
+  // *second* connection to `events.db` is safe under WAL mode) — rather than opening a third
+  // connection just to run a readiness probe. `verifySqliteIntegrity({quick: true})` runs SQLite's
+  // fast `quick_check` pragma (skips the index-content check `integrity_check` does, appropriate
+  // for a readiness probe that should be cheap enough to poll frequently). Wrapped in try/catch:
+  // a readiness *check* must never itself throw and crash the route — a thrown pragma read is
+  // itself a legitimate "not ready" signal, not a 500.
+  const healthDeps = {
+    getVersion: () => packageVersion,
+    checkReadiness: async () => {
+      let dbOk: boolean;
+      try {
+        dbOk = verifySqliteIntegrity({ db: dbOpsConnection, quick: true }).ok;
+      } catch {
+        dbOk = false;
+      }
+      const notShuttingDown = !shuttingDown;
+      return { ok: dbOk && notShuttingDown, checks: { db: dbOk, notShuttingDown } };
+    },
+  };
+
   // Assembles the concrete Express app and wires @jini/http's route-registration guard, `/api`
   // security middleware, and daemon-status routes — `mountPackHttp` above is already
   // framework-agnostic (it only ever forwards `app` straight through to a pack's own
   // `http(app, services)`).
   const app: Express = express();
   installRouteRegistrationGuard(app);
+  // Registered before `express.json()`/the bearer-auth/origin-guard middleware — see
+  // `health.ts`'s own module doc: a liveness/readiness probe must never need a JSON body parser,
+  // a bearer token, or a same-origin `Origin` header just to confirm the process is up.
+  registerHealthRoutes(app, healthDeps, { resolvedPortRef });
   app.use(express.json());
   registerApiBearerAuthMiddleware(app, { tokenConfig: apiTokenConfig, env });
   registerApiOriginGuardMiddleware(app, originGuardDeps);
@@ -598,6 +627,16 @@ export async function createLocalNodeDaemon(
   registerTerminalRoutes(app, terminalRoutesDeps, { resolvedPortRef });
   registerDaemonDbRoutes(app, daemonDbRoutesDeps, { resolvedPortRef });
   registerMediaRoutes(app, mediaRoutesDeps, { resolvedPortRef });
+  // Zero-config defaults, deliberately: `registerConnectorsRoutes`' five capability slots
+  // (auth/storage/payments/db/realtime) are all independently optional and left unconfigured here
+  // — every connectors route is reachable but answers 503 NOT_CONFIGURED until a caller-supplied
+  // preset binds real providers (see `connectors.ts`'s own module doc). `registerResearchRoutes`
+  // needs no `@jini/media` import in *this* file — its default credential resolver lives inside
+  // `research.ts` itself; this preset already depends on `@jini/media` for `mediaRoutesDeps` above,
+  // so wiring this in adds no new boundary surface either way (verified via
+  // `npx tsx scripts/check-engine-boundaries.ts`).
+  registerConnectorsRoutes(app, {}, { resolvedPortRef });
+  registerResearchRoutes(app, {}, { resolvedPortRef });
 
   mountPackHttp(app, config.packs, daemon);
   registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });

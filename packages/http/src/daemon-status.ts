@@ -54,8 +54,14 @@ export interface DaemonShutdownResponse {
 }
 
 /**
- * `GET /api/daemon/status` — a health-check callers can poll to confirm the
- * daemon is up and to read its version/host/port/data-dir/shutdown state.
+ * `GET /api/daemon/status` — an operator-detail endpoint callers can poll to read the daemon's
+ * version/host/port/data-dir/shutdown state. **Not the liveness/readiness contract** — this route
+ * has no dedicated always-open exemption in `api-security-middleware.ts`'s `OPEN_PROBE_PATHS` the
+ * way `health.ts`'s six routes do, and was never *documented* as one even though nothing here
+ * technically gated it same-origin either. A monitoring probe should poll `GET /health`/`GET
+ * /ready` (`health.ts`) instead — those are purpose-built for that job (plain liveness vs. a real,
+ * injectable readiness check) and are guaranteed reachable without a bearer token or an `Origin`
+ * header. This route is still useful for a human/CLI wanting the richer operator detail below.
  */
 export const daemonStatusRoute = defineJsonRoute<void, DaemonStatusResponse, DaemonStatusDeps>({
   method: 'get',
