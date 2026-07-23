@@ -3280,6 +3280,250 @@ used in the connectors canary section above.
   implementation during extraction)` — unchanged, no boundary violations
   introduced.
 
+## Section: `features/file-dropzone/` — consolidating OD's two file-staging zones (2026-07-18)
+
+### Source
+
+Two independent OD file-staging zones, both read in full from the real fork
+(`git clone https://github.com/leonaburime-ucla/open-design.git`, not this
+repo's frozen `integrations/open-design/reference/` snapshot):
+
+- `apps/web/src/components/DesignSystemAssetDropzone.tsx` (564 lines) — a
+  rich, kind-aware thumbnail grid over staged `File[]`: native drag/drop
+  (directory-aware at the *parent's* level, not its own), click-to-browse,
+  clipboard paste, kind-dispatch thumbnails (image/font/pdf/html/video/audio/
+  slides/text/other), remove tiles, and a click-to-enlarge lightbox with a
+  type-appropriate preview per kind.
+- `DesignSystemFlow.tsx`'s embedded `DropZone` (~190 lines, search the file
+  for `function DropZone`) — a labeled, prompt-driven zone: native drag/drop
+  (owns directory-aware reading itself), click-to-browse with a file-dialog
+  cancel-vs-still-loading detection heuristic (`SOURCE_FILE_DIALOG_FOCUS_DELAY_MS`/
+  `_WARMUP_MS`/a stale-timeout safety net), a plain staged-names list with
+  optional per-name removal, and an external "Browse folder" trigger.
+
+### The consolidation decision: ONE primitive, with evidence
+
+Read both in full before designing anything, per the task brief. Verdict:
+**consolidate into one `FileDropzone` primitive** — not two components
+sharing a subdirectory, one component with configuration knobs. Evidence:
+
+1. **Both are the exact same underlying interaction** — native drag/drop +
+   click-to-browse, resolving to a flat `File[]` the host stages. The only
+   real differences are *display* (thumbnail grid + lightbox vs. a plain
+   prompt/names line) and which capabilities are wired on (paste,
+   directory-select, the loading heuristic) — configuration, not a different
+   component shape.
+2. **They already shared the same directory-walking algorithm at the OD
+   source level**, just wired at different layers: `DropZone`'s `readDrop`
+   calls `filesFromDataTransfer` (a `webkitGetAsEntry` recursive directory
+   walker) internally before calling `onFiles`; `DesignSystemAssetDropzone`'s
+   `onDrop` prop just hands the raw `DataTransfer` up to its parent
+   (`DesignSystemFlow.tsx`'s `handleAssetDrop`), which calls the **exact
+   same** `filesFromDataTransfer` function (same file, one module-level
+   definition) before staging. One algorithm, two wiring styles — a textbook
+   case for one primitive owning it internally always, which is what this
+   port does (both variants now get directory-aware drop resolution for
+   free, including the thumbnail-grid variant, which never had it before).
+3. **A duplicate of that same algorithm already existed a third time in this
+   package** — `features/asset-tree-browser/rules.ts`'s `filesFromDataTransfer`
+   (ported earlier from `DesignFilesPanel.tsx`, already fully generic). This
+   is exactly the failure mode flagged by an independent audit the night
+   this task was dispatched ("an undetected duplicate primitive") — so
+   rather than writing a *fourth* copy for `file-dropzone`, this task
+   promotes the shared logic to `utils/file-transfer.ts` (see below) and
+   both features now import the one implementation.
+
+### Shared-primitive promotion (fixing a pre-existing near-duplicate, not just avoiding a new one)
+
+- **`utils/file-transfer.ts`** (new): `filesFromDataTransfer`/
+  `filesFromFileSystemEntry` (recursive directory-walk drop resolution) and
+  `filesFromClipboardData`/`normalizePastedFile`/`extensionForMimeType`/
+  `shouldIgnoreClipboardFilePaste` (clipboard-paste resolution), moved
+  verbatim out of `features/asset-tree-browser/rules.ts`.
+  `asset-tree-browser/rules.ts` now re-exports these same names from the new
+  location — its own barrel (`index.ts`) and every existing test are
+  unchanged, since they only ever imported by name, not by knowing which
+  file backed the implementation.
+- **`browser/useFileDropTarget.ts`** (new): the nesting-depth-tracked
+  drag-over-state + drop-read-error hook, promoted the same way out of
+  `features/asset-tree-browser/react/hooks/useAssetTreeDragUpload.ts` (itself
+  already fully generic — zero asset-tree-browser types) into this
+  package's shared `browser/` folder (already the established home for
+  cross-feature DOM-interaction hooks — `useDismissOnOutsideOrEscape`,
+  `useGlobalKeydown`). `useAssetTreeDragUpload` now re-exports
+  `useFileDropTarget` under its original name; its own test file is
+  unchanged and now exercises the promoted implementation directly.
+  `file-dropzone`'s own native-drop handling uses this hook too.
+- Neither promotion changed any public export surface `@jini/ui` already
+  had — both re-exporting modules keep their old names, so nothing outside
+  this task needed to change.
+
+### What shipped (`packages/ui/src/features/file-dropzone/`)
+
+| File | Contents |
+|---|---|
+| `types.ts` | `FileDropzoneKind` (the 9-member kind union), `FileDropzonePreviewState` (the object-URL/font-family/text-snippet maps the preview layer produces). Zero runtime statements — excluded from coverage in `vitest.config.ts`, matching the `settings-dialog`/`list-detail-panel` precedent. |
+| `constants.ts` | `FILE_DROPZONE_KIND_BY_EXTENSION`, `FILE_DROPZONE_GLYPH_ICON`, font specimen/pangram strings, text-preview size caps, and the file-dialog timing constants (`FILE_DIALOG_FOCUS_DELAY_MS`/`_WARMUP_MS`/`_STALE_MS`, the processing-affordance min-visible delay and file-count/byte thresholds) — all ported verbatim from the two origin files' module-level constants. |
+| `rules.ts` | `fileDropzoneKind`/`fileDropzoneExtension`/`fileDropzoneNeedsObjectUrl`/`fileDropzoneExtensionLabel`/`fileDropzoneSizeLabel`/`fileDropzoneStagingKey`/`fileDropzoneFontFamilyName` (all ported from `DesignSystemAssetDropzone.tsx`'s module-level helpers, renamed off the OD-branded style), `fileDropzoneShouldShowProcessing` (ported from `DesignSystemFlow.tsx`'s `shouldShowProcessing`, parameterized over the thresholds instead of reading module-level constants directly). Hook-free by design. |
+| `react/hooks/useFileDialogTracking.ts` | The file-dialog cancel-vs-still-loading detection heuristic, ported from `DropZone` — the "real, non-obvious behavior worth testing carefully" the task brief called out. Deliberately generalized beyond the origin: there, the heuristic only ran for the directory-browse zone (`directory && onProcessingStart`); here it runs for any zone that supplies `onProcessingStart`, since the heuristic has no directory-specific behavior. Also fixes a latent gap the origin never handled: no timer cleanup on unmount at all (this port clears every timer on unmount without invoking a stored `finish`, since calling into host state after unmount would be the host's problem to have prevented, but leaking a timer forever isn't). |
+| `react/hooks/useFileDropzonePreviews.ts` | The three `files`-keyed preview effects (object-URL creation/revocation, `FontFace` loading, bounded text-snippet reads), ported from `DesignSystemAssetDropzone.tsx` verbatim, including its own doc comment explaining the StrictMode-safe create/revoke-in-one-effect shape (the alternative — create in a `useMemo`, revoke in a separate empty-deps cleanup — breaks any preview staged at first mount). |
+| `react/hooks/useFileDropzone.ts` | The orchestrating hook: native drag/drop (via `browser/useFileDropTarget`), click-to-browse (via `useFileDialogTracking`), the shared large-selection processing-affordance heuristic (`fileDropzoneShouldShowProcessing` gating whether `onProcessingStart` wraps the staging work, ported from `DropZone`'s `processSelectedFiles`/`shouldShowProcessing`/`runAfterNextPaint`), and an optional page-wide clipboard-paste listener (ported from `DesignSystemAssetDropzone.tsx`'s paste effect, routed through the promoted `filesFromClipboardData`/`shouldIgnoreClipboardFilePaste` utilities instead of the origin's narrower inline check). |
+| `react/components/FileDropzoneThumbnailGrid.tsx`, `FileDropzoneLightbox.tsx` | The kind-aware thumbnail grid and click-to-enlarge lightbox, ported from `DesignSystemAssetDropzone.tsx`, split into two dumb components (the origin inlined both in one file). |
+| `react/components/FileDropzoneNameList.tsx` | The simple staged-names chip list with optional per-name removal, ported from `DropZone`'s inline names/remove-button markup. |
+| `react/components/FileDropzone.tsx` | The orchestrator, composing the above. Renders the thumbnail grid when `files` is supplied, the removable name-chip list when `names`+`onRemoveName` are both supplied, or the names joined directly into the zone's own text when `names` is supplied without `onRemoveName` (matching `DropZone`'s exact `names.length > 0 && !onRemoveName` branch) — the three origin display modes as one component's prop combinations, not three components. |
+| `index.ts` | Public barrel. |
+
+### De-branding
+
+No OD-branded identifier anywhere: not `DesignSystemAssetDropzone`, not
+`DropZone` (which would have collided with a generic "drop zone" naming
+instinct anyway) — the feature and every exported symbol is `FileDropzone`/
+`fileDropzone*`/`useFileDropzone*`. The origin filenames appear only in doc
+comments citing provenance (`Ported from DesignSystemFlow.tsx's DropZone`),
+matching this package's established citation convention (e.g.
+`asset-tree-browser`'s "Ported from a design-tool origin project's
+file-manager panel" and every other section in this file) — not as any
+package-internal folder/type/component name.
+
+### Deliberate generalizations beyond a literal port
+
+- **The "select from library" affordance**: the origin gated a "Select from
+  library" button behind `LIBRARY_UI_VISIBLE`, an OD product feature flag.
+  This ships as `secondaryAction?: { label; onClick }` — a plain optional
+  prop whose *presence* gates visibility (matching this package's existing
+  idiom, e.g. `asset-tree-browser`'s `downloadFiles?`/`getFileUrl?`), so any
+  host can wire in any secondary affordance, not just a library picker.
+- **Directory-aware drop resolution for the thumbnail-grid variant**: the
+  origin's `DesignSystemAssetDropzone` never itself expanded dropped
+  folders (its parent did, before staging) — this port's native-drop
+  handling is now owned by the primitive itself (via the promoted
+  `useFileDropTarget`), so every variant gets folder-aware drops uniformly.
+- **A drop-read error now has two ways to surface**: `useFileDropTarget`'s
+  own `dropReadError` state is returned directly from `useFileDropzone` (for
+  a host that wants to render its own inline banner), *and* mirrored into
+  the optional `onError` callback prop (matching `DropZone`'s original
+  contract) — a strict superset, not a behavior change for either origin.
+- **Full-sentence i18n keys for the default zone prompt** (`'Drag & drop,
+  paste, or browse'`) instead of splitting `"browse"` into its own styled
+  inline `<span>` the way `DesignSystemAssetDropzone` did — wrapping a
+  sub-phrase in its own `t()` call would let a translator reorder words in a
+  way that breaks the surrounding sentence; one `t()` call per full sentence
+  avoids that concatenation-based i18n antipattern, matching this package's
+  i18n policy.
+
+### A real bug found and fixed during this port, not silently carried over
+
+`FileDropzone.tsx`'s first draft called `useFileDropzonePreviews(files ?? [])`.
+Since `files ?? []` allocates a **fresh empty array on every render** when
+`files` is omitted, and `useFileDropzonePreviews`'s three effects are keyed
+on that array by reference, every render re-triggered all three effects —
+whose own `setState` calls (each producing a new, also-fresh `Map`, even
+when functionally empty) re-render the component, recreating the fallback
+array again: **an infinite render loop whenever the `files` prop was
+omitted entirely** (the bare/simple-variant path, i.e. most real usage).
+Caught by a genuine test hang (a runaway `renderHook`/`render` loop pegging
+CPU, not a logic assertion failure) during this task's own test-writing
+pass, root-caused, and fixed with a module-level stable `NO_FILES: File[] = []`
+constant instead of an inline fallback. Documented here per this project's
+"learn from tonight's audit findings" instruction (silently-swallowed or
+undetected defects are exactly what the audit flagged) — this one was
+caught, not shipped.
+
+### i18n
+
+Every user-facing string in every new file routes through `useT()`, English
+string as key, per this package's i18n policy. `rules.ts` stays hook-free —
+no string formatting happens there that needs translation. Every component
+has both a `@testing-library/react` mount test and a real
+`I18nProvider`-mounted French-dictionary test proving the translated text
+actually renders, including one end-to-end `FileDropzone` test translating
+the label, prompt, helper, browse-folder button, secondary action, and the
+zone's own `aria-label` together in one flow.
+
+### Phase 9.6 — async/network test-category gate
+
+`useFileDropzonePreviews`'s font-loading effect and text-snippet-read effect
+are this feature's only async surfaces (object-URL creation is synchronous).
+Explicit tests cover all 4 categories against both:
+1. **Malformed-but-technically-successful** — a `FontFace` whose `.load()`
+   resolves but whose construction throws first, and a text file whose
+   `.slice()`/`.text()` read throws, both fall back to the glyph/name-card
+   display rather than crashing or hanging.
+2. **Racing async operations** — a font `.load()` that resolves *after* the
+   `files` prop changed away from the file it was loading for is asserted to
+   never call `document.fonts.add` (the effect's `cancelled` flag closes
+   this race).
+3. **Rejected promise with no handler** — a `.load()` rejection is asserted
+   to be swallowed into the glyph fallback, not an unhandled rejection.
+4. **Stale state after retry** — not applicable to this feature (no retry
+   concept; files are re-staged fresh each time, not retried) — noted
+   explicitly per the gate's own "a cluster with no such surface is exempt,
+   say so" instruction rather than skipped silently.
+
+### Test/typecheck/coverage results
+
+- `pnpm --filter @jini/ui typecheck`: green (zero errors) — required the
+  same `exactOptionalPropertyTypes` discipline as every prior section
+  (optional prop/param types spelled `X | undefined`, not just `?:`), plus
+  one `renderHook` generic-inference gotcha in a test file (an explicit
+  callback-parameter type annotation didn't propagate into `initialProps`'s
+  inferred type under `exactOptionalPropertyTypes`; fixed by casting the
+  `initialProps` value to the exact optional-inclusive type instead of
+  relying on inference).
+- `pnpm --filter @jini/ui exec vitest run src/features/file-dropzone`:
+  **144 tests across 9 files, all green** — `rules` (24), `useFileDialogTracking`
+  (15), `useFileDropzonePreviews` (18), `useFileDropzone` (19),
+  `FileDropzoneThumbnailGrid` (16), `FileDropzoneLightbox` (18),
+  `FileDropzoneNameList` (5), `FileDropzone` (28, the full orchestrator —
+  every variant combination, drag/drop, click, paste, the processing
+  heuristic, and i18n end-to-end), and `index` (1, the barrel-completeness
+  smoke test this package's convention requires). Every hook has a mounted
+  test (`renderHook` for the two hook-only files, a small harness component
+  rendering a real `<input>`/drop target for `useFileDropzone` since its
+  contract is DOM-ref-shaped, not port-shaped); every component has a
+  `@testing-library/react` mount test and a real-DOM-event interaction test
+  (native `drop`/`dragenter`/`change`/`keydown` events via `fireEvent`, not
+  just calling handlers directly).
+- **Coverage (v8, `json-summary`/`json` reporters): 100% on all 4 metrics —
+  statements, branches, functions, lines — both aggregate and every
+  individual file in `features/file-dropzone/`**, clearing the
+  ≥99%-with-100%-as-the-goal bar with no `/* v8 ignore */` anywhere. The
+  classify-then-fix loop found: several genuinely-reachable branches that
+  just needed a test (the file-dialog focus-delay-vs-warmup race, the
+  stale-timeout safety net, a null `input.files`, the `requestAnimationFrame`-
+  unavailable fallback path, every preview-kind's fallback arm); one real
+  dead branch in `useFileDropzone.ts` (`stageFiles`' own empty-array guard —
+  every caller already guarantees a non-empty selection before reaching it),
+  refactored away rather than tested around; and one TS-required-but-
+  unreachable branch (`inputRef.current` null-check inside a post-mount
+  effect, where the consumer always renders the ref'd `<input>`
+  unconditionally), replaced with a non-null assertion plus an explaining
+  comment, per Phase 9.5's own classification rules.
+- Promoted-file regression check: `features/asset-tree-browser/` (whose
+  `rules.ts` and `useAssetTreeDragUpload.ts` now re-export from the new
+  shared locations) stays at **100% on all 4 metrics**, unchanged from
+  before this task — its own tests now exercise the promoted
+  `utils/file-transfer.ts`/`browser/useFileDropTarget.ts` implementations
+  directly, with no new test file needed for either promoted module.
+- Full package run (`pnpm --filter @jini/ui exec vitest run --coverage`):
+  **237 test files, 2490 tests, all green**. Package-wide aggregate sits at
+  96.06%/94.42%/95.04%/96.06% (statements/branches/functions/lines) — this
+  is **pre-existing debt in files this task never touched** (e.g.
+  `utils/notifications.ts` at 67%, several `src/components/*.tsx` atoms with
+  no tests at all), not a regression introduced here; every file this task
+  authored, edited, or promoted is at 100%, which is the bar this project's
+  Phase 9.5 method targets per-file, not a blanket whole-package retrofit
+  this task was never scoped to perform.
+- Purity grep (`grep -rniE 'open design|OD_|--od-stamp|/tmp/open-design'`)
+  across every file this task touched: **clean, zero matches in actual
+  code** — three literal `Open Design` mentions were caught in doc comments
+  during self-review and reworded to `OD`, matching this package's
+  established convention (see the `features/memory/` section above for the
+  same self-correction). No OD-branded package-internal folder/type/
+  component name anywhere (see "De-branding" above).
+- `pnpm guard` (repo root): `[guard] ok (skeleton — rules pending
+  implementation during extraction)` — unchanged, no boundary violations
+  introduced.
 ---
 
 ## Section: `html-viewer` — classification of `HtmlViewer` + `FileVersionManagerModal` (2026-07-18)

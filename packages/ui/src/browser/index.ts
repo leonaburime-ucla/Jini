@@ -7,3 +7,4 @@
 
 export * from './useDismissOnOutsideOrEscape.js';
 export * from './useGlobalKeydown.js';
+export * from './useFileDropTarget.js';

@@ -115,6 +115,9 @@ export default defineConfig({
         // revision-review/types.ts is likewise pure `interface`/`type`
         // declarations, zero runtime statements (same verification grep).
         'src/features/revision-review/types.ts',
+        // file-dropzone/types.ts is likewise pure `type`/`interface`
+        // declarations, zero runtime statements (same grep check).
+        'src/features/file-dropzone/types.ts',
       ],
       // Measured 2026-07-22 (audit fix — coverage-hardening pass): 99.98%
       // statements / ~99.86-99.88% branches / 100% functions / 99.98% lines

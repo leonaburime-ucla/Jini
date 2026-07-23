@@ -31,6 +31,7 @@ export * from './features/iframe-pool/index.js';
 export * from './features/command-palette/index.js';
 export * from './features/tab-launcher-menu/index.js';
 export * from './features/revision-review/index.js';
+export * from './features/file-dropzone/index.js';
 export * from './utils/index.js';
 export * from './utils/timezone.js';
 export * from './utils/zip.js';

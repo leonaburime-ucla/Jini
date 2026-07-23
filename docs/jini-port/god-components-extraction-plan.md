@@ -283,9 +283,15 @@ don't repeat that on the next items in this list.
    above), not bundled into this batch.
    `RecurringSchedulePicker`/`MentionAutocomplete`/popover chrome primitives
    (`NewAutomationModal.tsx`), `AssetTreeBrowser<TFile>`/`FilePreviewPane<TFile>`
-   (`DesignFilesPanel.tsx`), `DropZone`/`RevisionDiffCard`/`RevisionHistoryList`/token-chip family
+   (`DesignFilesPanel.tsx`), `RevisionDiffCard`/`RevisionHistoryList`/token-chip family
    (`DesignSystemFlow.tsx`, beyond the progress-card pattern in item 2), 4 presentational
-   onboarding components (`EntryShell.tsx`).
+   onboarding components (`EntryShell.tsx`). `DropZone` (`DesignSystemFlow.tsx`) was pulled
+   forward and done as its own dispatch (✅ done 2026-07-18) — consolidated together with
+   `DesignSystemAssetDropzone.tsx` (not itself in this plan's 23-file sweep, but the same
+   "file-staging zone" interaction shape, confirmed by reading both in full) into one
+   `features/file-dropzone/` primitive, not bundled into this batch. See
+   `packages/ui/source-map.md`'s `features/file-dropzone/` section for the consolidation
+   evidence.
 8. **`WorkspaceTabsBar.tsx`** — corrected from r5's "one-import fix" to a real parameterization job:
    extract the drag/reorder/keyboard-shortcut/hover-preview/search/persistence chrome, but requires
    genericizing three things (the tab-kind union, route-mapping functions, storage/event key names),
