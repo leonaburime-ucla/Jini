@@ -310,3 +310,102 @@ describe('CommentSidePanel', () => {
     expect(screen.getByText('Tout sélectionner')).toBeInTheDocument();
   });
 });
+
+describe('CommentSidePanel hook override 4-pattern test suite', () => {
+  it('Pattern 1 — State 1: Collapsed rail view state', () => {
+    const onCollapsedChange = vi.fn();
+    render(<CommentSidePanel {...baseProps({ collapsed: true, onCollapsedChange })} />);
+
+    const rail = screen.getByTestId('comment-side-collapsed-rail');
+    expect(rail).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+
+    fireEvent.click(rail);
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it('Pattern 2 — State 2: Expanded empty state', () => {
+    render(<CommentSidePanel {...baseProps({ comments: [] })} />);
+
+    expect(screen.getByText('No comments yet')).toBeInTheDocument();
+    expect(screen.queryByTestId('comment-side-item')).toBeNull();
+  });
+
+  it('Pattern 3 — State 3: Active dragging reorder state via useCommentReorder hook override', () => {
+    const onDragStart = vi.fn();
+    const onDragOver = vi.fn();
+    const onDrop = vi.fn();
+    const onDragLeaveContainer = vi.fn();
+    const clear = vi.fn();
+    const customReorderHook = () => ({
+      dragState: { draggingId: 'c1', overId: 'c2', edge: 'bottom' as const },
+      canReorder: true,
+      onDragStart,
+      onDragOver,
+      onDrop,
+      onDragLeaveContainer,
+      clear,
+    });
+
+    render(
+      <CommentSidePanel
+        {...baseProps({
+          useCommentReorder: customReorderHook as any,
+        })}
+      />,
+    );
+
+    const firstItem = screen.getByText('1. Button').closest('[data-testid="comment-side-item"]')!;
+    expect(firstItem).toHaveClass('dragging');
+
+    const secondItem = screen.getByText('2. Header').closest('[data-testid="comment-side-item"]')!;
+    expect(secondItem).toHaveClass('comment-side-item-drop-bottom');
+
+    // Exercise the actual wiring, not just the classNames `dragState` alone
+    // produces — a broken handler passthrough (e.g. the field-name mismatch
+    // this test used to have) wouldn't have been caught by the class
+    // assertions above.
+    const dragHandles = screen.getAllByLabelText('Drag to reorder');
+    fireEvent.dragStart(dragHandles[0]!);
+    expect(onDragStart).toHaveBeenCalledWith(expect.anything(), 'c1');
+
+    fireEvent.dragOver(secondItem);
+    expect(onDragOver).toHaveBeenCalledWith(expect.anything(), 'c2');
+
+    fireEvent.drop(secondItem);
+    expect(onDrop).toHaveBeenCalledWith(expect.anything(), 'c2');
+
+    fireEvent.dragEnd(dragHandles[0]!);
+    expect(clear).toHaveBeenCalled();
+
+    fireEvent.dragLeave(secondItem.parentElement!);
+    expect(onDragLeaveContainer).toHaveBeenCalled();
+  });
+
+  it('Pattern 4 — State 4: Dynamic full state transition walkthrough using React useState inside test harness', () => {
+    function DynamicCommentHarness() {
+      const [collapsed, setCollapsed] = useState(false);
+      return (
+        <CommentSidePanel
+          {...baseProps({
+            collapsed,
+            onCollapsedChange: setCollapsed,
+          })}
+        />
+      );
+    }
+
+    render(<DynamicCommentHarness />);
+
+    // Expanded initially
+    expect(screen.getByText('Comments')).toBeInTheDocument();
+
+    // Collapse
+    fireEvent.click(screen.getByLabelText('Hide Comments'));
+    expect(screen.getByTestId('comment-side-collapsed-rail')).toBeInTheDocument();
+
+    // Re-expand
+    fireEvent.click(screen.getByTestId('comment-side-collapsed-rail'));
+    expect(screen.getByText('Comments')).toBeInTheDocument();
+  });
+});
