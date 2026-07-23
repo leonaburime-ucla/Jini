@@ -2,10 +2,10 @@ import { useCallback, useMemo, useState } from 'react';
 import { useT } from '../i18n/index.js';
 import type { ConnectorsDependencies } from './ports.js';
 import type { Connector, ConnectorAuthResultEvent, ProviderTab } from './types.js';
-import { createFakeConnectorsDependencies } from './dependencies.js';
 import { useConnectorCatalog } from './hooks/useConnectorCatalog.js';
 import { useConnectorAuthorization } from './hooks/useConnectorAuthorization.js';
 import { useConnectorDetail } from './hooks/useConnectorDetail.js';
+import { useWiredConnectorsBrowser } from './hooks/useWiredConnectorsBrowser.js';
 import { connectorPanelAlerts, scopeConnectorsToProvider, sortConnectorsForSearch } from './rules.js';
 import { AUTHORIZATION_CANCEL_FAILED_MESSAGE, DEFAULT_PROVIDER_TABS, DEFAULT_PROVIDER_TAB_ID } from './constants.js';
 import { CenteredLoader } from '../../react/components/Loading.js';
@@ -29,6 +29,10 @@ export interface ConnectorsBrowserProps {
   onProviderTabClick?: (element: 'provider_chip' | 'search_connectors' | 'gate_card') => void;
   onConnectorAuthResult?: (event: ConnectorAuthResultEvent) => void;
   onConnectorsChanged?: () => void;
+  /** Custom hook overrides for dependency injection / testing. */
+  useConnectorCatalog?: typeof useConnectorCatalog;
+  useConnectorAuthorization?: typeof useConnectorAuthorization;
+  useConnectorDetail?: typeof useConnectorDetail;
 }
 
 /**
@@ -49,25 +53,28 @@ export function ConnectorsBrowser({
   onProviderTabClick,
   onConnectorAuthResult,
   onConnectorsChanged,
+  useConnectorCatalog: useConnectorCatalogHook = useConnectorCatalog,
+  useConnectorAuthorization: useConnectorAuthorizationHook = useConnectorAuthorization,
+  useConnectorDetail: useConnectorDetailHook = useConnectorDetail,
 }: ConnectorsBrowserProps) {
   const t = useT();
-  const deps = useMemo(() => dependencies ?? createFakeConnectorsDependencies(), [dependencies]);
   const [filter, setFilter] = useState('');
   const [selectedProvider, setSelectedProvider] = useState<string>(providerTabs[0]?.id ?? DEFAULT_PROVIDER_TAB_ID);
 
-  const catalog = useConnectorCatalog(deps.data, { unlocked, refreshKey: catalogRefreshKey });
-  const authorization = useConnectorAuthorization(deps.data, deps.authPendingStorage, deps.authBridge, {
-    connectors: catalog.connectors,
-    setConnectors: catalog.setConnectors,
-    ...(onConnectorsChanged ? { onConnectorsChanged } : {}),
-    ...(onConnectorAuthResult ? { onAuthResult: onConnectorAuthResult } : {}),
-  });
-  const toolPreviewRetryToken = `${unlocked ? 'configured' : 'unconfigured'}:${String(catalogRefreshKey)}`;
-  const detail = useConnectorDetail(deps.data, {
-    connectors: catalog.connectors,
-    setConnectors: catalog.setConnectors,
+  // Dependency resolution (host-supplied, or the package's in-memory fake)
+  // plus the catalog/authorization/detail cluster all live in one wirer —
+  // see `hooks/useWiredConnectorsBrowser.ts` — matching `features/asset-grid/`'s
+  // `useWiredAssetGridData` precedent for keeping "which adapter" out of the
+  // component. The three sub-hooks stay independently overridable for tests.
+  const { deps, catalog, authorization, detail } = useWiredConnectorsBrowser({
+    dependencies,
     unlocked,
-    retryToken: toolPreviewRetryToken,
+    catalogRefreshKey,
+    ...(onConnectorsChanged ? { onConnectorsChanged } : {}),
+    ...(onConnectorAuthResult ? { onConnectorAuthResult } : {}),
+    useConnectorCatalog: useConnectorCatalogHook,
+    useConnectorAuthorization: useConnectorAuthorizationHook,
+    useConnectorDetail: useConnectorDetailHook,
   });
 
   const providerScopedConnectors = useMemo(

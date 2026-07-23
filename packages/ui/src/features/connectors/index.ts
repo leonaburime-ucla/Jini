@@ -57,6 +57,11 @@ export type {
 } from './hooks/useConnectorAuthorization.js';
 export { useConnectorDetail } from './hooks/useConnectorDetail.js';
 export type { ConnectorDetailController, UseConnectorDetailParams } from './hooks/useConnectorDetail.js';
+export { useWiredConnectorsBrowser } from './hooks/useWiredConnectorsBrowser.js';
+export type {
+  UseWiredConnectorsBrowserParams,
+  WiredConnectorsBrowserController,
+} from './hooks/useWiredConnectorsBrowser.js';
 
 export { ConnectorLogo } from './components/ConnectorLogo.js';
 export type { ConnectorLogoProps } from './components/ConnectorLogo.js';
