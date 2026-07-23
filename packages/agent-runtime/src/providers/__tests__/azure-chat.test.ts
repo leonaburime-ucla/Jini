@@ -170,6 +170,26 @@ describe('runAzureToolTurn', () => {
     expect(Object.keys(init.headers)).not.toContain('X-Title');
   });
 
+  it('always sends max_tokens (never max_completion_tokens, regardless of deployment name), defaulting to 8192 — matches a live comparison against OD\'s real azure handler', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runAzureToolTurn({ apiKey: 'k', baseUrl: 'https://my-resource.openai.azure.com', model: 'gpt-4o-deployment', messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 8192 });
+
+    fetchMock.mockClear();
+    await runAzureToolTurn({ apiKey: 'k', baseUrl: 'https://my-resource.openai.azure.com', model: 'gpt-4o-deployment', maxTokens: 1024, messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 1024 });
+
+    // Even a deployment named after a newer model family still gets the legacy field — Azure
+    // deployment names are caller-defined strings, not necessarily matching OpenAI's own scheme.
+    fetchMock.mockClear();
+    await runAzureToolTurn({ apiKey: 'k', baseUrl: 'https://my-resource.openai.azure.com', model: 'my-gpt-5-deployment', messages: baseMessages, onEvent: () => {} });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.max_tokens).toBe(8192);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
   it('runs a full tool-call loop: accumulates streamed argument fragments, invokes executeTool, and continues to a final stop', async () => {
     const firstBody = sseBody(
       textChunk("Let's check "),

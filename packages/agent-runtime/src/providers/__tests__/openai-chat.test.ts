@@ -174,6 +174,32 @@ describe('runOpenAiToolTurn', () => {
     expect(bodyNoExtras.tools).toBeUndefined();
   });
 
+  it('always sends a token-limit field, defaulting to 8192 and picking max_tokens vs max_completion_tokens per model — matches a live comparison against OD\'s real handler', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runOpenAiToolTurn({ apiKey: 'sk', model: 'gpt-4o', messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 8192 });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).max_completion_tokens).toBeUndefined();
+
+    fetchMock.mockClear();
+    await runOpenAiToolTurn({ apiKey: 'sk', model: 'gpt-4o', maxTokens: 512, messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 512 });
+
+    fetchMock.mockClear();
+    await runOpenAiToolTurn({ apiKey: 'sk', model: 'gpt-5-mini', messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_completion_tokens: 8192 });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).max_tokens).toBeUndefined();
+
+    fetchMock.mockClear();
+    await runOpenAiToolTurn({ apiKey: 'sk', model: 'o1-preview', messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_completion_tokens: 8192 });
+
+    fetchMock.mockClear();
+    await runOpenAiToolTurn({ apiKey: 'sk', model: 'gpt-4o', maxTokens: -5, messages: baseMessages, onEvent: () => {} });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 8192 });
+  });
+
   it('ignores a non-record JSON frame, a malformed JSON frame, a missing/empty choices array, and a non-record delta', async () => {
     const body = sseBody(
       'data: 42\n\n',

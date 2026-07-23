@@ -19,10 +19,24 @@
  * confirmed OpenRouter product-identity leak, the `turn-end-guard.ts` fix
  * for the confirmed duplicate-`end`-event bug — both apply identically
  * here).
+ *
+ * **Token-limit fix**: an earlier version of this module sent no
+ * `max_tokens`/`max_completion_tokens` field at all — a live comparison
+ * against a running Open Design daemon found OD always sends one (defaulting
+ * to 8192), model-aware between the legacy and newer field name. This
+ * module now wires in `./token-params.js#buildOpenAIChatTokenParam` — that
+ * module already existed, itself a verbatim port of OD's real
+ * `apps/daemon/src/integrations/openai-chat-token-params.ts`, but was never
+ * actually called from here until this fix. `azure-chat.ts` reuses the same
+ * module's `buildLegacyMaxTokensParam` (always the legacy `max_tokens`
+ * field, not model-aware) — matching OD's own azure handler, which never
+ * uses the model-aware picker (Azure deployment names are caller-defined
+ * strings, not necessarily matching OpenAI's own model-naming scheme).
  */
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
 import { redactSecrets, validateBaseUrl } from './connection-guard.js';
 import { decodeSseStream } from './sse-decode.js';
+import { buildOpenAIChatTokenParam } from './token-params.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
 export interface OpenAiFunctionToolDef {
@@ -81,6 +95,8 @@ export interface OpenAiTurnOptions {
   readonly messages: readonly OpenAiMessageParam[];
   readonly tools?: readonly OpenAiFunctionToolDef[];
   readonly temperature?: number;
+  /** Defaults to {@link DEFAULT_OPENAI_MAX_TOKENS} (8192) when omitted or not a positive number — a token limit is always sent, matching OD's real behavior (see module doc). */
+  readonly maxTokens?: number;
   /** Same bound and rationale as `AnthropicTurnOptions.maxToolTurns`. Defaults to 8. */
   readonly maxToolTurns?: number;
   readonly executeTool?: OpenAiToolExecutor;
@@ -98,6 +114,8 @@ export interface OpenAiTurnResult {
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 const DEFAULT_MAX_TOOL_TURNS = 8;
 const DONE_SENTINEL = '[DONE]';
+/** Matches OD's own default (`apps/daemon/src/routes/chat.ts`'s openai/azure handlers both fall back to this when the caller doesn't supply one) — a real, explicit bound is always sent, never an unbounded request. */
+export const DEFAULT_OPENAI_MAX_TOKENS = 8192;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -117,11 +135,13 @@ function openAiHeaders(options: OpenAiTurnOptions): Record<string, string> {
 }
 
 function openAiRequestBody(options: OpenAiTurnOptions, messages: readonly OpenAiMessageParam[]): Record<string, unknown> {
+  const effectiveMaxTokens = typeof options.maxTokens === 'number' && options.maxTokens > 0 ? options.maxTokens : DEFAULT_OPENAI_MAX_TOKENS;
   return {
     model: options.model,
     stream: true,
     stream_options: { include_usage: true },
     messages,
+    ...buildOpenAIChatTokenParam(options.model, effectiveMaxTokens),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
   };

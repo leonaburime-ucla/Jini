@@ -36,9 +36,19 @@
  * {@link AzureTurnOptions}, and `apiVersion` is validated as
  * non-empty-if-supplied by the caller (`@jini/http`'s
  * `parseAzureProxyRequest` — see that module).
+ *
+ * **Token-limit fix**: an earlier version of this module sent no token-limit
+ * field at all — a live comparison against a running Open Design daemon
+ * found OD's real `azure` proxy handler always sends `max_tokens` (defaulting
+ * to 8192), unconditionally the legacy field name — never the newer
+ * `max_completion_tokens` `openai-chat.ts` picks for GPT-5/o-series models,
+ * since Azure deployment names are caller-defined strings, not necessarily
+ * matching OpenAI's own model-naming scheme. Wired via
+ * `./token-params.js#buildLegacyMaxTokensParam`.
  */
 import { defaultDnsLookup, validateBaseUrlResolved } from './connection-guard.js';
 import { runOpenAiCompatibleRequest, type OpenAiCompatibleRequestOutcome } from './openai-chat.js';
+import { buildLegacyMaxTokensParam } from './token-params.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
 export interface AzureFunctionToolDef {
@@ -100,6 +110,8 @@ export interface AzureTurnOptions {
   readonly messages: readonly AzureMessageParam[];
   readonly tools?: readonly AzureFunctionToolDef[];
   readonly temperature?: number;
+  /** Defaults to 8192 when omitted or not a positive number — a token limit is always sent, matching OD's real `azure` proxy handler (see module doc). */
+  readonly maxTokens?: number;
   /** Same bound and rationale as `AnthropicTurnOptions.maxToolTurns`. Defaults to 8. */
   readonly maxToolTurns?: number;
   readonly executeTool?: AzureToolExecutor;
@@ -116,6 +128,8 @@ export interface AzureTurnResult {
 
 const DEFAULT_AZURE_API_VERSION = '2024-10-21';
 const DEFAULT_MAX_TOOL_TURNS = 8;
+/** Matches OD's real azure handler's default when `maxTokens` isn't supplied — see module doc. */
+const DEFAULT_AZURE_MAX_TOKENS = 8192;
 
 function azureRequestUrl(baseUrl: string, model: string, apiVersion: string | undefined): string {
   const base = baseUrl.replace(/\/+$/, '');
@@ -132,10 +146,12 @@ function azureHeaders(options: AzureTurnOptions): Record<string, string> {
 }
 
 function azureRequestBody(options: AzureTurnOptions, messages: readonly AzureMessageParam[]): Record<string, unknown> {
+  const effectiveMaxTokens = typeof options.maxTokens === 'number' && options.maxTokens > 0 ? options.maxTokens : DEFAULT_AZURE_MAX_TOKENS;
   return {
     stream: true,
     stream_options: { include_usage: true },
     messages,
+    ...buildLegacyMaxTokensParam(effectiveMaxTokens),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
   };

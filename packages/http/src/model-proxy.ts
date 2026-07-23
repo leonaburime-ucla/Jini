@@ -173,6 +173,8 @@ interface ParsedProxyCommon {
   readonly model: string;
   readonly messages: unknown[];
   readonly temperature?: number;
+  /** Optional here; individual providers narrow to required where their real API demands it (see `ParsedAnthropicProxyRequest`). OpenAI/Azure/Ollama all default to 8192 in their turn-runner when omitted — see each module's doc. */
+  readonly maxTokens?: number;
   readonly maxToolTurns?: number;
   readonly extraHeaders?: Record<string, string>;
 }
@@ -206,6 +208,9 @@ function parseCommon(body: unknown): Result<ParsedProxyCommon> {
   if (body.temperature !== undefined && typeof body.temperature !== 'number') {
     return err(validationError('temperature must be a number when provided'));
   }
+  if (body.maxTokens !== undefined && typeof body.maxTokens !== 'number') {
+    return err(validationError('maxTokens must be a number when provided'));
+  }
   if (body.maxToolTurns !== undefined && typeof body.maxToolTurns !== 'number') {
     return err(validationError('maxToolTurns must be a number when provided'));
   }
@@ -219,6 +224,7 @@ function parseCommon(body: unknown): Result<ParsedProxyCommon> {
     messages: body.messages,
     ...(body.baseUrl !== undefined ? { baseUrl: body.baseUrl as string } : {}),
     ...(body.temperature !== undefined ? { temperature: body.temperature as number } : {}),
+    ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens as number } : {}),
     ...(body.maxToolTurns !== undefined ? { maxToolTurns: body.maxToolTurns as number } : {}),
     ...(body.extraHeaders !== undefined ? { extraHeaders: body.extraHeaders as Record<string, string> } : {}),
   });
@@ -349,7 +355,6 @@ function parseGoogleProxyRequest(body: unknown): Result<ParsedGoogleProxyRequest
  */
 interface ParsedOllamaProxyRequest extends ParsedProxyCommon {
   readonly tools?: unknown[];
-  readonly maxTokens?: number;
 }
 
 function parseOllamaProxyRequest(body: unknown): Result<ParsedOllamaProxyRequest> {
@@ -360,14 +365,10 @@ function parseOllamaProxyRequest(body: unknown): Result<ParsedOllamaProxyRequest
   if (record.tools !== undefined && !Array.isArray(record.tools)) {
     return err(validationError('tools must be an array when provided'));
   }
-  if (record.maxTokens !== undefined && typeof record.maxTokens !== 'number') {
-    return err(validationError('maxTokens must be a number when provided'));
-  }
 
   return ok({
     ...common.value,
     ...(record.tools !== undefined ? { tools: record.tools as unknown[] } : {}),
-    ...(record.maxTokens !== undefined ? { maxTokens: record.maxTokens as number } : {}),
   });
 }
 
@@ -496,6 +497,7 @@ function buildProxyProviderRegistry(deps: ModelProxyHttpDeps): Record<string, Pr
           ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
           ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly OpenAiFunctionToolDef[] } : {}),
           ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+          ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
           ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
           ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
           ...(deps.openaiExecuteTool
@@ -515,6 +517,7 @@ function buildProxyProviderRegistry(deps: ModelProxyHttpDeps): Record<string, Pr
           onEvent,
           ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly AzureFunctionToolDef[] } : {}),
           ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+          ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
           ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
           ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
           ...(deps.azureExecuteTool
@@ -653,6 +656,7 @@ export function registerModelProxyRoutes(app: Express, deps: ModelProxyHttpDeps,
         ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
         ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly OpenAiFunctionToolDef[] } : {}),
         ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+        ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
         ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
         ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
         ...(deps.openaiExecuteTool
@@ -680,6 +684,7 @@ export function registerModelProxyRoutes(app: Express, deps: ModelProxyHttpDeps,
         onEvent,
         ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly AzureFunctionToolDef[] } : {}),
         ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+        ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
         ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
         ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
         ...(deps.azureExecuteTool

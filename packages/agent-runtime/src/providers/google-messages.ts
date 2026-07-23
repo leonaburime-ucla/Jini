@@ -149,16 +149,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Builds the streaming request URL, attaching `apiKey` as the `?key=` query param — Google's REST auth convention (see `google.ts#googleProviderModelsUrl`'s identical pattern). */
-function googleRequestUrl(baseUrl: string | undefined, model: string, apiKey: string): string {
-  const url = new URL(googleStreamGenerateContentUrl(baseUrl ?? DEFAULT_GOOGLE_BASE_URL, model));
-  url.searchParams.set('key', apiKey);
-  return url.toString();
+/**
+ * Builds the streaming request URL with no credential attached — auth travels via the
+ * `x-goog-api-key` header (see `googleHeaders`), not a `?key=` query param.
+ *
+ * **Corrected to match Open Design's real behavior**: an earlier version of this function
+ * attached `apiKey` as a `?key=` query-string parameter, modeled on `google.ts#googleProviderModelsUrl`'s
+ * model-*listing* endpoint (a different, read-only surface). A live side-by-side comparison
+ * against a running OD daemon found its actual `/api/proxy/google/stream` chat handler
+ * (`apps/daemon/src/routes/chat.ts:1251`) uses `headers: { 'x-goog-api-key': apiKey }` instead —
+ * query-string credentials are also worse practice generically (they land in server access logs,
+ * proxy logs, and browser history far more readily than headers do), so this fix is both a real
+ * parity correction and a real hardening.
+ */
+function googleRequestUrl(baseUrl: string | undefined, model: string): string {
+  return googleStreamGenerateContentUrl(baseUrl ?? DEFAULT_GOOGLE_BASE_URL, model);
 }
 
 function googleHeaders(options: GoogleTurnOptions): Record<string, string> {
   return {
     'content-type': 'application/json',
+    'x-goog-api-key': options.apiKey,
     ...(options.extraHeaders ?? {}),
   };
 }
@@ -211,7 +222,7 @@ async function runSingleGoogleRequest(
 
   let response: { ok: boolean; status: number; body: AsyncIterable<Uint8Array | string> | null; text(): Promise<string> };
   try {
-    response = (await fetch(googleRequestUrl(options.baseUrl, options.model, options.apiKey), {
+    response = (await fetch(googleRequestUrl(options.baseUrl, options.model), {
       method: 'POST',
       headers: googleHeaders(options),
       body: JSON.stringify(googleRequestBody(options, contents)),

@@ -122,7 +122,7 @@ describe('runGoogleToolTurn', () => {
     ]);
   });
 
-  it('streams a plain text response through to text_delta/usage events, attaches the api key as a ?key= query param, and ends with reason stop', async () => {
+  it('streams a plain text response through to text_delta/usage events, attaches the api key as an x-goog-api-key header (not a query param), and ends with reason stop', async () => {
     const body = sseBody(textCandidate('Hello'), usageChunk({ promptTokenCount: 3, candidatesTokenCount: 1, totalTokenCount: 4 }), textCandidate('', 'STOP'));
     const fetchMock = vi.fn().mockResolvedValue(okResponse(body));
     vi.stubGlobal('fetch', fetchMock);
@@ -141,7 +141,8 @@ describe('runGoogleToolTurn', () => {
     ]);
     expect(result).toEqual({ finishReason: 'STOP', toolTurns: 0 });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=goog-key');
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse');
+    expect(init.headers['x-goog-api-key']).toBe('goog-key');
     expect(init.headers.authorization).toBeUndefined();
     expect(init.headers['HTTP-Referer']).toBeUndefined();
   });
