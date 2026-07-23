@@ -49,7 +49,7 @@
  * hanging, but the detailed safety-rating breakdown is not modeled.
  */
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
-import { redactSecrets, validateBaseUrl } from './connection-guard.js';
+import { defaultDnsLookup, redactSecrets, validateBaseUrlResolved } from './connection-guard.js';
 import { googleStreamGenerateContentUrl } from './google.js';
 import { decodeSseStream } from './sse-decode.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
@@ -202,7 +202,7 @@ async function runSingleGoogleRequest(
 ): Promise<SingleRequestOutcome> {
   const { onEvent } = options;
 
-  const baseUrlCheck = validateBaseUrl(options.baseUrl ?? DEFAULT_GOOGLE_BASE_URL);
+  const baseUrlCheck = await validateBaseUrlResolved(options.baseUrl ?? DEFAULT_GOOGLE_BASE_URL, defaultDnsLookup);
   if (baseUrlCheck.error) {
     onEvent({ type: 'error', message: baseUrlCheck.error });
     emitEnd('error');

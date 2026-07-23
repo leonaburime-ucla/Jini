@@ -37,7 +37,7 @@
  * non-empty-if-supplied by the caller (`@jini/http`'s
  * `parseAzureProxyRequest` — see that module).
  */
-import { validateBaseUrl } from './connection-guard.js';
+import { defaultDnsLookup, validateBaseUrlResolved } from './connection-guard.js';
 import { runOpenAiCompatibleRequest, type OpenAiCompatibleRequestOutcome } from './openai-chat.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
@@ -148,7 +148,7 @@ async function runSingleAzureRequest(
   emitEnd: (reason: AzureTurnEndReason) => void,
   hasEnded: () => boolean,
 ): Promise<OpenAiCompatibleRequestOutcome> {
-  const baseUrlCheck = validateBaseUrl(options.baseUrl);
+  const baseUrlCheck = await validateBaseUrlResolved(options.baseUrl, defaultDnsLookup);
   if (baseUrlCheck.error) {
     options.onEvent({ type: 'error', message: baseUrlCheck.error });
     emitEnd('error');

@@ -25,7 +25,7 @@
  * caller pointing this adapter at a *remote*, key-gated Ollama-compatible
  * gateway can still supply one.
  */
-import { validateBaseUrl } from './connection-guard.js';
+import { defaultDnsLookup, validateBaseUrlResolved } from './connection-guard.js';
 import { runOpenAiCompatibleRequest, type OpenAiCompatibleRequestOutcome } from './openai-chat.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
@@ -135,7 +135,7 @@ async function runSingleOllamaRequest(
   emitEnd: (reason: OllamaTurnEndReason) => void,
   hasEnded: () => boolean,
 ): Promise<OpenAiCompatibleRequestOutcome> {
-  const baseUrlCheck = validateBaseUrl(options.baseUrl ?? DEFAULT_OLLAMA_BASE_URL);
+  const baseUrlCheck = await validateBaseUrlResolved(options.baseUrl ?? DEFAULT_OLLAMA_BASE_URL, defaultDnsLookup);
   if (baseUrlCheck.error) {
     options.onEvent({ type: 'error', message: baseUrlCheck.error });
     emitEnd('error');

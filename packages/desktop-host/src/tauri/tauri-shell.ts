@@ -19,10 +19,16 @@ export function createTauriShellPort(surfaces: TauriShellSurfaces): ShellPort {
     openExternal: (url) => surfaces.shell.openUrl(url),
     openPath: (path) => surfaces.shell.openPath(path),
     async dirExists(path: string): Promise<boolean> {
-      const exists = await surfaces.fs.exists(path);
-      if (!exists) return false;
-      const info = await surfaces.fs.stat(path);
-      return info.isDirectory;
+      // ShellPort.dirExists documents "never throws" — a permission error, or the path vanishing
+      // between exists() and stat(), must resolve false, matching the Electron adapter.
+      try {
+        const exists = await surfaces.fs.exists(path);
+        if (!exists) return false;
+        const info = await surfaces.fs.stat(path);
+        return info.isDirectory;
+      } catch {
+        return false;
+      }
     },
     // Tauri's single-instance-style "there is no JS-callable equivalent" pattern already
     // documented in `tauri-surfaces.ts` applies here too, for a different reason: the

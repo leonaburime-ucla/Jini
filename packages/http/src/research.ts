@@ -7,13 +7,16 @@
  * not guessed, per this repo's "verify against the real source, don't guess" convention). Only the
  * request/response shape and defaults are ported (`search_depth: 'basic'`, `include_answer: true`,
  * `include_raw_content: false`, a 20-result hard cap, the `results[]` -> `ResearchSource[]` mapping)
- * — OD's own `TavilyError` class, `AbortController`-based 30s timeout, and `requestInit.dispatcher`
- * passthrough are not carried over; this route pack's own SEC-005 error-handling convention (a
- * generic `INTERNAL_ERROR` + correlation id, matching every other route pack in this package)
- * replaces the origin's thrown-`TavilyError` shape, and no request-level timeout/connection-pooling
- * knobs are exposed yet (`fetch`'s own defaults apply) — a future pass can add them the same way
- * `media.ts#MediaGenerationRequestInit` optionally threads a `dispatcher` through, if a real need
- * for one shows up.
+ * — OD's own `TavilyError` class and `requestInit.dispatcher` passthrough are not carried over;
+ * this route pack's own SEC-005 error-handling convention (a generic `INTERNAL_ERROR` + correlation
+ * id, matching every other route pack in this package) replaces the origin's thrown-`TavilyError`
+ * shape. OD's `AbortController`-based 30s timeout **is** carried over (added after an external
+ * audit flagged its absence — a stalled/malicious upstream could otherwise hold a request
+ * indefinitely, since bare `fetch` has no default timeout): `tavilySearch` aborts the request after
+ * `DEFAULT_TAVILY_TIMEOUT_MS` and clears the timer in a `finally` regardless of outcome. No other
+ * request-level knobs (connection pooling, `dispatcher`) are exposed yet — a future pass can add
+ * them the same way `media.ts#MediaGenerationRequestInit` optionally threads a `dispatcher` through,
+ * if a real need for one shows up.
  *
  * **`ResearchSource`/`ResearchSearchResponse` field names match OD's real `@open-design/contracts/
  * api/research.ts` `ResearchSource` shape** (`title`/`url`/`snippet`/`publishedAt?`/`provider`) —
@@ -56,6 +59,8 @@ const DEFAULT_TAVILY_BASE_URL = 'https://api.tavily.com';
 /** Tavily's own documented cap on `max_results` (see OD's `tavily.ts#TAVILY_MAX_RESULTS_LIMIT`). */
 const TAVILY_MAX_RESULTS_LIMIT = 20;
 const DEFAULT_MAX_SOURCES = 5;
+/** Matches OD's own `tavily.ts` timeout — see module doc. */
+const DEFAULT_TAVILY_TIMEOUT_MS = 30_000;
 
 export interface ResearchSource {
   readonly title: string;
@@ -151,16 +156,29 @@ async function tavilySearch(credentials: ProviderCredentials, request: ResearchS
     include_raw_content: false,
   };
 
+  const timeoutController = new AbortController();
+  const timeoutHandle = setTimeout(() => timeoutController.abort(), DEFAULT_TAVILY_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(`${base}/search`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
+      signal: timeoutController.signal,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(redactSecrets(`Tavily request failed: ${message}`, [apiKey]));
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    throw new Error(
+      redactSecrets(
+        timedOut
+          ? `Tavily request timed out after ${DEFAULT_TAVILY_TIMEOUT_MS}ms`
+          : `Tavily request failed: ${message}`,
+        [apiKey],
+      ),
+    );
+  } finally {
+    clearTimeout(timeoutHandle);
   }
   if (!response.ok) {
     const text = await response.text().catch(() => '');

@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 
 import express, { type Express } from 'express';
-import { AGENT_DEFS } from '@jini/agent-runtime';
+import { AGENT_DEFS, type OAuthCallbackListener } from '@jini/agent-runtime';
 import { bindings, createDaemon, createToolRegistry, type Bindings, type Daemon, type Principal } from '@jini/core';
 import type { AnyPack, MissingTokenIds } from '@jini/core/internal';
 import {
@@ -527,6 +527,11 @@ export async function createLocalNodeDaemon(
     taskStore: mediaTaskStore,
   };
 
+  // Owned here (rather than left to xai.ts's internal default) so stop() can close an in-flight
+  // OAuth loopback listener — otherwise the 127.0.0.1:56121 socket outlives the daemon by up to
+  // its 30-minute self-close timeout, keeping the process alive and the fixed port occupied.
+  const xaiListenerRef: { current: OAuthCallbackListener | null } = { current: null };
+
   let shuttingDown = false;
   let stopPromise: Promise<void> | null = null;
   let server: Server;
@@ -536,6 +541,15 @@ export async function createLocalNodeDaemon(
     if (!stopPromise) {
       stopPromise = (async () => {
         await closeHttpServer(server);
+        const xaiListener = xaiListenerRef.current;
+        xaiListenerRef.current = null;
+        if (xaiListener) {
+          try {
+            await xaiListener.stop();
+          } catch {
+            // Best-effort — the listener self-closes on its own timeout anyway.
+          }
+        }
         if (registryPath !== null) {
           // Best-effort (see this file's own `discoveryFile` doc): a daemon that already served
           // every request successfully must not fail its own shutdown just because its discovery
@@ -643,7 +657,7 @@ export async function createLocalNodeDaemon(
   // other field (provider config, loopback port, pending-auth cache, search defaults) keeps that
   // route pack's own built-in default. No OAuth account is connected until a caller completes the
   // `/api/xai/oauth/*` dance — `/api/xai/search` answers a clean 503 `NOT_CONFIGURED` until then.
-  registerXaiRoutes(app, { dataDir: config.dataDir }, { resolvedPortRef });
+  registerXaiRoutes(app, { dataDir: config.dataDir, listenerRef: xaiListenerRef }, { resolvedPortRef });
 
   mountPackHttp(app, config.packs, daemon);
   registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });

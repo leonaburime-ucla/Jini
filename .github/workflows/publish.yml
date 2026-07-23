@@ -88,7 +88,7 @@ jobs:
         run: |
           echo "@jini:registry=https://npm.pkg.github.com" >> ~/.npmrc
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
-          echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]' | while read -r pkg; do
+          echo "$PUBLISHED_PACKAGES" | jq -c '.[]' | while read -r pkg; do
             name=$(echo "$pkg" | jq -r '.name')
             dir="packages/${name#@jini/}"
             echo "Publishing $name from $dir to GitHub Packages"
@@ -96,3 +96,10 @@ jobs:
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the Action output through an env var rather than interpolating
+          # ${{ ... }} directly into the shell script — the interpolated form is
+          # GitHub's own documented script-injection anti-pattern (a value
+          # containing a shell metacharacter or `$()` would execute). No value
+          # in this specific output is attacker-controlled today, but the
+          # pattern is cheap to avoid regardless.
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}

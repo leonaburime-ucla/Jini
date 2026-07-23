@@ -396,8 +396,11 @@ export const xaiOauthCompleteRoute = defineJsonRoute<XaiOauthCompleteRequest, Xa
       // `completeOAuthPkce`'s own pre-network validation errors ("state not found or expired",
       // "state mismatch...") carry no secret and are a legitimate client-correctable failure —
       // surfaced verbatim as BAD_REQUEST rather than folded into the SEC-005 INTERNAL_ERROR path
-      // below (see module doc's "SEC-005 throughout" section).
-      if (message.includes('OAuth state')) {
+      // below (see module doc's "SEC-005 throughout" section). Exact-prefix match, not substring:
+      // pkce.ts#tokenRequest's upstream-error message ("token endpoint rejected request: ...")
+      // can legitimately contain the substring "OAuth state" inside an attacker-influenced token
+      // endpoint error body, which must never be reflected raw to the caller.
+      if (message.startsWith(`${resolved.providerConfig.providerId} OAuth state`)) {
         return err(validationError(message));
       }
       const correlationId = randomUUID();
