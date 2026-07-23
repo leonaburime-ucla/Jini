@@ -451,9 +451,9 @@ function registerProxyStreamRoute<ParsedRequest, TurnEvent extends { type: strin
   parse: (body: unknown) => Result<ParsedRequest>,
   run: (parsed: ParsedRequest, onEvent: (event: TurnEvent) => void) => Promise<unknown>,
 ): void {
-  app.post(path, (req: Request, res: Response) => {
-    void runProxyStream(req, res, adapter, provider, onInternalError, parse, run);
-  });
+  app.post(path, (req: Request, res: Response) =>
+    runProxyStream(req, res, adapter, provider, onInternalError, parse, run),
+  );
 }
 
 /** Type-erased registry entry for the `:provider` catch-all — see {@link buildProxyProviderRegistry}. */
@@ -591,7 +591,7 @@ function registerGenericProxyStreamRoute(
   onInternalError: (context: ModelProxyInternalErrorContext) => void,
   registry: Record<string, ProxyProviderRegistryEntry>,
 ): void {
-  app.post('/api/proxy/:provider/stream', (req: Request, res: Response) => {
+  app.post('/api/proxy/:provider/stream', async (req: Request, res: Response) => {
     const origin = guardSameOrigin(req, adapter);
     if (!origin.ok) {
       sendApiError(res, 403, origin.error);
@@ -603,7 +603,7 @@ function registerGenericProxyStreamRoute(
       sendApiError(res, 400, createApiError('BAD_REQUEST', `unknown provider: ${providerParam}`));
       return;
     }
-    void runProxyStream(req, res, adapter, providerParam, onInternalError, entry.parse, entry.run);
+    await runProxyStream(req, res, adapter, providerParam, onInternalError, entry.parse, entry.run);
   });
 }
 
