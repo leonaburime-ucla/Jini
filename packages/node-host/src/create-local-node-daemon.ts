@@ -77,6 +77,7 @@ import {
   registerResearchRoutes,
   registerRunRoutes,
   registerTerminalRoutes,
+  registerXaiRoutes,
   type DaemonDbOperations,
   type DaemonDbVacuumResult,
   type RunStartHandler,
@@ -637,6 +638,12 @@ export async function createLocalNodeDaemon(
   // `npx tsx scripts/check-engine-boundaries.ts`).
   registerConnectorsRoutes(app, {}, { resolvedPortRef });
   registerResearchRoutes(app, {}, { resolvedPortRef });
+  // `xai.ts`: zero-config-safe the same way — `dataDir` is the one default worth overriding here
+  // (this preset already has a real, trusted `dataDir` for `events.db`/`journal.db`/etc.), every
+  // other field (provider config, loopback port, pending-auth cache, search defaults) keeps that
+  // route pack's own built-in default. No OAuth account is connected until a caller completes the
+  // `/api/xai/oauth/*` dance — `/api/xai/search` answers a clean 503 `NOT_CONFIGURED` until then.
+  registerXaiRoutes(app, { dataDir: config.dataDir }, { resolvedPortRef });
 
   mountPackHttp(app, config.packs, daemon);
   registerDaemonStatusRoutes(app, daemonStatusDeps, { resolvedPortRef });
