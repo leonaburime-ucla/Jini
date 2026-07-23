@@ -1,5 +1,48 @@
 # `@jini/agent-runtime` — provenance
 
+## registry.ts (2026-07-18)
+
+Added as a prerequisite for the `@jini/chat-react` model-picker feature slice
+(`packages/chat-react/src/features/model-picker/`), which was directed to
+"depend only on `@jini/agent-runtime`'s existing registry/types for what a
+model/agent/provider actually is." At the time that task started, this
+package had **no TypeScript registry/types code at all** — only `craft/` and
+`skills/` markdown content (see README.md/below) — so there was nothing to
+reuse. This section documents the deviation and the addition made to close
+that gap, rather than silently inventing the vocabulary inside `chat-react`
+itself (which would have violated the same instruction's "don't invent
+parallel types").
+
+Source: `leonaburime-ucla/open-design`, cloned fresh at commit
+`0b88ef56144b5a42dc427c1292ae22676d698a34` (2026-07-18) —
+`packages/contracts/src/api/registry.ts` (`AgentInfo`, `AgentDiagnostic`,
+`AgentFixIntent`, `AgentDiagnosticReason`/`Severity`, `AgentModelOption`),
+`packages/contracts/src/api/providerModels.ts` (`ProviderModelOption`),
+`packages/contracts/src/api/app-config.ts` (`AgentModelPrefs`),
+`apps/web/src/state/config.ts` (`KnownProvider`),
+`apps/web/src/components/providerModelsCache.ts`
+(`providerModelsCacheKey`/`mergeProviderModelOptions`), and
+`apps/web/src/components/agentModelSelection.ts`
+(`normalizeAgentModelChoice`/`effectiveAgentModelChoice`).
+
+| Jini symbol | Origin | Transform |
+|---|---|---|
+| `CredentialStatus` | *(new)* | Generified 3-state status. OD's `MediaModelCards`-local `'configured' \| 'integrated' \| 'unsupported'` collapses the "provider not integrated by this particular daemon" case (OD-specific — which providers OD itself wired up) into the generic "no credential required" case: `'configured' \| 'available' \| 'unconfigured'`. |
+| `ModelProvider` | `KnownProvider` (`state/config.ts`) | Dropped OD-specific `baseUrl`/`model` default-fill fields not needed by a picker; kept `id`/`label`/`hint`/`credentialsRequired`/`docsUrl`. |
+| `ModelOption` | `AgentModelOption`/`MediaModel` (contracts + `media/models.ts`) | Merged shape: `AgentModelOption`'s `{id,label}` plus `MediaModel`'s `providerId`/`default`/`caps`, dropping OD's media-surface-specific fields. |
+| `AgentFixIntent`, `AgentDiagnosticSeverity`, `AgentDiagnostic` | `packages/contracts/src/api/registry.ts` verbatim shape | Verbatim field names; dropped the `launchOAuth` intent variant (Vela/AMR-specific terminal-auth flow, not a generic concept). |
+| `AgentDefinition` | `AgentInfo` (`packages/contracts/src/api/registry.ts`) | Dropped OD-only fields (`bin`, `authStatus`, `authMessage`, `path`, `modelsSource`, `externalMcpInjection`); kept the generic subset (`id`/`name`/`available`/`version`/`models`/`reasoningOptions`/`diagnostics`/`installUrl`/`docsUrl`/`supportsCustomModel`). |
+| `AgentModelChoice` | `AgentModelPrefs` (`packages/contracts/src/api/app-config.ts`) | Verbatim shape, renamed for symmetry with `AgentDefinition`. |
+| `resolveCredentialStatus` | *(new, factors out `MediaModelCards`'s inline `configured`/`credentialsRequired` ternary)* | Generic 3-way resolution, no OD-specific "is this provider integrated by the daemon at all" gate — a Jini consumer's provider list is whatever it declares, unlike OD's fixed subset. |
+| `mergeModelOptions` | `mergeProviderModelOptions` (`providerModelsCache.ts`) | Same dedupe-by-id/trim/fallback-label logic, retyped over `ModelOption` (adds `providerId`) instead of the OD-local `ProviderModelOption`. |
+| `fingerprintCredential`, `modelCatalogCacheKey` | `fingerprintSecret`/`providerModelsCacheKey` (`providerModelsCache.ts`) | Same FNV-1a fingerprint + cache-key composition; `apiVersion` (Azure-only) generalized to an optional `variant` param so the key isn't tied to one OD protocol's quirk. |
+| `normalizeAgentModelChoice`, `effectiveAgentModelChoice` | `agentModelSelection.ts` verbatim function names | **Behavior change, not a pure port**: the origin hard-gates this logic to `agent?.id === 'amr'` only (OD's remote-hosted agent, whose model catalogue can drift server-side) and is a no-op for every other agent. The generic version applies the same "configured model no longer in the agent's catalogue → fall back to the first available model" rule to **any** agent, since the underlying problem (a persisted model choice going stale against a live catalogue) isn't OD- or amr-specific. Flagged here per this task's "learn from tonight's audit findings" instruction (no silently-scoped behavior changes) — this one is deliberate and documented, not silent. |
+
+No product-identity strings ported (verified — see the parent chat-react
+source-map's purity-grep note, run across this package too). 100%
+statement/branch/function/line coverage (`registry.test.ts` + the barrel
+smoke test in `index.test.ts`), `tsc --noEmit` clean.
+
 ## craft/ (2026-07-17)
 
 Source: `integrations/open-design/reference/craft-original/` (13 markdown

@@ -109,6 +109,9 @@ importers:
 
   packages/chat-react:
     dependencies:
+      '@jini/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
       '@jini/chat-core':
         specifier: workspace:*
         version: link:../chat-core

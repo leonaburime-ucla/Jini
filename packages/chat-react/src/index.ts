@@ -13,6 +13,11 @@ export * from './artifact-types.js';
 export * from './slots.js';
 export * from './tool-renderer-registry.js';
 
+// `features/model-picker/` is an independent slice (depends only on
+// `@jini/agent-runtime`, not this package's conversation/message state) —
+// re-exported here for a consumer that wants everything from one barrel.
+export * from './features/model-picker/index.js';
+
 export * from './react/hooks/useRunStream.js';
 export * from './react/hooks/useConversation.js';
 export * from './react/hooks/useComposer.js';

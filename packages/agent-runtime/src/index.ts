@@ -46,6 +46,18 @@ export * from './amr-model-cache.js';
 // Registry + defs.
 export * from './registry.js';
 export * from './defs/index.js';
+// `model-registry.ts`: the provider/model/agent-picker vocabulary
+// (`AgentDefinition`, `CredentialStatus`, `ModelProvider`,
+// `ModelCatalogOption`, `AgentModelChoice`) + pure helpers a chat/model
+// picker UI needs — distinct from `registry.ts`'s `BASE_AGENT_DEFS` CLI
+// adapter catalog above (same word, different concept; kept as a separate
+// module and file to avoid colliding on the `registry` name). Reuses this
+// package's own `AgentDiagnostic`/`AgentDiagnosticSeverity`/`AgentFixIntent`
+// from `./types.js` rather than redefining a second, looser copy; its own
+// `ModelOption` is exported here as `ModelCatalogOption` since the plain
+// `ModelOption` name is already owned by `agent-protocol/acp/models.ts`'s
+// narrower ACP-probe shape re-exported below. See source-map.md.
+export * from './model-registry.js';
 
 // Stream parsers.
 export { createClaudeStreamHandler } from './claude-stream.js';

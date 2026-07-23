@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@jini/agent-runtime": "workspace:*",
     "@jini/chat-core": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
