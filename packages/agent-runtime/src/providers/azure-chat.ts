@@ -19,12 +19,13 @@
  * chat.ts`'s `[proxy:azure]` handler, confirmed by reading that file
  * directly in a sibling checkout — see `source-map.md`'s dated entry).
  * That source additionally branches on whether `baseUrl` already contains
- * a versioned `/openai/v1` path (a newer Azure OpenAI API preview) and
- * retries with `max_completion_tokens` instead of `max_tokens` on a 400
- * from an older deployment; both are deliberately not carried forward here
- * — this adapter targets the one documented, stable URL/body shape per
- * this task's approved scope ("byte-identical to OpenAI, only URL/auth
- * differ").
+ * a versioned `/openai/v1` path (a newer Azure OpenAI API preview); that
+ * branch is deliberately not carried forward here — this adapter targets
+ * the one documented, stable URL/body shape per this task's approved scope
+ * ("byte-identical to OpenAI, only URL/auth differ"). Its 400-retry
+ * behavior IS carried forward (see "Token-limit fix" below) — round-4
+ * external audit (`AUD-R4-001`) found the first port had dropped it,
+ * which fails every request against a GPT-5/o-series Azure deployment.
  *
  * **Auth**: `api-key: {apiKey}` header — NOT `Authorization: Bearer`,
  * Azure OpenAI's own convention (also confirmed against the same OD
@@ -44,11 +45,16 @@
  * `max_completion_tokens` `openai-chat.ts` picks for GPT-5/o-series models,
  * since Azure deployment names are caller-defined strings, not necessarily
  * matching OpenAI's own model-naming scheme. Wired via
- * `./token-params.js#buildLegacyMaxTokensParam`.
+ * `./token-params.js#buildLegacyMaxTokensParam`. Because deployment names
+ * are opaque, a legacy-field request can still be rejected by a
+ * GPT-5/o-series deployment with a 400 — OD's real handler retries exactly
+ * once with `max_completion_tokens` on that specific error
+ * (`isUnsupportedMaxTokensError`); this module does the same via
+ * `runOpenAiCompatibleRequest`'s `retryableBody` hook.
  */
 import { defaultDnsLookup, validateBaseUrlResolved } from './connection-guard.js';
 import { runOpenAiCompatibleRequest, type OpenAiCompatibleRequestOutcome } from './openai-chat.js';
-import { buildLegacyMaxTokensParam } from './token-params.js';
+import { buildLegacyMaxTokensParam, buildMaxCompletionTokensParam, isUnsupportedMaxTokensError } from './token-params.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
 export interface AzureFunctionToolDef {
@@ -145,13 +151,21 @@ function azureHeaders(options: AzureTurnOptions): Record<string, string> {
   };
 }
 
-function azureRequestBody(options: AzureTurnOptions, messages: readonly AzureMessageParam[]): Record<string, unknown> {
-  const effectiveMaxTokens = typeof options.maxTokens === 'number' && options.maxTokens > 0 ? options.maxTokens : DEFAULT_AZURE_MAX_TOKENS;
+function effectiveAzureMaxTokens(options: AzureTurnOptions): number {
+  return typeof options.maxTokens === 'number' && options.maxTokens > 0 ? options.maxTokens : DEFAULT_AZURE_MAX_TOKENS;
+}
+
+/** `tokenParam` is injected so the 400-retry path (see module doc) can rebuild an otherwise-identical body with `max_completion_tokens` instead of `max_tokens`. */
+function azureRequestBody(
+  options: AzureTurnOptions,
+  messages: readonly AzureMessageParam[],
+  tokenParam: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     stream: true,
     stream_options: { include_usage: true },
     messages,
-    ...buildLegacyMaxTokensParam(effectiveMaxTokens),
+    ...tokenParam,
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
   };
@@ -171,10 +185,16 @@ async function runSingleAzureRequest(
     return { finishReason: null, toolCalls: [], text: '' };
   }
 
+  const maxTokens = effectiveAzureMaxTokens(options);
+
   return runOpenAiCompatibleRequest({
     url: azureRequestUrl(options.baseUrl, options.model, options.apiVersion),
     headers: azureHeaders(options),
-    body: azureRequestBody(options, messages),
+    body: azureRequestBody(options, messages, buildLegacyMaxTokensParam(maxTokens)),
+    retryableBody: (status, rawErrorText) =>
+      status === 400 && isUnsupportedMaxTokensError(rawErrorText)
+        ? azureRequestBody(options, messages, buildMaxCompletionTokensParam(maxTokens))
+        : null,
     ...(options.signal ? { signal: options.signal } : {}),
     redactSecretsList: [options.apiKey],
     guardMessageId: 'azure-turn',

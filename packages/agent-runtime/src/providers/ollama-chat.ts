@@ -34,6 +34,17 @@
  *   `if (typeof maxTokens === 'number' && maxTokens > 0) payload.options = {
  *   num_predict: maxTokens }`.
  *
+ * **Round-4 external audit fix (`AUD-R4-002`)**: the first port of this
+ * module's tool-call loop kept the OpenAI-compatible wire shape for both the
+ * emitted lifecycle event and the continuation request — `tool_use` was
+ * never emitted, and the assistant/tool continuation messages used a
+ * stringified `arguments` blob with `id`/`type`/`tool_call_id` fields that
+ * don't exist in Ollama's native tool-call schema. Fixed: `tool_use` now
+ * fires for every resolved call as soon as the stream ends (see
+ * `runSingleOllamaRequest`), and `OllamaToolCallParam`/`OllamaMessageParam`
+ * now match Ollama's own documented shape (`arguments` as a native object,
+ * `tool_name` instead of `tool_call_id` — see those interfaces' docs).
+ *
  * **Deliberate extension beyond OD's own scope, not a parity gap**: OD's
  * ollama handler never builds a `tools` field into its request and never
  * reads `message.tool_calls` from the response — its own ollama proxy has
@@ -62,18 +73,28 @@ export interface OllamaFunctionToolDef {
   };
 }
 
+/**
+ * Ollama's native `/api/chat` tool-call shape — genuinely different from the
+ * OpenAI-compatible one this file's types were originally copied from:
+ * `arguments` is a native JSON object (not a stringified blob), and there is
+ * no `id`/`type` field at all (confirmed against Ollama's own documented
+ * "Chat request (No streaming, with tools)" example,
+ * `github.com/ollama/ollama/blob/main/docs/api.md`). Round-4 external audit
+ * (`AUD-R4-002`) found the first port had kept the OpenAI shape here, which
+ * a strict Ollama server can reject. Synthetic per-call `id`s are still
+ * generated (see `runSingleOllamaRequest`) but stay purely internal to this
+ * module's own event stream — they are never put on the wire.
+ */
 export interface OllamaToolCallParam {
-  readonly id: string;
-  readonly type: 'function';
-  readonly function: { readonly name: string; readonly arguments: string };
+  readonly function: { readonly name: string; readonly arguments: unknown };
 }
 
 export interface OllamaMessageParam {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string | null;
   readonly tool_calls?: readonly OllamaToolCallParam[];
-  readonly tool_call_id?: string;
-  readonly name?: string;
+  /** Ollama's native tool-result association field — NOT `tool_call_id` (that's the OpenAI shape; Ollama has no call-id concept on the wire). */
+  readonly tool_name?: string;
 }
 
 export interface OllamaToolCall {
@@ -302,6 +323,15 @@ async function runSingleOllamaRequest(
     }
   }
 
+  // Emitted for every resolved call as soon as the stream ends, independent of whether the
+  // caller actually supplied an `executeTool` — matches `openai-chat.ts#runOpenAiCompatibleRequest`'s
+  // identical unconditional-on-resolution emission (see AUD-R4-002 fix note in the module doc).
+  if (finishReason === 'tool_calls') {
+    for (const call of toolCalls) {
+      onEvent({ type: 'tool_use', id: call.id, name: call.name, input: call.input });
+    }
+  }
+
   return { finishReason, toolCalls, text: fullText };
 }
 
@@ -342,15 +372,13 @@ export async function runOllamaToolTurn(options: OllamaTurnOptions): Promise<Oll
     toolTurns += 1;
 
     const assistantToolCalls: OllamaToolCallParam[] = outcome.toolCalls.map((call) => ({
-      id: call.id,
-      type: 'function',
-      function: { name: call.name, arguments: JSON.stringify(call.input) },
+      function: { name: call.name, arguments: call.input },
     }));
     const toolResultMessages: OllamaMessageParam[] = [];
     for (const call of outcome.toolCalls) {
       const result = await options.executeTool(call);
       options.onEvent({ type: 'tool_result', toolUseId: call.id, content: result.content, isError: false });
-      toolResultMessages.push({ role: 'tool', content: result.content, tool_call_id: call.id });
+      toolResultMessages.push({ role: 'tool', content: result.content, tool_name: call.name });
     }
 
     messages = [

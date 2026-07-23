@@ -207,6 +207,26 @@ describe('runOllamaToolTurn', () => {
     expect(events.filter((e) => e.type === 'end')).toEqual([{ type: 'end', reason: 'stop' }]);
     expect(events).toContainEqual({ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { location: 'SF' } });
     expect(events).toContainEqual({ type: 'tool_result', toolUseId: 'call_1', content: '72F sunny', isError: false });
+
+    // Ollama's native continuation shape: `arguments` is a real object (never stringified), no
+    // `id`/`type` on the tool_calls entry, and the tool-result message uses `tool_name` — NOT the
+    // OpenAI-shaped `tool_call_id` (AUD-R4-002 regression test).
+    const secondRequestBody = JSON.parse(fetchMock.mock.calls[1]![1].body);
+    expect(secondRequestBody.messages).toContainEqual({
+      role: 'assistant',
+      content: "Let's check ",
+      tool_calls: [{ function: { name: 'get_weather', arguments: { location: 'SF' } } }],
+    });
+    expect(secondRequestBody.messages).toContainEqual({
+      role: 'tool',
+      content: '72F sunny',
+      tool_name: 'get_weather',
+    });
+    const assistantMessage = secondRequestBody.messages.find((m: { role: string }) => m.role === 'assistant');
+    expect(assistantMessage.tool_calls[0].id).toBeUndefined();
+    expect(assistantMessage.tool_calls[0].type).toBeUndefined();
+    const toolResultMessage = secondRequestBody.messages.find((m: { role: string }) => m.role === 'tool');
+    expect(toolResultMessage.tool_call_id).toBeUndefined();
   });
 
   it('generates a stable synthetic id for a tool call with no id in the response', async () => {
@@ -253,7 +273,7 @@ describe('runOllamaToolTurn', () => {
     expect(result.finishReason).toBe('contaminated');
   });
 
-  it('ends with reason stop (no further request) when a tool call is requested but no executeTool is supplied', async () => {
+  it('ends with reason stop (no further request) when a tool call is requested but no executeTool is supplied, but still emits tool_use for the resolved call', async () => {
     const body = ndjsonBody(toolCallLine('noop', {}, 'call_1'), doneLine());
     const fetchMock = vi.fn().mockResolvedValue(okResponse(body));
     vi.stubGlobal('fetch', fetchMock);
@@ -262,5 +282,6 @@ describe('runOllamaToolTurn', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ finishReason: 'tool_calls', toolTurns: 0 });
     expect(events.filter((e) => e.type === 'end')).toEqual([{ type: 'end', reason: 'stop' }]);
+    expect(events).toContainEqual({ type: 'tool_use', id: 'call_1', name: 'noop', input: {} });
   });
 });

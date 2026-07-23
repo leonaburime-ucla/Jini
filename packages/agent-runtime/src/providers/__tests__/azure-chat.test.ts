@@ -181,13 +181,93 @@ describe('runAzureToolTurn', () => {
     await runAzureToolTurn({ apiKey: 'k', baseUrl: 'https://my-resource.openai.azure.com', model: 'gpt-4o-deployment', maxTokens: 1024, messages: baseMessages, onEvent: () => {} });
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ max_tokens: 1024 });
 
-    // Even a deployment named after a newer model family still gets the legacy field — Azure
+    // Even a deployment named after a newer model family still gets the legacy field first — Azure
     // deployment names are caller-defined strings, not necessarily matching OpenAI's own scheme.
     fetchMock.mockClear();
     await runAzureToolTurn({ apiKey: 'k', baseUrl: 'https://my-resource.openai.azure.com', model: 'my-gpt-5-deployment', messages: baseMessages, onEvent: () => {} });
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
     expect(body.max_tokens).toBe(8192);
     expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  it('retries once with max_completion_tokens when the deployment rejects the legacy max_tokens field with a 400 — matches OD\'s real [proxy:azure] retry', async () => {
+    const unsupportedParamError = 'Unsupported parameter: \'max_tokens\' is not supported with this model. Use \'max_completion_tokens\' instead.';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: null, text: async () => unsupportedParamError })
+      .mockResolvedValueOnce(okResponse(sseBody(textChunk('ok'), finishChunk('stop'), done())));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events: AzureTurnEvent[] = [];
+    const result = await runAzureToolTurn({
+      apiKey: 'k',
+      baseUrl: 'https://my-resource.openai.azure.com',
+      model: 'my-gpt-5-deployment',
+      messages: baseMessages,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(firstBody.max_tokens).toBe(8192);
+    expect(firstBody.max_completion_tokens).toBeUndefined();
+    const secondBody = JSON.parse(fetchMock.mock.calls[1]![1].body);
+    expect(secondBody.max_completion_tokens).toBe(8192);
+    expect(secondBody.max_tokens).toBeUndefined();
+    // The retry reuses the same URL/headers — only the body's token-limit field changes.
+    expect(fetchMock.mock.calls[1]![0]).toBe(fetchMock.mock.calls[0]![0]);
+    expect(fetchMock.mock.calls[1]![1].headers).toEqual(fetchMock.mock.calls[0]![1].headers);
+
+    expect(result).toEqual({ finishReason: 'stop', toolTurns: 0 });
+    expect(events).toEqual([
+      { type: 'status', label: 'requesting' },
+      { type: 'text_delta', delta: 'ok' },
+      { type: 'end', reason: 'stop' },
+    ]);
+  });
+
+  it('does not retry a second time — a 400 on the retried request surfaces as a normal error', async () => {
+    const unsupportedParamError = 'Unsupported parameter: \'max_tokens\' is not supported with this model. Use \'max_completion_tokens\' instead.';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: null, text: async () => unsupportedParamError })
+      .mockResolvedValueOnce({ ok: false, status: 400, body: null, text: async () => unsupportedParamError });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events: AzureTurnEvent[] = [];
+    await runAzureToolTurn({
+      apiKey: 'azure-retry-key',
+      baseUrl: 'https://my-resource.openai.azure.com',
+      model: 'my-gpt-5-deployment',
+      messages: baseMessages,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      { type: 'error', message: unsupportedParamError, code: '400' },
+      { type: 'end', reason: 'error' },
+    ]);
+  });
+
+  it('does not retry on a 400 unrelated to the token-limit field', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, body: null, text: async () => JSON.stringify({ error: { message: 'Invalid request' } }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events: AzureTurnEvent[] = [];
+    await runAzureToolTurn({
+      apiKey: 'k',
+      baseUrl: 'https://my-resource.openai.azure.com',
+      model: 'gpt-4o-deployment',
+      messages: baseMessages,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      { type: 'error', message: 'Invalid request', code: '400' },
+      { type: 'end', reason: 'error' },
+    ]);
   });
 
   it('runs a full tool-call loop: accumulates streamed argument fragments, invokes executeTool, and continues to a final stop', async () => {

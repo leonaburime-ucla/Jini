@@ -187,6 +187,17 @@ export interface OpenAiCompatibleRequestInit {
   readonly onEvent: (event: OpenAiTurnEvent) => void;
   readonly emitEnd: (reason: OpenAiTurnEndReason) => void;
   readonly hasEnded: () => boolean;
+  /**
+   * Optional single-retry hook: called with the HTTP status and raw error
+   * body text on a non-ok response, before the error is treated as
+   * terminal. Return a replacement request body to retry once with, or
+   * `null`/`undefined` to fall through to the normal error path. Matches
+   * OD's real `[proxy:azure]` handler, which retries a 400
+   * `isUnsupportedMaxTokensError` response with `max_completion_tokens`
+   * (see `azure-chat.ts`). Cleared on the retried call so a second failure
+   * cannot retry again.
+   */
+  readonly retryableBody?: (status: number, rawErrorText: string) => Record<string, unknown> | null | undefined;
 }
 
 /**
@@ -224,6 +235,13 @@ export async function runOpenAiCompatibleRequest(init: OpenAiCompatibleRequestIn
 
   if (!response.ok) {
     const rawText = await response.text();
+    if (init.retryableBody) {
+      const retryBody = init.retryableBody(response.status, rawText);
+      if (retryBody) {
+        const { retryableBody: _retryableBody, ...retryInit } = init;
+        return runOpenAiCompatibleRequest({ ...retryInit, body: retryBody });
+      }
+    }
     onEvent({
       type: 'error',
       message: redactSecrets(extractOpenAiErrorDetail(rawText), init.redactSecretsList),

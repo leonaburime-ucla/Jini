@@ -388,7 +388,7 @@ export async function runGoogleToolTurn(options: GoogleTurnOptions): Promise<Goo
         functionResponse: {
           name: call.name,
           id: call.id,
-          response: { content: result.content, ...(result.isError !== undefined ? { isError: result.isError } : {}) },
+          response: { content: result.content, isError: result.isError ?? false },
         },
       });
     }
