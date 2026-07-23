@@ -227,6 +227,13 @@ describe('xaiOauthCompleteRoute', () => {
     expect(xaiOauthCompleteRoute.parse({ body: { state: 'a', code: 'b' }, query: {}, params: {} })).toEqual({ ok: true, value: { state: 'a', code: 'b' } });
   });
 
+  it('trims incidental whitespace off state/code, matching OD real handler\'s server-side .trim() (live-verified 2026-07-22: a padded-but-real state reached the real xAI token endpoint instead of failing "state not found or expired")', () => {
+    expect(xaiOauthCompleteRoute.parse({ body: { state: '  a  ', code: '\tb\n' }, query: {}, params: {} })).toEqual({
+      ok: true,
+      value: { state: 'a', code: 'b' },
+    });
+  });
+
   it('happy path: exchanges the code, persists the token, stops the listener, returns ok:true', async () => {
     const pending = new PendingAuthCache(30 * 60 * 1000);
     const state = seedPendingState(pending);
@@ -243,6 +250,19 @@ describe('xaiOauthCompleteRoute', () => {
       ok: true,
       value: { connected: true, expiresAt: expect.any(Number), scope: 'openid api:access', savedAt: expect.any(Number), listening: false },
     });
+  });
+
+  it('a padded-but-real state/code (e.g. a copy-paste with a trailing newline) still resolves the pending PKCE entry, matching OD\'s trim-then-lookup behavior', async () => {
+    const pending = new PendingAuthCache(30 * 60 * 1000);
+    const state = seedPendingState(pending);
+    const deps = makeDeps({ pending, fetchImpl: vi.fn(async () => okTokenResponse()) });
+
+    const parsed = xaiOauthCompleteRoute.parse({ body: { state: `  ${state}\n`, code: ' auth-code-1 ' }, query: {}, params: {} });
+    expect(parsed).toEqual({ ok: true, value: { state, code: 'auth-code-1' } });
+    if (!parsed.ok) throw new Error('expected ok');
+
+    const result = await xaiOauthCompleteRoute.handle(parsed.value, deps);
+    expect(result).toEqual({ ok: true, value: { ok: true } });
   });
 
   it('BAD_REQUEST (not INTERNAL_ERROR) for an unknown/expired state, with no secret to leak', async () => {
@@ -416,6 +436,13 @@ describe('xaiSearchRoute.parse', () => {
     expect(xaiSearchRoute.parse({ body: { query: 'q', excludedXHandles: [1, 2] }, query: {}, params: {} }).ok).toBe(false);
     expect(xaiSearchRoute.parse({ body: { query: 'q', fromDate: 5 }, query: {}, params: {} }).ok).toBe(false);
     expect(xaiSearchRoute.parse({ body: { query: 'q', enableImageUnderstanding: 'yes' }, query: {}, params: {} }).ok).toBe(false);
+  });
+
+  it('trims incidental whitespace off query, matching OD real handler\'s server-side .trim() (routes/xai.ts:258)', () => {
+    expect(xaiSearchRoute.parse({ body: { query: '  latest on grok  ' }, query: {}, params: {} })).toEqual({
+      ok: true,
+      value: { query: 'latest on grok' },
+    });
   });
 
   it('accepts a bare query and the full set of optional fields', () => {

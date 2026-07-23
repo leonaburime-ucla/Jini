@@ -95,6 +95,26 @@
  * exception: `completeOAuthPkce`'s own "state not found or expired" / "state mismatch" validation
  * errors (thrown before any network call, carrying no secret) are surfaced verbatim as
  * `BAD_REQUEST` — a legitimate client-correctable error, not an internal failure to redact.
+ *
+ * **Two known, deliberate, non-functional divergences from OD's exact wire text, both confirmed
+ * against the real OD daemon (2026-07-22 live-parity pass) and left as-is:**
+ * 1. `GET /api/xai/auth/status` when disconnected: OD's real handler (`routes/xai.ts:205-207`)
+ *    returns only `{ connected: false, listening }` — `expiresAt`/`scope`/`savedAt` are *omitted*
+ *    entirely, confirmed live (`{"connected":false,"listening":false}`, no other keys). This file's
+ *    `XaiAuthStatusResponse` always includes those three keys, set to `null` when disconnected —
+ *    a deliberate stable-typed-envelope choice (avoids an `expiresAt?: number` optional-vs-null split
+ *    for callers) consistent with this package's established camelCase/typed-shape departures from
+ *    OD elsewhere in this same file; not changed to avoid weakening the typed response contract.
+ * 2. The "state not found or expired" / "state mismatch" `BAD_REQUEST` text
+ *    (`@jini/agent-runtime`'s `oauth-provider.ts`) reads `xai OAuth state ...` (lowercase, from the
+ *    generic `providerId: 'xai'` config field shared across providers), where OD's real, hardcoded
+ *    string (`integrations/xai-oauth.ts:131,134-136`) reads `xAI OAuth state ...` (mixed-case, a
+ *    literal specific to that one file). Confirmed live (`{"error":"xAI OAuth state not found or
+ *    expired"}` from the real daemon). Purely cosmetic — same meaning, same `BAD_REQUEST` classifi-
+ *    cation either way (`xaiOauthCompleteRoute`'s own prefix check uses the same `providerId` for
+ *    both generation and matching, so it's internally self-consistent) — and the casing lives in
+ *    `@jini/agent-runtime`'s already-shipped generic module, outside this file's own scope to alter
+ *    without special-casing one provider's capitalization inside otherwise-generic code.
  */
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
@@ -272,8 +292,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Trims before checking/returning — matches OD's real route handlers, which trim `state`/`code`
+ * (`routes/xai.ts:154-157`) and `query` (`routes/xai.ts:258`) before ever using them, so a
+ * paste-back value with incidental leading/trailing whitespace (the common case for xAI's own
+ * loopback-redirect UX, which shows the user a code to copy rather than following a redirect — see
+ * this file's own `xaiOauthCompleteRoute` doc) still matches the exact state string the pending-auth
+ * cache stored it under. Live-verified against the real OD daemon (2026-07-22 live-parity pass):
+ * `POST /oauth/complete` with a state padded in extra spaces around a real, still-pending state
+ * proceeded straight to the token exchange (reaching `auth.x.ai`'s real "invalid_grant" response)
+ * instead of failing with "state not found or expired" — proving OD's server-side trim, not just its
+ * request-body parsing, is load-bearing. This file's own three `nonEmptyString` call sites
+ * (`state`/`code` in `parseXaiOauthComplete`, `query` in `parseXaiSearch`) are exactly OD's three
+ * trimmed fields — `fromDate`/`toDate`/`model` deliberately go through `parseOptionalString` instead,
+ * which does not trim, matching OD's own untrimmed `from_date`/`to_date`/`model` handling. */
 function nonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function parseOptionalString(body: Record<string, unknown>, key: string): Result<string | undefined> {

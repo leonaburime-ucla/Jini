@@ -53,14 +53,14 @@ beforeEach(() => {
 });
 
 describe('healthRoute / apiHealthRoute', () => {
-  it('always reports {ok: true} with no readiness check involved', async () => {
+  it('always reports {ok: true, version} with no readiness check involved', async () => {
     const result = await healthRoute.handle(undefined, makeDeps());
-    expect(result).toEqual({ ok: true, value: { ok: true } });
+    expect(result).toEqual({ ok: true, value: { ok: true, version: '1.2.3' } });
   });
 
   it('the /api-prefixed variant behaves identically', async () => {
     const result = await apiHealthRoute.handle(undefined, makeDeps());
-    expect(result).toEqual({ ok: true, value: { ok: true } });
+    expect(result).toEqual({ ok: true, value: { ok: true, version: '1.2.3' } });
   });
 
   it('parse ignores the request entirely (void input)', () => {
@@ -71,13 +71,13 @@ describe('healthRoute / apiHealthRoute', () => {
 describe('readyRoute / apiReadyRoute', () => {
   it('defaults to always-ready with empty checks when checkReadiness is not supplied', async () => {
     const result = await readyRoute.handle(undefined, makeDeps());
-    expect(result).toEqual({ ok: true, value: { ok: true, checks: {} } });
+    expect(result).toEqual({ ok: true, value: { ok: true, ready: true, version: '1.2.3', checks: {} } });
   });
 
   it('reports ok:true with the real checks map when checkReadiness resolves ok', async () => {
     const checkReadiness = vi.fn().mockResolvedValue({ ok: true, checks: { db: true, sqlite: true } });
     const result = await readyRoute.handle(undefined, makeDeps({ checkReadiness }));
-    expect(result).toEqual({ ok: true, value: { ok: true, checks: { db: true, sqlite: true } } });
+    expect(result).toEqual({ ok: true, value: { ok: true, ready: true, version: '1.2.3', checks: { db: true, sqlite: true } } });
     expect(checkReadiness).toHaveBeenCalledTimes(1);
   });
 
