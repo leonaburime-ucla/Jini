@@ -1732,3 +1732,112 @@ package's existing `makeApp`/`makeRes`/direct-`.parse()`/`.handle()` unit-test c
 `model-proxy.test.ts`'s `vi.stubGlobal('fetch', ...)` convention — not executed under this session's
 standing test-runner restriction, verified via `tsc --noEmit` instead (real imports, no `any`-typed
 escape hatches).
+
+## 2026-07-22 addition — `xai.ts` (`POST/GET /api/xai/oauth/*`, `/api/xai/auth/status`, `POST /api/xai/search`)
+
+Deliberately scoped **out** of the `health.ts`/`connectors.ts`/`research.ts` route-parity pass
+documented immediately above, pending a product decision on whether to build xAI OAuth support at
+all (xAI's real shape — a PKCE OAuth connect flow plus a gated search call — is not a chat-turn-
+runner like azure/google/ollama, so it didn't fit that pass's proxy-provider shape). Approved after
+that pass landed; this is that build. Ported from OD's real `apps/daemon/src/routes/xai.ts` (422
+lines — read directly in the sibling `/Users/la/Desktop/Programming/OSS-Repos/open-design` checkout,
+matching this repo's "verify against the real source, don't guess" convention) plus its three
+integration siblings, `integrations/xai-oauth.ts`, `xai-oauth-server.ts`, and `xai-tokens.ts` — see
+the routes-classification table above, row **#27 `xai.ts` (MIXED, OD-leaning)**: "the OAuth start/
+complete/status/cancel/disconnect shape is a recognizable generic pattern, but this file is fused to
+a transitional xAI PoC arrangement."
+
+**Reused `@jini/agent-runtime`'s existing generic OAuth+PKCE machinery — did not build a second
+OAuth stack.** Before writing anything, checked `packages/agent-runtime/src/providers/{pkce,oauth-
+provider,oauth-callback-server,oauth-tokens,oauth-credentials}.ts` per this task's own explicit
+instruction, and confirmed (via that package's own `source-map.md`, "providers/ — LLM-provider
+integrations", 2026-07-18) that these five files are **already a direct, generalized port of this
+exact origin's OAuth siblings** — `integrations/xai-oauth.ts` → `oauth-provider.ts`
+(`beginOAuthPkce`/`completeOAuthPkce`/`refreshOAuthPkceToken`, config-driven via
+`OAuthPkceProviderConfig`, with `XAI_OAUTH_PROVIDER_CONFIG` kept as the concrete xAI preset the
+origin shipped), `integrations/xai-oauth-server.ts` → `oauth-callback-server.ts`
+(`startOAuthCallbackListener`, de-branded, `host`/`port`/`path` already caller-supplied instead of
+xAI-hardcoded constants — meaning the fixed-loopback-port quirk needed **no new listener-mechanics
+code**, only a caller-supplied default), `integrations/xai-tokens.ts` → `oauth-tokens.ts`
+(`getStoredOAuthToken`/`setStoredOAuthToken`/`clearStoredOAuthToken`, filename now a parameter),
+`integrations/xai-credentials.ts` → `oauth-credentials.ts` (`resolveOAuthBearer`, refresh-on-read).
+That prior port had zero HTTP route consumers anywhere in the repo — `xai.ts` is the first one. So
+this task built **only** the pieces that machinery had no opinion on: xAI's concrete `providerConfig`/
+callback host-port-path *defaults* (all overridable via `XaiHttpDeps`, defaulting to
+`@jini/agent-runtime`'s real `XAI_OAUTH_PROVIDER_CONFIG`/`XAI_OAUTH_REDIRECT_HOST`/`_PORT`/`_PATH`),
+the HTTP wire shapes (`RouteInputContext` parsing, `Result`/`ApiError` responses,
+`requireSameOrigin` — reusing this package's own `defineJsonRoute`/`mountJsonRoute`/`guardSameOrigin`
+exactly like every other route pack, rather than OD's origin manual `isLocalSameOrigin` checks), and
+the `x_search` Responses-API call itself (`callXaiSearch`, `extractAnswerText`, `extractUrlCitations`
+— genuinely xAI-specific, no existing home in `@jini/agent-runtime`).
+
+**Dropped: OD's "SuperGrok subscription" gate.** The origin's `POST /api/xai/search` resolved
+credentials through OD's own multi-source cascade (`resolveProviderConfig(..., 'grok')`: OD-native
+OAuth token → a separate "Hermes" tool's `auth.json` → `OD_GROK_API_KEY` env var → `XAI_API_KEY` env
+var) and returned a 401 with product-specific copy ("sign in with your SuperGrok subscription...")
+when nothing resolved. Both are OD product/billing decisions the neutral engine has no business
+modeling. The port checks only "is an xAI OAuth account connected" (via `resolveOAuthBearer` against
+this file's own token store) and answers a clean `NOT_CONFIGURED` (503) when it isn't; if a connected
+account isn't actually entitled to `x_search`, xAI's own `/responses` endpoint returns its own real
+error, surfaced through the same SEC-005 `INTERNAL_ERROR` path as any other upstream failure — no
+hardcoded pre-flight entitlement check sits on top of xAI's own answer.
+
+**Wire shape changed from OD's snake_case request body to this package's established camelCase
+convention** (`allowedXHandles`/`excludedXHandles`/`fromDate`/`toDate`/`enableImageUnderstanding`/
+`enableVideoUnderstanding`, matching `media.ts`/`connectors.ts`'s camelCase JSON surfaces) —
+converted to xAI's real snake_case (`allowed_x_handles`, ...) only when building the actual upstream
+`x_search` tool payload, the same split `research.ts` already applies to Tavily's
+`search_depth`/`max_results`.
+
+**State-sharing design, not a straight per-request default.** Unlike `research.ts`'s
+`resolveCredentials` (stateless — a fresh default is harmless every call) or `connectors.ts`'s
+per-capability `deps.auth`/`deps.storage` (genuinely optional forever, never defaulted), this route
+pack's `pending` (`PendingAuthCache`) and `listenerRef` (the in-flight loopback-listener slot) are
+mutable state that must be the *same instance* across `oauth/start` → `oauth/complete`/`oauth/
+cancel`/`oauth/disconnect` for the dance to work — a fresh `PendingAuthCache` minted independently
+per request would mean `start` and `complete` never see each other's state. `registerXaiRoutes`
+resolves every optional `XaiHttpDeps` default exactly once and hands that single resolved object to
+every mounted route, so a zero-config `registerXaiRoutes(app, {}, adapter)` call still shares one
+cache/listener-slot across the whole mounted lifetime. Each individual route's own `handle` also
+re-resolves defaults at its own top (an idempotent pass-through once `registerXaiRoutes` has already
+resolved them) purely so each route stays directly unit-testable in isolation, matching every other
+route pack's test convention in this package.
+
+**SEC-005**: every thrown error converts to a redacted, correlation-id-bearing generic
+`INTERNAL_ERROR` before it ever reaches the HTTP caller. For the two paths that touch an untrusted
+upstream response body — token exchange/refresh and `callXaiSearch` (which sends this file's own
+just-issued bearer token as a header, the highest-risk path) — `redactSecrets` (reused from
+`@jini/agent-runtime`'s `connection-guard.ts`, already this package's `research.ts` precedent)
+additionally strips it out of the message before it is even logged to the host's own sink. One
+mid-review fix: the module doc originally claimed this redaction applied to *every* thrown-error
+path; the first test pass caught that `handleListenerCallback`'s and `xaiOauthCompleteRoute`'s own
+token-exchange catch blocks were logging the raw (unredacted) error to the sink, contradicting that
+claim — fixed by adding a small `redactError` helper applied at both those catch sites, and the
+module doc was rewritten to state precisely which paths get redaction (the two that touch upstream
+text) versus which don't need it (purely local `fs`/listener-bind failures carry no upstream text to
+redact in the first place). `completeOAuthPkce`'s own pre-network "state not found or expired"/"state
+mismatch" validation errors are the one deliberate non-redacted exception — surfaced verbatim as
+`BAD_REQUEST`, since they carry no secret and are a legitimate client-correctable failure, not an
+internal one.
+
+**`@jini/node-host`'s wiring** (`create-local-node-daemon.ts`): `registerXaiRoutes(app, { dataDir:
+config.dataDir }, { resolvedPortRef })`, alongside the `connectors`/`research` zero-config calls —
+`dataDir` is the one default worth overriding at this call site (this preset already has a real,
+trusted `dataDir` for `events.db`/`journal.db`/etc.); every other `XaiHttpDeps` field keeps its own
+built-in default. No OAuth account is connected until a caller completes the `/api/xai/oauth/*`
+dance — `/api/xai/search` answers a clean 503 `NOT_CONFIGURED` until then, the same zero-config-safe
+shape every other route pack added this session already established.
+
+**Verified**: `pnpm --dir packages/http exec tsc --noEmit` / `run build` — clean. `pnpm --dir
+packages/node-host exec tsc --noEmit` — clean (after rebuilding `@jini/http`'s `dist`, which
+`node-host` resolves against). Repo-root `npx tsx scripts/check-engine-boundaries.ts`, `npx tsx
+scripts/guard.ts`, and `npx tsx scripts/check-protocol-purity.ts` — all clean. `src/__tests__/
+xai.test.ts` — direct `.parse()`/`.handle()` unit tests plus `registerXaiRoutes` mount tests,
+matching `research.test.ts`/`connectors.test.ts`'s conventions: real temporary-directory filesystem
+I/O for token storage (mirroring `@jini/agent-runtime`'s own `oauth-tokens.test.ts`/
+`oauth-credentials.test.ts` `mkdtemp`/`rm` convention) and a real `PendingAuthCache`/`beginOAuthPkce`
+for PKCE state — only the loopback listener (`startCallbackListener`) and `fetchImpl` are injected as
+mocks, so the suite proves this route pack's own parsing/wiring/SEC-005 behavior without re-testing
+socket mechanics `oauth-callback-server.test.ts` already covers independently. Not executed under
+this session's standing test-runner restriction (verified via `tsc --noEmit` instead, matching this
+file's own established precedent for every route pack added this session).
