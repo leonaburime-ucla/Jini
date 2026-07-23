@@ -378,3 +378,230 @@ describe('AssetTreeBrowser', () => {
     expect(within(preview).getByRole('link', { name: /Download/ })).toHaveAttribute('href', '/files/readme.txt');
   });
 });
+
+describe('AssetTreeBrowser hook override 4-pattern test suite', () => {
+  it('Pattern 1 — State 1: Default/empty directory state via hook overrides', () => {
+    const customNavHook = () => ({
+      currentDir: '',
+      breadcrumbs: [{ path: '', label: 'Files' }],
+      filesAtCurrentDir: [],
+      foldersAtCurrentDir: [],
+      dirsAtCurrentDir: [],
+      groupedSections: [],
+      sections: [],
+      navigateToDir: vi.fn(),
+      setCurrentDir: vi.fn(),
+    });
+
+    const customSelectionHook = () => ({
+      selected: new Set<string>(),
+      toggleSelect: vi.fn(),
+      clearSelection: vi.fn(),
+      renamePath: vi.fn(),
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          files: [],
+          folders: [],
+          useAssetTreeNavigation: customNavHook as any,
+          useAssetTreeSelection: customSelectionHook as any,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('asset-tree-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('asset-tree-selection-bar')).toBeNull();
+  });
+
+  it('Pattern 2 — State 2: Navigated subdirectory view state with breadcrumb interactions', () => {
+    const mockSetCurrentDir = vi.fn();
+    const sec = [{ kind: 'text', label: 'Text', files: [makeFiles()[0]!] }];
+    const customNavHook = () => ({
+      currentDir: 'sub/folder',
+      breadcrumbs: [
+        { path: '', label: 'Files' },
+        { path: 'sub', label: 'sub' },
+        { path: 'sub/folder', label: 'folder' },
+      ],
+      filesAtCurrentDir: [makeFiles()[0]!],
+      foldersAtCurrentDir: [],
+      dirsAtCurrentDir: [],
+      groupedSections: sec,
+      sections: sec,
+      navigateToDir: vi.fn(),
+      setCurrentDir: mockSetCurrentDir,
+    });
+
+    const customSelectionHook = () => ({
+      selected: new Set<string>(),
+      toggleSelect: vi.fn(),
+      clearSelection: vi.fn(),
+      renamePath: vi.fn(),
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          useAssetTreeNavigation: customNavHook as any,
+          useAssetTreeSelection: customSelectionHook as any,
+        })}
+      />,
+    );
+
+    const subButton = screen.getByRole('button', { name: 'sub' });
+    expect(subButton).toBeInTheDocument();
+
+    fireEvent.click(subButton);
+    expect(mockSetCurrentDir).toHaveBeenCalledWith('sub');
+  });
+
+  it('Pattern 3 — State 3: Multi-selection bar state with clear action callback', () => {
+    const mockClearSelection = vi.fn();
+    const selectedSet = new Set(['readme.txt', 'photo.png']);
+    const customSelectionHook = () => ({
+      selected: selectedSet,
+      toggleSelect: vi.fn(),
+      clearSelection: mockClearSelection,
+      renamePath: vi.fn(),
+    });
+
+    const sec = [{ kind: 'text', label: 'Text', files: makeFiles() }];
+    const customNavHook = () => ({
+      currentDir: '',
+      breadcrumbs: [{ path: '', label: 'Files' }],
+      filesAtCurrentDir: makeFiles(),
+      foldersAtCurrentDir: [],
+      dirsAtCurrentDir: [],
+      groupedSections: sec,
+      sections: sec,
+      navigateToDir: vi.fn(),
+      setCurrentDir: vi.fn(),
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          useAssetTreeNavigation: customNavHook as any,
+          useAssetTreeSelection: customSelectionHook as any,
+        })}
+      />,
+    );
+
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(mockClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pattern 4 — State 4: Dynamic full state transition walkthrough using React useState inside hook override', () => {
+    function useTestDynamicNavigation() {
+      const [currentDir, setCurrentDir] = useState('docs');
+      const breadcrumbs = [
+        { path: '', label: 'Files' },
+        { path: 'docs', label: 'docs' },
+      ];
+      const filesAtCurrentDir = makeFiles();
+      const sec = [{ kind: 'text', label: 'Text', files: filesAtCurrentDir }];
+
+      return {
+        currentDir,
+        breadcrumbs,
+        filesAtCurrentDir,
+        foldersAtCurrentDir: [],
+        dirsAtCurrentDir: [],
+        groupedSections: sec,
+        sections: sec,
+        navigateToDir: (dir: string) => setCurrentDir(dir),
+        setCurrentDir: (dir: string) => setCurrentDir(dir),
+      };
+    }
+
+    const customSelectionHook = () => ({
+      selected: new Set<string>(),
+      toggleSelect: vi.fn(),
+      clearSelection: vi.fn(),
+      renamePath: vi.fn(),
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          useAssetTreeNavigation: useTestDynamicNavigation as any,
+          useAssetTreeSelection: customSelectionHook as any,
+        })}
+      />,
+    );
+
+    // Initial navigated state with breadcrumb button
+    const filesBtn = screen.getByRole('button', { name: 'Files' });
+    expect(filesBtn).toBeInTheDocument();
+    fireEvent.click(filesBtn);
+  });
+
+  it('Pattern 5 — State 5: Active preview pane via useAssetTreePreview hook override', () => {
+    const files = makeFiles();
+    const previewedFile = files[0]!;
+    const mockClearPreview = vi.fn();
+    const customPreviewHook = () => ({
+      previewPath: previewedFile.path,
+      previewFile: previewedFile,
+      setPreviewPath: vi.fn(),
+      clearPreview: mockClearPreview,
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          files,
+          useAssetTreePreview: customPreviewHook as any,
+        })}
+      />,
+    );
+
+    const preview = screen.getByTestId('asset-tree-preview');
+    expect(preview).toBeInTheDocument();
+    expect(screen.getByTestId(`asset-tree-file-row-${previewedFile.path}`)).toHaveClass('active');
+
+    fireEvent.click(within(preview).getByRole('button', { name: 'Close preview' }));
+    expect(mockClearPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pattern 6 — State 6: Active inline rename via useAssetTreeRename hook override', () => {
+    const files = makeFiles();
+    const targetPath = files[0]!.path;
+    const mockUpdateDraft = vi.fn();
+    const mockCommitRename = vi.fn();
+    const mockCancelRename = vi.fn();
+    const customRenameHook = () => ({
+      renaming: { path: targetPath, draft: 'renamed-draft', saving: false },
+      renameError: null,
+      startRename: vi.fn(),
+      updateDraft: mockUpdateDraft,
+      commitRename: mockCommitRename,
+      cancelRename: mockCancelRename,
+    });
+
+    render(
+      <AssetTreeBrowser
+        {...baseProps({
+          files,
+          useAssetTreeRename: customRenameHook as any,
+        })}
+      />,
+    );
+
+    const input = screen.getByRole('textbox', { name: `Rename ${targetPath}` });
+    expect(input).toHaveValue('renamed-draft');
+
+    fireEvent.change(input, { target: { value: 'renamed-draft-2' } });
+    expect(mockUpdateDraft).toHaveBeenCalledWith('renamed-draft-2');
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockCommitRename).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(mockCancelRename).toHaveBeenCalledTimes(1);
+  });
+});

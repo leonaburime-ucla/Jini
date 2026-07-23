@@ -65,6 +65,11 @@ export interface AssetTreeBrowserProps<TFile extends AssetTreeFileItem> {
   emptyStateActions?: readonly AssetTreeToolbarAction[];
   /** Host-owned footer slot, rendered below the listing. This package ships no default footer — see `packages/ui/source-map.md` for why. */
   footer?: ReactNode;
+  /** Custom hook overrides for dependency injection / testing. */
+  useAssetTreeNavigation?: typeof useAssetTreeNavigation;
+  useAssetTreePreview?: typeof useAssetTreePreview;
+  useAssetTreeRename?: typeof useAssetTreeRename;
+  useAssetTreeSelection?: typeof useAssetTreeSelection;
 }
 
 /**
@@ -103,11 +108,27 @@ export function AssetTreeBrowser<TFile extends AssetTreeFileItem>({
   toolbarActions = EMPTY_TOOLBAR_ACTIONS,
   emptyStateActions = EMPTY_TOOLBAR_ACTIONS,
   footer,
+  useAssetTreeNavigation: useAssetTreeNavigationHook = useAssetTreeNavigation,
+  useAssetTreePreview: useAssetTreePreviewHook = useAssetTreePreview,
+  useAssetTreeRename: useAssetTreeRenameHook = useAssetTreeRename,
+  useAssetTreeSelection: useAssetTreeSelectionHook = useAssetTreeSelection,
 }: AssetTreeBrowserProps<TFile>) {
   const t = useT();
+  // KNOWN FOLLOW-UP (flagged by the 2026-07-22 verification pass, not yet
+  // fixed): this has the same useWiredX gap ConnectorsBrowser had — `deps`
+  // resolution is still inline instead of behind a `useWiredAssetTreeBrowser`
+  // wrapper. Deliberately not fixed here: unlike ConnectorsBrowser's `deps`
+  // (fed to exactly the 3 already-overridable sub-hooks), this `deps` also
+  // feeds `useAssetTreeRowMenu`, `useAssetTreeClipboardPasteUpload`, and
+  // `useAssetTreeCopyLocalPath` below — none of which currently have their
+  // own override props — so collapsing it into one wired hook is a real
+  // design decision (what belongs in the wired hook vs. stays overridable)
+  // rather than a mechanical port of the ConnectorsBrowser pattern. Lower
+  // severity than that one too: these are DOM/clipboard adapters, not
+  // remote data fetching.
   const deps = useMemo(() => dependencies ?? createBrowserAssetTreeDependencies(), [dependencies]);
 
-  const navigation = useAssetTreeNavigation({
+  const navigation = useAssetTreeNavigationHook({
     files,
     folders,
     sectionOrder,
@@ -116,14 +137,14 @@ export function AssetTreeBrowser<TFile extends AssetTreeFileItem>({
     navState,
     onNavStateChange,
   });
-  const preview = useAssetTreePreview(files, selectInitialPreviewFile);
+  const preview = useAssetTreePreviewHook(files, selectInitialPreviewFile);
   // Declared before `useAssetTreeSelection` so its in-flight `renaming.path`
   // (if any) can be threaded into selection's prune logic as
   // `pendingRenamePath` — see that hook's doc comment for the race this
   // closes. `onRenamed` referencing `selection` here (declared below) is
   // safe: it's a closure that only actually runs later, once `selection` is
   // fully bound.
-  const rename = useAssetTreeRename<TFile>({
+  const rename = useAssetTreeRenameHook<TFile>({
     currentDir: navigation.currentDir,
     onRenameFile,
     onRenamed: (oldPath, renamedFile) => {
@@ -131,7 +152,7 @@ export function AssetTreeBrowser<TFile extends AssetTreeFileItem>({
       selection.renamePath(oldPath, renamedFile.path);
     },
   });
-  const selection = useAssetTreeSelection(
+  const selection = useAssetTreeSelectionHook(
     navigation.filesAtCurrentDir,
     navigation.currentDir,
     rename.renaming?.path ?? null,
