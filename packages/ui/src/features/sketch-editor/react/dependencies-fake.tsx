@@ -31,10 +31,15 @@ interface FakeExcalidrawProps {
   onChange?: (elements: unknown[], appState: Record<string, unknown>, files: Record<string, unknown>) => void;
   renderTopRightUI?: () => ReactNode;
   name?: string;
+  /** Real Excalidraw re-themes its own canvas off this prop with nothing
+   *  else in the DOM to observe — surfaced here as `data-theme` so a test
+   *  driving `theme` through (e.g. via a `useSketchTheme` override) has
+   *  something to actually assert on. */
+  theme?: string;
   children?: ReactNode;
 }
 
-function FakeExcalidraw({ initialData, excalidrawAPI, onChange, renderTopRightUI, name, children }: FakeExcalidrawProps) {
+function FakeExcalidraw({ initialData, excalidrawAPI, onChange, renderTopRightUI, name, theme, children }: FakeExcalidrawProps) {
   const elementsRef = useRef<unknown[]>((initialData?.elements ?? []).slice());
   const appStateRef = useRef<Record<string, unknown>>({ ...(initialData?.appState ?? {}) });
   const filesRef = useRef<Record<string, unknown>>({ ...(initialData?.files ?? {}) });
@@ -63,7 +68,7 @@ function FakeExcalidraw({ initialData, excalidrawAPI, onChange, renderTopRightUI
   };
 
   return (
-    <div data-testid="fake-excalidraw" aria-label={name}>
+    <div data-testid="fake-excalidraw" aria-label={name} data-theme={theme}>
       <button type="button" data-testid="main-menu-trigger">
         Menu
       </button>
