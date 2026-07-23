@@ -1,4 +1,4 @@
-import type { IconName } from '../../components/Icon.js';
+import type { IconName } from '../../react/components/Icon.js';
 import type { FileDropzoneKind } from './types.js';
 
 /** MIME-type sniffing (see `rules.ts`'s `fileDropzoneKind`) is authoritative when present; this is the fallback for files the browser types as `application/octet-stream`. */

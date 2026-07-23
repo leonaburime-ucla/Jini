@@ -1,4 +1,4 @@
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import { FILE_DROPZONE_FONT_SPECIMEN, FILE_DROPZONE_GLYPH_ICON, FILE_DROPZONE_TEXT_THUMB_CHARS } from '../../constants.js';
 import { fileDropzoneExtensionLabel, fileDropzoneKind, fileDropzoneStagingKey } from '../../rules.js';

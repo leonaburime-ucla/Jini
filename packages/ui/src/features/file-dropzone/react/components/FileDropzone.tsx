@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from 'react';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useGlobalKeydown } from '../../../../browser/useGlobalKeydown.js';
 import { useT } from '../../../i18n/index.js';
 import { useFileDropzone } from '../hooks/useFileDropzone.js';

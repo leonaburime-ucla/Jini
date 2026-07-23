@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { Icon } from '../../../../components/Icon.js';
+import { Icon } from '../../../../react/components/Icon.js';
 import { useT } from '../../../i18n/index.js';
 import type { TranslationVars } from '../../../i18n/index.js';
 import { FILE_DROPZONE_FONT_PANGRAM, FILE_DROPZONE_FONT_SPECIMEN, FILE_DROPZONE_GLYPH_ICON } from '../../constants.js';
