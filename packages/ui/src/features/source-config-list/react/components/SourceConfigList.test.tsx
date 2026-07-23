@@ -1,10 +1,12 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../../i18n/index.js';
 import { createFakeSourceConfigDependencies } from '../../dependencies.js';
 import { SourceConfigList } from './SourceConfigList.js';
 import type { SourceConfigItem, SourceFieldSpec, SourceTrustOption } from '../../types.js';
+import type { SourceConfigListController } from '../hooks/useSourceConfigList.js';
+import type { SourceConfigAddFormController } from '../hooks/useSourceConfigAddForm.js';
 
 /**
  * Proof that the generic `SourceConfigList<TSource>` primitive really holds
@@ -356,5 +358,150 @@ describe('SourceConfigList — title/subtitle/emptyMessage/addLabel passthrough'
     expect(screen.getByText('Connect external tools.')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('No servers yet.')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Add server' })).toBeInTheDocument();
+  });
+});
+
+describe('SourceConfigList 4-pattern hook override test suite', () => {
+  it('Pattern 1 — State 1: Loading list state via hook override', () => {
+    // Explicit return-type annotations here (rather than relying purely on
+    // the `as any` cast below) mean tsc still catches an invented/misnamed
+    // field in the object literal itself via excess-property checking — the
+    // `as any` is only there to bridge the generic-vs-concrete mismatch
+    // between `typeof useWiredSourceConfigList` and this fixed McpServerSource
+    // shape, not to silence real field-shape drift.
+    const customListHook = (): SourceConfigListController<McpServerSource> => ({
+      sources: [],
+      loading: true,
+      error: null,
+      capabilities: { canSetTrust: false, canRefresh: false, canTest: false, canUpdate: false },
+      pendingKeys: new Set<string>(),
+      testResults: {},
+      addSourceToList: vi.fn(),
+      setTrust: vi.fn(),
+      refresh: vi.fn(),
+      remove: vi.fn(),
+      test: vi.fn(),
+      update: vi.fn(),
+      isPending: () => false,
+      reload: vi.fn(),
+    });
+
+    const customAddFormHook = (): SourceConfigAddFormController => ({
+      values: {},
+      trust: 'always',
+      validation: { ok: false, issues: [] },
+      submitAttempted: false,
+      submitting: false,
+      submitError: null,
+      setField: vi.fn(),
+      setTrust: vi.fn(),
+      submit: vi.fn(),
+    });
+
+    render(
+      <SourceConfigList<McpServerSource>
+        dependencies={mcpDependencies()}
+        fieldSpecs={MCP_FIELD_SPECS}
+        useWiredSourceConfigList={customListHook as any}
+        useWiredSourceConfigAddForm={customAddFormHook as any}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('Pattern 2 — State 2: Configured sources list state via hook override', () => {
+    const sources: McpServerSource[] = [{ id: 's1', fields: { url: 'https://mcp.server' } }];
+    const customListHook = (): SourceConfigListController<McpServerSource> => ({
+      sources,
+      loading: false,
+      error: null,
+      capabilities: { canSetTrust: false, canRefresh: false, canTest: false, canUpdate: false },
+      pendingKeys: new Set<string>(),
+      testResults: {},
+      addSourceToList: vi.fn(),
+      setTrust: vi.fn(),
+      refresh: vi.fn(),
+      remove: vi.fn(),
+      test: vi.fn(),
+      update: vi.fn(),
+      isPending: () => false,
+      reload: vi.fn(),
+    });
+
+    const customAddFormHook = (): SourceConfigAddFormController => ({
+      values: {},
+      trust: 'always',
+      validation: { ok: false, issues: [] },
+      submitAttempted: false,
+      submitting: false,
+      submitError: null,
+      setField: vi.fn(),
+      setTrust: vi.fn(),
+      submit: vi.fn(),
+    });
+
+    render(
+      <SourceConfigList<McpServerSource>
+        dependencies={mcpDependencies()}
+        fieldSpecs={MCP_FIELD_SPECS}
+        useWiredSourceConfigList={customListHook as any}
+        useWiredSourceConfigAddForm={customAddFormHook as any}
+      />,
+    );
+
+    expect(screen.getByText('https://mcp.server')).toBeInTheDocument();
+  });
+
+  it('Pattern 3 — State 3: Submitting add form state via hook override', () => {
+    const customListHook = (): SourceConfigListController<McpServerSource> => ({
+      sources: [],
+      loading: false,
+      error: null,
+      capabilities: { canSetTrust: false, canRefresh: false, canTest: false, canUpdate: false },
+      pendingKeys: new Set<string>(),
+      testResults: {},
+      addSourceToList: vi.fn(),
+      setTrust: vi.fn(),
+      refresh: vi.fn(),
+      remove: vi.fn(),
+      test: vi.fn(),
+      update: vi.fn(),
+      isPending: () => false,
+      reload: vi.fn(),
+    });
+
+    const customAddFormHook = (): SourceConfigAddFormController => ({
+      values: { url: 'https://submitting.server' },
+      trust: 'always',
+      validation: { ok: true, issues: [] },
+      submitAttempted: true,
+      submitting: true,
+      submitError: null,
+      setField: vi.fn(),
+      setTrust: vi.fn(),
+      submit: vi.fn(),
+    });
+
+    render(
+      <SourceConfigList<McpServerSource>
+        dependencies={mcpDependencies()}
+        fieldSpecs={MCP_FIELD_SPECS}
+        useWiredSourceConfigList={customListHook as any}
+        useWiredSourceConfigAddForm={customAddFormHook as any}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Adding…' })).toBeDisabled();
+  });
+
+  it('Pattern 4 — State 4: Dynamic form input value transition walkthrough using React useState inside test harness', () => {
+    const dependencies = mcpDependencies();
+    render(<SourceConfigList<McpServerSource> dependencies={dependencies} fieldSpecs={MCP_FIELD_SPECS} />);
+
+    const input = screen.getByLabelText('URL', { exact: false });
+    fireEvent.change(input, { target: { value: 'https://test-mcp.org' } });
+
+    expect(input).toHaveValue('https://test-mcp.org');
   });
 });
