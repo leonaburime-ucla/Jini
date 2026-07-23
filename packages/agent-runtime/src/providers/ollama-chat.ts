@@ -1,32 +1,56 @@
 /**
  * @module providers/ollama-chat
  *
- * Ollama Chat Completions wire adapter + tool-loop turn-runner. Sibling of
- * `anthropic-messages.ts`/`openai-chat.ts` — see those modules' headers for
- * the shared design rationale. Targets Ollama's OpenAI-compatible
- * `/v1/chat/completions` endpoint (documented at
- * `github.com/ollama/ollama/blob/main/docs/openai.md`) rather than Ollama's
- * own native `/api/chat` wire format — the OpenAI-compatible surface is
- * byte-identical to plain OpenAI's chat-completions JSON, so this module
- * reuses `openai-chat.ts`'s extracted `runOpenAiCompatibleRequest`
- * SSE-reduction loop rather than duplicating it.
+ * Ollama native Chat API wire adapter + tool-loop turn-runner. Sibling of
+ * `anthropic-messages.ts`/`openai-chat.ts`/`azure-chat.ts` — see those
+ * modules' headers for the shared design rationale.
  *
- * **Local-first design call (already approved):** `baseUrl` defaults to
- * `http://localhost:11434` — a real local Ollama install needs no
- * configuration to work out of the box. `validateBaseUrl`'s loopback
- * carve-out (see `connection-guard.ts`'s doc: "Loopback is intentionally
- * allowed... for local LLM servers like Ollama") is exactly what makes this
- * safe under the shared SSRF guard.
+ * **Corrected to match Open Design's real behavior** (an earlier version of
+ * this module targeted Ollama's OpenAI-compatible `/v1/chat/completions`
+ * surface instead — found wrong by a live side-by-side comparison against a
+ * running OD daemon, `apps/daemon/src/routes/chat.ts:1298`'s real
+ * `/api/proxy/ollama/stream` handler):
  *
- * **No required `apiKey`:** unlike every other provider in this package,
- * local Ollama has no auth of its own. `apiKey` is optional on
- * {@link OllamaTurnOptions}; when omitted, no `authorization` header is
- * sent at all (not even `Bearer undefined`) — see `ollamaHeaders`. A
- * caller pointing this adapter at a *remote*, key-gated Ollama-compatible
- * gateway can still supply one.
+ * - **Endpoint**: `{baseUrl}/api/chat` — Ollama's own native chat API, not
+ *   the OpenAI-compatible shim. `baseUrl` has any trailing `/api` stripped
+ *   before appending, matching OD's `.replace(/\/api\/?$/, '')`.
+ * - **Wire format**: newline-delimited JSON (NDJSON), one JSON object per
+ *   line, terminated by a line with `"done": true` — NOT Server-Sent
+ *   Events. `text_delta`s come from `message.content`; the terminal line's
+ *   `done: true` ends the stream (see `runSingleOllamaRequest` below).
+ * - **`apiKey` is required**, like every other provider — OD's real handler
+ *   rejects a request with no `apiKey` (`if (!apiKey || !model)`), because
+ *   its default target is Ollama Cloud (see next point), not a bare local
+ *   install.
+ * - **Default `baseUrl` is `https://ollama.com`** (Ollama Cloud), matching
+ *   OD's `effectiveBaseUrl = baseUrl || 'https://ollama.com'` — not a local
+ *   loopback address. A caller running a real local Ollama install still
+ *   just passes `baseUrl: 'http://localhost:11434'` explicitly; the
+ *   loopback carve-out in `connection-guard.ts` (documented there as
+ *   existing "for local LLM servers like Ollama") still applies when they
+ *   do.
+ * - **Token limit**: `options.num_predict` (Ollama's native token-limit
+ *   field), sent only when `maxTokens` is a positive number — matches OD's
+ *   `if (typeof maxTokens === 'number' && maxTokens > 0) payload.options = {
+ *   num_predict: maxTokens }`.
+ *
+ * **Deliberate extension beyond OD's own scope, not a parity gap**: OD's
+ * ollama handler never builds a `tools` field into its request and never
+ * reads `message.tool_calls` from the response — its own ollama proxy has
+ * no tool-calling support at all. Ollama's real native `/api/chat` API does
+ * support tool calling (a `tools` array in the same OpenAI
+ * function-declaration shape on the request, `message.tool_calls: [{id?,
+ * function: {name, arguments}}]` on a non-streaming-final response chunk —
+ * see `github.com/ollama/ollama/blob/main/docs/api.md#chat-request-with-
+ * tools`). This module keeps that capability (as the original, pre-parity-
+ * fix version of this file already did) rather than removing working
+ * functionality just to match a gap in OD's own product scope — matching
+ * this repo's established practice elsewhere (e.g. `xai.ts` deliberately
+ * generalizing OD's OAuth-connect *shape* while dropping its OD-specific
+ * SuperGrok billing gate).
  */
-import { defaultDnsLookup, validateBaseUrlResolved } from './connection-guard.js';
-import { runOpenAiCompatibleRequest, type OpenAiCompatibleRequestOutcome } from './openai-chat.js';
+import { createRoleMarkerGuard } from '../role-marker-guard.js';
+import { defaultDnsLookup, redactSecrets, validateBaseUrlResolved } from './connection-guard.js';
 import { createTurnEndGuard, type TurnEndReason } from './turn-end-guard.js';
 
 export interface OllamaFunctionToolDef {
@@ -78,14 +102,15 @@ export type OllamaTurnEvent =
   | { readonly type: 'end'; readonly reason: OllamaTurnEndReason };
 
 export interface OllamaTurnOptions {
-  /** Optional — see module doc. Local Ollama needs no auth. */
-  readonly apiKey?: string;
-  /** Defaults to `http://localhost:11434` — see module doc. */
+  /** Required — see module doc (OD's real handler rejects a request with no apiKey). */
+  readonly apiKey: string;
+  /** Defaults to `https://ollama.com` (Ollama Cloud) — see module doc. Pass a local address explicitly to target a local install. */
   readonly baseUrl?: string;
   readonly model: string;
   readonly messages: readonly OllamaMessageParam[];
   readonly tools?: readonly OllamaFunctionToolDef[];
   readonly temperature?: number;
+  readonly maxTokens?: number;
   /** Same bound and rationale as `AnthropicTurnOptions.maxToolTurns`. Defaults to 8. */
   readonly maxToolTurns?: number;
   readonly executeTool?: OllamaToolExecutor;
@@ -100,68 +125,191 @@ export interface OllamaTurnResult {
   readonly toolTurns: number;
 }
 
-const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
+const DEFAULT_OLLAMA_BASE_URL = 'https://ollama.com';
 const DEFAULT_MAX_TOOL_TURNS = 8;
 
-function ollamaRequestUrl(baseUrl: string | undefined): string {
-  const base = (baseUrl ?? DEFAULT_OLLAMA_BASE_URL).replace(/\/+$/, '');
-  return /\/v\d+(\/|$)/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** No `authorization` header at all when `apiKey` is omitted — a bare `Bearer` with no token is worse than no header, and a local Ollama install rejects neither. */
+/** Strips a trailing `/api` (with or without a trailing slash) before appending `/api/chat` — matches OD's `.replace(/\/+$/, '').replace(/\/api\/?$/, '')` so a caller-supplied `baseUrl` ending in `/api` doesn't produce `/api/api/chat`. */
+function ollamaRequestUrl(baseUrl: string | undefined): string {
+  const trimmed = (baseUrl ?? DEFAULT_OLLAMA_BASE_URL).replace(/\/+$/, '').replace(/\/api\/?$/, '');
+  return `${trimmed}/api/chat`;
+}
+
 function ollamaHeaders(options: OllamaTurnOptions): Record<string, string> {
   return {
     'content-type': 'application/json',
-    ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
+    authorization: `Bearer ${options.apiKey}`,
     ...(options.extraHeaders ?? {}),
   };
 }
 
 function ollamaRequestBody(options: OllamaTurnOptions, messages: readonly OllamaMessageParam[]): Record<string, unknown> {
+  const modelOptions: Record<string, unknown> = {};
+  if (options.temperature !== undefined) modelOptions.temperature = options.temperature;
+  if (typeof options.maxTokens === 'number' && options.maxTokens > 0) modelOptions.num_predict = options.maxTokens;
+
   return {
     model: options.model,
     stream: true,
-    stream_options: { include_usage: true },
     messages,
-    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+    ...(Object.keys(modelOptions).length > 0 ? { options: modelOptions } : {}),
     ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
   };
 }
 
-/** Validates `options.baseUrl`, then delegates to `openai-chat.ts#runOpenAiCompatibleRequest` with Ollama's own URL/header/body builders. */
+function extractOllamaErrorDetail(rawText: string): string {
+  try {
+    const parsed: unknown = JSON.parse(rawText);
+    if (isRecord(parsed) && typeof parsed.error === 'string') return parsed.error;
+  } catch {
+    // fall through to raw text
+  }
+  return rawText.slice(0, 500);
+}
+
+interface SingleRequestOutcome {
+  readonly finishReason: string | null;
+  readonly toolCalls: readonly OllamaToolCall[];
+  readonly text: string;
+}
+
+/**
+ * Reads a `fetch` response body as newline-delimited JSON, yielding one
+ * parsed line at a time. Buffers partial lines across chunk boundaries — an
+ * NDJSON line is not guaranteed to arrive in a single chunk. A trailing,
+ * unterminated final line (no closing newline) is still yielded once the
+ * stream ends, matching `sse-decode.ts#decodeSseStream`'s equivalent
+ * tolerance for the SSE case.
+ */
+async function* decodeNdjsonStream(body: AsyncIterable<Uint8Array | string>): AsyncGenerator<unknown> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of body) {
+    buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      try {
+        yield JSON.parse(line);
+      } catch {
+        continue; // tolerate a malformed/empty keep-alive line
+      }
+    }
+  }
+  const trailing = buffer.trim();
+  if (trailing) {
+    try {
+      yield JSON.parse(trailing);
+    } catch {
+      // final partial line was never completed — nothing usable to yield
+    }
+  }
+}
+
+/** Runs exactly one Ollama `/api/chat` NDJSON streaming request and reduces it into a single outcome. Mirrors `anthropic-messages.ts#runSingleAnthropicRequest`'s `emitEnd` contract — see that function's doc. */
 async function runSingleOllamaRequest(
   options: OllamaTurnOptions,
   messages: readonly OllamaMessageParam[],
   emitEnd: (reason: OllamaTurnEndReason) => void,
-  hasEnded: () => boolean,
-): Promise<OpenAiCompatibleRequestOutcome> {
+): Promise<SingleRequestOutcome> {
+  const { onEvent } = options;
+
   const baseUrlCheck = await validateBaseUrlResolved(options.baseUrl ?? DEFAULT_OLLAMA_BASE_URL, defaultDnsLookup);
   if (baseUrlCheck.error) {
-    options.onEvent({ type: 'error', message: baseUrlCheck.error });
+    onEvent({ type: 'error', message: baseUrlCheck.error });
     emitEnd('error');
     return { finishReason: null, toolCalls: [], text: '' };
   }
 
-  return runOpenAiCompatibleRequest({
-    url: ollamaRequestUrl(options.baseUrl),
-    headers: ollamaHeaders(options),
-    body: ollamaRequestBody(options, messages),
-    ...(options.signal ? { signal: options.signal } : {}),
-    redactSecretsList: [options.apiKey],
-    guardMessageId: 'ollama-turn',
-    providerLabel: 'Ollama',
-    onEvent: options.onEvent,
-    emitEnd,
-    hasEnded,
-  });
+  let response: { ok: boolean; status: number; body: AsyncIterable<Uint8Array | string> | null; text(): Promise<string> };
+  try {
+    response = (await fetch(ollamaRequestUrl(options.baseUrl), {
+      method: 'POST',
+      headers: ollamaHeaders(options),
+      body: JSON.stringify(ollamaRequestBody(options, messages)),
+      ...(options.signal ? { signal: options.signal } : {}),
+    })) as unknown as typeof response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    onEvent({ type: 'error', message: redactSecrets(message, [options.apiKey]) });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    onEvent({
+      type: 'error',
+      message: redactSecrets(extractOllamaErrorDetail(rawText), [options.apiKey]),
+      code: String(response.status),
+    });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+  if (!response.body) {
+    onEvent({ type: 'error', message: 'Ollama response had no body' });
+    emitEnd('error');
+    return { finishReason: null, toolCalls: [], text: '' };
+  }
+
+  onEvent({ type: 'status', label: 'requesting' });
+
+  const guard = createRoleMarkerGuard('ollama-turn');
+  let fullText = '';
+  const toolCalls: OllamaToolCall[] = [];
+  let finishReason: string | null = null;
+
+  for await (const line of decodeNdjsonStream(response.body)) {
+    if (!isRecord(line)) continue;
+
+    const message = isRecord(line.message) ? line.message : null;
+    if (message && typeof message.content === 'string' && message.content.length > 0) {
+      const safe = guard.feedText(message.content);
+      if (safe.length > 0) {
+        fullText += safe;
+        onEvent({ type: 'text_delta', delta: safe });
+      }
+      if (guard.contaminated) {
+        const warn = guard.warningEvent();
+        if (warn) onEvent(warn);
+        finishReason = 'contaminated';
+        emitEnd('contaminated');
+        break;
+      }
+    }
+
+    if (message && Array.isArray(message.tool_calls)) {
+      for (const rawCall of message.tool_calls) {
+        if (!isRecord(rawCall) || !isRecord(rawCall.function)) continue;
+        const name = typeof rawCall.function.name === 'string' ? rawCall.function.name : '';
+        if (!name) continue;
+        const args = rawCall.function.arguments;
+        const input = typeof args === 'string' ? (() => { try { return JSON.parse(args); } catch { return args; } })() : args;
+        const id = typeof rawCall.id === 'string' && rawCall.id ? rawCall.id : `ollama-tool-${toolCalls.length}`;
+        toolCalls.push({ id, name, input });
+      }
+      if (toolCalls.length > 0) finishReason = 'tool_calls';
+    }
+
+    if (line.done === true) {
+      if (finishReason !== 'contaminated' && finishReason !== 'tool_calls') finishReason = 'stop';
+      break;
+    }
+  }
+
+  return { finishReason, toolCalls, text: fullText };
 }
 
 /**
- * Runs a full Ollama (OpenAI-compatible) Chat Completions turn, including
- * the tool-execution loop when `options.executeTool` is supplied and the
- * model requests a function call. See
- * `anthropic-messages.ts#runAnthropicToolTurn`'s doc for the shared
- * event-stream/`ended`-flag contract this mirrors exactly.
+ * Runs a full Ollama native `/api/chat` turn, including the tool-execution
+ * loop when `options.executeTool` is supplied and the model requests a
+ * function call. See `anthropic-messages.ts#runAnthropicToolTurn`'s doc for
+ * the shared event-stream/`ended`-flag contract this mirrors exactly.
  */
 export async function runOllamaToolTurn(options: OllamaTurnOptions): Promise<OllamaTurnResult> {
   const maxToolTurns = options.maxToolTurns ?? DEFAULT_MAX_TOOL_TURNS;
@@ -174,7 +322,7 @@ export async function runOllamaToolTurn(options: OllamaTurnOptions): Promise<Oll
   let lastFinishReason: string | null = null;
 
   while (true) {
-    const outcome = await runSingleOllamaRequest(options, messages, emitEnd, endGuard.hasEnded);
+    const outcome = await runSingleOllamaRequest(options, messages, emitEnd);
     lastFinishReason = outcome.finishReason;
 
     if (endGuard.hasEnded()) break;

@@ -49,10 +49,13 @@
  * `apiKey` (and optional `baseUrl`/`extraHeaders`) in the POST body, exactly
  * like `@jini/agent-runtime`'s existing `providers/model-catalog.ts` BYOK
  * surface — this route never stores or reads a server-side credential.
- * Ollama is the one deliberate exception: `apiKey` is optional on its parsed
- * request (see `parseOllamaProxyRequest`), matching `OllamaTurnOptions`'s own
- * "local Ollama needs no auth" design (see `@jini/agent-runtime`'s
- * `ollama-chat.ts`).
+ * `apiKey` is required for all five providers, including Ollama — an earlier
+ * version of this module made it optional for Ollama on a "local install
+ * needs no auth" rationale that a live comparison against a running Open
+ * Design daemon proved doesn't match OD's real behavior (OD's default
+ * Ollama target is Ollama Cloud, which does require a key; see
+ * `@jini/agent-runtime`'s `ollama-chat.ts` module doc for the full
+ * corrected design).
  *
  * **Tool execution is out of scope for this pass.** `ModelProxyHttpDeps`'s
  * `executeTool` hooks are optional and default to unset, matching
@@ -336,62 +339,35 @@ function parseGoogleProxyRequest(body: unknown): Result<ParsedGoogleProxyRequest
 }
 
 /**
- * Deliberately NOT built on top of `parseCommon` — that shared validator hard-requires a
- * non-empty `apiKey`, which is wrong for Ollama (local installs need no auth; see
- * `@jini/agent-runtime`'s `ollama-chat.ts` module doc). This duplicates `parseCommon`'s other
- * field-by-field checks rather than partially reusing it, so the one intentional divergence
- * (`apiKey` optional) is visible at this function's own call site instead of hidden behind a
- * "mostly shared, except..." conditional inside `parseCommon` itself.
+ * Now built on `parseCommon` like every other provider — `apiKey` is required, matching Open
+ * Design's real `/api/proxy/ollama/stream` handler (`apps/daemon/src/routes/chat.ts:1298`'s
+ * `if (!apiKey || !model)`), confirmed by a live side-by-side comparison against a running OD
+ * daemon. An earlier version of this function made `apiKey` optional for a "local Ollama needs no
+ * auth" rationale that turned out not to match OD's actual behavior — OD's default target is
+ * Ollama Cloud (`https://ollama.com`), which does require a key; see `ollama-chat.ts`'s module doc
+ * for the full corrected design.
  */
-interface ParsedOllamaProxyRequest {
-  readonly apiKey?: string;
-  readonly baseUrl?: string;
-  readonly model: string;
-  readonly messages: unknown[];
+interface ParsedOllamaProxyRequest extends ParsedProxyCommon {
   readonly tools?: unknown[];
-  readonly temperature?: number;
-  readonly maxToolTurns?: number;
-  readonly extraHeaders?: Record<string, string>;
+  readonly maxTokens?: number;
 }
 
 function parseOllamaProxyRequest(body: unknown): Result<ParsedOllamaProxyRequest> {
-  if (!isRecord(body)) return err(validationError('body must be a JSON object'));
+  const common = parseCommon(body);
+  if (!common.ok) return common;
+  const record = body as Record<string, unknown>;
 
-  if (body.apiKey !== undefined && typeof body.apiKey !== 'string') {
-    return err(validationError('apiKey must be a string when provided'));
-  }
-  const model = nonEmptyString(body.model);
-  if (!model) {
-    return err(validationError('model must be a non-empty string', [{ path: 'model', message: 'required non-empty string' }]));
-  }
-  if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    return err(validationError('messages must be a non-empty array', [{ path: 'messages', message: 'required non-empty array' }]));
-  }
-  if (body.baseUrl !== undefined && typeof body.baseUrl !== 'string') {
-    return err(validationError('baseUrl must be a string when provided'));
-  }
-  if (body.tools !== undefined && !Array.isArray(body.tools)) {
+  if (record.tools !== undefined && !Array.isArray(record.tools)) {
     return err(validationError('tools must be an array when provided'));
   }
-  if (body.temperature !== undefined && typeof body.temperature !== 'number') {
-    return err(validationError('temperature must be a number when provided'));
-  }
-  if (body.maxToolTurns !== undefined && typeof body.maxToolTurns !== 'number') {
-    return err(validationError('maxToolTurns must be a number when provided'));
-  }
-  if (body.extraHeaders !== undefined && !isRecord(body.extraHeaders)) {
-    return err(validationError('extraHeaders must be an object when provided'));
+  if (record.maxTokens !== undefined && typeof record.maxTokens !== 'number') {
+    return err(validationError('maxTokens must be a number when provided'));
   }
 
   return ok({
-    model,
-    messages: body.messages,
-    ...(body.apiKey !== undefined ? { apiKey: body.apiKey as string } : {}),
-    ...(body.baseUrl !== undefined ? { baseUrl: body.baseUrl as string } : {}),
-    ...(body.tools !== undefined ? { tools: body.tools as unknown[] } : {}),
-    ...(body.temperature !== undefined ? { temperature: body.temperature as number } : {}),
-    ...(body.maxToolTurns !== undefined ? { maxToolTurns: body.maxToolTurns as number } : {}),
-    ...(body.extraHeaders !== undefined ? { extraHeaders: body.extraHeaders as Record<string, string> } : {}),
+    ...common.value,
+    ...(record.tools !== undefined ? { tools: record.tools as unknown[] } : {}),
+    ...(record.maxTokens !== undefined ? { maxTokens: record.maxTokens as number } : {}),
   });
 }
 
@@ -570,13 +546,14 @@ function buildProxyProviderRegistry(deps: ModelProxyHttpDeps): Record<string, Pr
       parse: parseOllamaProxyRequest as (body: unknown) => Result<unknown>,
       run: ((parsed: ParsedOllamaProxyRequest, onEvent: (event: OllamaTurnEvent) => void) =>
         runOllamaToolTurn({
+          apiKey: parsed.apiKey,
           model: parsed.model,
           messages: parsed.messages as unknown as readonly OllamaMessageParam[],
           onEvent,
-          ...(parsed.apiKey !== undefined ? { apiKey: parsed.apiKey } : {}),
           ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
           ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly OllamaFunctionToolDef[] } : {}),
           ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+          ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
           ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
           ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
           ...(deps.ollamaExecuteTool
@@ -750,13 +727,14 @@ export function registerModelProxyRoutes(app: Express, deps: ModelProxyHttpDeps,
     parseOllamaProxyRequest,
     (parsed, onEvent) =>
       runOllamaToolTurn({
+        apiKey: parsed.apiKey,
         model: parsed.model,
         messages: parsed.messages as unknown as readonly OllamaMessageParam[],
         onEvent,
-        ...(parsed.apiKey !== undefined ? { apiKey: parsed.apiKey } : {}),
         ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
         ...(parsed.tools !== undefined ? { tools: parsed.tools as unknown as readonly OllamaFunctionToolDef[] } : {}),
         ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {}),
+        ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
         ...(parsed.maxToolTurns !== undefined ? { maxToolTurns: parsed.maxToolTurns } : {}),
         ...(parsed.extraHeaders !== undefined ? { extraHeaders: parsed.extraHeaders } : {}),
         ...(deps.ollamaExecuteTool

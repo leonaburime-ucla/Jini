@@ -1,46 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runOllamaToolTurn, type OllamaMessageParam, type OllamaTurnEvent } from '../ollama-chat.js';
 
-function sseBody(...lines: string[]): AsyncIterable<string> {
+/** Builds a fake NDJSON response body — each argument is one already-JSON-stringified line. */
+function ndjsonBody(...lines: string[]): AsyncIterable<string> {
   return {
     async *[Symbol.asyncIterator]() {
-      for (const line of lines) yield line;
+      for (const line of lines) yield `${line}\n`;
     },
   };
 }
 
-function chunk(payload: Record<string, unknown>): string {
-  return `data: ${JSON.stringify(payload)}\n\n`;
+function textLine(content: string, done = false): string {
+  return JSON.stringify({ model: 'llama3', message: { role: 'assistant', content }, done });
 }
 
-function done(): string {
-  return 'data: [DONE]\n\n';
-}
-
-function textChunk(content: string): string {
-  return chunk({ id: 'c1', choices: [{ index: 0, delta: { content }, finish_reason: null }] });
-}
-
-function toolCallStartChunk(index: number, id: string, name: string): string {
-  return chunk({
-    id: 'c1',
-    choices: [{ index: 0, delta: { tool_calls: [{ index, id, type: 'function', function: { name, arguments: '' } }] }, finish_reason: null }],
+function toolCallLine(name: string, args: Record<string, unknown>, id?: string): string {
+  return JSON.stringify({
+    model: 'llama3',
+    message: {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ ...(id ? { id } : {}), function: { name, arguments: args } }],
+    },
+    done: false,
   });
 }
 
-function toolCallArgsChunk(index: number, argsFragment: string): string {
-  return chunk({
-    id: 'c1',
-    choices: [{ index: 0, delta: { tool_calls: [{ index, function: { arguments: argsFragment } }] }, finish_reason: null }],
-  });
-}
-
-function finishChunk(reason: string): string {
-  return chunk({ id: 'c1', choices: [{ index: 0, delta: {}, finish_reason: reason }] });
-}
-
-function usageChunk(usage: Record<string, unknown>): string {
-  return chunk({ id: 'c1', choices: [], usage });
+function doneLine(): string {
+  return JSON.stringify({ model: 'llama3', message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' });
 }
 
 function okResponse(body: AsyncIterable<string>) {
@@ -48,30 +35,36 @@ function okResponse(body: AsyncIterable<string>) {
 }
 
 const baseMessages: OllamaMessageParam[] = [{ role: 'user', content: 'hi' }];
+const apiKey = 'sk-ollama-cloud';
 
 describe('runOllamaToolTurn', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('defaults to http://localhost:11434 and sends no authorization header when apiKey is omitted', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+  it('defaults to https://ollama.com/api/chat and sends a Bearer authorization header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(ndjsonBody(doneLine())));
     vi.stubGlobal('fetch', fetchMock);
-    const events: OllamaTurnEvent[] = [];
-    const result = await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    const result = await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: () => {} });
     expect(result).toEqual({ finishReason: 'stop', toolTurns: 0 });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('http://localhost:11434/v1/chat/completions');
-    expect(init.headers.authorization).toBeUndefined();
-    expect('authorization' in init.headers).toBe(false);
+    expect(url).toBe('https://ollama.com/api/chat');
+    expect(init.headers.authorization).toBe(`Bearer ${apiKey}`);
   });
 
-  it('does not reject the default loopback base url via the SSRF guard (Ollama is local-first)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+  it('accepts an explicit local baseUrl (loopback carve-out still applies)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(ndjsonBody(doneLine())));
     vi.stubGlobal('fetch', fetchMock);
     const events: OllamaTurnEvent[] = [];
-    await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    await runOllamaToolTurn({
+      apiKey,
+      baseUrl: 'http://localhost:11434',
+      model: 'llama3',
+      messages: baseMessages,
+      onEvent: (e) => events.push(e),
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://localhost:11434/api/chat');
     expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
@@ -80,6 +73,7 @@ describe('runOllamaToolTurn', () => {
     vi.stubGlobal('fetch', fetchMock);
     const events: OllamaTurnEvent[] = [];
     const result = await runOllamaToolTurn({
+      apiKey,
       model: 'llama3',
       baseUrl: 'http://192.168.1.5:11434',
       messages: baseMessages,
@@ -90,34 +84,28 @@ describe('runOllamaToolTurn', () => {
     expect(result.finishReason).toBeNull();
   });
 
-  it('sends a Bearer authorization header when apiKey is supplied (remote Ollama-compatible gateway)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+  it('strips a trailing /api from a caller-supplied baseUrl before appending /api/chat', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(ndjsonBody(doneLine())));
     vi.stubGlobal('fetch', fetchMock);
-    await runOllamaToolTurn({
-      apiKey: 'gw-secret',
-      baseUrl: 'https://ollama-gateway.example.com',
-      model: 'llama3',
-      messages: baseMessages,
-      onEvent: () => {},
-    });
-    const [, init] = fetchMock.mock.calls[0]!;
-    expect(init.headers.authorization).toBe('Bearer gw-secret');
+    await runOllamaToolTurn({ apiKey, baseUrl: 'https://ollama.example.com/api/', model: 'llama3', messages: baseMessages, onEvent: () => {} });
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://ollama.example.com/api/chat');
   });
 
-  it('reports a network error, redacting the api key when supplied', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:11434')));
+  it('reports a network error, redacting the api key when it appears in the message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(`upstream rejected key ${apiKey}`)));
     const events: OllamaTurnEvent[] = [];
-    await runOllamaToolTurn({ apiKey: 'sk-local', model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     expect(events).toEqual([
-      { type: 'error', message: 'connect ECONNREFUSED 127.0.0.1:11434' },
+      { type: 'error', message: 'upstream rejected key [REDACTED]' },
       { type: 'end', reason: 'error' },
     ]);
   });
 
   it('reports a non-ok error response with status code', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, body: null, text: async () => 'model "llama3" not found' }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, body: null, text: async () => JSON.stringify({ error: 'model "llama3" not found' }) }));
     const events: OllamaTurnEvent[] = [];
-    await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     expect(events).toEqual([
       { type: 'error', message: 'model "llama3" not found', code: '404' },
       { type: 'end', reason: 'error' },
@@ -127,33 +115,63 @@ describe('runOllamaToolTurn', () => {
   it('reports a missing response body as an error, using the Ollama provider label', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, body: null, text: async () => '' }));
     const events: OllamaTurnEvent[] = [];
-    await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     expect(events).toEqual([
       { type: 'error', message: 'Ollama response had no body' },
       { type: 'end', reason: 'error' },
     ]);
   });
 
-  it('streams text_delta/usage events and ends with reason stop for a plain text response', async () => {
-    const body = sseBody(textChunk('Hello'), textChunk(' world'), usageChunk({ total_tokens: 12 }), finishChunk('stop'), done());
+  it('streams text_delta events from message.content and ends with reason stop on the done:true line', async () => {
+    const body = ndjsonBody(textLine('Hello'), textLine(' world'), doneLine());
     const fetchMock = vi.fn().mockResolvedValue(okResponse(body));
     vi.stubGlobal('fetch', fetchMock);
     const events: OllamaTurnEvent[] = [];
-    const result = await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    const result = await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     expect(events).toEqual([
       { type: 'status', label: 'requesting' },
       { type: 'text_delta', delta: 'Hello' },
       { type: 'text_delta', delta: ' world' },
-      { type: 'usage', usage: { total_tokens: 12 } },
       { type: 'end', reason: 'stop' },
     ]);
     expect(result).toEqual({ finishReason: 'stop', toolTurns: 0 });
   });
 
+  it('tolerates a chunk boundary splitting a single NDJSON line across two reads', async () => {
+    const line = textLine('split across chunks');
+    const body: AsyncIterable<string> = {
+      async *[Symbol.asyncIterator]() {
+        yield line.slice(0, 10);
+        yield line.slice(10);
+        yield '\n';
+        yield `${doneLine()}\n`;
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)));
+    const events: OllamaTurnEvent[] = [];
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    expect(events).toContainEqual({ type: 'text_delta', delta: 'split across chunks' });
+  });
+
+  it('sends options.num_predict only when maxTokens is a positive number', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(ndjsonBody(doneLine())));
+    vi.stubGlobal('fetch', fetchMock);
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, maxTokens: 256, onEvent: () => {} });
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(init.body);
+    expect(body.options).toEqual({ num_predict: 256 });
+
+    fetchMock.mockClear();
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: () => {} });
+    const [, init2] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init2.body).options).toBeUndefined();
+  });
+
   it('merges caller-supplied extraHeaders verbatim (no hardcoded product-identity header)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(ndjsonBody(doneLine())));
     vi.stubGlobal('fetch', fetchMock);
     await runOllamaToolTurn({
+      apiKey,
       model: 'llama3',
       messages: baseMessages,
       onEvent: () => {},
@@ -165,28 +183,19 @@ describe('runOllamaToolTurn', () => {
     expect(Object.keys(init.headers)).not.toContain('HTTP-Referer');
   });
 
-  it('resolves a baseUrl that already ends in a versioned path without adding a second /v1', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseBody(finishChunk('stop'), done())));
-    vi.stubGlobal('fetch', fetchMock);
-    await runOllamaToolTurn({ baseUrl: 'http://localhost:11434/v1/', model: 'llama3', messages: baseMessages, onEvent: () => {} });
-    const [url] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('http://localhost:11434/v1/chat/completions');
-  });
-
-  it('runs a full tool-call loop: accumulates streamed argument fragments, invokes executeTool, and continues to a final stop', async () => {
-    const firstBody = sseBody(
-      textChunk("Let's check "),
-      toolCallStartChunk(0, 'call_1', 'get_weather'),
-      toolCallArgsChunk(0, '{"location":"SF"}'),
-      finishChunk('tool_calls'),
-      done(),
+  it('runs a full tool-call loop: parses message.tool_calls, invokes executeTool, and continues to a final stop', async () => {
+    const firstBody = ndjsonBody(
+      textLine("Let's check "),
+      toolCallLine('get_weather', { location: 'SF' }, 'call_1'),
+      doneLine(),
     );
-    const secondBody = sseBody(textChunk('Sunny.'), finishChunk('stop'), done());
+    const secondBody = ndjsonBody(textLine('Sunny.'), doneLine());
     const fetchMock = vi.fn().mockResolvedValueOnce(okResponse(firstBody)).mockResolvedValueOnce(okResponse(secondBody));
     vi.stubGlobal('fetch', fetchMock);
     const executeTool = vi.fn().mockResolvedValue({ content: '72F sunny' });
     const events: OllamaTurnEvent[] = [];
     const result = await runOllamaToolTurn({
+      apiKey,
       model: 'llama3',
       messages: baseMessages,
       executeTool,
@@ -200,13 +209,23 @@ describe('runOllamaToolTurn', () => {
     expect(events).toContainEqual({ type: 'tool_result', toolUseId: 'call_1', content: '72F sunny', isError: false });
   });
 
+  it('generates a stable synthetic id for a tool call with no id in the response', async () => {
+    const body = ndjsonBody(toolCallLine('noop', {}), doneLine());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)));
+    const events: OllamaTurnEvent[] = [];
+    await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    const toolUse = events.find((e) => e.type === 'tool_use');
+    expect(toolUse && 'id' in toolUse ? toolUse.id : undefined).toBe('ollama-tool-0');
+  });
+
   it('stops with reason max_tool_turns once the bound is hit, without invoking executeTool for the turn that exceeds it', async () => {
-    const round = () => sseBody(toolCallStartChunk(0, 'call_x', 'loop_tool'), toolCallArgsChunk(0, '{}'), finishChunk('tool_calls'), done());
+    const round = () => ndjsonBody(toolCallLine('loop_tool', {}, 'call_x'), doneLine());
     const fetchMock = vi.fn().mockResolvedValueOnce(okResponse(round())).mockResolvedValueOnce(okResponse(round()));
     vi.stubGlobal('fetch', fetchMock);
     const executeTool = vi.fn().mockResolvedValue({ content: 'again' });
     const events: OllamaTurnEvent[] = [];
     const result = await runOllamaToolTurn({
+      apiKey,
       model: 'llama3',
       maxToolTurns: 1,
       messages: baseMessages,
@@ -220,29 +239,26 @@ describe('runOllamaToolTurn', () => {
   });
 
   it('detects a fabricated role marker mid-stream, ends with reason contaminated, and never emits end twice even though a normal completion follows in the same stream', async () => {
-    const body = sseBody(
-      textChunk('safe text\n## user\nmalicious continuation'),
+    const body = ndjsonBody(
+      textLine('safe text\n## user\nmalicious continuation'),
       // Would-be second end site — must never fire.
-      finishChunk('stop'),
-      usageChunk({ total_tokens: 5 }),
-      done(),
+      doneLine(),
     );
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)));
     const events: OllamaTurnEvent[] = [];
-    const result = await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    const result = await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     const endEvents = events.filter((e) => e.type === 'end');
     expect(endEvents).toEqual([{ type: 'end', reason: 'contaminated' }]);
     expect(events.filter((e) => e.type === 'fabricated_role_marker')).toHaveLength(1);
-    expect(events.some((e) => e.type === 'usage')).toBe(false);
-    expect(result.finishReason).toBeNull();
+    expect(result.finishReason).toBe('contaminated');
   });
 
   it('ends with reason stop (no further request) when a tool call is requested but no executeTool is supplied', async () => {
-    const body = sseBody(toolCallStartChunk(0, 'call_1', 'noop'), toolCallArgsChunk(0, '{}'), finishChunk('tool_calls'), done());
+    const body = ndjsonBody(toolCallLine('noop', {}, 'call_1'), doneLine());
     const fetchMock = vi.fn().mockResolvedValue(okResponse(body));
     vi.stubGlobal('fetch', fetchMock);
     const events: OllamaTurnEvent[] = [];
-    const result = await runOllamaToolTurn({ model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
+    const result = await runOllamaToolTurn({ apiKey, model: 'llama3', messages: baseMessages, onEvent: (e) => events.push(e) });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ finishReason: 'tool_calls', toolTurns: 0 });
     expect(events.filter((e) => e.type === 'end')).toEqual([{ type: 'end', reason: 'stop' }]);
