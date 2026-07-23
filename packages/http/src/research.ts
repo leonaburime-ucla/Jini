@@ -156,22 +156,57 @@ async function tavilySearch(credentials: ProviderCredentials, request: ResearchS
     include_raw_content: false,
   };
 
+  // The timeout must stay armed for the full operation, not just until `fetch` resolves —
+  // `fetch` resolves as soon as response headers arrive, before the body is read. A round-2
+  // external audit caught (and locally reproduced) an earlier version of this fix that cleared
+  // the timer right after `fetch` resolved, leaving `response.text()`/`response.json()` below
+  // completely unbounded against a server that sends headers promptly and then stalls the body.
+  //
+  // `TavilyHttpError` marks an error already redacted and formatted by the `!response.ok` branch
+  // below, so the outer catch can rethrow it verbatim instead of wrapping it a second time (which
+  // would otherwise produce a "Tavily request failed: Tavily 429: ..." double-prefixed message).
+  class TavilyHttpError extends Error {}
+
   const timeoutController = new AbortController();
   const timeoutHandle = setTimeout(() => timeoutController.abort(), DEFAULT_TAVILY_TIMEOUT_MS);
-  let response: Response;
   try {
-    response = await fetch(`${base}/search`, {
+    const response = await fetch(`${base}/search`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
       signal: timeoutController.signal,
     });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new TavilyHttpError(redactSecrets(`Tavily ${response.status}: ${text.slice(0, 200) || 'no body'}`, [apiKey]));
+    }
+
+    const json = (await response.json()) as TavilyRawResponse;
+    const answer = typeof json.answer === 'string' ? json.answer : '';
+    const rawResults = Array.isArray(json.results) ? json.results : [];
+    const sources: ResearchSource[] = [];
+    for (const raw of rawResults as TavilyRawResult[]) {
+      const url = typeof raw.url === 'string' ? raw.url : '';
+      if (!url) continue;
+      const publishedAt = typeof raw.published_date === 'string' && raw.published_date.trim() ? raw.published_date.trim() : undefined;
+      sources.push({
+        title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : url,
+        url,
+        snippet: typeof raw.content === 'string' ? raw.content.trim().slice(0, 800) : '',
+        provider: 'tavily',
+        ...(publishedAt ? { publishedAt } : {}),
+      });
+    }
+    return { answer, sources };
   } catch (error) {
+    if (!timeoutController.signal.aborted && error instanceof TavilyHttpError) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
-    const timedOut = error instanceof Error && error.name === 'AbortError';
     throw new Error(
       redactSecrets(
-        timedOut
+        timeoutController.signal.aborted
           ? `Tavily request timed out after ${DEFAULT_TAVILY_TIMEOUT_MS}ms`
           : `Tavily request failed: ${message}`,
         [apiKey],
@@ -180,28 +215,6 @@ async function tavilySearch(credentials: ProviderCredentials, request: ResearchS
   } finally {
     clearTimeout(timeoutHandle);
   }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(redactSecrets(`Tavily ${response.status}: ${text.slice(0, 200) || 'no body'}`, [apiKey]));
-  }
-
-  const json = (await response.json()) as TavilyRawResponse;
-  const answer = typeof json.answer === 'string' ? json.answer : '';
-  const rawResults = Array.isArray(json.results) ? json.results : [];
-  const sources: ResearchSource[] = [];
-  for (const raw of rawResults as TavilyRawResult[]) {
-    const url = typeof raw.url === 'string' ? raw.url : '';
-    if (!url) continue;
-    const publishedAt = typeof raw.published_date === 'string' && raw.published_date.trim() ? raw.published_date.trim() : undefined;
-    sources.push({
-      title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : url,
-      url,
-      snippet: typeof raw.content === 'string' ? raw.content.trim().slice(0, 800) : '',
-      provider: 'tavily',
-      ...(publishedAt ? { publishedAt } : {}),
-    });
-  }
-  return { answer, sources };
 }
 
 export const researchSearchRoute = defineJsonRoute<ResearchSearchRequest, ResearchSearchResponse, ResearchHttpDeps>({
