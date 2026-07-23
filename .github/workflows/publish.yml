@@ -1,0 +1,98 @@
+# Publish pipeline (Changesets).
+#
+# This workflow is scaffolding: it is wired up but DORMANT until an `NPM_TOKEN`
+# repo secret is added (Settings -> Secrets and variables -> Actions -> New
+# repository secret, generated from an npm account/org that owns the `@jini`
+# scope). Until that secret exists:
+#   - If there are no pending changesets, this workflow no-ops (nothing to
+#     version, nothing to publish).
+#   - If there ARE pending changesets, the "Version Packages" PR step still
+#     works (it only needs GITHUB_TOKEN, which GitHub provides automatically).
+#     Only the actual `npm publish` step needs NPM_TOKEN, and it will fail
+#     harmlessly at the npm-auth step if the secret is missing -- nothing gets
+#     force-published, nothing else in the repo is affected.
+#
+# Flow (standard Changesets release flow):
+#   1. A PR merges to main carrying one or more `.changeset/*.md` files
+#      (added via `pnpm changeset`).
+#   2. This workflow runs on push to main. `changesets/action` sees the
+#      pending changesets and opens/updates a "Version Packages" PR that
+#      bumps affected package versions and CHANGELOGs (consuming the
+#      changeset files).
+#   3. A human reviews and merges that "Version Packages" PR. That merge is
+#      itself a push to main with no *new* changesets pending, so this
+#      workflow runs again -- this time `changesets/action` publishes the
+#      bumped packages to npm (`pnpm changeset publish`) and, on success,
+#      mirrors the same packages to GitHub Packages.
+#
+# See docs/jini-port/publishing.md for the full contributor-facing writeup.
+
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  version-or-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+      id-token: write # enables npm provenance; pnpm auto-attests in GH Actions when this is granted
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r run build
+
+      - name: Create Release Pull Request or Publish to npm
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          publish: pnpm changeset publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # changesets/action writes its own ~/.npmrc using NPM_TOKEN. If
+          # actions/setup-node's registry-url above already wrote one first,
+          # that copy reads NODE_AUTH_TOKEN instead -- set both so publish
+          # authenticates regardless of which .npmrc wins.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Mirror to GitHub Packages. Runs only right after a real npm publish
+      # (steps.changesets.outputs.published == 'true'), and only for the
+      # packages that were just published (steps.changesets.outputs.publishedPackages,
+      # a JSON array of {name, version} -- see changesets/action's README).
+      # Uses `pnpm publish` (not `npm publish`) so workspace:* internal
+      # dependency ranges get rewritten to real semver the same way the npm
+      # publish above did; `npm publish` would ship the literal "workspace:*"
+      # string and break consumers. `|| true` per package: a re-run of this
+      # workflow after a partial failure would otherwise hard-fail on a 409
+      # for packages GitHub Packages already has at that version.
+      - name: Mirror newly published packages to GitHub Packages
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          echo "@jini:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+          echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]' | while read -r pkg; do
+            name=$(echo "$pkg" | jq -r '.name')
+            dir="packages/${name#@jini/}"
+            echo "Publishing $name from $dir to GitHub Packages"
+            pnpm --dir "$dir" publish --registry https://npm.pkg.github.com --no-git-checks || true
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
