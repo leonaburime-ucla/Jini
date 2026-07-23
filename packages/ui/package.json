@@ -1,7 +1,8 @@
 {
   "name": "@jini/ui",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/leonaburime-ucla/Jini.git", "directory": "packages/ui" },
   "type": "module",
   "exports": {
     ".": {
@@ -12,6 +13,8 @@
   "files": [
     "dist"
   ],
+  "publishConfig": { "access": "restricted", "registry": "https://registry.npmjs.org" },
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
