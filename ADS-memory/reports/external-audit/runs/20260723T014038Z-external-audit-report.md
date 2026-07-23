@@ -130,10 +130,43 @@ All three auditors reviewed commit `2966efa19` independently. **Unanimous: PASS,
 
 **Coordinator-recomputed `blocking_gate`, final: PASS.** All originally-validated blockers (SSRF, R7-boundary-dependence at the architecture-decision level, and the reopened Tavily timeout) are now either fixed-and-triple-verified or explicitly deferred pending a human decision (R7). Cleared to push.
 
+## Round 4 — Compliance check on 2 new post-push commits (Codex gpt-5.6-sol, xhigh, solo)
+
+_Retroactively appended 2026-07-23; this round ran and its fix landed before this report file was updated to include it — see `ADS-memory/.local-artifacts/external-audit/offloads/20260723T014038Z/round4/` for the raw packet/output._
+
+Dispatched against 2 brand-new commits that landed after round 3's clean PASS — `5f5920fb8` (Ollama wire-protocol rewrite: OD's real `/api/chat` NDJSON shape, `ollama.com` default, mandatory `apiKey`, replacing a prior OpenAI-compatible-shaped port) and `e660b5cdb` (Google auth moved from `?key=` query param to `x-goog-api-key` header; OpenAI/Azure wired to actually send a token-limit field, model-aware for OpenAI, always-legacy for Azure — the picker logic already existed in `token-params.ts` but was never wired into the request body). All three fixes were coordinator-verified live against real upstream APIs (Ollama got a real `ollama.com` 401, Google's real API returned its real invalid-key message, OpenAI's real API returned a real 401 with the key redacted) before this round's static/behavioral audit.
+
+Codex found **2 new blockers** in this diff (score 6.9, gate **FAIL**):
+- **AUD-R4-001**: `azure-chat.ts` always sent the legacy `max_tokens` field with zero fallback. OD's real `[proxy:azure]` handler retries once with `max_completion_tokens` on a 400 recognized by `isUnsupportedMaxTokensError` — Azure deployment names are caller-defined opaque strings, so the model family can't be inferred up front. This regressed every GPT-5/o-series Azure deployment to a deterministic HTTP 400, and the committed test asserted the *incomplete* behavior as correct.
+- **AUD-R4-002**: `ollama-chat.ts`'s tool loop never emitted the `tool_use` lifecycle event, and its continuation request kept the OpenAI-compatible wire shape (stringified `arguments`, `id`/`type`, `tool_call_id`) instead of Ollama's native schema (object `arguments`, no `id`/`type`, `tool_name`) — confirmed against Ollama's own documented `/api/chat` examples.
+
+What Codex confirmed as solid and unaffected: the NDJSON partial-line decoder, SSRF ordering (`validateBaseUrlResolved` before dispatch), Google's header/redaction fix, the OpenAI/Azure default-token-limit picker itself (only the Azure *retry* was missing), and package boundaries.
+
+**Fixed in commit `6e6db1f32`** (same day): added a redaction-preserving single-retry hook (`retryableBody`) to `openai-chat.ts`'s shared `runOpenAiCompatibleRequest` reducer, wired into `azure-chat.ts`'s 400-path; rewrote Ollama's tool-call emission to fire `tool_use` unconditionally on resolution and rebuilt `OllamaToolCallParam`/`OllamaMessageParam` to match Ollama's native wire shape. Also fixed an unrelated pre-existing bug surfaced while re-running the full suite: `google-messages.ts` dropped `functionResponse.isError` entirely instead of defaulting to `false`. Added exact second-request-body assertions for both providers. Full 19-file/313-test provider suite passes; `@jini/agent-runtime`/`@jini/http` typecheck clean.
+
+**Coordinator-recomputed `blocking_gate`: FAIL as originally scored** — both blockers were real; fix commit `6e6db1f32` cleared to a fresh round for verification rather than self-certified.
+
+## Round 5 — Verification of the round-4 fix (Codex gpt-5.6-sol, xhigh, solo)
+
+**Resolved model:** `gpt-5.6-sol`, `-c model_reasoning_effort=xhigh`, `codex-cli 0.144.3`. Single-auditor round by explicit user request (not a coverage gap — user asked specifically for a Codex xhigh recheck of this one fix commit).
+
+**Internal verification gate (mandatory pre-dispatch for this high-risk-tier threat model):** ran first, using a falsification-framed read-only subagent excluded from the commit's own rationale/commit-message text. It independently traced the retry-recursion control flow, ran the 4-file/67-test targeted slice plus the full 19-file/313-test provider suite (all pass), ran `tsc --noEmit` clean, and — as a control against test-fabrication — checked out parent commit `e660b5cdb` in a scratch worktree and confirmed the new/changed assertions genuinely fail pre-fix. Zero findings; cleared to external dispatch. Full record: `ADS-memory/.local-artifacts/external-audit/internal-verification/20260723-round5-internal-verification.md`.
+
+**External dispatch — Codex (xhigh), scope `e660b5cdb..6e6db1f32`:** independently reconciled both ledger entries by *executing* the code paths, not just reading the tests — confirmed Azure's retry fires only on `status===400 && isUnsupportedMaxTokensError(rawErrorText)`, reuses the same URL/headers, changes only the token-limit field, never retries twice (the recursive call strips `retryableBody`), and still redacts secrets on the retried request's own terminal-error path; confirmed OpenAI's own (non-Azure) path makes exactly one request since it never supplies `retryableBody`; confirmed Ollama's continuation carries a real object `arguments`, populated `tool_name`, and no `id`/`type`/`tool_call_id`, with exactly one `tool_use` emission per resolved call both with and without `executeTool` supplied, from a single call site.
+
+- **`AUD-R4-001`**: `ledger_updates` → `verified: true`.
+- **`AUD-R4-002`**: `ledger_updates` → `verified: true`.
+- **Findings:** none. **Score: 9.8/10** (small deduction only because the read-only sandbox blocked an independent full Vitest rerun despite successful direct behavioral execution, typechecks, and the disclosed internal-verification suite evidence). **`blocking_gate`: PASS.**
+- Also independently re-confirmed `result.isError ?? false` is correct for `google-messages.ts` (the type only permits `boolean | undefined`, and `??` still converts a stray runtime `null` to `false` if one ever occurred) and that SSRF/origin/boundary surfaces are untouched by this diff.
+- **Suggested changes:** none — no defect warranted a patch. Proposed-Fix Disposition Gate: N/A, nothing returned to disposition.
+
+**Coordinator-recomputed `blocking_gate`, round 5: PASS.** Both round-4 blockers are genuinely closed with independently-executed behavioral confirmation, not just static reading or trust in the commit's own test suite. No new issues introduced by the fix. Full raw offload: `ADS-memory/.local-artifacts/external-audit/offloads/20260723T014038Z/round5/`.
+
 ## Decision Points For User
 
 1. **Should I implement fixes 1–6 and check 14 now?** They're ready, low-risk, and isolated from the concurrent `packages/ui` work — just holding for your go-ahead given the cost comment.
 2. **Item 7 (R7 boundary)**: do you want `@jini/media`/`@jini/capability-providers` promoted per `UNLOCKED.md`'s real process, or an explicit, documented allowlist exception carved out for these specific edges? Either is legitimate; neither should stay silently unenforced.
 3. **Item 11 (publish activation semantics)**: `access: restricted` vs `public` for the initial npm release, and whether the very first push after adding `NPM_TOKEN` should really publish all 25 packages unreviewed, or should require an explicit first version-PR gate too.
 4. **Path to a 10** (from Fable, since it scored below 10): confirm the origin-guard middleware's `Host`/`Origin` handling on every `/api` route (item 13) to close the DNS-rebinding question definitively, and verify `@jini` npm-scope ownership before any token exists.
-5. Gemini coverage is missing from this round entirely (quota exhaustion) — worth a follow-up single-auditor Gemini pass later if you want that third perspective, no rush.
+5. Gemini coverage is missing from round 3 entirely (quota exhaustion) — worth a follow-up single-auditor Gemini pass later if you want that third perspective, no rush.
+6. As of round 5, this threat model (`TM-jini-20260722-session-backend-and-merge`) has a clean PASS through commit `6e6db1f32` — items 1–3 above (R7 boundary decision, publish activation semantics, path-to-10 origin-guard/npm-scope checks) remain the only open decisions carried forward from earlier rounds.
