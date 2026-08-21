@@ -423,16 +423,30 @@ export const CHAT_PANE_STYLES = `
 /* The full description used to print under every row unconditionally, which is why the palette
    grew to dozens of multi-line rows on a bare "/" — this is a real hover/focus tooltip styled like
    the popover itself (panel background, border, shadow — the chat pane's own visual language, not
-   a bare browser 'title' with its ~1s delay, zero styling, and no touch support), positioned via
-   'opacity'/'pointer-events' rather than 'display: none' so the SAME node stays in the
-   accessibility tree at rest — 'aria-describedby' keeps working for assistive tech whether or not
-   anything is hovering, since opacity/position never remove a node from that tree the way
-   'display: none' does.
-   Known trade-off: this is a CSS-only tooltip, positioned 'top: 100%' of its own row and clipped by
-   the popover's own 'overflow-y: auto' (necessary for the scrollable list itself) — a row within
-   roughly one tooltip-height of the popover's bottom scroll edge can have its tooltip clipped. A
-   JS-measured fixed/portalled tooltip would avoid that, but is disproportionate machinery for a
-   hover hint on a command palette; accepted as a known limitation rather than silently shipped. */
+   a bare browser 'title' with its ~1s delay, zero styling, and no touch support), kept in the
+   accessibility tree at rest (never 'display: none', which most screen readers drop from that
+   tree) so 'aria-describedby' keeps resolving whether or not anything is hovering.
+   FIXED (was: opacity-only toggle) — an owner-reported bug: a popover near/at the 280px cap,
+   scrolled to its end, showed the last real row followed by a large blank block filling the rest
+   of the box. Root cause: 'opacity: 0' hides a box visually but does not remove it from layout —
+   this element is 'position: absolute; top: 100%' of a row that is 'position: relative'
+   ('.jini-composer-discovery-item' above), so at rest it was still laid out at its full natural
+   size (routinely 50-260px tall for a real description), invisible but still there. An
+   absolutely-positioned descendant still counts toward its scrolling ancestor's scrollable
+   overflow region even while invisible ('scrollHeight' measured 501px against a 242px
+   'clientHeight' for a 6-row list — that 259px gap of phantom, content-free scroll area IS the
+   blank block), so every row silently taxed the popover with its own tooltip-height of nothing to
+   scroll to. Fix: collapse the box itself at rest ('max-height: 0; overflow: hidden;' plus zeroed
+   padding/border, so its rendered footprint — and thus its contribution to scrollHeight — is
+   negligible) rather than only hiding it visually; the :hover/:focus-visible rule below restores
+   real size. The node, and its text, are unaffected either way — this only changes whether an
+   AT-REST tooltip has real layout dimensions, not whether it exists.
+   Known trade-off (unchanged by this fix): a CSS-only tooltip positioned 'top: 100%' of its own
+   row is still clipped by the popover's own 'overflow-y: auto' (necessary for the scrollable list
+   itself) — a row within roughly one tooltip-height of the popover's bottom scroll edge can still
+   have its OWN tooltip clipped while genuinely hovered. A JS-measured fixed/portalled tooltip
+   would avoid that, but is disproportionate machinery for a hover hint on a command palette;
+   accepted as a known limitation rather than silently shipped. */
 .jini-chat-pane .jini-composer-discovery-description {
   position: absolute;
   z-index: 20;
@@ -441,10 +455,12 @@ export const CHAT_PANE_STYLES = `
   margin-top: 4px;
   width: max-content;
   max-width: 240px;
-  padding: 6px 10px;
+  max-height: 0;
+  padding: 0 10px;
+  overflow: hidden;
   color: var(--jini-chat-text);
   background: var(--jini-chat-panel);
-  border: 1px solid var(--jini-chat-border);
+  border: 0;
   border-radius: 8px;
   box-shadow: 0 8px 20px rgb(0 0 0 / 16%);
   font-size: 12px;
@@ -457,6 +473,10 @@ export const CHAT_PANE_STYLES = `
 }
 .jini-chat-pane .jini-composer-discovery-item:hover .jini-composer-discovery-description,
 .jini-chat-pane .jini-composer-discovery-item:focus-visible .jini-composer-discovery-description {
+  max-height: none;
+  padding: 6px 10px;
+  overflow: visible;
+  border: 1px solid var(--jini-chat-border);
   opacity: 1;
 }
 /* '<code>'/'<small>' both default to the browser's UA styling (monospace at an unrelated size)
