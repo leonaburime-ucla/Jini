@@ -213,12 +213,15 @@ describe('Composer', () => {
     expect(screen.queryByRole('listbox', { name: 'Composer commands' })).not.toBeInTheDocument();
   });
 
-  it('keeps the add-menu row compact — description moves to a hover title plus an accessible, non-hidden-from-a11y node', async () => {
+  it('keeps the add-menu row compact — description is a real styled hover/focus tooltip, not a bare title, and stays reachable for assistive tech', async () => {
     render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
     const item = screen.getByRole('menuitem', { name: /^\/mcp/ });
 
-    expect(item).toHaveAttribute('title', 'Open MCP settings');
+    // A bare native `title` was rejected on review (~1s delay, unstyled, no touch support) in favor
+    // of a real tooltip matching the popover's own look — asserting its absence keeps this test
+    // honest about which mechanism is actually in play.
+    expect(item).not.toHaveAttribute('title');
     const describedBy = item.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
     const description = document.getElementById(describedBy!);
@@ -226,11 +229,18 @@ describe('Composer', () => {
     expect(description).toHaveClass('jini-composer-discovery-description');
     // Never `display: none` — most screen readers drop an `aria-describedby` target from the
     // accessibility tree entirely once it's `display: none`, which would silently un-fix this bug.
+    // `opacity`/`pointer-events` (not `display`/`visibility`) is what keeps this node present at
+    // rest and only visually revealed on `:hover`/`:focus-visible` of the row.
     const descriptionStyleRule = CHAT_PANE_STYLES.match(
       /\.jini-chat-pane \.jini-composer-discovery-description \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(descriptionStyleRule).not.toContain('display: none');
-    expect(descriptionStyleRule).toContain('clip: rect(0, 0, 0, 0)');
+    expect(descriptionStyleRule).toContain('opacity: 0');
+    expect(descriptionStyleRule).toContain('pointer-events: none');
+    const revealStyleRule = CHAT_PANE_STYLES.match(
+      /\.jini-chat-pane \.jini-composer-discovery-item:hover \.jini-composer-discovery-description,\s*\n\.jini-chat-pane \.jini-composer-discovery-item:focus-visible \.jini-composer-discovery-description \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(revealStyleRule).toContain('opacity: 1');
   });
 
   it('groups Attach files into the discovery menu without changing upload behavior', async () => {
@@ -293,6 +303,19 @@ describe('Composer', () => {
     expect(within(palette).getAllByRole('option')).toHaveLength(4);
     expect(within(palette).getByRole('option', { name: /\/mcp.*Open MCP settings/i })).toBeInTheDocument();
     expect(within(palette).queryByText(/server-id/i)).not.toBeInTheDocument();
+  });
+
+  it('hints that typing narrows the list on a bare slash, and drops the hint once a real query is typed', async () => {
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+    const textarea = screen.getByRole('textbox');
+    await userEvent.type(textarea, '/');
+
+    const palette = screen.getByRole('listbox', { name: 'Composer commands' });
+    const hint = within(palette).getByText('Keep typing to narrow the list');
+    expect(hint).toHaveAttribute('role', 'presentation');
+
+    await userEvent.type(textarea, 'word');
+    expect(within(palette).queryByText('Keep typing to narrow the list')).not.toBeInTheDocument();
   });
 
   it('selects the /mcp command through the generic callback without inventing server inventory', async () => {
@@ -677,7 +700,7 @@ describe('Composer', () => {
     expect(argumentStyleRule).toContain('font-size: inherit');
   });
 
-  it('keeps the slash row compact — description moves to a hover title plus an accessible node', async () => {
+  it('keeps the slash row compact — description is a real hover/focus tooltip, not a bare title, and stays reachable for assistive tech', async () => {
     render(<DiscoveryHarness slots={{ discoveryGroups: ARGUMENT_COMMAND_GROUPS }} />);
     await userEvent.type(screen.getByRole('textbox'), '/mcp');
     // `/mcp` fuzzy-matches both "mcp" and "mcp-docs" (existing test above, line ~470) — disambiguate
@@ -685,7 +708,7 @@ describe('Composer', () => {
     // description text rather than the label alone.
     const option = screen.getByRole('option', { name: /\/mcp.*Open MCP settings/i });
 
-    expect(option).toHaveAttribute('title', 'Open MCP settings');
+    expect(option).not.toHaveAttribute('title');
     const describedBy = option.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
     const description = document.getElementById(describedBy!);

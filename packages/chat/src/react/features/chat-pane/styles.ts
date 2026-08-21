@@ -395,6 +395,7 @@ export const CHAT_PANE_STYLES = `
   text-transform: uppercase;
 }
 .jini-chat-pane .jini-composer-discovery-item {
+  position: relative; /* anchors .jini-composer-discovery-description below */
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -420,19 +421,43 @@ export const CHAT_PANE_STYLES = `
 }
 .jini-chat-pane .jini-composer-discovery-item small { color: var(--jini-chat-muted); }
 /* The full description used to print under every row unconditionally, which is why the palette
-   grew to dozens of multi-line rows on a bare "/" — this keeps the description reachable for
-   assistive tech via 'aria-describedby' (never 'display: none', which most screen readers drop
-   from the accessibility tree) while a native 'title' attribute on the row supplies the sighted
-   hover tooltip. Same visually-hidden technique already used above for '.jini-composer-file-input'
-   and below for '.jini-chat-pane__drop-announcement' — one hidden-but-functional idiom, not a new one. */
+   grew to dozens of multi-line rows on a bare "/" — this is a real hover/focus tooltip styled like
+   the popover itself (panel background, border, shadow — the chat pane's own visual language, not
+   a bare browser 'title' with its ~1s delay, zero styling, and no touch support), positioned via
+   'opacity'/'pointer-events' rather than 'display: none' so the SAME node stays in the
+   accessibility tree at rest — 'aria-describedby' keeps working for assistive tech whether or not
+   anything is hovering, since opacity/position never remove a node from that tree the way
+   'display: none' does.
+   Known trade-off: this is a CSS-only tooltip, positioned 'top: 100%' of its own row and clipped by
+   the popover's own 'overflow-y: auto' (necessary for the scrollable list itself) — a row within
+   roughly one tooltip-height of the popover's bottom scroll edge can have its tooltip clipped. A
+   JS-measured fixed/portalled tooltip would avoid that, but is disproportionate machinery for a
+   hover hint on a command palette; accepted as a known limitation rather than silently shipped. */
 .jini-chat-pane .jini-composer-discovery-description {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  clip-path: inset(50%);
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  width: max-content;
+  max-width: 240px;
+  padding: 6px 10px;
+  color: var(--jini-chat-text);
+  background: var(--jini-chat-panel);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 16%);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.jini-chat-pane .jini-composer-discovery-item:hover .jini-composer-discovery-description,
+.jini-chat-pane .jini-composer-discovery-item:focus-visible .jini-composer-discovery-description {
+  opacity: 1;
 }
 /* '<code>'/'<small>' both default to the browser's UA styling (monospace at an unrelated size)
    with nothing here overriding it — computed font-SIZE happened to already match the row label

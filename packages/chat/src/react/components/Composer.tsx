@@ -137,6 +137,16 @@ export function Composer({
   const slashQuery = parseComposerSlashQuery(composer.draft);
   const slashMatches = slashQuery === null ? [] : filterComposerDiscovery(discoveryGroups, slashQuery);
   const slashOpen = slashMatches.length > 0 && dismissedSlashDraft !== composer.draft;
+  /**
+   * A bare "/" intentionally matches every item (`matchesFuzzyCommand`'s own doc) so the palette
+   * doubles as a browse-everything view — but with nothing typed yet, nothing on screen tells a
+   * first-time user that continuing to type narrows it, and a fuzzy substring match against full
+   * descriptions stays broad for the first character or two regardless (owner-reported "it doesn't
+   * narrow" — narrowing DOES fire on every keystroke, this is the one state where there's no visual
+   * cue that it will). Shown only here, not once the user has started typing a real query — at that
+   * point the shrinking list is its own feedback.
+   */
+  const showSlashFilterHint = slashQuery !== null && slashQuery.command === '' && slashQuery.argument === null;
 
   function restoreComposerFocus() {
     textareaRef.current?.focus();
@@ -310,6 +320,7 @@ export function Composer({
           matches={slashMatches}
           activeIndex={Math.min(slashActiveIndex, slashMatches.length - 1)}
           onSelect={(item) => selectSlashItem(slashMatches.findIndex((match) => match.item === item))}
+          showFilterHint={showSlashFilterHint}
           t={t}
         />
       ) : null}

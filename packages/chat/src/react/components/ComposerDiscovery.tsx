@@ -92,15 +92,15 @@ export function ComposerDiscoveryMenu(props: ComposerDiscoveryMenuProps) {
                       type="button"
                       role="menuitem"
                       className="jini-composer-discovery-item"
-                      title={description}
                       aria-describedby={descriptionId}
                       onClick={() => props.onSelect(item)}
                     >
                       <span>{props.t(item.label)}</span>
-                      {/* Kept compact by design (label only) — the full description moved to `title`
-                          (sighted hover) plus this visually-hidden node (`aria-describedby`, never
-                          `display: none`) so screen-reader users keep it too. See
-                          `.jini-composer-discovery-description`'s own doc in styles.ts. */}
+                      {/* Kept compact by design (label only) — the full description is a real
+                          hover/focus tooltip (`.jini-composer-discovery-description`, styled to
+                          match the popover itself — see its own doc in styles.ts for why NOT a bare
+                          `title` attribute), reachable for assistive tech via `aria-describedby`
+                          whether or not anything is hovering. */}
                       {description ? (
                         <small id={descriptionId} className="jini-composer-discovery-description">
                           {description}
@@ -122,6 +122,10 @@ export interface ComposerSlashMenuProps {
   matches: readonly ComposerDiscoveryMatch[];
   activeIndex: number;
   onSelect: (item: ComposerDiscoveryItem) => void;
+  /** True only for a bare "/" (see `Composer.tsx`'s own doc on `showSlashFilterHint`) — shows a
+   *  one-line "keep typing to narrow" cue above the options, since that's the one state where
+   *  nothing else on screen signals that typing filters the list. */
+  showFilterHint?: boolean;
   t: (key: string) => string;
 }
 
@@ -136,6 +140,16 @@ export function ComposerSlashMenu(props: ComposerSlashMenuProps) {
       role="listbox"
       aria-label={props.t('Composer commands')}
     >
+      {props.showFilterHint ? (
+        // `role="presentation"` opts this out of the listbox's own "children are options" ARIA
+        // expectation explicitly, rather than leaving an unmarked stray `<div>` for assistive tech
+        // to guess about — same escape hatch real combobox implementations use for a "no results"
+        // row. Reuses `.jini-composer-discovery-group-label`'s existing look (faint, small,
+        // uppercase) instead of introducing a new visual style for one hint line.
+        <div className="jini-composer-discovery-group-label" role="presentation">
+          {props.t('Keep typing to narrow the list')}
+        </div>
+      ) : null}
       {props.matches.map((match, index) => {
         const description = props.t(match.item.description ?? match.groupLabel);
         const descriptionId = `jini-composer-slash-option-${index}-desc`;
@@ -147,7 +161,6 @@ export function ComposerSlashMenu(props: ComposerSlashMenuProps) {
             role="option"
             aria-selected={index === props.activeIndex}
             aria-describedby={descriptionId}
-            title={description}
             className={`jini-composer-discovery-item${index === props.activeIndex ? ' is-active' : ''}`}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => props.onSelect(match.item)}
@@ -161,7 +174,7 @@ export function ComposerSlashMenu(props: ComposerSlashMenuProps) {
                 <small className="jini-composer-slash-confirm-badge"> {props.t('Confirm')}</small>
               ) : null}
             </span>
-            {/* Compact row, description on hover/focus — see the matching doc on the "+" menu's
+            {/* Compact row, real hover/focus tooltip — see the matching doc on the "+" menu's
                 identical change just above. */}
             <small id={descriptionId} className="jini-composer-discovery-description">
               {description}
