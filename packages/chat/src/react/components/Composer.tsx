@@ -11,7 +11,7 @@
  * the slots a host supplies; it does not itself know what a "library
  * picker" or "session mode" is.
  */
-import { useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { RemixIcon } from '@jini-ai/ui';
 import { useT } from '../hooks/context.js';
 import { AttachmentTray } from './AttachmentTray.js';
@@ -141,6 +141,41 @@ export function Composer({
   function restoreComposerFocus() {
     textareaRef.current?.focus();
   }
+
+  /**
+   * Neither popover had any way to dismiss on an outside click — Escape worked (each already wires
+   * its own keydown), but clicking away left them open with no affordance to close (bug report:
+   * "no click-outside, owner is stuck once it opens"). `mousedown`, not `click`, so this settles
+   * before the "+" trigger button's own `onToggle` fires on the SAME click — that click's target is
+   * inside `.jini-composer-discovery` (the trigger lives there too), so it's correctly treated as
+   * "inside" and left for `onToggle` to handle, not fought over by two competing handlers.
+   *
+   * Scoped by DOM lookup (`closest`/`querySelector`) off `textareaRef`, not new refs threaded
+   * through `ComposerDiscovery.tsx`'s props — both popovers already carry stable classes/ids this
+   * component doesn't otherwise need direct handles to.
+   */
+  useEffect(() => {
+    if (!discoveryMenuOpen && !slashOpen) return;
+    const composerRoot = textareaRef.current?.closest('.jini-composer');
+    if (!composerRoot) return;
+
+    function handleOutsideMouseDown(event: MouseEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (discoveryMenuOpen) {
+        const trigger = composerRoot!.querySelector('.jini-composer-discovery');
+        if (!trigger?.contains(target)) setDiscoveryMenuOpen(false);
+      }
+      if (slashOpen) {
+        const menu = composerRoot!.querySelector('#jini-composer-slash-menu');
+        const insideTextarea = textareaRef.current?.contains(target) ?? false;
+        if (!insideTextarea && !menu?.contains(target)) setDismissedSlashDraft(composer.draft);
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideMouseDown);
+    return () => document.removeEventListener('mousedown', handleOutsideMouseDown);
+  }, [discoveryMenuOpen, slashOpen, composer.draft]);
 
   /**
    * `expectedDraft` is the draft as the user last saw it at the moment of selection — what the

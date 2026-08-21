@@ -83,18 +83,32 @@ export function ComposerDiscoveryMenu(props: ComposerDiscoveryMenuProps) {
             group.items.length > 0 ? (
               <div key={group.id} className="jini-composer-discovery-group" role="group" aria-label={props.t(group.label)}>
                 <span className="jini-composer-discovery-group-label">{props.t(group.label)}</span>
-                {group.items.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="menuitem"
-                    className="jini-composer-discovery-item"
-                    onClick={() => props.onSelect(item)}
-                  >
-                    <span>{props.t(item.label)}</span>
-                    {item.description ? <small>{props.t(item.description)}</small> : null}
-                  </button>
-                ))}
+                {group.items.map((item) => {
+                  const description = item.description ? props.t(item.description) : undefined;
+                  const descriptionId = description ? `jini-composer-discovery-desc-${item.id}` : undefined;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="menuitem"
+                      className="jini-composer-discovery-item"
+                      title={description}
+                      aria-describedby={descriptionId}
+                      onClick={() => props.onSelect(item)}
+                    >
+                      <span>{props.t(item.label)}</span>
+                      {/* Kept compact by design (label only) — the full description moved to `title`
+                          (sighted hover) plus this visually-hidden node (`aria-describedby`, never
+                          `display: none`) so screen-reader users keep it too. See
+                          `.jini-composer-discovery-description`'s own doc in styles.ts. */}
+                      {description ? (
+                        <small id={descriptionId} className="jini-composer-discovery-description">
+                          {description}
+                        </small>
+                      ) : null}
+                    </button>
+                  );
+                })}
               </div>
             ) : null,
           )}
@@ -122,31 +136,39 @@ export function ComposerSlashMenu(props: ComposerSlashMenuProps) {
       role="listbox"
       aria-label={props.t('Composer commands')}
     >
-      {props.matches.map((match, index) => (
-        <button
-          key={`${match.groupId}:${match.item.id}`}
-          id={`jini-composer-slash-option-${index}`}
-          type="button"
-          role="option"
-          aria-selected={index === props.activeIndex}
-          className={`jini-composer-discovery-item${index === props.activeIndex ? ' is-active' : ''}`}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => props.onSelect(match.item)}
-        >
-          <span>
-            {props.t(match.item.label)}
-            {match.item.argument ? (
-              <code className="jini-composer-slash-argument"> {match.item.argument.placeholder}</code>
-            ) : null}
-            {match.item.needsConfirmation ? (
-              <small className="jini-composer-slash-confirm-badge"> {props.t('Confirm')}</small>
-            ) : null}
-          </span>
-          <small>
-            {props.t(match.item.description ?? match.groupLabel)}
-          </small>
-        </button>
-      ))}
+      {props.matches.map((match, index) => {
+        const description = props.t(match.item.description ?? match.groupLabel);
+        const descriptionId = `jini-composer-slash-option-${index}-desc`;
+        return (
+          <button
+            key={`${match.groupId}:${match.item.id}`}
+            id={`jini-composer-slash-option-${index}`}
+            type="button"
+            role="option"
+            aria-selected={index === props.activeIndex}
+            aria-describedby={descriptionId}
+            title={description}
+            className={`jini-composer-discovery-item${index === props.activeIndex ? ' is-active' : ''}`}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => props.onSelect(match.item)}
+          >
+            <span>
+              {props.t(match.item.label)}
+              {match.item.argument ? (
+                <code className="jini-composer-slash-argument"> {match.item.argument.placeholder}</code>
+              ) : null}
+              {match.item.needsConfirmation ? (
+                <small className="jini-composer-slash-confirm-badge"> {props.t('Confirm')}</small>
+              ) : null}
+            </span>
+            {/* Compact row, description on hover/focus — see the matching doc on the "+" menu's
+                identical change just above. */}
+            <small id={descriptionId} className="jini-composer-discovery-description">
+              {description}
+            </small>
+          </button>
+        );
+      })}
     </div>
   );
 }

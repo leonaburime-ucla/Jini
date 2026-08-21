@@ -184,6 +184,55 @@ describe('Composer', () => {
     expect(menu).not.toBeInTheDocument();
   });
 
+  it('closes the grouped add menu on an outside click but not on a click inside it', async () => {
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
+    const menu = screen.getByRole('menu', { name: 'Add context' });
+
+    // A click INSIDE the popover (its own group label, not an actionable item) must not dismiss it —
+    // only a click that lands outside `.jini-composer-discovery` entirely should.
+    await userEvent.click(within(menu).getByText('Plugins'));
+    expect(screen.getByRole('menu', { name: 'Add context' })).toBeInTheDocument();
+
+    await userEvent.click(document.body);
+    expect(screen.queryByRole('menu', { name: 'Add context' })).not.toBeInTheDocument();
+  });
+
+  it('closes the slash palette on an outside click, but a click back into the textarea keeps it open', async () => {
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+    const textarea = screen.getByRole('textbox');
+    await userEvent.type(textarea, '/word');
+    expect(screen.getByRole('listbox', { name: 'Composer commands' })).toBeInTheDocument();
+
+    // Repositioning the cursor in the textarea is not "clicking away" — the palette must survive it,
+    // or every click a user makes to edit their own draft would silently kill the palette.
+    await userEvent.click(textarea);
+    expect(screen.getByRole('listbox', { name: 'Composer commands' })).toBeInTheDocument();
+
+    await userEvent.click(document.body);
+    expect(screen.queryByRole('listbox', { name: 'Composer commands' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the add-menu row compact — description moves to a hover title plus an accessible, non-hidden-from-a11y node', async () => {
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
+    const item = screen.getByRole('menuitem', { name: /^\/mcp/ });
+
+    expect(item).toHaveAttribute('title', 'Open MCP settings');
+    const describedBy = item.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const description = document.getElementById(describedBy!);
+    expect(description).toHaveTextContent('Open MCP settings');
+    expect(description).toHaveClass('jini-composer-discovery-description');
+    // Never `display: none` — most screen readers drop an `aria-describedby` target from the
+    // accessibility tree entirely once it's `display: none`, which would silently un-fix this bug.
+    const descriptionStyleRule = CHAT_PANE_STYLES.match(
+      /\.jini-chat-pane \.jini-composer-discovery-description \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(descriptionStyleRule).not.toContain('display: none');
+    expect(descriptionStyleRule).toContain('clip: rect(0, 0, 0, 0)');
+  });
+
   it('groups Attach files into the discovery menu without changing upload behavior', async () => {
     const onFiles = vi.fn();
     render(
@@ -614,6 +663,34 @@ describe('Composer', () => {
     const option = screen.getByRole('option', { name: /\/search/i });
     expect(within(option).getByText('<query>')).toBeInTheDocument();
     expect(within(option).getByText('Confirm')).toBeInTheDocument();
+  });
+
+  it('puts the argument placeholder and confirm badge on the same type scale as the row label', async () => {
+    // `<code>`/`<small>` default to the browser's own UA styling (monospace, unrelated size) with
+    // nothing overriding it today — that's what read as "visibly larger" next to the label even
+    // though the computed font-size already happened to match; the fix is a font-family reset, not
+    // a size change, so this asserts the actual rule rather than a computed size that already passed.
+    const argumentStyleRule = CHAT_PANE_STYLES.match(
+      /\.jini-chat-pane \.jini-composer-slash-argument,\s*\n\.jini-chat-pane \.jini-composer-slash-confirm-badge \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(argumentStyleRule).toContain('font-family: inherit');
+    expect(argumentStyleRule).toContain('font-size: inherit');
+  });
+
+  it('keeps the slash row compact — description moves to a hover title plus an accessible node', async () => {
+    render(<DiscoveryHarness slots={{ discoveryGroups: ARGUMENT_COMMAND_GROUPS }} />);
+    await userEvent.type(screen.getByRole('textbox'), '/mcp');
+    // `/mcp` fuzzy-matches both "mcp" and "mcp-docs" (existing test above, line ~470) — disambiguate
+    // the same way the existing bare-slash test does (line ~245), by requiring both label and
+    // description text rather than the label alone.
+    const option = screen.getByRole('option', { name: /\/mcp.*Open MCP settings/i });
+
+    expect(option).toHaveAttribute('title', 'Open MCP settings');
+    const describedBy = option.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const description = document.getElementById(describedBy!);
+    expect(description).toHaveTextContent('Open MCP settings');
+    expect(description).toHaveClass('jini-composer-discovery-description');
   });
 
   it('swaps the send button for a stop button while running, calling onCancel instead of onSend', async () => {

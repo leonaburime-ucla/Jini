@@ -350,7 +350,13 @@ export const CHAT_PANE_STYLES = `
   border-top: 1px solid var(--jini-chat-border-soft);
 }
 .jini-chat-pane .jini-composer-attachment-picker { display: inline-flex; }
-.jini-chat-pane .jini-composer-discovery { position: relative; display: inline-flex; }
+/* NOT 'position: relative' — the discovery popover (below) anchors off '.jini-composer' itself
+   (the nearest positioned ancestor once this wrapper opts out), not off this small trigger-button
+   wrapper. Anchoring to the wrapper put the popover's bottom edge at the wrapper's own top edge —
+   inside the footer, just below the textarea — so any popover taller than a couple of rows grew
+   upward straight over the textarea and blocked clicks into it (reproduced live: Playwright's own
+   click on the textarea failed with "intercepts pointer events" while the popover was open). */
+.jini-chat-pane .jini-composer-discovery { display: inline-flex; }
 .jini-chat-pane .jini-composer-discovery-menu,
 .jini-chat-pane .jini-composer-slash-menu {
   position: absolute;
@@ -367,14 +373,17 @@ export const CHAT_PANE_STYLES = `
   border-radius: 10px;
   box-shadow: 0 12px 30px rgb(0 0 0 / 14%);
 }
+/* Both anchor off '.jini-composer' ('bottom: calc(100% + 6px)' = fully above the textarea AND the
+   footer, not just above the trigger button) so the popover floats as a clean detached card instead
+   of overlapping the input it sits next to. */
 .jini-chat-pane .jini-composer-discovery-menu {
-  inset-inline-start: 0;
+  inset-inline-start: 8px;
   bottom: calc(100% + 6px);
   width: min(280px, calc(100vw - 32px));
 }
 .jini-chat-pane .jini-composer-slash-menu {
   inset-inline: 8px;
-  bottom: 48px;
+  bottom: calc(100% + 6px);
 }
 .jini-chat-pane .jini-composer-discovery-group { display: flex; flex-direction: column; gap: 2px; }
 .jini-chat-pane .jini-composer-discovery-group-label {
@@ -410,6 +419,33 @@ export const CHAT_PANE_STYLES = `
   box-shadow: inset 3px 0 0 var(--jini-chat-accent);
 }
 .jini-chat-pane .jini-composer-discovery-item small { color: var(--jini-chat-muted); }
+/* The full description used to print under every row unconditionally, which is why the palette
+   grew to dozens of multi-line rows on a bare "/" — this keeps the description reachable for
+   assistive tech via 'aria-describedby' (never 'display: none', which most screen readers drop
+   from the accessibility tree) while a native 'title' attribute on the row supplies the sighted
+   hover tooltip. Same visually-hidden technique already used above for '.jini-composer-file-input'
+   and below for '.jini-chat-pane__drop-announcement' — one hidden-but-functional idiom, not a new one. */
+.jini-chat-pane .jini-composer-discovery-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+/* '<code>'/'<small>' both default to the browser's UA styling (monospace at an unrelated size)
+   with nothing here overriding it — computed font-SIZE happened to already match the row label
+   (13.5px), so the visible mismatch is font-FAMILY: raw monospace next to the label's sans-serif
+   stack reads as a different, larger type scale even at equal size. Inheriting the row's own font
+   puts both on one consistent scale. */
+.jini-chat-pane .jini-composer-slash-argument,
+.jini-chat-pane .jini-composer-slash-confirm-badge {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 400;
+  color: var(--jini-chat-muted);
+}
 .jini-chat-pane .jini-composer-file-input {
   position: absolute;
   width: 1px;
