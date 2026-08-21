@@ -241,8 +241,62 @@ export const CHAT_PANE_STYLES = `
   border-color: color-mix(in srgb, var(--jini-chat-accent) 22%, var(--jini-chat-border-strong));
   box-shadow: 0 1px 2px rgba(26, 25, 22, .06), 0 0 0 1px rgba(201, 100, 66, .06);
 }
+/*
+ * Pinned-context zone: whatever a host pins above the composer input (selected plugins, MCP
+ * servers, or anything a future host adds -- see 'leadingAccessories''s own doc in 'slots.ts').
+ * 'Composer.tsx' only mounts this element when 'slots.leadingAccessories' is a truthy prop value,
+ * but a host that always supplies a TRAY COMPONENT rather than conditionally supplying the prop
+ * itself (one that internally renders 'null' when nothing is pinned) still leaves an empty node
+ * behind -- ':empty' below is what actually collapses THAT case to zero height and zero seam,
+ * mirroring '.jini-attachment-tray:empty' a few rules down, which solves the identical problem for
+ * the real file-attachment tray.
+ *
+ * Collapsed (nothing pinned): zero height, zero padding, invisible (0-width) seam -- no reserved
+ * space, matching the owner's "if nil, it doesn't animate" requirement exactly, since there is
+ * nothing here to animate.
+ *
+ * Populated: grows to a single fixed-height row via 'max-height' (not 'height: auto', which can't
+ * transition) and gains a hairline seam using the SAME border/token '.jini-composer-footer' below
+ * already uses one zone down -- reads as one more zone of the same control, not a new floating
+ * box. The transition runs both directions, so removing the last pinned item gets a matching exit,
+ * not an instant cut.
+ *
+ * 'overflow-x: auto' + the mask below turn this into a single scrollable row with an edge-fade
+ * affordance rather than the wrap-and-grow a naive flex row would do with six or more items; '> *'
+ * keeps any direct host child (a single tray wrapper, a bare row of buttons, anything) from
+ * shrinking to fit, so overflow -- not internal wrapping -- is what kicks in once content is wider
+ * than the zone.
+ */
 .jini-chat-pane .jini-composer-leading {
-  padding: 8px 12px 0;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-height: 0;
+  padding: 0 12px;
+  border-bottom: 0 solid var(--jini-chat-border-soft);
+  opacity: 0;
+  scrollbar-width: thin;
+  transition:
+    max-height .22s cubic-bezier(.3, .1, .25, 1),
+    padding .22s cubic-bezier(.3, .1, .25, 1),
+    border-bottom-width .22s ease,
+    opacity .16s ease;
+  -webkit-mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
+}
+.jini-chat-pane .jini-composer-leading:not(:empty) {
+  max-height: 64px;
+  padding: 10px 12px;
+  border-bottom-width: 1px;
+  opacity: 1;
+}
+.jini-chat-pane .jini-composer-leading > * {
+  flex: none;
+  min-width: max-content;
+}
+@media (prefers-reduced-motion: reduce) {
+  .jini-chat-pane .jini-composer-leading { transition: none; }
 }
 .jini-chat-pane .jini-attachment-tray {
   display: flex;
@@ -254,6 +308,20 @@ export const CHAT_PANE_STYLES = `
   scrollbar-width: thin;
 }
 .jini-chat-pane .jini-attachment-tray:empty { display: none; }
+/*
+ * The sanctioned reuse path (see '.jini-composer-leading''s own doc above and 'AttachmentTray''s
+ * module doc): a host nesting Jini's own tray/chip classes inside the pinned-context zone to match
+ * the real attachment tray's look. Un-does the wrap-and-grow rule directly above -- meant for that
+ * tray's OWN use one zone down, where wrapping onto a second line is fine -- so the OUTER zone's
+ * single scroll axis is the one that wins here instead. The real file-attachment tray is
+ * unaffected: it always renders as this zone's sibling ('Composer.tsx'), never its descendant.
+ */
+.jini-chat-pane .jini-composer-leading .jini-attachment-tray {
+  flex-wrap: nowrap;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+}
 .jini-chat-pane .jini-attachment-chip {
   display: inline-flex;
   align-items: center;
@@ -267,6 +335,14 @@ export const CHAT_PANE_STYLES = `
   border: 1px solid var(--jini-chat-border);
   border-radius: 9px;
   box-shadow: 0 1px 1px rgba(13, 12, 10, .025);
+  animation: jini-chat-chip-in .16s ease both;
+}
+@keyframes jini-chat-chip-in {
+  from { opacity: 0; transform: translateY(3px) scale(.94); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jini-chat-pane .jini-attachment-chip { animation: none; }
 }
 .jini-chat-pane .jini-attachment-chip-body {
   display: flex;
