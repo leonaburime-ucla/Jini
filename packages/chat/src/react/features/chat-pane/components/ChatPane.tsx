@@ -410,6 +410,9 @@ export function ChatPane({
       && !pane.isUploadingAttachments,
     onFiles: pane.addAttachments,
   });
+  // `composerSlots`'s type excludes both `leadingAccessories` and `footerAccessories` (see
+  // `ChatPaneProps.composerSlots`'s doc), so the two explicit keys below are never overwriting a
+  // caller-supplied value — they are the ONLY source for both.
   const slots: ComposerSlots = definedProps({
     ...composerSlots,
     leadingAccessories: leadingAccessory,

@@ -154,8 +154,24 @@ export interface ChatPaneProps {
   attachmentAccept?: string;
   disabled?: boolean;
   runtimePickerPlacement?: RuntimePickerPlacement;
-  composerSlots?: Omit<ComposerSlots, 'footerAccessories'>;
+  /**
+   * `footerAccessories` AND `leadingAccessories` are both excluded here for the same reason:
+   * `ChatPane` itself always owns both ends of the composer's slot row. The footer is always the
+   * `AgentRuntimePicker` (see `slots` assembly below); the leading, pinned-context zone is always
+   * assembled from this interface's own {@link leadingAccessory} prop. A `composerSlots` value
+   * carrying either key used to type-check but silently lose the value at runtime — `ChatPane`'s
+   * `slots` object always overwrote both keys unconditionally — so this `Omit` turns that dead end
+   * into a compile error instead of a debugging session.
+   */
+  composerSlots?: Omit<ComposerSlots, 'footerAccessories' | 'leadingAccessories'>;
   header?: ReactNode;
+  /**
+   * Content for the composer's pinned-context zone — the space above the input that a host
+   * populates with whatever it wants pinned there (selected plugins, MCP servers, anything else),
+   * and which Jini renders and animates as a first-class part of the composer control (see
+   * `CHAT_PANE_STYLES`'s `.jini-composer-leading` rules). `undefined`/`null` renders nothing at
+   * all, so an idle composer reserves no space for this zone.
+   */
   leadingAccessory?: ReactNode;
   footer?: ReactNode;
   className?: string;
