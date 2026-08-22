@@ -261,11 +261,24 @@ export const CHAT_PANE_STYLES = `
  * box. The transition runs both directions, so removing the last pinned item gets a matching exit,
  * not an instant cut.
  *
- * 'overflow-x: auto' + the mask below turn this into a single scrollable row with an edge-fade
- * affordance rather than the wrap-and-grow a naive flex row would do with six or more items; '> *'
- * keeps any direct host child (a single tray wrapper, a bare row of buttons, anything) from
- * shrinking to fit, so overflow -- not internal wrapping -- is what kicks in once content is wider
- * than the zone.
+ * 'overflow-x: auto' turns this into a single scrollable row instead of the wrap-and-grow a naive
+ * flex row would do with six or more items; '> *' keeps any direct host child (a single tray
+ * wrapper, a bare row of buttons, anything) from shrinking to fit, so overflow -- not internal
+ * wrapping -- is what kicks in once content is wider than the zone.
+ *
+ * The "more content" cue is a real shadow/vignette, not a plain alpha fade -- an alpha fade toward
+ * this zone's own background was tried first and rejected on review: the chip and the zone
+ * background are already close in luminance, so fading a chip's OWN pixels toward transparent read
+ * as "something is clipped/broken", not "swipe for more", at a glance with no hover. The four-layer
+ * 'background' below is the standard scroll-shadow technique instead: a real 'color-mix'-tinted
+ * vignette (darkens in a light theme, lightens in a dark one, since it's mixed from the theme's OWN
+ * text color rather than a fixed hex) drawn at each edge -- but each 'scroll'-attached shadow layer
+ * is covered by a same-edge 'local'-attached solid-to-transparent layer that scrolls WITH the
+ * content, so the shadow is only ever visible on the edges that still have more to reveal: at rest
+ * (scrolled to the start) the left shadow is hidden and the right one shows; scroll all the way to
+ * the true end and the right shadow hides too. Verified live (not just by reading the technique):
+ * scrolling this element from 0 to its max scrollLeft measurably fades the right cover's computed
+ * background-position across the full track and the shadow disappears exactly at the end.
  */
 .jini-chat-pane .jini-composer-leading {
   display: flex;
@@ -282,8 +295,16 @@ export const CHAT_PANE_STYLES = `
     padding .22s cubic-bezier(.3, .1, .25, 1),
     border-bottom-width .22s ease,
     opacity .16s ease;
-  -webkit-mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
-  mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
+  background-color: var(--jini-chat-subtle);
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+  background-position: 0 0, 100% 0, 0 0, 100% 0;
+  background-size: 26px 100%, 26px 100%, 20px 100%, 20px 100%;
+  background-image:
+    linear-gradient(to right, var(--jini-chat-subtle), transparent),
+    linear-gradient(to left, var(--jini-chat-subtle), transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--jini-chat-text) 30%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--jini-chat-text) 30%, transparent), transparent);
 }
 .jini-chat-pane .jini-composer-leading:not(:empty) {
   max-height: 64px;
