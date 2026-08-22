@@ -43,6 +43,39 @@ describe('ToolCard', () => {
     expect(screen.getByText('hello')).toBeInTheDocument();
   });
 
+  it('renders an image block from a tool_result.media as an inline <img> on the GenericCard fallback', () => {
+    const { container } = render(
+      <ToolCard
+        use={{ kind: 'tool_use', id: 't2b', name: 'assistant_demo_image', input: {} }}
+        result={{ kind: 'tool_result', toolUseId: 't2b', content: '{"ok":true}', isError: false, media: [{ type: 'image', mimeType: 'image/png', data: 'AAAA' }] }}
+        runSucceeded
+      />,
+    );
+    const img = container.querySelector('.op-media-image');
+    expect(img).toBeInTheDocument();
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,AAAA');
+  });
+
+  it('renders an image block on the DelegatedToolCard path (a dotted Jini tool id) too', () => {
+    const { container } = render(
+      <ToolCard
+        use={{ kind: 'tool_use', id: 't2c', name: 'demo.image', input: {} }}
+        result={{ kind: 'tool_result', toolUseId: 't2c', content: 'ok', isError: false, media: [{ type: 'image', mimeType: 'image/jpeg', data: 'BBBB' }] }}
+        runSucceeded
+      />,
+    );
+    const img = container.querySelector('.op-media-image');
+    expect(img).toBeInTheDocument();
+    expect(img).toHaveAttribute('src', 'data:image/jpeg;base64,BBBB');
+  });
+
+  it('renders no media element at all for a result with none — every existing card stays visually unchanged', () => {
+    const { container } = render(
+      <ToolCard use={{ kind: 'tool_use', id: 't2d', name: 'CustomTool', input: {} }} result={{ kind: 'tool_result', toolUseId: 't2d', content: 'ok', isError: false }} runSucceeded />,
+    );
+    expect(container.querySelector('.op-media')).not.toBeInTheDocument();
+  });
+
   it('shows a spinner status while running with no result yet', () => {
     render(<ToolCard use={{ kind: 'tool_use', id: 't3', name: 'WebFetch', input: { url: 'https://x.test' } }} runStreaming />);
     expect(screen.getByTitle('Running')).toBeInTheDocument();

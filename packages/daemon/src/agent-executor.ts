@@ -136,6 +136,7 @@ import { resolveContinuationTransport } from './continuation/continuation-transp
 import type { RunByteJournal } from './continuation/journal.js';
 import { resultContent } from './delegated-tool-bridge.js';
 import { applyImagePromptDelivery, type ImagePromptDelivery } from './image-prompt-delivery.js';
+import { extractResultMedia, type ToolResultMediaBlock } from './tool-result-media.js';
 import type { RunRetrySideEffectState } from './run/core/index.js';
 import type { ToolExecutor } from './tool-executor.js';
 import type { RunLifecycle } from './run-lifecycle.js';
@@ -1530,17 +1531,30 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       const run: RunRef = { id: runId };
       let content: string;
       let isError: boolean;
+      // Same extraction `delegated-tool-bridge.ts`'s `execute()` runs, kept consistent per
+      // `resultContent`'s own doc ("both callers share one mapping"). This path never ran
+      // `splitToolResultSurfaces` (it has no `mcp-ui` withhold-from-model concept — the flattened
+      // `content` below already carries the whole raw output, a pre-existing, unrelated gap), so
+      // there is no `remainder` to thread back in — only the extracted blocks are used here.
+      let media: readonly ToolResultMediaBlock[] = [];
       try {
         const result = await continuation.toolExecutor.execute(continuation.principal, run, toolUse.name, toolUse.input);
         content = resultContent(result);
         isError = result.status !== 'completed';
+        media = extractResultMedia(result.output).media;
       } catch (error) {
         content = errorMessage(error);
         isError = true;
       }
       await lifecycle.emit(runId, {
         event: 'agent',
-        data: { type: 'tool_result', toolUseId: toolUse.id, content, ...(isError ? { isError: true } : {}) },
+        data: {
+          type: 'tool_result',
+          toolUseId: toolUse.id,
+          content,
+          ...(isError ? { isError: true } : {}),
+          ...(media.length > 0 ? { media } : {}),
+        },
       });
       injectToolResultLine(toolUse.id, content, isError);
     });

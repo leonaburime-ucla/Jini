@@ -88,7 +88,29 @@ export type RunAgentPayload =
   | { type: 'thinking_delta'; delta: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_input_delta'; id: string; name: string; delta: string }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  /**
+   * `media`: typed content blocks a tool result carries ALONGSIDE `content`, for a UI to render
+   * directly — an image, today; more block types later without another wire change. Additive and
+   * optional: a tool that returns none, which is every tool this codebase ships as of this field's
+   * introduction, produces an identical wire event to before.
+   *
+   * Typed `unknown` here for the same reason `mcp-ui`'s `resource` and `a2ui`'s `message` are
+   * (see their own docs below): `@jini-ai/protocol` sits below every feature package and must not
+   * depend sideways on one for a single variant's shape. The real vocabulary
+   * (`{type:'text',text}` / `{type:'image',mimeType,data}`, MCP's own content-block convention —
+   * these blocks come FROM MCP tool results, so reusing its vocabulary beats inventing a fourth
+   * one) is `@jini-ai/daemon`'s `tool-result-media.ts`, and `@jini-ai/chat`'s `AgentEvent` ports
+   * (does not import — see `tools.ts`'s own module doc on why chat-core stays free of a
+   * `@jini-ai/protocol` dependency) the same shape for `ToolCard` to render.
+   *
+   * Deliberately NOT routed through the `mcp-ui` withheld-surface mechanism above: that path exists
+   * for a security property (a UI-only resource must never reach the model — see `mcp-ui`'s doc),
+   * and forcing an image through it would mean building the general MCP-UI host (iframe rendering,
+   * `registerMcpUiSurfaceRenderer`) this field is deliberately scoped to avoid needing yet. `media`
+   * blocks stay on the ordinary `tool_result` event, visible to whatever reads the run stream — the
+   * model still only ever sees `content`, since no driver forwards `media` into a prompt.
+   */
+  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; media?: unknown }
   | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number }
   | { type: 'raw'; line: string }
   /**

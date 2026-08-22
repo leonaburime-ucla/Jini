@@ -9,6 +9,7 @@
 import type { Principal, RunRef, SurfaceEmission } from '@jini-ai/core';
 import type { RunAgentPayload } from '@jini-ai/protocol';
 import type { RunLifecycle } from './run-lifecycle.js';
+import { extractResultMedia } from './tool-result-media.js';
 import { splitToolResultSurfaces } from './tool-result-surfaces.js';
 import type { ToolExecutionResult, ToolExecutor } from './tool-executor.js';
 
@@ -198,6 +199,12 @@ export function createDelegatedToolBridge(options: CreateDelegatedToolBridgeOpti
         );
         settled = true;
 
+        // Recognized media blocks (images) are pulled out FIRST — see `tool-result-media.ts`'s own
+        // doc for why this has to run before the surfaces split below rather than after or beside
+        // it: leaving an image block in place would also route it through the surfaces whitelist
+        // as an unrecognized type, duplicating it into a second, useless `mcp-ui` event.
+        const { remainder, media } = extractResultMedia(executed.output);
+
         // THE MODEL/HUMAN FORK. A tool call's return value is definitionally what the model
         // receives, so a UI resource left inside it is model-visible context no matter what any
         // downstream layer does — `@jini-ai/mcp`'s `okResult()` JSON.stringifies the whole result
@@ -207,9 +214,9 @@ export function createDelegatedToolBridge(options: CreateDelegatedToolBridgeOpti
         // Whitelist, not blacklist: only block types known to be model-safe survive into `output`;
         // everything else is withheld and emitted for the human. See `tool-result-surfaces.ts` for
         // why that direction is load-bearing.
-        const { modelOutput, surfaces } = splitToolResultSurfaces(executed.output);
+        const { modelOutput, surfaces } = splitToolResultSurfaces(remainder);
         const result: ToolExecutionResult =
-          surfaces.length === 0 ? executed : { ...executed, output: modelOutput };
+          surfaces.length === 0 && media.length === 0 ? executed : { ...executed, output: modelOutput };
 
         // Emitted BEFORE `tool_result` so the surface is on screen by the time the transcript shows
         // the call completing — otherwise the human is asked to confirm something not yet visible.
@@ -227,6 +234,7 @@ export function createDelegatedToolBridge(options: CreateDelegatedToolBridgeOpti
             toolUseId,
             content: resultContent(result),
             ...(result.status === 'completed' ? {} : { isError: true }),
+            ...(media.length > 0 ? { media } : {}),
           },
         });
         return result;
