@@ -113,6 +113,10 @@ export {
   deleteRole,
   deletePolicy,
   writePolicyPermission,
+  /** OQ-10 — the inverse of `writePolicyPermission`; without it a policy's permission set was
+   *  append-only (shrinking it meant `deletePolicy` + recreate, which INV-09 blocks once the
+   *  policy is referenced). */
+  removePolicyPermission,
 } from "./admin-crud-service.js";
 
 /**

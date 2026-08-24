@@ -22,6 +22,7 @@ import {
   updateRole,
   updateUser,
   writePolicyPermission,
+  removePolicyPermission,
 } from "../admin-crud-service.js";
 import type { IdentityRepos } from "../ports.js";
 import {
@@ -697,4 +698,190 @@ test("AC-24: WRITE_POLICY_PERMISSION enforces the INV-07 clamp — a non-owner r
       }),
     GrantExceedsIssuerError
   );
+});
+
+// ---------------------------------------------------------------------------
+// REMOVE_POLICY_PERMISSION (OQ-10) — the inverse of WRITE_POLICY_PERMISSION.
+// Before this transition a policy's permission set was append-only: shrinking it meant
+// deletePolicy + recreate, which INV-09 refuses as soon as anything references the policy.
+// ---------------------------------------------------------------------------
+
+test("REMOVE_POLICY_PERMISSION: owner removes one permission and the policy's others survive", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+  const { policy } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "shrinkable-policy" },
+  });
+  const { policyPermission: doomed } = await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: policy.id, permission: "content.write" },
+  });
+  await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: policy.id, permission: "content.read" },
+  });
+
+  await removePolicyPermission({
+    deps,
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: ownerPrincipalId,
+      policyId: policy.id,
+      policyPermissionId: doomed.id,
+    },
+  });
+
+  const rows = await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: policy.id });
+  assert.deepEqual(rows.map((row) => row.permission), ["content.read"]);
+});
+
+test("REMOVE_POLICY_PERMISSION is gated by role.manage — a caller with no grants is refused", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+  const { policy } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "gated-policy" },
+  });
+  const { policyPermission } = await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: policy.id, permission: "content.write" },
+  });
+  await seedBarePrincipal(repos, "no-grant-remover");
+
+  await assert.rejects(
+    () =>
+      removePolicyPermission({
+        deps,
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: "no-grant-remover",
+          policyId: policy.id,
+          policyPermissionId: policyPermission.id,
+        },
+      }),
+    IdentityForbiddenError
+  );
+
+  const rows = await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: policy.id });
+  assert.equal(rows.length, 1, "a refused removal must not have deleted the row");
+});
+
+test("REMOVE_POLICY_PERMISSION refuses a permission id belonging to a DIFFERENT policy", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+  const { policy: victim } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "victim-policy" },
+  });
+  const { policy: other } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "other-policy" },
+  });
+  const { policyPermission } = await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: victim.id, permission: "content.write" },
+  });
+
+  await assert.rejects(
+    () =>
+      removePolicyPermission({
+        deps,
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: ownerPrincipalId,
+          policyId: other.id,
+          policyPermissionId: policyPermission.id,
+        },
+      }),
+    (err: unknown) =>
+      err instanceof IdentityNotFoundError &&
+      err.message === `policy permission '${policyPermission.id}' was not found on policy '${other.id}'`
+  );
+
+  assert.equal(
+    (await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: victim.id })).length,
+    1,
+    "the cross-policy delete must be a no-op on the real owner's rows"
+  );
+});
+
+test("INV-06: REMOVE_POLICY_PERMISSION refuses a built-in or frozen parent policy", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+  await repos.policies.save({
+    id: "frozen-policy-remove",
+    workspaceId: WORKSPACE,
+    name: "frozen",
+    isBuiltin: false,
+    isFrozen: true,
+  });
+
+  await assert.rejects(
+    () =>
+      removePolicyPermission({
+        deps,
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: ownerPrincipalId,
+          policyId: "frozen-policy-remove",
+          policyPermissionId: "any-row",
+        },
+      }),
+    (err: unknown) =>
+      err instanceof IdentityValidationError &&
+      err.message === "cannot remove a permission from a built-in or frozen policy (INV-06/AC-26)"
+  );
+});
+
+test("REMOVE_POLICY_PERMISSION is NOT grant-clamped — de-escalation never needs the issuer to hold the permission", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+  const { policy } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "declamped-policy" },
+  });
+  const { policyPermission } = await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: policy.id, permission: "content.write" },
+  });
+
+  // A caller holding ONLY `role.manage` — deliberately not `content.write`, so writing this same
+  // permission would trip INV-07's GrantExceedsIssuer clamp. Removing it must still succeed:
+  // taking authority away confers nothing, so the clamp does not apply (see the transition's doc).
+  const { policy: managerPolicy } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "role-manager-only" },
+  });
+  await writePolicyPermission({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, policyId: managerPolicy.id, permission: "role.manage" },
+  });
+  const { principal: manager } = await createUser({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, username: "rolemanager", password: "rolemanager-p4ssw0rd!" },
+  });
+  await attachPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: manager.id, policyId: managerPolicy.id },
+  });
+
+  // Guard against a vacuous pass: prove this caller really IS clamped for `content.write`, so the
+  // removal below is genuinely exercising the "removal is exempt" rule rather than succeeding
+  // because the manager happened to hold the permission all along.
+  await assert.rejects(
+    () =>
+      writePolicyPermission({
+        deps,
+        input: { workspaceId: WORKSPACE, callerPrincipalId: manager.id, policyId: policy.id, permission: "content.write" },
+      }),
+    GrantExceedsIssuerError
+  );
+
+  await removePolicyPermission({
+    deps,
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: manager.id,
+      policyId: policy.id,
+      policyPermissionId: policyPermission.id,
+    },
+  });
+
+  assert.deepEqual(await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: policy.id }), []);
 });

@@ -466,6 +466,64 @@ export async function writePolicyPermission(required: {
   return { policyPermission };
 }
 
+/**
+ * `REMOVE_POLICY_PERMISSION` (OQ-10) — the inverse of {@link writePolicyPermission}, and the
+ * transition whose absence made a policy's permission set append-only: the only way to shrink one
+ * was `deletePolicy` + recreate, which INV-09 blocks outright the moment anything references the
+ * policy.
+ *
+ * Gated by `role.manage`, the same permission `writePolicyPermission` and `deletePolicy` require.
+ * Deliberately NOT clamped by `assertGrantClamp` (INV-07): the clamp exists to stop a caller
+ * conferring authority it does not itself hold, and removal confers nothing — it is a strict
+ * de-escalation. Requiring the clamp here would mean an admin who cannot grant `content.write`
+ * also cannot take it back, which is the wrong direction for a safety rule. This is strictly less
+ * powerful than the already-unclamped `deletePolicy`, which drops EVERY permission row the policy
+ * has.
+ *
+ * Refuses a built-in or `is_frozen` parent policy (INV-06/AC-26), checked BEFORE the row lookup so
+ * a frozen policy reports why it is frozen rather than leaking whether the row exists. A row that
+ * is absent — or that exists but belongs to a DIFFERENT policy — is one and the same
+ * `IdentityNotFoundError`: membership is proven from `listByPolicyId`'s result, so a caller can
+ * never delete across a policy boundary by guessing an id.
+ *
+ * @complexity O(n) in the policy's own permission-row count (one `listByPolicyId`) — bounded by the
+ * same operator-managed-roster assumption every other identity list call makes.
+ */
+export async function removePolicyPermission(required: {
+  deps: AuthServiceDeps;
+  input: { workspaceId: UUID; callerPrincipalId: UUID; policyId: UUID; policyPermissionId: UUID };
+}): Promise<void> {
+  const { deps, input } = required;
+
+  await assertCallerHasAnyPermission({
+    deps,
+    workspaceId: input.workspaceId,
+    callerPrincipalId: input.callerPrincipalId,
+    permissions: ["role.manage"],
+  });
+
+  const policy = await deps.repos.policies.findById({ workspaceId: input.workspaceId, id: input.policyId });
+  if (!policy) throw new IdentityNotFoundError(`policy '${input.policyId}' was not found`);
+  if (policy.isBuiltin || policy.isFrozen) {
+    throw new IdentityValidationError(
+      "cannot remove a permission from a built-in or frozen policy (INV-06/AC-26)"
+    );
+  }
+
+  const rows = await deps.repos.policyPermissions.listByPolicyId({
+    workspaceId: input.workspaceId,
+    policyId: input.policyId,
+  });
+  const target = rows.find((row) => row.id === input.policyPermissionId);
+  if (!target) {
+    throw new IdentityNotFoundError(
+      `policy permission '${input.policyPermissionId}' was not found on policy '${input.policyId}'`
+    );
+  }
+
+  await deps.repos.policyPermissions.delete({ workspaceId: input.workspaceId, id: target.id });
+}
+
 /** True iff `principalId` holds the owner wildcard `*` (unconstrained) in its effective set. */
 async function principalHoldsOwnerWildcard(required: {
   deps: AuthServiceDeps;
