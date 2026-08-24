@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useT } from '../../../i18n/index.js';
 import { Icon } from '../../../../react/components/Icon.js';
 import type { MediaProvidersPort } from '../../ports.js';
@@ -55,6 +55,11 @@ export interface MediaProvidersTabProps {
   /** Host-persisted local edits from before this tab mounted. See
    *  `useMediaProvidersTab`'s doc for how this feeds the first-load merge. */
   initialProviders?: MediaProviderMap;
+  /** Provider ids that must render first, in the order given, ahead of the
+   *  usual configured/alphabetical grouping — see `sortProvidersByConfigured`'s
+   *  own doc. Optional; omitted (every pre-existing caller) keeps the prior
+   *  configured-first/alphabetical order unchanged. */
+  pinnedProviderIds?: readonly string[];
   labels?: MediaProvidersTabLabels;
 }
 
@@ -71,6 +76,7 @@ export function MediaProvidersTab({
   port,
   catalog = DEFAULT_MEDIA_PROVIDER_CATALOG,
   initialProviders,
+  pinnedProviderIds,
   labels,
 }: MediaProvidersTabProps) {
   const t = useT();
@@ -116,7 +122,12 @@ export function MediaProvidersTab({
     });
   };
 
-  const orderedCatalog = sortProvidersByConfigured(catalog, providers);
+  const orderedCatalog = sortProvidersByConfigured(catalog, providers, pinnedProviderIds);
+  // Membership check against the ALREADY-ORDERED result, not `pinnedProviderIds` directly: a
+  // pinned id absent from `catalog` never appears in `orderedCatalog` either (see
+  // `sortProvidersByConfigured`'s own "silently skipped" doc), so this stays correct without
+  // re-deriving which pinned ids actually resolved to a real card.
+  const pinnedIdSet = new Set(pinnedProviderIds ?? []);
   const hasPendingChanges = pendingProviderIds.size > 0;
   // Save writes every provider at once, so ONE unacceptable endpoint blocks the
   // whole button rather than being silently persisted alongside the good ones.
@@ -149,7 +160,7 @@ export function MediaProvidersTab({
       {!hasAnyConfigured ? <p className="jini-hint">{emptyStateLabel}</p> : null}
 
       <div className="jini-media-provider-list">
-        {orderedCatalog.map((option) => {
+        {orderedCatalog.map((option, index) => {
           const entry = providers[option.id] ?? {};
           const clearable = isEntryPresent(entry);
           const saved = isMarkerOnlyEntry(entry);
@@ -162,9 +173,17 @@ export function MediaProvidersTab({
           const effectiveBaseUrl = resolveProviderBaseUrl(entry, option.defaultBaseUrl);
           const baseUrlInvalid = isProviderBaseUrlInvalid(entry);
           const modelListId = `jini-media-provider-models-${option.id}`;
+          // A divider renders once, directly above the first UNpinned card — i.e. exactly at the
+          // pinned/rest boundary `sortProvidersByConfigured` produced. Never renders above index 0
+          // (nothing pinned, or the pinned card IS index 0 with no boundary yet) and never when
+          // every card is pinned (no "rest" to separate from).
+          const previousOption = index > 0 ? orderedCatalog[index - 1] : undefined;
+          const showDividerBefore = !pinnedIdSet.has(option.id) && previousOption !== undefined && pinnedIdSet.has(previousOption.id);
 
           return (
-            <div className="jini-media-provider-card" key={option.id}>
+            <Fragment key={option.id}>
+              {showDividerBefore ? <hr className="jini-media-provider-divider" /> : null}
+              <div className="jini-media-provider-card">
               <div className="jini-media-provider-card-head">
                 <strong>{option.label}</strong>
                 {saved ? (
@@ -254,7 +273,8 @@ export function MediaProvidersTab({
               ) : !rawBaseUrl.trim() && effectiveBaseUrl ? (
                 <span className="jini-field-hint">{t(baseUrlDefaultHintTemplate, { url: effectiveBaseUrl })}</span>
               ) : null}
-            </div>
+              </div>
+            </Fragment>
           );
         })}
       </div>

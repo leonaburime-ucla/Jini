@@ -795,6 +795,27 @@ a.jini-button {
   background: transparent;
 }
 
+/* A host app's own global `button:disabled` reset (Tovu's admin: `styles.css`'s burnt-orange
+   `color-mix` tint) is a type selector + pseudo-class, (0,1,1) specificity — it outranks the
+   class-only rule above for the SAME property, so a disabled ghost button would otherwise show
+   that host's accent tint behind it instead of staying transparent (confirmed live: the Media
+   providers tab's disabled "Clear" button). `:disabled` gives this rule the matching (0,1,1)
+   specificity it needs to win regardless of which host renders it — a ghost button has no fill in
+   any state, disabled included, and that contract shouldn't depend on what a consuming app's own
+   button reset happens to do.
+
+   `color` needs the same treatment, not just `background`: Tovu's global rule sets BOTH as a
+   matched pair (a near-white "ink" meant to sit on ITS OWN peach fill), so resetting only the
+   background left white-on-white invisible text — confirmed live, not a hypothetical. `.jini-
+   button:disabled` (above, line ~150) already dims via `opacity: 0.55`; restoring the ordinary
+   `var(--jini-text)` here just gives that opacity something visible to dim, same as every other
+   disabled `.jini-button` variant that doesn't hit this host-specific collision. */
+.jini-btn-ghost:disabled,
+.jini-button-ghost:disabled {
+  background: transparent;
+  color: var(--jini-text);
+}
+
 /* Searchable model select (gap 4) — thin wrapper around the shared
    `CustomSelect` primitive; the wrapper itself carries no layout beyond
    filling its `.jini-field`. */
@@ -3343,6 +3364,17 @@ button.connector-action.is-loading { cursor: wait; }
   border-radius: var(--jini-radius-sm);
 }
 
+/* Separates a pinned provider (`MediaProvidersTabProps.pinnedProviderIds`) from the rest of the
+   configured-first/alphabetical list below it — a plain `<hr>` rather than a styled `<div>` since
+   it carries no content, just a boundary; a flex child of `.jini-media-provider-list` so it needs
+   its own margin reset (the browser default `hr` margin would otherwise fight that list's own
+   `gap`, doubling the visual space around it). */
+.jini-media-provider-divider {
+  margin: 2px 0;
+  border: none;
+  border-top: 1px solid var(--jini-border);
+}
+
 .jini-media-provider-card-head {
   display: flex;
   align-items: center;
@@ -3389,8 +3421,19 @@ button.connector-action.is-loading { cursor: wait; }
   background: var(--jini-bg-subtle);
 }
 
+/* `top: 0; left: 0` is a BUG FIX, not cosmetic — do not drop it. Without an explicit offset,
+   `position: absolute` resolves against the element's STATIC position, and when every ancestor up
+   the chain is `position: static` (true for every current caller — none of `.jini-media-provider-
+   field`'s ancestors are positioned except the one `--secret` field's own wrapper), the containing
+   block falls back to the *initial containing block* (the whole document). A static position deep
+   in a long page can then inflate the document's scrollHeight well past its real content — the
+   exact defect class the consuming host's own `.visually-hidden` was fixed for after a "bunch of
+   white space" incident; pinning to the containing block's origin here closes it for every current
+   and future `.jini-sr-only` caller instead of leaving it latent. */
 .jini-sr-only {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   padding: 0;

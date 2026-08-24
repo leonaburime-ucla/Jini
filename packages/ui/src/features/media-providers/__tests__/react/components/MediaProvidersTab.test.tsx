@@ -25,6 +25,36 @@ describe('MediaProvidersTab', () => {
     expect(headings.indexOf('Bravo Video')).toBeLessThan(headings.indexOf('Alpha Images'));
   });
 
+  it('pinnedProviderIds renders that provider first even though it is unconfigured and the other one is configured', async () => {
+    const port = createFakeMediaProvidersPort({ providers: { bravo: { apiKeyConfigured: true, apiKeyTail: '9999' } } });
+    render(<MediaProvidersTab port={port} catalog={CATALOG} pinnedProviderIds={['alpha']} />);
+    await screen.findByText('Bravo Video');
+
+    const headings = screen.getAllByText(/Alpha Images|Bravo Video/).map((el) => el.textContent);
+    expect(headings.indexOf('Alpha Images')).toBeLessThan(headings.indexOf('Bravo Video'));
+  });
+
+  it('a divider separates the pinned provider from the rest of the list', async () => {
+    const port = createFakeMediaProvidersPort();
+    const { container } = render(<MediaProvidersTab port={port} catalog={CATALOG} pinnedProviderIds={['alpha']} />);
+    await screen.findByText('Bravo Video');
+    expect(container.querySelectorAll('.jini-media-provider-divider')).toHaveLength(1);
+  });
+
+  it('no divider renders when pinnedProviderIds is omitted (every pre-existing caller)', async () => {
+    const port = createFakeMediaProvidersPort();
+    const { container } = render(<MediaProvidersTab port={port} catalog={CATALOG} />);
+    await screen.findByText('Bravo Video');
+    expect(container.querySelectorAll('.jini-media-provider-divider')).toHaveLength(0);
+  });
+
+  it('no divider renders when every catalog entry is pinned — nothing to separate from', async () => {
+    const port = createFakeMediaProvidersPort();
+    const { container } = render(<MediaProvidersTab port={port} catalog={CATALOG} pinnedProviderIds={['alpha', 'bravo']} />);
+    await screen.findByText('Bravo Video');
+    expect(container.querySelectorAll('.jini-media-provider-divider')).toHaveLength(0);
+  });
+
   it('falls back to DEFAULT_MEDIA_PROVIDER_CATALOG when no catalog prop is passed', async () => {
     const port = createFakeMediaProvidersPort();
     render(<MediaProvidersTab port={port} />);

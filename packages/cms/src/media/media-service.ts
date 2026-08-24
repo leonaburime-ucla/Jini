@@ -83,12 +83,24 @@ export const DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MiB
  * SVG must be sanitized at ingest before it's safe to store;
  * that sanitizer is not built in this pass, so SVG upload is rejected rather
  * than accepted unsanitized.
+ *
+ * `video/mp4`/`video/webm` (owner-directed, 2026-08-24): the two formats
+ * `content-type-sniffer.ts` already recognizes by magic bytes. Unlike the four
+ * image types above, an accepted video is never re-encoded — there is no
+ * `TransformFormat` for video (`transform-types.ts`'s union is image-only), so
+ * a video asset's public URL bypasses the transform/rendition pipeline
+ * entirely and serves the original bytes as-is (host concern; see Tovu's
+ * `routes/site/media-rendition.ts`). This widens the SAME advisory,
+ * client-declared-string check item 4 above already discloses as untrusted —
+ * no new ingress hardening was added for video.
  */
 export const DEFAULT_ALLOWED_MIME_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/gif",
+  "video/mp4",
+  "video/webm",
 ]);
 
 /**
