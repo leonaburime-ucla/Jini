@@ -190,11 +190,79 @@ describe('delegatedToolExecuteRoute.handle', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('returns a denied ToolExecutionResult as a normal 200-shaped ok() result, not an error', async () => {
+  it('maps a denied ToolExecutionResult to a 403 TOOL_OPERATION_DENIED error, mirroring db-ops.ts', async () => {
     const deps = makeDeps();
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
     const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'forbidden' }, deps);
-    expect(result).toEqual({ ok: true, value: { result: expect.objectContaining({ status: 'denied' }) } });
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'TOOL_OPERATION_DENIED', message: 'this operation was denied by policy' },
+    });
+  });
+
+  it('maps a confirmation-denied ToolExecutionResult to a 403 TOOL_OPERATION_DENIED error', async () => {
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'confirm-me', requiresConfirmation: true },
+      policy: { authorize: () => 'allow' },
+      handler: async () => 'should not run',
+    });
+    const toolExecutor = createToolExecutor({ registry, delegate: { onConfirm: () => 'deny' } });
+    const deps = makeDeps({ toolExecutor });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'confirm-me' }, deps);
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'TOOL_OPERATION_DENIED', message: 'this operation was denied during confirmation' },
+    });
+  });
+
+  it('maps a failed ToolExecutionResult to a SEC-005-redacted INTERNAL_ERROR and reports it via onInternalError', async () => {
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'flaky' },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        throw new Error('boom: secret detail');
+      },
+    });
+    const toolExecutor = createToolExecutor({ registry });
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ toolExecutor, onInternalError });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'flaky' }, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
+    }
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+    const context = onInternalError.mock.calls[0]![0];
+    expect(context.source).toBe('delegated-tool-execute');
+    expect(context.error).toBe('boom: secret detail');
+  });
+
+  it('maps a timed-out ToolExecutionResult to a SEC-005-redacted INTERNAL_ERROR', async () => {
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'slow', timeoutMs: 10 },
+      policy: { authorize: () => 'allow' },
+      handler: async (ctx) => {
+        await new Promise((resolve, reject) => {
+          ctx.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    });
+    const toolExecutor = createToolExecutor({ registry });
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ toolExecutor, onInternalError });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'slow' }, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('INTERNAL_ERROR');
+    }
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+    expect(onInternalError.mock.calls[0]![0].error).toBe('timed-out');
   });
 
   it('SEC-005: redacts an unregistered toolId (a ToolExecutor routing error) to a generic INTERNAL_ERROR and reports it via onInternalError', async () => {
@@ -252,9 +320,9 @@ describe('delegatedToolExecuteRoute.handle', () => {
     controller.abort();
 
     const result = await resultPromise;
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.result.status).toBe('cancelled');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toEqual({ code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) });
     }
   });
 

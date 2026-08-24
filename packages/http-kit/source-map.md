@@ -2104,3 +2104,11 @@ Not touched: `@jini-ai/agentic`'s `gen-ui/` module (the six `GenUi*` event kinds
 `createGenUiEncoder`) — this route was its only real caller in the repo, but removing the encoder
 itself is a bigger, separate call this change deliberately did not make. Flagged in that package's own
 source-map entry for whoever picks that question up.
+
+## 2026-08-23 — `delegated-tools.ts`: real HTTP status codes instead of always-200
+
+`toolExecutionResultToApiResult` no longer wraps every `ToolExecutionResult.status` in a 200
+response. Only `completed` still returns `200 {result}`; `denied`/`confirmation-denied` now return
+`403 TOOL_OPERATION_DENIED` and `timed-out`/`cancelled`/`failed` now return a SEC-005-redacted `500
+INTERNAL_ERROR`, mirroring `db-ops.ts`'s existing status-mapping convention for the same
+`ToolExecutionResult` union rather than inventing a second one.

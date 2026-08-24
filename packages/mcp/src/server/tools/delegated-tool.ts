@@ -98,7 +98,7 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
   return {
     name: 'execute_delegated_tool',
     description:
-      'Execute a Jini-registered tool (never an agent-vendor-specific tool name) against the current run, routed through the daemon\'s ToolExecutor deny-by-default gate — the same authorization/confirmation/audit path every other tool-execution mechanism in this host uses. Returns {result}, a ToolExecutionResult: {status, output?, truncated?, error?} where status is one of completed|denied|confirmation-denied|timed-out|cancelled|failed.',
+      'Execute a Jini-registered tool (never an agent-vendor-specific tool name) against the current run, routed through the daemon\'s ToolExecutor deny-by-default gate — the same authorization/confirmation/audit path every other tool-execution mechanism in this host uses. On a completed outcome, returns {result} normally. Any other outcome surfaces as an HTTP error the caller must catch, not a status field in a 200 body: denied/confirmation-denied raise a 403 TOOL_OPERATION_DENIED; timed-out/cancelled/failed raise a 500 INTERNAL_ERROR.',
     inputSchema: {
       type: 'object',
       properties: {

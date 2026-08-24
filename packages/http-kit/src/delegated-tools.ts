@@ -114,14 +114,41 @@ function parseDelegatedToolExecute(input: RouteInputContext): Result<DelegatedTo
 }
 
 /**
+ * Maps a settled `ToolExecutionResult` to the wire `Result` — the same status mapping
+ * `db-ops.ts`'s `toolResultToApiResult` establishes for this identical `ToolExecutionResult`
+ * union, kept consistent here rather than reinvented: `completed` → `200 {result}`,
+ * `denied`/`confirmation-denied` → `403 TOOL_OPERATION_DENIED`, `timed-out`/`cancelled`/`failed`
+ * → a SEC-005-redacted `500 INTERNAL_ERROR` (the real status/error goes to `onInternalError`,
+ * never the wire).
+ */
+function toolExecutionResultToApiResult(
+  deps: DelegatedToolsHttpDeps,
+  runId: string,
+  toolId: string,
+  result: ToolExecutionResult,
+): Result<DelegatedToolExecuteResponse> {
+  switch (result.status) {
+    case 'completed':
+      return ok({ result });
+    case 'denied':
+      return err(createApiError('TOOL_OPERATION_DENIED', 'this operation was denied by policy'));
+    case 'confirmation-denied':
+      return err(createApiError('TOOL_OPERATION_DENIED', 'this operation was denied during confirmation'));
+    case 'timed-out':
+    case 'cancelled':
+    case 'failed':
+      return err(reportInternalError(deps, 'delegated-tool-execute', result.error ?? result.status, runId, toolId));
+  }
+}
+
+/**
  * `POST /api/delegated-tool-calls` — executes one delegated tool call against an already-started
- * run. Returns `200 {result}` for every legitimate business outcome (`completed`, `denied`,
- * `confirmation-denied`, `timed-out`, `cancelled`, `failed` — `ToolExecutionResult`'s own status
- * union), matching `ToolExecutor`'s own design: those are business-domain outcomes, not
- * transport errors. Only a genuinely unexpected throw (an unregistered `toolId` — a
+ * run. Maps `ToolExecutionResult.status` to the HTTP response via `toolExecutionResultToApiResult`
+ * above — mirroring `db-ops.ts`'s precedent for the identical status union rather than treating
+ * every business outcome as a `200`. A genuinely unexpected throw (an unregistered `toolId` — a
  * routing/programming error per `ToolExecutor.execute`'s own contract — or a race where the run
  * became terminal between this route's existence check and the bridge's first emitted event)
- * reaches the SEC-005 redaction path below.
+ * reaches the same SEC-005 redaction path.
  */
 export const delegatedToolExecuteRoute = defineJsonRoute<
   DelegatedToolExecuteRequest,
@@ -159,7 +186,7 @@ export const delegatedToolExecuteRoute = defineJsonRoute<
         input: input.input,
         ...(signal !== undefined ? { signal } : {}),
       });
-      return ok({ result });
+      return toolExecutionResultToApiResult(deps, input.runId, input.toolId, result);
     } catch (error) {
       return err(reportInternalError(deps, 'delegated-tool-execute', error, input.runId, input.toolId));
     }
