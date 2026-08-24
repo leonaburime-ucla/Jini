@@ -38,7 +38,12 @@ describe('antigravityAgentDef shape', () => {
     expect(antigravityAgentDef.id).toBe('antigravity');
     expect(antigravityAgentDef.bin).toBe('agy');
     expect(antigravityAgentDef.supportsCustomModel).toBe(false);
-    expect(antigravityAgentDef.promptViaStdin).toBe(true);
+    // agy has no stdin prompt path under its default `--input-format text`;
+    // the prompt rides argv as `-p`'s value, so this def must stay
+    // argv-budgeted. If `promptViaStdin` ever comes back, the driver stops
+    // putting the prompt where the CLI actually reads it.
+    expect('promptViaStdin' in antigravityAgentDef).toBe(false);
+    expect(antigravityAgentDef.maxPromptArgBytes).toBe(30_000);
     expect(antigravityAgentDef.streamFormat).toBe('plain');
     expect(antigravityAgentDef.fallbackModels[0]?.id).toBe('default');
   });
@@ -495,12 +500,38 @@ describe('antigravityAgentDef.buildArgs', () => {
     return path.join(dir, 'settings.json');
   }
 
-  it('writes the model selection and returns the base print-mode argv when a concrete model is chosen', () => {
+  // The regression this whole describe block exists for: `-p` is a Go
+  // flag-package flag whose VALUE is the prompt. The previous argv was
+  // `['-p', '-']` — a literal one-character prompt of `-` — which agy ran
+  // happily (exit 0) while never reading the real prompt, so every turn came
+  // back as a generic "How can I assist you today?" greeting sourced from
+  // agy's own project memory instead of an answer. Asserting the prompt is
+  // present in argv is what makes that failure visible from a unit test.
+  it('passes the prompt as the value of -p', () => {
+    const args = antigravityAgentDef.buildArgs('Reply with PONG', [], [], {}, {});
+    expect(args).toEqual(['-p', 'Reply with PONG']);
+  });
+
+  it('never emits a bare `-` stdin sentinel in place of the prompt', () => {
+    const args = antigravityAgentDef.buildArgs('Reply with PONG', [], [], {}, {
+      agentLogFilePath: '/tmp/agy.log',
+    });
+    expect(args).not.toContain('-');
+    expect(args[args.indexOf('-p') + 1]).toBe('Reply with PONG');
+  });
+
+  it('keeps a multi-line transcript prompt intact as a single argv entry', () => {
+    const transcript = 'user: first\n\nassistant: second\n\nuser: third';
+    const args = antigravityAgentDef.buildArgs(transcript, [], [], {}, {});
+    expect(args).toEqual(['-p', transcript]);
+  });
+
+  it('writes the model selection and returns the print-mode argv when a concrete model is chosen', () => {
     const settingsPath = tempSettingsPath();
     const args = antigravityAgentDef.buildArgs('hi', [], [], { model: 'Gemini 3.1 Pro (High)' }, {
       antigravitySettingsPath: settingsPath,
     });
-    expect(args).toEqual(['-p', '-']);
+    expect(args).toEqual(['-p', 'hi']);
     expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual({ model: 'Gemini 3.1 Pro (High)' });
   });
 
@@ -516,14 +547,30 @@ describe('antigravityAgentDef.buildArgs', () => {
     expect(existsSync(settingsPath)).toBe(false);
   });
 
-  it('prepends --log-file <path> before -p - when agentLogFilePath is set', () => {
+  // Order matters for real: everything after `-p` is consumed as its value,
+  // so `--log-file` has to come first or the log path becomes part of the
+  // prompt and the diagnostic log is never written.
+  it('prepends --log-file <path> before -p when agentLogFilePath is set', () => {
     const args = antigravityAgentDef.buildArgs('hi', [], [], {}, { agentLogFilePath: '/tmp/agy.log' });
-    expect(args).toEqual(['--log-file', '/tmp/agy.log', '-p', '-']);
+    expect(args).toEqual(['--log-file', '/tmp/agy.log', '-p', 'hi']);
   });
 
   it('omits --log-file entirely when agentLogFilePath is absent', () => {
     const args = antigravityAgentDef.buildArgs('hi', [], [], {}, {});
-    expect(args).toEqual(['-p', '-']);
+    expect(args).toEqual(['-p', 'hi']);
+  });
+
+  // agy resumes a prior conversation only when explicitly asked
+  // (`-c`/`--continue`, or `--conversation <id>`). Never emitting either is
+  // what keeps each Runner-initiated turn a genuinely fresh conversation.
+  it('never asks agy to continue or resume a conversation', () => {
+    const args = antigravityAgentDef.buildArgs('hi', [], [], { model: 'Gemini 3.1 Pro (High)' }, {
+      antigravitySettingsPath: tempSettingsPath(),
+      agentLogFilePath: '/tmp/agy.log',
+    });
+    for (const resumeFlag of ['-c', '--continue', '--conversation']) {
+      expect(args).not.toContain(resumeFlag);
+    }
   });
 
   it('defaults extraAllowedDirs/options/runtimeContext when omitted entirely', () => {

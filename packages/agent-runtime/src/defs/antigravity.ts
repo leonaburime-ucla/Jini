@@ -337,7 +337,7 @@ export const antigravityAgentDef = {
   // composed in server.ts gives a second line of defense for weak
   // plain-stream models like Gemini 3.5 Flash.
   buildArgs: (
-    _prompt,
+    prompt,
     _imagePaths,
     _extra = [],
     options = {},
@@ -349,18 +349,18 @@ export const antigravityAgentDef = {
         runtimeContext.antigravitySettingsPath,
       );
     }
-    // We invoke agy via `-p -` (print mode + stdin sentinel), NOT
-    // `chat -`. Verified against `agy --help` on v1.0.3 — the
-    // `Available subcommands` list is `changelog / help / install /
-    // plugin / update`, and `chat` is NOT among them. `-p` is the
-    // documented print-mode flag (`Short alias for --print`) and
-    // `agy -p -` reads the prompt from stdin. The looper reviewer
-    // bot's environment runs a different agy build that may have
-    // renamed the entry point; until upstream confirms a stable
-    // headless subcommand (see google-antigravity/antigravity-cli#119)
-    // and the change actually ships in the auto-update channel that
-    // packaged OD users get, `-p -` is the contract that actually
-    // produces a print-mode reply on the installed CLI.
+    // `-p` is a Go `flag`-package flag that TAKES THE PROMPT AS ITS VALUE,
+    // not a boolean switch followed by a positional prompt, and agy has no
+    // stdin sentinel under the default `--input-format text`. Verified
+    // against the installed agy v1.1.19:
+    //   - `agy -p` alone           -> `flag needs an argument: -p`
+    //   - `echo <prompt> | agy -p -` -> runs, but the prompt is the literal
+    //     one-character string `-`; the piped stdin is never read, and agy
+    //     answers the empty ask with a generic greeting drawn from whatever
+    //     project memory it has ("How can I assist you today?").
+    //   - `agy -p '<prompt>'`      -> the prompt actually lands.
+    // So the prompt rides argv as `-p`'s value. That is also why this def is
+    // argv-budgeted (`maxPromptArgBytes` below) rather than `promptViaStdin`.
     const args: string[] = [];
     // Always opt into `--log-file` when the daemon supplied a path so
     // it can post-exit grep for the actual upstream failure shape
@@ -369,19 +369,22 @@ export const antigravityAgentDef = {
     // never echoes those errors on stdout. See server.ts empty-output
     // guard for the consumer.
     //
-    // Flag order is load-bearing on agy v1.0.3: `agy -p --log-file
-    // /tmp/x -` runs successfully but leaves /tmp/x empty, while `agy
-    // --log-file /tmp/x -p -` captures the diagnostic log, including
-    // `Propagating selected model override to backend: label="<model>"`
-    // and auth/quota failures.
+    // Flag order is load-bearing: `--log-file` must precede `-p`, since
+    // everything after `-p` is consumed as its value. `agy --log-file /tmp/x
+    // -p '<prompt>'` captures the diagnostic log, including `Propagating
+    // selected model override to backend: label="<model>"` and auth/quota
+    // failures.
     if (runtimeContext.agentLogFilePath) {
       args.push('--log-file', runtimeContext.agentLogFilePath);
     }
-    args.push('-p');
-    args.push('-');
+    args.push('-p', prompt);
     return args;
   },
-  promptViaStdin: true,
+  // agy takes its prompt on argv (see `buildArgs`), so this def is
+  // argv-budgeted like the other plain-stream argv adapters (aider,
+  // deepseek) rather than `promptViaStdin`. Without one of these three
+  // fields `assessAgentExecutorCompatibility` rejects the def outright.
+  maxPromptArgBytes: 30_000,
   streamFormat: 'plain',
   // `buildArgs` above already consumes `runtimeContext.agentLogFilePath` when
   // the caller supplies one; this is what asks it to. Two distinct things
