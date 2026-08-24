@@ -457,6 +457,55 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: 'Attaching files…' })).toBeDisabled();
   });
 
+  it(
+    'stages a file pasted directly into the textarea — a screenshot or a Finder-copied video ' +
+      'carries no text, so without this the owner-reported symptom is total silence: no chip, no ' +
+      'network call, nothing',
+    () => {
+      const onFiles = vi.fn();
+      render(<DiscoveryHarness attachmentPicker={{ onFiles, accept: 'image/*' }} />);
+      const textarea = screen.getByRole('textbox');
+      const file = new File(['image'], 'clipboard-image.png', { type: 'image/png' });
+      const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(pasteEvent, 'clipboardData', { value: { files: [file] } });
+
+      act(() => {
+        textarea.dispatchEvent(pasteEvent);
+      });
+
+      expect(onFiles).toHaveBeenCalledWith([file]);
+    },
+  );
+
+  it('lets an ordinary text paste through untouched when the clipboard carries no files', async () => {
+    const onFiles = vi.fn();
+    render(<DiscoveryHarness attachmentPicker={{ onFiles }} />);
+    const textarea = screen.getByRole('textbox');
+    await userEvent.type(textarea, 'hello ');
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, 'clipboardData', { value: { files: [] } });
+
+    act(() => {
+      textarea.dispatchEvent(pasteEvent);
+    });
+
+    expect(onFiles).not.toHaveBeenCalled();
+  });
+
+  it('ignores a file paste when no attachmentPicker is wired, without throwing', () => {
+    render(<ComposerHarness onSend={() => {}} />);
+    const textarea = screen.getByRole('textbox');
+    const file = new File(['image'], 'clipboard-image.png', { type: 'image/png' });
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, 'clipboardData', { value: { files: [file] } });
+
+    expect(() => {
+      act(() => {
+        textarea.dispatchEvent(pasteEvent);
+      });
+    }).not.toThrow();
+  });
+
   it('reports a rejected attachment host effect without leaving an unhandled rejection', async () => {
     const failure = new Error('attachment host failed');
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});

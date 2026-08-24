@@ -11,7 +11,7 @@
  * the slots a host supplies; it does not itself know what a "library
  * picker" or "session mode" is.
  */
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { RemixIcon } from '@jini-ai/ui';
 import { useT } from '../hooks/context.js';
 import { AttachmentTray } from './AttachmentTray.js';
@@ -290,6 +290,25 @@ export function Composer({
     }
   }
 
+  /**
+   * A screenshot or a Finder-copied video pasted into the textarea previously vanished with no
+   * feedback: the browser's default paste has nothing to do with a `File` on the clipboard (it only
+   * inserts `text/plain`, which a file-only clipboard entry never carries), so the keystroke was a
+   * silent no-op — no chip, no `/api/attachments` call, nothing. This is the paste-side counterpart
+   * to `handleAttachmentChange` (the file-input path) and `useChatPaneFileDrop` (the drag-and-drop
+   * path); all three now reach `attachmentPicker.onFiles` the same way.
+   *
+   * `preventDefault` only when `files.length > 0` — an ordinary text paste (the overwhelmingly
+   * common case) is left to the browser's own default handling untouched.
+   */
+  function handleAttachmentPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!attachmentPicker) return;
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    runComposerHostEffect('attachmentPicker.onFiles', () => attachmentPicker.onFiles(files));
+  }
+
   return (
     <div className="jini-composer">
       {slots?.leadingAccessories ? <div className="jini-composer-leading">{slots.leadingAccessories}</div> : null}
@@ -306,6 +325,7 @@ export function Composer({
           setDismissedSlashDraft(null);
         }}
         onKeyDown={handleKeyDown}
+        onPaste={handleAttachmentPaste}
         aria-controls={slashOpen ? 'jini-composer-slash-menu' : undefined}
         aria-expanded={slashOpen}
         aria-activedescendant={
