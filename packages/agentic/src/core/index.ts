@@ -59,6 +59,8 @@ export {
 
 export { agentHandle, type AgentHandleOptions, type AgentHandleProps } from './handle.js';
 
+export { buildAgentListHandles } from './list-handles.js';
+
 export {
   findFieldFillRefusal,
   findFieldReadRefusal,

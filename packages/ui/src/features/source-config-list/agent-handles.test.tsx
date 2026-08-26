@@ -4,12 +4,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { AGENT_ELEMENT_ATTRIBUTE, isValidElementHandle } from '@jini-ai/agentic';
 import {
   sourceConfigActionHandle,
+  sourceConfigAddFormHandle,
   sourceConfigAgentProps,
   sourceConfigFieldHandle,
+  sourceConfigItemHandles,
 } from './agent-handles.js';
+import { validateSourceDraft } from './rules.js';
 import { SourceConfigAddForm } from './react/components/SourceConfigAddForm.js';
 import { SourceConfigField } from './react/components/SourceConfigField.js';
 import { SourceConfigItemCard } from './react/components/SourceConfigItemCard.js';
+import { SourceConfigListView } from './react/components/SourceConfigListView.js';
 import { SourceConfigTestControl } from './react/components/SourceConfigTestControl.js';
 import type { SourceConfigListCapabilities } from './react/hooks/useSourceConfigList.js';
 import type { SourceConfigItem, SourceFieldSpec } from './types.js';
@@ -72,6 +76,33 @@ function itemCardProps(overrides: Partial<Parameters<typeof SourceConfigItemCard
   } as Parameters<typeof SourceConfigItemCard>[0];
 }
 
+function listViewProps(overrides: Partial<Parameters<typeof SourceConfigListView>[0]> = {}) {
+  const values = { url: '' };
+  return {
+    fieldSpecs: [URL_FIELD],
+    sources: [] as SourceConfigItem[],
+    loading: false,
+    capabilities: FULL_CAPS,
+    pendingKeys: new Set<string>(),
+    testResults: {},
+    addForm: {
+      values,
+      validation: validateSourceDraft([URL_FIELD], values),
+      submitAttempted: false,
+      submitting: false,
+      onFieldChange: vi.fn(),
+      onTrustChange: vi.fn(),
+      onSubmit: vi.fn(),
+    },
+    onRefresh: vi.fn(),
+    onRemove: vi.fn(),
+    onTrustChange: vi.fn(),
+    onTest: vi.fn(),
+    onUpdate: vi.fn(),
+    ...overrides,
+  } as Parameters<typeof SourceConfigListView>[0];
+}
+
 describe('handle derivation', () => {
   it('names an action directly under the base', () => {
     expect(sourceConfigActionHandle('mcp-add', 'submit')).toBe('mcp-add-submit');
@@ -125,6 +156,31 @@ describe('handle derivation', () => {
     expect(() => sourceConfigAgentProps('Mcp Add', { role: 'form', label: 'Add server' })).toThrow(
       'invalid element handle "Mcp Add": handles are lowercase words joined by single hyphens, and are never CSS selectors',
     );
+  });
+
+  it('derives the add form base from the list base', () => {
+    expect(sourceConfigAddFormHandle('mcp')).toBe('mcp-add');
+  });
+
+  it("derives each item card's base from its own stable id, not its position", () => {
+    expect(sourceConfigItemHandles('mcp', ['higgsfield', 'github'])).toEqual([
+      'mcp-item-higgsfield',
+      'mcp-item-github',
+    ]);
+  });
+
+  it('never lets an item card base collide with the add form base', () => {
+    // A source id of "add" is ordinary host data; the `-item-` namespace is what keeps it from
+    // landing on the same handle as `sourceConfigAddFormHandle`'s own `<base>-add`.
+    expect(sourceConfigItemHandles('mcp', ['add'])).toEqual(['mcp-item-add']);
+    expect(sourceConfigItemHandles('mcp', ['add'])[0]).not.toBe(sourceConfigAddFormHandle('mcp'));
+  });
+
+  it('keeps two ids that slugify identically apart, delegating dedup to @jini-ai/agentic', () => {
+    expect(sourceConfigItemHandles('mcp', ['My_Server', 'my.server'])).toEqual([
+      'mcp-item-my-server',
+      'mcp-item-my-server-2',
+    ]);
   });
 });
 
@@ -329,5 +385,73 @@ describe('handle uniqueness across a whole rendered surface', () => {
     expect(new Set(handles).size).toBe(handles.length);
     expect(handles).toContain('mcp-add-field-save');
     expect(handles).toContain('mcp-add-submit');
+  });
+});
+
+describe('SourceConfigListView markup — the list-level scheme', () => {
+  // `SourceConfigList`/`SourceConfigListView` were deliberately left out of the original
+  // `agentHandle` rollout (see this module's "list-level scheme" doc) because deriving N distinct
+  // card handles from N arbitrary source ids didn't have a shared, tested policy yet. It does now
+  // (`@jini-ai/agentic`'s `buildAgentListHandles`), so this is the first place the whole list — add
+  // form plus every card — is addressable from one host-supplied base.
+  const SOURCES: SourceConfigItem[] = [
+    { id: 'higgsfield', enabled: true, fields: { url: 'https://higgsfield.example' } },
+    { id: 'github', enabled: true, fields: { url: 'https://github.example' } },
+  ];
+
+  it('derives the add form and every item card from one base, keyed by stable id', () => {
+    const { container } = render(
+      <SourceConfigListView {...listViewProps({ sources: SOURCES, agentHandle: 'mcp' })} />,
+    );
+    expect(handlesIn(container)).toEqual(
+      expect.arrayContaining(['mcp-add', 'mcp-item-higgsfield', 'mcp-item-github']),
+    );
+  });
+
+  it('keeps a card handle stable when the list is reordered, since it is keyed by id not position', () => {
+    const { container, rerender } = render(
+      <SourceConfigListView {...listViewProps({ sources: SOURCES, agentHandle: 'mcp' })} />,
+    );
+    const before = container.querySelectorAll('[data-testid="source-config-item-card"]');
+    expect(before[0]).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'mcp-item-higgsfield');
+
+    rerender(<SourceConfigListView {...listViewProps({ sources: [...SOURCES].reverse(), agentHandle: 'mcp' })} />);
+    const after = container.querySelectorAll('[data-testid="source-config-item-card"]');
+    // "github" is now first in render order, but still answers to its own id-derived handle.
+    expect(after[0]).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'mcp-item-github');
+    expect(after[1]).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'mcp-item-higgsfield');
+  });
+
+  it('never publishes the same handle twice across the add form and every card, even with adversarial ids', () => {
+    const adversarial: SourceConfigItem[] = [
+      { id: 'add', enabled: true, fields: {} },
+      { id: 'Add', enabled: true, fields: {} },
+    ];
+    const { container } = render(
+      <SourceConfigListView {...listViewProps({ sources: adversarial, agentHandle: 'mcp' })} />,
+    );
+    const handles = handlesIn(container);
+    expect(new Set(handles).size).toBe(handles.length);
+    expect(handles).toContain('mcp-add'); // the add form itself — not shadowed by the "add"-id card
+  });
+
+  it("lets an explicit addForm.agentHandle win over the list-level base's own derived one", () => {
+    const { container } = render(
+      <SourceConfigListView
+        {...listViewProps({
+          sources: SOURCES,
+          agentHandle: 'mcp',
+          addForm: { ...listViewProps().addForm, agentHandle: 'custom-add' },
+        })}
+      />,
+    );
+    const handles = handlesIn(container);
+    expect(handles).toContain('custom-add');
+    expect(handles).not.toContain('mcp-add');
+  });
+
+  it('emits no data-agent-* markup at all when the list published no base handle', () => {
+    const { container } = render(<SourceConfigListView {...listViewProps({ sources: SOURCES })} />);
+    expect(handlesIn(container)).toEqual([]);
   });
 });

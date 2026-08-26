@@ -23,8 +23,22 @@
  * host whose source shape happens to contain a field keyed `remove` or `save` cannot collide with
  * this feature's own action handles. A duplicate handle is not a cosmetic problem: it makes
  * `page.fill`/`page.click` ambiguous for the very element a caller was most likely to want.
+ *
+ * ## The list-level scheme (`SourceConfigList`/`SourceConfigListView`)
+ *
+ * A list mounts one add form and N item cards from ONE base, the same "caller names one thing,
+ * this feature names its own parts" split as every card/form above:
+ *
+ * | element | handle |
+ * |---|---|
+ * | the add form | `<base>-add` (that base's own scheme then applies) |
+ * | one item card, keyed by the source's own stable id | `<base>-item-<slug of source.id>` (that base's own scheme then applies) |
+ *
+ * Item cards sit under `<base>-item-` rather than directly under `<base>` so that a source id
+ * cannot collide with the add form's `<base>-add` handle. See {@link sourceConfigItemHandles} for
+ * why cards are keyed by id rather than list position.
  */
-import { agentHandle, type AgentElementRole, type AgentHandleProps } from '@jini-ai/agentic';
+import { agentHandle, buildAgentListHandles, type AgentElementRole, type AgentHandleProps } from '@jini-ai/agentic';
 
 /** Segments of a derived handle: `<base>-field-<key>` and `<base>-<action>` share one joiner. */
 const HANDLE_SEPARATOR = '-';
@@ -34,6 +48,12 @@ const FIELD_NAMESPACE = 'field';
 
 /** What an unnameable field key degrades to, so it still produces a resolvable handle. */
 const UNNAMEABLE_FIELD_SEGMENT = 'unnamed';
+
+/** The action name `SourceConfigList`/`SourceConfigListView` derive the add form's base from. */
+const LIST_ADD_FORM_ACTION = 'add';
+
+/** The namespace every item card sits under — see this module's doc for why it is not `<base>` directly. */
+const LIST_ITEM_NAMESPACE = 'item';
 
 /**
  * Reduces one segment to the `[a-z0-9]+(-[a-z0-9]+)*` alphabet handles are restricted to.
@@ -88,6 +108,38 @@ export function sourceConfigFieldHandle(base: string, fieldKey: string): string 
   return [base, FIELD_NAMESPACE, segment === '' ? UNNAMEABLE_FIELD_SEGMENT : segment].join(
     HANDLE_SEPARATOR,
   );
+}
+
+/**
+ * The add form's own base, derived from a list's base — see this module's "list-level scheme" doc.
+ *
+ * @param listBase - The list's own handle, as published by the host to `SourceConfigList`/`SourceConfigListView`.
+ * @returns `<listBase>-add`.
+ * @complexity O(1).
+ */
+export function sourceConfigAddFormHandle(listBase: string): string {
+  return sourceConfigActionHandle(listBase, LIST_ADD_FORM_ACTION);
+}
+
+/**
+ * One distinct, stable base handle per rendered item card, positionally aligned with `sourceIds` —
+ * what `SourceConfigListView` hands each `SourceConfigItemCard` as its own `agentHandle`.
+ *
+ * Derived from each source's own stable id, never its position in the list: an agent reading
+ * `page.find_elements` should keep seeing the same card handle for the same source after a
+ * refresh reorders or filters the list. Delegates the actual slugify-and-deduplicate mechanics to
+ * `@jini-ai/agentic`'s {@link buildAgentListHandles} — see that function's own doc for why
+ * uniqueness needs a suffix search rather than a single `-<index>` append.
+ *
+ * @param listBase - The list's own handle, as published by the host.
+ * @param sourceIds - The rendered sources' own stable ids, in render order.
+ * @returns One base handle per id, positionally aligned with `sourceIds`, all distinct, and none
+ *   colliding with {@link sourceConfigAddFormHandle}'s `<listBase>-add` (see the `-item-`
+ *   namespace in this module's doc).
+ * @complexity See {@link buildAgentListHandles}.
+ */
+export function sourceConfigItemHandles(listBase: string, sourceIds: readonly string[]): string[] {
+  return buildAgentListHandles(`${listBase}${HANDLE_SEPARATOR}${LIST_ITEM_NAMESPACE}`, sourceIds);
 }
 
 /** What to publish about one sub-element — see {@link sourceConfigAgentProps}. */
