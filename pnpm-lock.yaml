@@ -163,6 +163,9 @@ importers:
 
   packages/admin:
     dependencies:
+      '@jini-ai/agentic':
+        specifier: workspace:*
+        version: link:../agentic
       '@jini-ai/ui':
         specifier: workspace:*
         version: link:../ui

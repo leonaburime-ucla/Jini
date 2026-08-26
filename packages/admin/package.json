@@ -86,6 +86,7 @@
     "react-dom": "^19.2.0"
   },
   "dependencies": {
+    "@jini-ai/agentic": "workspace:*",
     "@jini-ai/ui": "workspace:*"
   }
 }
