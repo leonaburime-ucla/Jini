@@ -1,4 +1,5 @@
 import { type ReactNode } from 'react';
+import { agentHandle, type AgentElementRole } from '@jini-ai/agentic';
 import { resolveTone, toneClassName, type ConfirmTone } from '../../types.js';
 import { useConfirmDialog, type UseConfirmDialog } from './ConfirmDialog.hooks.js';
 
@@ -16,6 +17,36 @@ import { useConfirmDialog, type UseConfirmDialog } from './ConfirmDialog.hooks.j
  *
  * Unstyled, like everything in this layer: the `.confirm-dialog` / `.btn-secondary` /
  * `.btn-danger` / `.btn-warning` class names are emitted for the host stylesheet to define.
+ *
+ * ## Agent handles
+ *
+ * Given `agentHandle="delete-role"` this publishes:
+ *
+ * | element | handle | role |
+ * |---|---|---|
+ * | the confirm action | `delete-role-confirm` | `button` |
+ * | the cancel/dismiss action | `delete-role-cancel` | `button` |
+ *
+ * Both segments are literals this component chooses itself, never host data — unlike `RowMenu`'s
+ * per-item keys (arbitrary host strings that can collide after slugifying), `confirm`/`cancel`
+ * need no sanitizing. `agentHandle` itself is NOT sanitized either: it is the caller's own explicit
+ * choice of name, and a bad one should fail loudly at first render rather than silently answer to a
+ * handle the caller never wrote. Omit `agentHandle` and no `data-agent-*` markup is emitted at all.
+ *
+ * Both handles are present in the DOM as soon as `agentHandle` is supplied, regardless of `open` —
+ * this component stays mounted and toggles the native `<dialog>`'s open state rather than being
+ * conditionally rendered by its caller (see `useConfirmDialog`'s doc comment), so there is no
+ * "closed" render that omits them, the same reasoning `RowMenu`'s always-visible trigger handle
+ * documents for itself.
+ *
+ * This component renders no typed-confirmation input today (no "type DELETE to confirm" field) —
+ * if one is added later it needs its own handle under this same scheme (e.g. `<base>-confirm-input`,
+ * role `field`).
+ *
+ * Labels state both the action and its consequence tier, derived from this component's own
+ * three-tier `ConfirmTone` vocabulary rather than reparsed from `title`/`body`: `body` is arbitrary
+ * `ReactNode` (a caller can pass JSX), not guaranteed to be a string at all, so it cannot be safely
+ * folded into agent-facing text — see {@link confirmDialogConsequencePhrase}.
  */
 
 export interface ConfirmDialogProps {
@@ -45,9 +76,83 @@ export interface ConfirmDialogProps {
    *  see `ConfirmDialogController`'s doc comment for why binding a public prop to a concrete
    *  implementation's inferred return object is a coupling rather than a convenience. */
   useDialog?: UseConfirmDialog;
+  /** This dialog's own agent handle — see this file's "Agent handles" doc comment for the full
+   *  scheme. Omit and no `data-agent-*` markup is emitted at all. */
+  agentHandle?: string;
 }
 
 const DEFAULT_CANCEL_LABEL = 'Cancel';
+
+/** Sub-handle segments appended to the caller's base — literals this component chooses itself,
+ *  never host data (see this file's "Agent handles" doc comment for why that means neither needs
+ *  sanitizing, unlike `RowMenu`'s per-item keys). */
+const CONFIRM_HANDLE_ACTION = 'confirm';
+const CANCEL_HANDLE_ACTION = 'cancel';
+
+/**
+ * Plain-language phrase for what confirming actually changes, keyed off the dialog's own
+ * three-tier `ConfirmTone` vocabulary (`"default"` / `"warning"` / `"danger"`, documented in
+ * `../../types.js`) rather than reparsed from `title` or `body` — see this file's doc comment for
+ * why those cannot be safely folded into agent-facing text.
+ *
+ * @param tone - The dialog's resolved tone (see `resolveTone`).
+ * @returns The tier's consequence phrase, or `undefined` for `"default"`, which declares no tier.
+ * @complexity O(1).
+ */
+function confirmDialogConsequencePhrase(tone: ConfirmTone): string | undefined {
+  if (tone === 'danger') return 'cannot be undone';
+  if (tone === 'warning') return 'changes access, but is reversible';
+  return undefined;
+}
+
+/**
+ * The confirm action's agent-facing label: what it does (`confirmLabel`), what it applies to
+ * (`title`), and — when the tone declares one — its consequence tier.
+ *
+ * @param confirmLabel - The button's own visible text, e.g. `"Delete"`.
+ * @param title - The dialog's title, e.g. `"Delete role?"`.
+ * @param tone - The dialog's resolved tone.
+ * @returns A label an agent can use to judge whether confirming is safe, without having read
+ *   `body` (which this function never receives — see this file's doc comment for why).
+ * @complexity O(1).
+ */
+function confirmDialogConfirmLabel(confirmLabel: string, title: string, tone: ConfirmTone): string {
+  const consequence = confirmDialogConsequencePhrase(tone);
+  return consequence === undefined ? `${confirmLabel} — ${title}` : `${confirmLabel} — ${title}; ${consequence}`;
+}
+
+/**
+ * The cancel action's agent-facing label. Unlike {@link confirmDialogConfirmLabel}, its consequence
+ * is a guarantee of this component's own contract (cancelling never calls `onConfirm`) rather than
+ * something read off `tone`, so it needs no tone input at all.
+ *
+ * @param cancelLabel - The button's own visible text, already defaulted by the caller.
+ * @param title - The dialog's title, e.g. `"Delete role?"`.
+ * @returns A label stating that this action leaves the titled action unconfirmed.
+ * @complexity O(1).
+ */
+function confirmDialogCancelLabel(cancelLabel: string, title: string): string {
+  return `${cancelLabel} — leaves "${title}" unconfirmed; no action taken`;
+}
+
+/**
+ * Builds the `data-agent-*` attribute props for one of this dialog's two actions, or nothing at
+ * all when the dialog published no base handle — same shape as `RowMenu.tsx`'s local
+ * `rowMenuAgentProps`, kept local and unexported here since only this one component needs it.
+ *
+ * @param base - The dialog's own handle from the caller, or `undefined` when it published none.
+ * @param action - Which action this is — see {@link CONFIRM_HANDLE_ACTION}/{@link CANCEL_HANDLE_ACTION}.
+ * @param options - Role and this action's already-composed label.
+ * @returns Spreadable attribute props, or `{}` when `base` is `undefined`.
+ * @complexity O(1).
+ */
+function confirmDialogAgentProps(
+  base: string | undefined,
+  action: typeof CONFIRM_HANDLE_ACTION | typeof CANCEL_HANDLE_ACTION,
+  options: { role: AgentElementRole; label: string },
+) {
+  return base === undefined ? {} : agentHandle(`${base}-${action}`, options);
+}
 
 /**
  * Controlled modal confirm — renders the `<dialog>` markup and delegates its open/close and focus
@@ -58,12 +163,15 @@ const DEFAULT_CANCEL_LABEL = 'Cancel';
  * is no browser-assigned "default button" for Enter to reach for at all; confirm can only ever fire
  * from an explicit click or explicit Tab-then-Enter onto it.
  */
-export function ConfirmDialog({ useDialog = useConfirmDialog, ...props }: ConfirmDialogProps) {
+export function ConfirmDialog({ useDialog = useConfirmDialog, agentHandle: baseHandle, ...props }: ConfirmDialogProps) {
   const { titleId, dialogRef, cancelRef, handleNativeCancel, handleBackdropClick } = useDialog(
     props.open,
     props.pending,
     props.onCancel,
   );
+
+  const tone = resolveTone(props);
+  const cancelLabel = props.cancelLabel ?? DEFAULT_CANCEL_LABEL;
 
   return (
     <dialog
@@ -82,14 +190,22 @@ export function ConfirmDialog({ useDialog = useConfirmDialog, ...props }: Confir
           className="btn-secondary"
           disabled={props.pending}
           onClick={props.onCancel}
+          {...confirmDialogAgentProps(baseHandle, CANCEL_HANDLE_ACTION, {
+            role: 'button',
+            label: confirmDialogCancelLabel(cancelLabel, props.title),
+          })}
         >
-          {props.cancelLabel ?? DEFAULT_CANCEL_LABEL}
+          {cancelLabel}
         </button>
         <button
           type="button"
-          className={toneClassName(resolveTone(props))}
+          className={toneClassName(tone)}
           disabled={props.pending}
           onClick={props.onConfirm}
+          {...confirmDialogAgentProps(baseHandle, CONFIRM_HANDLE_ACTION, {
+            role: 'button',
+            label: confirmDialogConfirmLabel(props.confirmLabel, props.title, tone),
+          })}
         >
           {props.confirmLabel}
         </button>
