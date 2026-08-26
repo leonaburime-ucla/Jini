@@ -117,9 +117,18 @@ function parseDelegatedToolExecute(input: RouteInputContext): Result<DelegatedTo
  * Maps a settled `ToolExecutionResult` to the wire `Result` — the same status mapping
  * `db-ops.ts`'s `toolResultToApiResult` establishes for this identical `ToolExecutionResult`
  * union, kept consistent here rather than reinvented: `completed` → `200 {result}`,
- * `denied`/`confirmation-denied` → `403 TOOL_OPERATION_DENIED`, `timed-out`/`cancelled`/`failed`
- * → a SEC-005-redacted `500 INTERNAL_ERROR` (the real status/error goes to `onInternalError`,
- * never the wire).
+ * `denied`/`confirmation-denied` → `403 TOOL_OPERATION_DENIED`, `timed-out`/`cancelled` → a
+ * SEC-005-redacted `500 INTERNAL_ERROR` (the real status/error goes to `onInternalError`, never the
+ * wire).
+ *
+ * `failed` splits in two, on `result.errorKind` (`@jini-ai/daemon`'s `ToolExecutor` sets it from
+ * whether the handler threw `@jini-ai/core`'s `ToolInputError`): `'validation'` means the CALLER's
+ * input was the problem — a wrong/missing/malformed field name, a `themeId` that doesn't exist, a
+ * path escaping its theme — so it is reported as a real `400 BAD_REQUEST` carrying the handler's own
+ * actionable message (the same one a model reads to retry correctly), not redacted. Everything else
+ * (`'internal'`, or no `errorKind` at all — e.g. an older `ToolExecutor` build) stays the SEC-005
+ * redacted 500 path, because a handler that threw for a reason OTHER than "your input was bad" can
+ * embed exactly the kind of internal detail that path exists to keep off the wire.
  */
 function toolExecutionResultToApiResult(
   deps: DelegatedToolsHttpDeps,
@@ -136,7 +145,11 @@ function toolExecutionResultToApiResult(
       return err(createApiError('TOOL_OPERATION_DENIED', 'this operation was denied during confirmation'));
     case 'timed-out':
     case 'cancelled':
+      return err(reportInternalError(deps, 'delegated-tool-execute', result.status, runId, toolId));
     case 'failed':
+      if (result.errorKind === 'validation') {
+        return err(createApiError('BAD_REQUEST', result.error ?? 'invalid tool input'));
+      }
       return err(reportInternalError(deps, 'delegated-tool-execute', result.error ?? result.status, runId, toolId));
   }
 }

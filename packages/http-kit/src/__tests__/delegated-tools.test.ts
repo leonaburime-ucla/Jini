@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createToolRegistry, type Principal } from '@jini-ai/core';
+import { createToolRegistry, ToolInputError, type Principal } from '@jini-ai/core';
 import {
   createInMemoryEventLog,
   createRunLifecycle,
@@ -239,6 +239,50 @@ describe('delegatedToolExecuteRoute.handle', () => {
     const context = onInternalError.mock.calls[0]![0];
     expect(context.source).toBe('delegated-tool-execute');
     expect(context.error).toBe('boom: secret detail');
+  });
+
+  it('maps a failed ToolExecutionResult with errorKind "validation" to a real 400 BAD_REQUEST, not the SEC-005-redacted 500 — this is the theme_list_files "malformed param name" bug fix', async () => {
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'picky' },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        throw new ToolInputError("'themeId' (non-empty string) is required");
+      },
+    });
+    const toolExecutor = createToolExecutor({ registry });
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ toolExecutor, onInternalError });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'picky' }, deps);
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: "'themeId' (non-empty string) is required" },
+    });
+    // Not redacted, and not reported as an internal error — the caller gets the real message directly.
+    expect(onInternalError).not.toHaveBeenCalled();
+  });
+
+  it('maps a failed ToolExecutionResult with no errorKind (an internal failure) to the SEC-005-redacted INTERNAL_ERROR, same as a plain Error', async () => {
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'flaky-internal' },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        throw new Error('boom: secret detail');
+      },
+    });
+    const toolExecutor = createToolExecutor({ registry });
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ toolExecutor, onInternalError });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'flaky-internal' }, deps);
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'an internal error occurred', requestId: expect.any(String) },
+    });
+    expect(onInternalError).toHaveBeenCalledTimes(1);
+    expect(onInternalError.mock.calls[0]![0].error).toBe('boom: secret detail');
   });
 
   it('maps a timed-out ToolExecutionResult to a SEC-005-redacted INTERNAL_ERROR', async () => {

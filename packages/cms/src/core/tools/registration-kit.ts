@@ -24,7 +24,7 @@
  * the handler — and that judgement stays recorded in the domain file next to the handler it
  * describes, where a reviewer reading the handler can see it.
  */
-import type { ToolHandler, ToolRegistration } from "@jini-ai/core";
+import { ToolInputError, type ToolHandler, type ToolRegistration } from "@jini-ai/core";
 
 // Imported from `../commands/command` rather than the `../commands` barrel deliberately. The barrel
 // re-exports `appliers.ts`, which names `features/post` and `features/settings` directly, so any file
@@ -152,14 +152,14 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Narrows `ctx.input` to a record, refusing anything else. The first line of most handlers. */
 export function requireInputRecord(input: unknown): Record<string, unknown> {
-  if (!isRecord(input)) throw new Error("input must be an object");
+  if (!isRecord(input)) throw new ToolInputError("input must be an object");
   return input;
 }
 
 export function requireString(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`'${key}' (non-empty string) is required`);
+    throw new ToolInputError(`'${key}' (non-empty string) is required`);
   }
   return value;
 }
@@ -167,7 +167,7 @@ export function requireString(input: Record<string, unknown>, key: string): stri
 export function requireNumber(input: Record<string, unknown>, key: string): number {
   const value = input[key];
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`'${key}' (number) is required`);
+    throw new ToolInputError(`'${key}' (number) is required`);
   }
   return value;
 }
@@ -175,7 +175,7 @@ export function requireNumber(input: Record<string, unknown>, key: string): numb
 export function requireObject(input: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = input[key];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`'${key}' (object) is required`);
+    throw new ToolInputError(`'${key}' (object) is required`);
   }
   return value as Record<string, unknown>;
 }
@@ -183,21 +183,21 @@ export function requireObject(input: Record<string, unknown>, key: string): Reco
 export function optionalString(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "string") throw new Error(`'${key}' must be a string`);
+  if (typeof value !== "string") throw new ToolInputError(`'${key}' must be a string`);
   return value;
 }
 
 export function optionalNumber(input: Record<string, unknown>, key: string): number | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`'${key}' must be a number`);
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ToolInputError(`'${key}' must be a number`);
   return value;
 }
 
 export function optionalBoolean(input: Record<string, unknown>, key: string): boolean | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "boolean") throw new Error(`'${key}' must be a boolean`);
+  if (typeof value !== "boolean") throw new ToolInputError(`'${key}' must be a boolean`);
   return value;
 }
 
@@ -209,7 +209,7 @@ export function optionalBoolean(input: Record<string, unknown>, key: string): bo
 export function requireNoInput(input: unknown): void {
   if (input === undefined) return;
   if (!isRecord(input) || Object.keys(input).length > 0) {
-    throw new Error("this tool accepts no input — omit 'input' or pass {}");
+    throw new ToolInputError("this tool accepts no input — omit 'input' or pass {}");
   }
 }
 
@@ -330,7 +330,12 @@ export function decorateWithSchema(params: {
   message: string;
 }): Error {
   const schema = params.catalog.get(params.toolId)?.inputSchema;
-  return new Error(
+  // A `ToolInputError`, not a plain `Error`: every rejection reaching here already passed the
+  // caller's own `isShapeRejection` predicate — "a DIFFERENT input would fix this" — which is
+  // exactly what the marker means. `@jini-ai/daemon`'s `ToolExecutor` reads it off the thrown error
+  // to tag the execution result `errorKind: 'validation'` rather than folding it into the same
+  // redacted-500 bucket a genuine internal failure gets.
+  return new ToolInputError(
     schema
       ? `${params.message}. ${RETRY_IS_FUTILE} Schema for '${params.toolId}': ${JSON.stringify(schema)}`
       : `${params.message}. ${RETRY_IS_FUTILE}`,

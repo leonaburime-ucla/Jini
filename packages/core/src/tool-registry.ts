@@ -118,6 +118,26 @@ export interface ToolExecutionContext {
 /** Runs the tool's actual side effect. Only ever invoked by `ToolExecutor`, never called directly by a route/agent holding the registry. */
 export type ToolHandler = (ctx: ToolExecutionContext) => Promise<unknown>;
 
+/**
+ * Thrown by a `ToolHandler` (or a validator it calls, e.g. `@jini-ai/cms`'s `registration-kit.ts`
+ * `requireString`/`requireInputRecord`/etc.) to mean "the caller's input was malformed or missing a
+ * required field" — a fact about the CALL, not the server. `@jini-ai/daemon`'s `ToolExecutor.execute`
+ * tags a handler rejection's `ToolExecutionResult.errorKind` as `'validation'` when the thrown error
+ * is `instanceof ToolInputError`, and every HTTP-facing mapping of a `'failed'` execution (today:
+ * `@jini-ai/http-kit`'s `delegated-tools.ts`) uses that tag to answer with a 4xx instead of folding
+ * it into the same redacted 500 an actual internal/infrastructure failure gets.
+ *
+ * Deliberately a plain marker with no extra fields: the message itself is already caller-actionable
+ * (`withSchemaOnRejection` appends the tool's own input schema to it), so nothing beyond "this IS one
+ * of these" needs to survive the `instanceof` check.
+ */
+export class ToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolInputError';
+  }
+}
+
 export type AuthorizationDecision = 'allow' | 'deny';
 
 export interface ToolAuthorizationContext {
