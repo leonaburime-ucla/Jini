@@ -75,7 +75,8 @@
     },
     "./interactive-ui.css": "./dist/features/interactive-ui/interactive-ui.css",
     "./settings-dialog.css": "./dist/features/settings/dialog/styles/settings-dialog.css",
-    "./tabbed-dialog.css": "./dist/features/tabbed-dialog/styles/tabbed-dialog.css"
+    "./tabbed-dialog.css": "./dist/features/tabbed-dialog/styles/tabbed-dialog.css",
+    "./remixicon.css": "./dist/react/components/remixicon-font/remixicon.css"
   },
   "files": [
     "dist",
