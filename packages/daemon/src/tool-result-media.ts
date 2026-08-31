@@ -11,17 +11,18 @@
  * and is deliberately narrower: it recognizes exactly one block type today (`image`), and has no
  * withhold-from-model concept of its own.
  *
- * The two DO interact, and the shape of {@link extractResultMedia}'s return value is why: a caller
- * runs this FIRST and feeds its `remainder` into `splitToolResultSurfaces`, not the raw output.
- * Recognized image blocks are removed from `content` here rather than left for the surfaces pass to
- * find, because `splitToolResultSurfaces`'s whitelist only recognizes `text` — an image block left
- * in place would ALSO get swept into `surfaces` and re-emitted as a second, useless `mcp-ui` event
- * (nothing renders an image through that channel; `McpUiSurfaceCard`'s `parseUIResource` expects a
- * `{uri, mimeType, text|blob}` resource shape an image block does not have, so it would render
- * nothing — harmless, but a duplicate emission of a block already delivered via `media`). Removing
- * it here instead means each recognized block reaches exactly one channel. Every block this module
- * does NOT recognize passes through `remainder` untouched, so `splitToolResultSurfaces`'s own
- * fail-closed handling of a genuinely unknown type is exactly as before.
+ * The two DO interact, though not by pipelining: `delegated-tool-bridge.ts`'s `execute()` calls both
+ * of them against the SAME raw `executed.output`, not this module's `remainder` into
+ * `splitToolResultSurfaces`. That used to be pipelined — this module removed recognized image
+ * blocks from `content` before the surfaces pass ran, because `splitToolResultSurfaces`'s whitelist
+ * used to recognize only `text`, and an image block left in place would have been swept into
+ * `surfaces` and withheld from the model. Now that `image` is itself one of
+ * `tool-result-surfaces.ts`'s `MODEL_VISIBLE_BLOCK_TYPES` (a deliberate addition — see that
+ * constant's own doc), the surfaces pass classifies an image block correctly on its own, so there is
+ * no misclassification left to prevent by removing it first. This module's `remainder` field is
+ * therefore no longer read by that caller at all (kept for this module's own tests and any future
+ * caller that wants a de-imaged copy); only `media` is used, to populate the `tool_result` event's
+ * sibling `media` field for a UI that wants to render inline without re-parsing `content`.
  *
  * ## Why only `image`, and why blocks are silently skipped rather than reported
  *

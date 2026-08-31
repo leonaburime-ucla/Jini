@@ -226,6 +226,39 @@ describe('computeRuntimeContext', () => {
       mcpJsonPath: '/work/.mcp.jini-r1.json',
     });
   });
+
+  // Session-resume plumbing (RunEndPayload.sessionRef round trip — see events.ts's doc): a run
+  // carrying ONLY a resume/new session id, with nothing else staged, must still produce a context
+  // — the early-return guard above must not treat "no files, no mcp bridge" as "nothing to do".
+  it('includes resumeSessionId even when nothing else was staged', () => {
+    expect(computeRuntimeContext(null, null, null, 'sess-abc')).toEqual({ resumeSessionId: 'sess-abc' });
+  });
+
+  it('includes newSessionId even when nothing else was staged', () => {
+    expect(computeRuntimeContext(null, null, null, undefined, 'new-sess-1')).toEqual({ newSessionId: 'new-sess-1' });
+  });
+
+  it('still returns undefined for a null resumeSessionId and no newSessionId, matching the pre-session-plumbing baseline', () => {
+    expect(computeRuntimeContext(null, null, null, null, undefined)).toBeUndefined();
+  });
+
+  it('treats an empty-string resumeSessionId as absent, matching claude.ts buildArgs\' own truthiness check', () => {
+    expect(computeRuntimeContext(null, null, null, '', undefined)).toBeUndefined();
+  });
+
+  it('combines a resumeSessionId with staged files and an mcp bridge', () => {
+    const cleanup = vi.fn(async () => {});
+    const bridge: McpBridgeDelivery = {
+      kind: 'claude-mcp-json',
+      mcpJsonPath: '/work/.mcp.jini-r1.json',
+      serverEntry: { command: 'jini-mcp', args: [], env: { JINI_RUN_ID: 'r1', JINI_DAEMON_URL: 'http://x' } },
+    };
+    expect(computeRuntimeContext({ path: '/tmp/p.md', cleanup }, null, bridge, 'sess-abc')).toEqual({
+      promptFilePath: '/tmp/p.md',
+      mcpJsonPath: '/work/.mcp.jini-r1.json',
+      resumeSessionId: 'sess-abc',
+    });
+  });
 });
 
 describe('buildAgentBuildArgsOptions', () => {

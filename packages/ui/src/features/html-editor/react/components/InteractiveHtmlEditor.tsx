@@ -1,5 +1,7 @@
 import type { CSSProperties } from 'react';
 import 'grapesjs/dist/css/grapes.min.css';
+import type { CanvasEmbedPlaceholderDescriptor } from '../../canvas-embed-placeholders.js';
+import type { CanvasStyling } from '../../canvas-style.js';
 import { useInteractiveHtmlEditor } from '../hooks/useInteractiveHtmlEditor.js';
 
 /**
@@ -31,8 +33,12 @@ import { useInteractiveHtmlEditor } from '../hooks/useInteractiveHtmlEditor.js';
  * is an optional predicate the caller supplies to lock specific elements (identified however the
  * caller likes) out of every GrapesJS interaction that could edit, move, or remove them — not
  * editable, draggable, droppable, removable, or selectable. When omitted, no elements are protected.
- * See `@jini-ai/admin/react`'s `InteractiveHtmlEditor` for a worked example: it composes this
- * primitive with a predicate recognizing Tovu's `data-embed-type` placeholder convention.
+ * `describeEmbedPlaceholder` is the same idea for a second, independent concern: recognizing an
+ * unresolved embed marker and labeling it for `../../canvas-embed-placeholders.ts`'s explicit
+ * placeholder card. See `@jini-ai/admin/react`'s `InteractiveHtmlEditor` for a worked example of both:
+ * it composes this primitive with a predicate recognizing Tovu's legacy `data-embed-type` convention
+ * for the first, and a describer recognizing the current `data-embed-config` convention for the
+ * second.
  *
  * ## Styling contract
  *
@@ -42,6 +48,23 @@ import { useInteractiveHtmlEditor } from '../hooks/useInteractiveHtmlEditor.js';
  * same category of dependency as shipping a `<video>` element would carry the browser's native
  * controls chrome. The host's own `.interactive-html-editor` wrapper class is still available for
  * layout (sizing, borders) it wants to apply.
+ *
+ * Styling the EDITED DOCUMENT is a separate concern, and the host's: `canvasStyling` supplies the
+ * stylesheets and raw CSS the canvas document itself renders against, so `html` is edited looking
+ * the way it will publish instead of against browser defaults. Neither half reaches `onChange` —
+ * GrapesJS keeps `canvas.styles`/`canvas.frameStyle` out of its exported code, and
+ * `useInteractiveHtmlEditor`'s `serializeEditorContent` builds its output from the component tree
+ * and the `CssComposer`, neither of which these touch. Omit it to edit against browser defaults on
+ * GrapesJS's white canvas, which is what every caller got before the option existed. See
+ * `../../canvas-style.ts` for why supplying it also has to displace GrapesJS's own default canvas
+ * background.
+ *
+ * `canvasStyling.contentWrapper` adds a third half to that same contract: the real DOM ancestor chain
+ * (e.g. `<main><article class="post-detail wrap">`) the host's own page template wraps `html` in, so
+ * the canvas centers/pads content the same way the published page does instead of full-bleed. Also
+ * never reaches `onChange` — see `../../canvas-content-wrapper.ts`'s file header for why that is
+ * guaranteed by WHEN it is applied (against the live canvas, after GrapesJS has already parsed
+ * `html`), not by a strip-on-export step.
  */
 export interface InteractiveHtmlEditorProps {
   /** The document to load into the editor. Read once, at mount — see this file's header and
@@ -57,6 +80,18 @@ export interface InteractiveHtmlEditorProps {
    *  `hasAttributeOnAnyNodeShape` (exported alongside this component) rather than `el.hasAttribute`
    *  directly — see that helper's own doc for why. Omit to protect nothing. */
   isProtectedElement?: (el: Element) => boolean;
+  /** CSS to render the edited document against inside the editing canvas, so the operator sees
+   *  roughly what the document publishes as rather than browser defaults. Read once, at mount, same
+   *  as `html`. Never part of `onChange`'s output — see this file's "Styling contract" section. */
+  canvasStyling?: CanvasStyling;
+  /** Identifies elements that are unresolved embed markers, so the canvas can decorate each one with
+   *  an explicit placeholder card instead of leaving it an empty, unlabeled element (or whatever
+   *  fallback content it authored) — see `../../canvas-embed-placeholders.ts`'s own file header for
+   *  the export-safety argument. Read once, at mount, same as `isProtectedElement`. Returning
+   *  `undefined` for an element means "not a marker this host owns" — left completely untouched.
+   *  Omit to decorate nothing, the pre-existing behavior. This component has the same zero knowledge
+   *  of any host's marker convention that `isProtectedElement` documents above. */
+  describeEmbedPlaceholder?: (el: Element) => CanvasEmbedPlaceholderDescriptor | undefined;
 }
 
 /** See this file's header for why these exist: they zero out layout space GrapesJS's default CSS
@@ -66,8 +101,21 @@ const GJS_STYLE_VARS = {
   '--gjs-canvas-top': '0px',
 } as CSSProperties;
 
-export function InteractiveHtmlEditor({ html, onChange, className, isProtectedElement }: InteractiveHtmlEditorProps) {
-  const { containerRef } = useInteractiveHtmlEditor(html, onChange, isProtectedElement);
+export function InteractiveHtmlEditor({
+  html,
+  onChange,
+  className,
+  isProtectedElement,
+  canvasStyling,
+  describeEmbedPlaceholder,
+}: InteractiveHtmlEditorProps) {
+  const { containerRef } = useInteractiveHtmlEditor(
+    html,
+    onChange,
+    isProtectedElement,
+    canvasStyling,
+    describeEmbedPlaceholder,
+  );
   const wrapperClassName = className ? `interactive-html-editor ${className}` : 'interactive-html-editor';
   return <div ref={containerRef} className={wrapperClassName} style={GJS_STYLE_VARS} />;
 }

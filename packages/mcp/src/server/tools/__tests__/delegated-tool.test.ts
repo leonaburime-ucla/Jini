@@ -100,6 +100,53 @@ describe('createExecuteDelegatedToolTool', () => {
     const result = await tool.handler({ toolId: 't1' }, ctx);
     expect(result).toEqual({ executionId: 'e1', status: 'denied' });
   });
+
+  describe('unwrapping an MCP content envelope (typed-media bridge fix)', () => {
+    // Regression: `@jini-ai/daemon`'s `delegated-tool-bridge.ts` keeps an `image` block in a
+    // completed call's `output` (it is model-safe — see that package's `tool-result-surfaces.ts`).
+    // Left wrapped inside `{executionId, status, output}`, `../tool-protocol.js`'s `okResult()` would
+    // still JSON.stringify the whole thing into inert text, because the wrapper has no top-level
+    // `content` field. This tool must unwrap down to `output` so `okResult()`'s own envelope
+    // passthrough can find it.
+    it('unwraps a completed result whose output is itself an MCP content envelope, down to just that envelope', async () => {
+      postDaemonJson.mockResolvedValueOnce({
+        result: {
+          executionId: 'e1',
+          status: 'completed',
+          output: {
+            content: [
+              { type: 'text', text: 'Generated a swatch.' },
+              { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+            ],
+          },
+        },
+      });
+      const tool = createExecuteDelegatedToolTool({ runId: 'run-1' });
+      const result = await tool.handler({ toolId: 'assistant_demo_image' }, ctx);
+      expect(result).toEqual({
+        content: [
+          { type: 'text', text: 'Generated a swatch.' },
+          { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+        ],
+      });
+    });
+
+    it('does NOT unwrap when output is plain JSON (not a content envelope) — preserves the existing envelope contract', async () => {
+      postDaemonJson.mockResolvedValueOnce({ result: { executionId: 'e1', status: 'completed', output: { posts: [{ id: 'p1' }] } } });
+      const tool = createExecuteDelegatedToolTool({ runId: 'run-1' });
+      const result = await tool.handler({ toolId: 't1' }, ctx);
+      expect(result).toEqual({ executionId: 'e1', status: 'completed', output: { posts: [{ id: 'p1' }] } });
+    });
+
+    it('does NOT unwrap a non-completed status even if it happens to carry an output-shaped content field', async () => {
+      postDaemonJson.mockResolvedValueOnce({
+        result: { executionId: 'e1', status: 'failed', output: { content: [{ type: 'text', text: 'partial' }] } },
+      });
+      const tool = createExecuteDelegatedToolTool({ runId: 'run-1' });
+      const result = await tool.handler({ toolId: 't1' }, ctx);
+      expect(result).toEqual({ executionId: 'e1', status: 'failed', output: { content: [{ type: 'text', text: 'partial' }] } });
+    });
+  });
 });
 
 describe('delegatedToolTimeoutMs (REF-002: the deadline is host policy, not engine policy)', () => {

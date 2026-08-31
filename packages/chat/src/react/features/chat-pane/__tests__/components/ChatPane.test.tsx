@@ -1,3 +1,4 @@
+import { createRef } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,7 +7,7 @@ import type { ChatMessage } from '@jini-ai/chat/core';
 import { FILE_SYSTEM_READ_ERROR_MESSAGE } from '@jini-ai/ui';
 import { createFakeChatTransport } from '../../../../hooks/testing/fake-transport.js';
 import { ChatPane } from '../../components/ChatPane.js';
-import type { ChatPaneActivity, ChatPaneAgent } from '../../types.js';
+import type { ChatPaneActivity, ChatPaneAgent, ChatPaneComposerHandle } from '../../types.js';
 
 const agents: ChatPaneAgent[] = [{
   id: 'codex',
@@ -480,6 +481,42 @@ describe('ChatPane', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Choose AI runtime' }));
     await userEvent.click(screen.getByRole('button', { name: 'Use API · BYOK' }));
     expect(onExecutionModeChange).toHaveBeenCalledWith('api');
+  });
+
+  describe('composerHandle', () => {
+    it('publishes insertText once mounted, appends onto an existing draft, and clears on unmount', () => {
+      const composerHandle = createRef<ChatPaneComposerHandle | null>();
+      const { unmount } = render(
+        <ChatPane transport={createFakeChatTransport()} agents={agents} composerHandle={composerHandle} />,
+      );
+
+      // Populated by ChatPane's own mount effect — a host has no other way to learn the pane exists.
+      expect(composerHandle.current).not.toBeNull();
+
+      act(() => {
+        composerHandle.current?.insertText('/Users/op/dropped-folder');
+      });
+      expect(screen.getByRole('textbox')).toHaveValue('/Users/op/dropped-folder');
+
+      // A second insertion APPENDS onto whatever the operator already typed in between — it must
+      // never clobber their own words, which is the whole reason `insertText` exists (a host that
+      // wanted to replace the draft outright already has that: `workingDirectory`-style controlled
+      // props, or just `pane.composer.setDraft` if it were public).
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'look at' } });
+      act(() => {
+        composerHandle.current?.insertText('/Users/op/dropped-folder');
+      });
+      expect(screen.getByRole('textbox')).toHaveValue('look at /Users/op/dropped-folder');
+
+      unmount();
+      expect(composerHandle.current).toBeNull();
+    });
+
+    it('does nothing when composerHandle is omitted — no crash, no phantom ref writes', () => {
+      // The prop is optional; every other test in this file renders ChatPane without it. This test
+      // exists only to make that omission an asserted case rather than an accident of coverage.
+      expect(() => render(<ChatPane transport={createFakeChatTransport()} agents={agents} />)).not.toThrow();
+    });
   });
 
   // These assert what the pane actually PUTS ON SCREEN, which line coverage cannot speak to: every

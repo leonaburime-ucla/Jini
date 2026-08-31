@@ -57,9 +57,15 @@ export function MessageList({
   useEffect(() => {
     if (!scrollIntent) return;
     const el = containerRef.current;
-    if (el) {
+    // Gated on `stickToBottomRef`, same as the ResizeObserver effect below: `scrollIntent` turns
+    // true on EVERY streamed event (tool-call chatter included, not just a finished reply — see
+    // `useConversation.applyRunToAssistantMessage`), so scrolling unconditionally here yanked a user
+    // who had deliberately scrolled up to read history back to the bottom on the very next chunk
+    // (owner-reported, 2026-08-30). `stickToBottomRef` already reflects the user's own last scroll
+    // gesture via the `onScroll` handler below, captured BEFORE this content change, so it is safe
+    // to trust here.
+    if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
-      stickToBottomRef.current = true;
     }
     onScrolled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps

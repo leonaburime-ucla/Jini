@@ -159,6 +159,7 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
   const composer = useComposer(definedProps({
     initialDraft: options.initialDraft,
     initialAgent: selection,
+    conversationId: options.conversationId,
   }));
   const conversation = useConversation(definedProps({
     transport: options.transport,

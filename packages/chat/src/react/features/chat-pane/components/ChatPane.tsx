@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { WorkingDirPicker } from '@jini-ai/ui';
 
 import { Composer } from '../../../components/Composer.js';
+import { appendComposerDiscovery } from '../../../components/composer-discovery.js';
 import { MessageList } from '../../../components/MessageList.js';
 import { useT } from '../../../hooks/context.js';
 import type { ComposerSlots } from '../../../slots.js';
@@ -342,6 +343,7 @@ export function ChatPane({
   byokRuntime,
   onByokModelChange,
   initialDraft,
+  composerHandle,
   placeholder,
   suggestions = [],
   workingDirectory,
@@ -392,6 +394,27 @@ export function ChatPane({
     onChangeWorkingDirectory,
     workingDirectoryAccess,
   }));
+  // Mirrors `Composer.tsx`'s own `draftRef`: `composerHandle.insertText` (below) is called from
+  // OUTSIDE any render, so it cannot close over `pane.composer.draft` directly — that would freeze
+  // it at whatever the draft was on the render that captured it. Reassigned unconditionally every
+  // render, same as its counterpart.
+  const composerDraftRef = useRef(pane.composer.draft);
+  composerDraftRef.current = pane.composer.draft;
+  useEffect(() => {
+    if (!composerHandle) return;
+    composerHandle.current = {
+      insertText: (text) => {
+        pane.composer.setDraft(appendComposerDiscovery(composerDraftRef.current, text));
+      },
+    };
+    return () => {
+      composerHandle.current = null;
+    };
+    // `pane.composer` is a fresh object every render `useComposer` produces (see its own `useMemo`
+    // deps), so depending on it here just means this effect re-publishes a new (equally correct)
+    // closure on every render rather than genuinely skipping renders — cheap, and it keeps
+    // `pane.composer.setDraft` from ever going stale if that reference ever changes.
+  }, [composerHandle, pane.composer]);
   // No `runContext` here on purpose: agent-driven sends go through `pane.sendPrompt`, which builds
   // the context from the SAME `runContext` already handed to `useChatPane` above. A second copy
   // would be a second source of truth that could silently drift from the composer's.

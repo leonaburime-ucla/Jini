@@ -1,5 +1,8 @@
 import { useEffect, useRef } from 'react';
 import grapesjs, { type Editor } from 'grapesjs';
+import { applyCanvasContentWrapper } from '../../canvas-content-wrapper.js';
+import { applyCanvasEmbedPlaceholders, type CanvasEmbedPlaceholderDescriptor } from '../../canvas-embed-placeholders.js';
+import { buildCanvasStyleConfig, type CanvasStyling } from '../../canvas-style.js';
 import { prettifyCss } from '../../css.js';
 
 /**
@@ -9,8 +12,8 @@ import { prettifyCss } from '../../css.js';
  * in `@jini-ai/admin` — the imperative, non-React lifecycle (`grapesjs.init`/`editor.destroy`) stays
  * out of the render path, and a test can drive it independently of the markup.
  *
- * **Uncontrolled by design.** `html` (and `isProtectedElement`) are read once, at construction — this
- * hook does not react to later changes in either argument. GrapesJS owns an internal component tree
+ * **Uncontrolled by design.** `html` (and `isProtectedElement`, and `canvasStyling`) are read once,
+ * at construction — this hook does not react to later changes in any of them. GrapesJS owns an internal component tree
  * once initialized; feeding an external string back into a live editor on every parent re-render
  * (which is what a naive `useEffect([html])` would do, since this same hook's own `onChange` callback
  * pushes edits back up into whatever state produced the `html` prop) would either fight the operator's
@@ -23,6 +26,11 @@ import { prettifyCss } from '../../css.js';
  * locked GrapesJS component type for whatever `isProtectedElement` predicate its caller supplies —
  * see this file's `registerProtectedElementType`. The predicate itself (e.g. recognizing a host's own
  * embed-placeholder convention) belongs to the caller, not this primitive.
+ *
+ * **`canvasStyling.contentWrapper` is applied on `load`, against the live canvas — never folded into
+ * `components` above.** See `../../canvas-content-wrapper.ts`'s own file header for why: GrapesJS's
+ * exported HTML/CSS are built from its component model, which `components` seeds and this wrapper
+ * never touches, so it cannot leak into a save no matter how the canvas is edited afterward.
  */
 
 const PROTECTED_ELEMENT_TYPE = 'protected-element';
@@ -68,6 +76,7 @@ function initInteractiveHtmlEditor(
   container: HTMLElement,
   html: string,
   isProtectedElement: ((el: Element) => boolean) | undefined,
+  canvasStyling: CanvasStyling,
 ): Editor {
   return grapesjs.init({
     container,
@@ -78,6 +87,7 @@ function initInteractiveHtmlEditor(
     panels: { defaults: [] },
     blockManager: { blocks: [] },
     richTextEditor: { actions: RTE_ACTIONS },
+    canvas: buildCanvasStyleConfig(canvasStyling),
     plugins: isProtectedElement
       ? [(editor: Editor) => registerProtectedElementType(editor, isProtectedElement)]
       : [],
@@ -135,6 +145,8 @@ export function useInteractiveHtmlEditor(
   html: string,
   onChange: (html: string) => void,
   isProtectedElement?: (el: Element) => boolean,
+  canvasStyling: CanvasStyling = {},
+  describeEmbedPlaceholder?: (el: Element) => CanvasEmbedPlaceholderDescriptor | undefined,
 ) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
@@ -146,11 +158,25 @@ export function useInteractiveHtmlEditor(
     const mountEl = document.createElement('div');
     mountEl.style.height = '100%';
     wrapper.appendChild(mountEl);
-    const editor = initInteractiveHtmlEditor(mountEl, html, isProtectedElement);
+    const editor = initInteractiveHtmlEditor(mountEl, html, isProtectedElement, canvasStyling);
     const handleUpdate = () => onChangeRef.current(serializeEditorContent(editor));
     editor.on('update', handleUpdate);
+    // `load` fires once the canvas's initial component render is done (`editor.Canvas.getBody()` is
+    // populated) — see `applyCanvasContentWrapper`'s own file header for why the wrap has to happen
+    // here, against the live canvas, rather than folded into `components` above. Embed placeholders
+    // piggyback on this SAME handler/event rather than a second `editor.on('load', ...)` registration
+    // — see `applyCanvasEmbedPlaceholders`'s own file header for its matching export-safety argument.
+    // Applied AFTER the content wrapper so a placeholder can sit correctly however deep the wrapper
+    // chain nests its marker, though nothing about either function actually depends on this order.
+    const handleLoad = () => {
+      const body = editor.Canvas.getBody();
+      applyCanvasContentWrapper(body, canvasStyling.contentWrapper);
+      if (describeEmbedPlaceholder) applyCanvasEmbedPlaceholders(body, describeEmbedPlaceholder);
+    };
+    editor.on('load', handleLoad);
     return () => {
       editor.off('update', handleUpdate);
+      editor.off('load', handleLoad);
       editor.destroy();
       mountEl.remove();
     };

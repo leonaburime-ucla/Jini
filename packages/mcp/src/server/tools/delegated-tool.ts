@@ -33,6 +33,34 @@ interface DelegatedToolExecuteResponse {
   readonly result: unknown;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Unwraps a completed delegated call's `{executionId, status, output, ...}` envelope down to just
+ * `output` when — and only when — `output` is itself an MCP content envelope (`{content: [...]}`).
+ * Every other shape (a non-completed status, a plain JSON `output` like a string or a list, no
+ * `output` at all) is returned byte-identical to `result` — this is an additive unwrap, not a new
+ * general response shape, so the existing "surfaces the result envelope unchanged" contract for an
+ * ordinary tool call is untouched.
+ *
+ * Why unwrap at all: `../tool-protocol.js`'s `okResult()` only recognizes an already-well-formed
+ * content envelope AT THE TOP LEVEL of what a handler returns. Left wrapped inside
+ * `{executionId, status, output}`, a genuine `image` block in `output.content` (kept there by
+ * `@jini-ai/daemon`'s `delegated-tool-bridge.ts`, which treats `image` as model-safe — see that
+ * package's `tool-result-surfaces.ts`) would still get JSON.stringified into inert text by
+ * `okResult()`'s fallback path, because the wrapper object itself has no top-level `content` field
+ * for it to recognize. Unwrapping here is what lets `okResult()`'s whitelist actually reach the
+ * block the bridge already preserved.
+ */
+function unwrapMcpContentEnvelope(result: unknown): unknown {
+  if (!isRecord(result) || result['status'] !== 'completed') return result;
+  const output = result['output'];
+  if (!isRecord(output) || !Array.isArray(output['content'])) return result;
+  return output;
+}
+
 /**
  * Request deadline for one delegated tool call, overriding `daemon-client.ts`'s 15 s default.
  *
@@ -144,7 +172,7 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
         ...daemonCallOptions(ctx),
         timeoutMs,
       });
-      return data.result;
+      return unwrapMcpContentEnvelope(data.result);
     },
   };
 }

@@ -410,6 +410,42 @@ describe('AgentExecutor — successful run end-to-end', () => {
 
     expect(buildArgs).toHaveBeenCalledWith('do the thing', [], undefined, undefined, undefined);
   });
+
+  it('forwards a host-supplied resumeSessionId into runtimeContext even when nothing else is staged', async () => {
+    const buildArgs = vi.fn(() => ['--flag']);
+    const { lifecycle, executor } = createHarness({ def: createFakeDef({ buildArgs }) });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-resume-session' });
+
+    const runPromise = executor.run({
+      runId: run.id,
+      agentId: 'fake-agent',
+      prompt: 'do the thing',
+      cwd: '/work',
+      resumeSessionId: 'sess-from-prior-turn',
+    });
+    await flushAsync();
+    await runPromise;
+
+    expect(buildArgs).toHaveBeenCalledWith('do the thing', [], undefined, undefined, { resumeSessionId: 'sess-from-prior-turn' });
+  });
+
+  it('forwards a host-minted newSessionId into runtimeContext even when nothing else is staged', async () => {
+    const buildArgs = vi.fn(() => ['--flag']);
+    const { lifecycle, executor } = createHarness({ def: createFakeDef({ buildArgs }) });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-new-session' });
+
+    const runPromise = executor.run({
+      runId: run.id,
+      agentId: 'fake-agent',
+      prompt: 'do the thing',
+      cwd: '/work',
+      newSessionId: 'freshly-minted-id',
+    });
+    await flushAsync();
+    await runPromise;
+
+    expect(buildArgs).toHaveBeenCalledWith('do the thing', [], undefined, undefined, { newSessionId: 'freshly-minted-id' });
+  });
 });
 
 describe('AgentExecutor — image prompt delivery (MSG-4: prompt-path defs)', () => {

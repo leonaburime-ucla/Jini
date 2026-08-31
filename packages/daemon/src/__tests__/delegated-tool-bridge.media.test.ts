@@ -75,11 +75,13 @@ describe('DelegatedToolBridge — typed media', () => {
     expect(agentPayloads.filter((p) => p.type === 'mcp-ui')).toHaveLength(0);
   });
 
-  it('carries `media` in the value returned to the caller too, not only the emitted event', async () => {
+  it('keeps the image block in `result.output` too, not only the emitted event\'s `media` — this is the value `execute_delegated_tool` (`@jini-ai/mcp`) hands back as the MODEL\'s own tool result, with no access to the run event stream at all', async () => {
     const { result } = await runImageTool({
       content: [{ type: 'text', text: 'ok' }, { type: 'image', mimeType: 'image/png', data: PNG_BASE64 }],
     });
-    expect(result.output).toEqual({ content: [{ type: 'text', text: 'ok' }] });
+    expect(result.output).toEqual({
+      content: [{ type: 'text', text: 'ok' }, { type: 'image', mimeType: 'image/png', data: PNG_BASE64 }],
+    });
   });
 
   it('leaves an ordinary (non-envelope) tool result completely untouched — no `media` field at all', async () => {

@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetComposerDraftCacheForTests } from '../../../../hooks/composer-draft-cache.js';
 import { createFakeChatTransport } from '../../../../hooks/testing/fake-transport.js';
 import type { ChatPaneAgent } from '../../types.js';
 import { useChatPane } from '../../hooks/useChatPane.hooks.js';
@@ -11,6 +12,25 @@ const agents: ChatPaneAgent[] = [
 ];
 
 describe('useChatPane', () => {
+  beforeEach(() => __resetComposerDraftCacheForTests());
+
+  it('threads conversationId into the composer so a draft round-trips a conversation switch', () => {
+    // Reproduces the owner-reported bug: `useChatPane` used to call `useComposer` with only
+    // `initialDraft`/`initialAgent` (never `conversationId`), so nothing survived a host remounting
+    // `ChatPane` on switch (a conversation-keyed `key`).
+    const transport = createFakeChatTransport();
+    const first = renderHook(() => useChatPane({ transport, agents, conversationId: 'chat-1' }));
+    act(() => first.result.current.composer.setDraft('remember to follow up with the vendor'));
+    first.unmount();
+
+    const other = renderHook(() => useChatPane({ transport, agents, conversationId: 'chat-2' }));
+    expect(other.result.current.composer.draft).toBe('');
+    other.unmount();
+
+    const back = renderHook(() => useChatPane({ transport, agents, conversationId: 'chat-1' }));
+    expect(back.result.current.composer.draft).toBe('remember to follow up with the vendor');
+  });
+
   it('owns uncontrolled selection changes and ignores invalid sends', async () => {
     const transport = createFakeChatTransport();
     const onSelectionChange = vi.fn();

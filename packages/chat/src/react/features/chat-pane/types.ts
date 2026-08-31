@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
 import type { ChatAttachment, ChatMessage } from '@jini-ai/chat/core';
 
 import type { ComposerSlots } from '../../slots.js';
@@ -106,6 +106,21 @@ export type ChatPaneRunContext =
   | RunContext
   | ((input: ChatPaneRunContextInput) => RunContext | undefined);
 
+/**
+ * Imperative access to the composer's draft text — published on `composerHandle.current` by
+ * `ChatPane` itself once mounted (`null` before mount and after unmount).
+ */
+export interface ChatPaneComposerHandle {
+  /**
+   * Appends `text` to whatever the operator has already typed (same joining rule the "+" discovery
+   * menu's `insertText` items use — see `appendComposerDiscovery`), rather than replacing the draft
+   * outright. This is the seam for a host that needs to write into the draft AFTER first render —
+   * `initialDraft` only seeds the very first one and cannot be written to again, and `ChatPane`
+   * exposes no other prop for pushing text into an in-progress draft from outside.
+   */
+  insertText: (text: string) => void;
+}
+
 export interface ChatPaneProps {
   transport: ChatTransport;
   agents?: readonly ChatPaneAgent[];
@@ -136,6 +151,14 @@ export interface ChatPaneProps {
   /** Passed straight through to the runtime picker. */
   onByokModelChange?: (model: string) => void;
   initialDraft?: string;
+  /**
+   * A ref `ChatPane` populates with a `ChatPaneComposerHandle` once mounted, for a host that needs
+   * to insert text into the draft from OUTSIDE this component's own props — e.g. an absolute path
+   * a desktop host recovered from a native drag-drop event and could not have known at
+   * `initialDraft`-seeding time. `null` before mount and after unmount; a host calling `.insertText`
+   * before the pane exists has nothing to call.
+   */
+  composerHandle?: RefObject<ChatPaneComposerHandle | null>;
   placeholder?: string;
   suggestions?: readonly string[];
   /** Controlled working-directory value. */

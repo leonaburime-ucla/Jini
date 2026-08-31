@@ -600,6 +600,24 @@ export interface AgentExecutorRunInput {
    * architecture decision C8 (`ADS-memory/reports/jini-port/extraction-plan.md`).
    */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Stored session id for this (conversation, agent) pair from a prior run's
+   * `RunEndPayload.sessionRef` (see `@jini-ai/protocol`'s doc on that field) — set when the host
+   * wants this run to continue that CLI session instead of starting cold. Forwarded verbatim into
+   * `RuntimeContext.resumeSessionId`; a `resumesSessionViaCli` def (see
+   * `@jini-ai/agent-runtime`'s `types.ts`) reads it to pass its CLI's own resume flag, in which case
+   * the host should send only the latest user turn as `prompt`, not the full transcript. `null` and
+   * omitted are equivalent: no resume target for this run.
+   */
+  readonly resumeSessionId?: string | null;
+  /**
+   * A fresh id the host mints and persists when starting a session it wants resumable on a later
+   * turn (i.e. no `resumeSessionId` is available yet). Forwarded verbatim into
+   * `RuntimeContext.newSessionId`; a `resumesSessionViaCli` def passes it to its CLI's own
+   * "start with this id" flag so a later turn's `resumeSessionId` can continue the same underlying
+   * CLI session. Ignored by defs that don't declare `resumesSessionViaCli`.
+   */
+  readonly newSessionId?: string;
 }
 
 export interface AgentExecutor {
@@ -2440,13 +2458,36 @@ export function computeChildEnv(spawnEnv: NodeJS.ProcessEnv, mcpBridge: McpBridg
   };
 }
 
-/** Phase 6b: the `RuntimeContext` `buildArgs` receives — `undefined` unless a file or bridge path was staged. Pure. */
+/**
+ * Phase 6b: the `RuntimeContext` `buildArgs` receives — `undefined` unless a file, bridge path, or
+ * session id was staged. Pure.
+ *
+ * `resumeSessionId`/`newSessionId` round-trip a prior run's `RunEndPayload.sessionRef` (see
+ * `@jini-ai/protocol`'s doc on that field) back into this run's `RuntimeContext`, letting a
+ * `resumesSessionViaCli` def (e.g. claude) continue its own CLI session across turns instead of
+ * spawning cold every time. Either one alone must still produce a context — a run supplying ONLY a
+ * session id, with no prompt/log file staged and no claude-mcp-json bridge, is exactly the common
+ * case for a resumed turn.
+ */
 export function computeRuntimeContext(
   preparedPromptFile: PreparedPromptFile | null,
   preparedLogFile: PreparedAgentLogFile | null,
   mcpBridge: McpBridgeDelivery | null,
+  resumeSessionId?: string | null,
+  newSessionId?: string,
 ): RuntimeContext | undefined {
-  if (!preparedPromptFile && !preparedLogFile && mcpBridge?.kind !== 'claude-mcp-json') {
+  // Matches claude.ts buildArgs' own `typeof x === 'string' && x` truthiness check, so an empty
+  // string or explicit `null` (no resume target yet) is treated as absent here too, rather than
+  // manufacturing a context that carries a session field the def would ignore anyway.
+  const hasResumeSessionId = typeof resumeSessionId === 'string' && resumeSessionId.length > 0;
+  const hasNewSessionId = typeof newSessionId === 'string' && newSessionId.length > 0;
+  if (
+    !preparedPromptFile
+    && !preparedLogFile
+    && mcpBridge?.kind !== 'claude-mcp-json'
+    && !hasResumeSessionId
+    && !hasNewSessionId
+  ) {
     return undefined;
   }
   return {
@@ -2455,6 +2496,8 @@ export function computeRuntimeContext(
     // Safe to pass before the file exists: `writeMcpJsonForRun` runs after buildArgs but still
     // before spawn, so the path is real by the time the child process starts.
     ...(mcpBridge?.kind === 'claude-mcp-json' ? { mcpJsonPath: mcpBridge.mcpJsonPath } : {}),
+    ...(hasResumeSessionId ? { resumeSessionId } : {}),
+    ...(hasNewSessionId ? { newSessionId } : {}),
   };
 }
 
@@ -2914,7 +2957,13 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     );
 
     const childEnv = computeChildEnv(spawnEnv, mcpBridge);
-    const runtimeContext = computeRuntimeContext(preparedPromptFile, preparedLogFile, mcpBridge);
+    const runtimeContext = computeRuntimeContext(
+      preparedPromptFile,
+      preparedLogFile,
+      mcpBridge,
+      input.resumeSessionId,
+      input.newSessionId,
+    );
 
     // A `runtimeLock` def's buildArgs mutates process-global state its own CLI reads back at
     // startup, so the mutex must be held from before buildArgs until the spawned child has

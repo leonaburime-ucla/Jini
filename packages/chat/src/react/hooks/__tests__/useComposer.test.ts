@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatAttachment } from '../../../core/index.js';
+import { __resetComposerDraftCacheForTests } from '../composer-draft-cache.js';
 import { useComposer } from '../useComposer.js';
 import type { ProjectContextValue } from '../../slots.js';
 
@@ -199,5 +200,74 @@ describe('useComposer', () => {
     const { result } = renderHook(() => useComposer({ initialDraft: 'check out ' }));
     act(() => result.current.selectMention({ id: 's1', label: 'brand-extract' }));
     expect(result.current.draft).toBe('check out @brand-extract ');
+  });
+
+  describe('per-conversation draft persistence', () => {
+    beforeEach(() => __resetComposerDraftCacheForTests());
+
+    it('restores a draft after switching away and back across a remount', () => {
+      // Mirrors a host that remounts `ChatPane` (via a conversation-keyed `key`) on a
+      // user-initiated conversation switch — see `composer-draft-cache.ts`'s module doc.
+      const first = renderHook(() => useComposer({ conversationId: 'convo-a' }));
+      act(() => first.result.current.setDraft('buy milk, walk dog, call mom'));
+      first.unmount();
+
+      const other = renderHook(() => useComposer({ conversationId: 'convo-b' }));
+      expect(other.result.current.draft).toBe('');
+      other.unmount();
+
+      const back = renderHook(() => useComposer({ conversationId: 'convo-a' }));
+      expect(back.result.current.draft).toBe('buy milk, walk dog, call mom');
+    });
+
+    it('never shows one conversation draft to another, with or without a remount', () => {
+      const { result, rerender } = renderHook(
+        ({ conversationId }: { conversationId: string }) => useComposer({ conversationId }),
+        { initialProps: { conversationId: 'convo-a' } },
+      );
+      act(() => result.current.setDraft('secret plan for A'));
+
+      rerender({ conversationId: 'convo-b' });
+      expect(result.current.draft).toBe('');
+
+      act(() => result.current.setDraft('unrelated note for B'));
+      rerender({ conversationId: 'convo-a' });
+      expect(result.current.draft).toBe('secret plan for A');
+    });
+
+    it('clears staged attachments and the mention popover when the conversation changes without a remount', () => {
+      const { result, rerender } = renderHook(
+        ({ conversationId }: { conversationId: string }) => useComposer({ conversationId }),
+        { initialProps: { conversationId: 'convo-a' } },
+      );
+      act(() => result.current.addAttachment({ path: '/a', name: 'a', kind: 'file' }));
+      act(() => void result.current.openMention('q'));
+      expect(result.current.attachments).toHaveLength(1);
+      expect(result.current.mention.open).toBe(true);
+
+      rerender({ conversationId: 'convo-b' });
+
+      expect(result.current.attachments).toEqual([]);
+      expect(result.current.mention.open).toBe(false);
+    });
+
+    it('does not cache a draft when there is no conversation id yet (an untitled chat)', () => {
+      const first = renderHook(() => useComposer({ conversationId: null }));
+      act(() => first.result.current.setDraft('draft with no home yet'));
+      first.unmount();
+
+      const other = renderHook(() => useComposer({ conversationId: null }));
+      expect(other.result.current.draft).toBe('');
+    });
+
+    it('evicts a cleared draft from the cache instead of restoring an empty string', () => {
+      const first = renderHook(() => useComposer({ conversationId: 'convo-c' }));
+      act(() => first.result.current.setDraft('will be sent'));
+      act(() => first.result.current.reset());
+      first.unmount();
+
+      const back = renderHook(() => useComposer({ conversationId: 'convo-c' }));
+      expect(back.result.current.draft).toBe('');
+    });
   });
 });

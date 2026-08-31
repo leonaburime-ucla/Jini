@@ -243,6 +243,35 @@ describe('Composer', () => {
     expect(revealStyleRule).toContain('opacity: 1');
   });
 
+  it('expands the hovered description in normal flow instead of floating it over the next row', async () => {
+    // Regression test for an owner-reported bug: hovering "UI/UX Design (Skill)" popped a
+    // description box that painted over the "/mcp" row beneath it. Root cause was
+    // '.jini-composer-discovery-description' being 'position: absolute; top: 100%' of its own
+    // row — a stacking z-index fix would only have changed WHICH box wins the overlap, not
+    // removed the overlap itself, so the real fix is confining the description to the row's own
+    // normal flex-column flow so an expanding row pushes its siblings down instead of covering
+    // them. This asserts the mechanism, not just the visual symptom: the description rule must
+    // not remove itself from flow via 'position: absolute' (or 'fixed').
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
+    const item = screen.getByRole('menuitem', { name: /^\/mcp/ });
+    const describedBy = item.getAttribute('aria-describedby');
+    const description = document.getElementById(describedBy!);
+    expect(description).toHaveClass('jini-composer-discovery-description');
+
+    const descriptionStyleRule = CHAT_PANE_STYLES.match(
+      /\.jini-chat-pane \.jini-composer-discovery-description \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(descriptionStyleRule).not.toMatch(/position:\s*(absolute|fixed)/);
+    expect(descriptionStyleRule).not.toContain('z-index');
+
+    // Collapsed at rest via 'max-height: 0', not 'display: none' — still resolvable via
+    // 'aria-describedby' — and now sized to the row's own width so it wraps in place instead of
+    // floating off to one side.
+    expect(descriptionStyleRule).toContain('max-height: 0');
+    expect(descriptionStyleRule).toContain('width: 100%');
+  });
+
   it('groups Attach files into the discovery menu without changing upload behavior', async () => {
     const onFiles = vi.fn();
     render(

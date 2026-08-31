@@ -15,9 +15,21 @@
  * `refactor/web-chat-composer-slice-pr`), generalized: the Lexical-editor-ref
  * plumbing and localStorage port are OD/DOM-specific and dropped; the
  * draft/attachment/mention/agent-selection *state shape* is kept.
+ *
+ * `conversationId` (when supplied) keys the draft — and, on a change, the staged attachments and
+ * mention popover — against `composer-draft-cache.ts`'s module-level cache, so a switch between
+ * conversations round-trips whatever was typed instead of losing it or leaking it into the wrong
+ * conversation. That cache is a separate, always-on mechanism from `persistence` above: `persistence`
+ * is a single opaque host-owned slot (e.g. localStorage, for surviving a page *reload*) that this
+ * hook still never touches directly; the cache instead survives a `ChatPane` remount within the same
+ * page session — see its own module doc for why a switch here so often means a full remount. Staged
+ * attachments and the mention popover are deliberately NOT cached across a switch (unlike the draft
+ * text): they reference an in-flight upload batch, and carrying them into a different conversation
+ * risks attaching the wrong files to the wrong thread, so they are cleared instead.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatAttachment } from '../../core/index.js';
+import { readCachedDraft, writeCachedDraft } from './composer-draft-cache.js';
 import type { AgentSelection, ComposerSlots, MentionResult, ProjectContextValue } from '../slots.js';
 
 export interface ComposerDraftPersistence {
@@ -31,6 +43,13 @@ export interface UseComposerOptions {
   project?: ProjectContextValue;
   composerSlots?: ComposerSlots;
   persistence?: ComposerDraftPersistence;
+  /**
+   * The active conversation, used to key the per-conversation draft cache (see this module's doc).
+   * `null`/absent (an untitled, not-yet-created conversation) opts out of caching entirely — there is
+   * nothing to key on yet, and the draft lives only in this hook's own React state until an id
+   * exists.
+   */
+  conversationId?: string | null;
 }
 
 export interface MentionPopoverState {
@@ -64,8 +83,10 @@ export interface UseComposerResult {
 const EMPTY_MENTION: MentionPopoverState = { open: false, query: '', results: [] };
 
 export function useComposer(options: UseComposerOptions = {}): UseComposerResult {
-  const { project, composerSlots, persistence } = options;
-  const [draft, setDraftState] = useState<string>(() => options.initialDraft ?? persistence?.read() ?? '');
+  const { project, composerSlots, persistence, conversationId } = options;
+  const [draft, setDraftState] = useState<string>(
+    () => options.initialDraft ?? persistence?.read() ?? readCachedDraft(conversationId) ?? '',
+  );
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [agent, setAgent] = useState<AgentSelection | undefined>(options.initialAgent);
   const [mention, setMention] = useState<MentionPopoverState>(EMPTY_MENTION);
@@ -74,9 +95,24 @@ export function useComposer(options: UseComposerOptions = {}): UseComposerResult
     (next: string) => {
       setDraftState(next);
       persistence?.write(next);
+      writeCachedDraft(conversationId, next);
     },
-    [persistence],
+    [persistence, conversationId],
   );
+
+  // Re-keys the draft (and drops attachments/the mention popover — see this module's doc) when
+  // `conversationId` changes WITHOUT a remount — a host that keeps the composer mounted across
+  // conversations, unlike a host that remounts `ChatPane` via a conversation-keyed `key` (the
+  // `useState` initializer above already handles that case at mount time). Skips the very first
+  // render via the ref comparison so it never fights that initializer.
+  const previousConversationIdRef = useRef(conversationId);
+  useEffect(() => {
+    if (conversationId === previousConversationIdRef.current) return;
+    previousConversationIdRef.current = conversationId;
+    setDraftState(readCachedDraft(conversationId) ?? '');
+    setAttachments([]);
+    setMention(EMPTY_MENTION);
+  }, [conversationId]);
 
   const addAttachment = useCallback((attachment: ChatAttachment) => {
     setAttachments((prev) => [...prev, attachment]);
