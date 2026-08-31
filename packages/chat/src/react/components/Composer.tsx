@@ -11,7 +11,16 @@
  * the slots a host supplies; it does not itself know what a "library
  * picker" or "session mode" is.
  */
-import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type CSSProperties,
+  type KeyboardEvent,
+} from 'react';
 import { RemixIcon } from '@jini-ai/ui';
 import { useT } from '../hooks/context.js';
 import { AttachmentTray } from './AttachmentTray.js';
@@ -20,6 +29,8 @@ import type { ComposerDiscoveryItem, ComposerDiscoveryOutcome, ComposerSlots } f
 import { ComposerDiscoveryMenu, ComposerSlashMenu } from './ComposerDiscovery.js';
 import {
   appendComposerDiscovery,
+  composerDiscoveryMenuPosition,
+  composerSlashMenuPosition,
   filterComposerDiscovery,
   parseComposerSlashQuery,
   replaceComposerSlashTrigger,
@@ -131,6 +142,8 @@ export function Composer({
   const [discoveryMenuOpen, setDiscoveryMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [dismissedSlashDraft, setDismissedSlashDraft] = useState<string | null>(null);
+  const [discoveryMenuPosition, setDiscoveryMenuPosition] = useState<CSSProperties>();
+  const [slashMenuPosition, setSlashMenuPosition] = useState<CSSProperties>();
   const resolvedPlaceholder = placeholder ?? t('Send a message…');
   const discoveryGroups = slots?.discoveryGroups ?? [];
   const hasDiscoveryItems = discoveryGroups.some((group) => group.items.length > 0);
@@ -186,6 +199,36 @@ export function Composer({
     document.addEventListener('mousedown', handleOutsideMouseDown);
     return () => document.removeEventListener('mousedown', handleOutsideMouseDown);
   }, [discoveryMenuOpen, slashOpen, composer.draft]);
+
+  /**
+   * Anchors the "+" menu and slash palette to `.jini-composer`'s live on-screen rect via
+   * `position: fixed` (see `composerDiscoveryMenuPosition`/`composerSlashMenuPosition`'s own doc
+   * in `composer-discovery.ts` for the ancestor-clipping bug this fixes). `useLayoutEffect`, not
+   * `useEffect`, so the measured position lands before the browser paints the just-opened popover
+   * — otherwise the very first frame would flash at the CSS default (`position: absolute`)
+   * position before snapping to the fixed one. Recomputed on scroll/resize while either popover is
+   * open, matching `useAgentRuntimePicker.hooks.ts`'s identical popover-tracking idiom: the
+   * composer's on-screen position can change under an open popover without it ever unmounting.
+   */
+  useLayoutEffect(() => {
+    if (!discoveryMenuOpen && !slashOpen) return undefined;
+    const composerRoot = textareaRef.current?.closest('.jini-composer');
+    if (!composerRoot) return undefined;
+
+    function update() {
+      const rect = composerRoot!.getBoundingClientRect();
+      if (discoveryMenuOpen) setDiscoveryMenuPosition(composerDiscoveryMenuPosition(rect));
+      if (slashOpen) setSlashMenuPosition(composerSlashMenuPosition(rect));
+    }
+
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [discoveryMenuOpen, slashOpen]);
 
   /**
    * `expectedDraft` is the draft as the user last saw it at the moment of selection — what the
@@ -341,6 +384,7 @@ export function Composer({
           activeIndex={Math.min(slashActiveIndex, slashMatches.length - 1)}
           onSelect={(item) => selectSlashItem(slashMatches.findIndex((match) => match.item === item))}
           showFilterHint={showSlashFilterHint}
+          style={slashMenuPosition}
           t={t}
         />
       ) : null}
@@ -350,6 +394,7 @@ export function Composer({
             <input
               ref={attachmentInputRef}
               className="jini-composer-file-input"
+              data-testid="composer-attachment-input"
               type="file"
               multiple
               aria-label={t('Attach files')}
@@ -384,6 +429,7 @@ export function Composer({
             onClose={() => setDiscoveryMenuOpen(false)}
             onSelect={selectPlusItem}
             onAttachmentChange={handleAttachmentChange}
+            style={discoveryMenuPosition}
             t={t}
           />
         ) : null}

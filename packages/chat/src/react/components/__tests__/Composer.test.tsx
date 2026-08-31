@@ -272,6 +272,30 @@ describe('Composer', () => {
     expect(descriptionStyleRule).toContain('width: 100%');
   });
 
+  it('anchors the add-menu and slash palette with position: fixed so an overflow: hidden ancestor cannot clip them', async () => {
+    // Regression test for an owner-reported bug: the list read as "clipped mid-item" at the top
+    // instead of cleanly scrolled. Root cause was both popovers being plain `position: absolute`
+    // descendants of `.jini-composer`, itself inside `.jini-chat-pane__body` — which sets
+    // `overflow: hidden` unconditionally — plus whatever clipping box a host's own dock chrome
+    // adds (Tovu admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile "peek" sheet
+    // caps the whole dock at 58vh). The exact arithmetic (viewport-clamped `maxHeight`/`bottom`) is
+    // covered directly in `composer-discovery.test.ts`; this asserts the wiring — that `Composer`
+    // actually applies the computed `position: fixed` style to each popover's DOM node, the same
+    // way `AgentRuntimePicker`'s already-portaled popover escapes the identical ancestor.
+    render(<DiscoveryHarness slots={{ discoveryGroups: DISCOVERY_GROUPS }} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
+    const menu = screen.getByRole('menu', { name: 'Add context' });
+    expect(menu.style.position).toBe('fixed');
+    await userEvent.click(document.body);
+    expect(screen.queryByRole('menu', { name: 'Add context' })).not.toBeInTheDocument();
+
+    const textarea = screen.getByRole('textbox');
+    await userEvent.type(textarea, '/word');
+    const palette = screen.getByRole('listbox', { name: 'Composer commands' });
+    expect(palette.style.position).toBe('fixed');
+  });
+
   it('groups Attach files into the discovery menu without changing upload behavior', async () => {
     const onFiles = vi.fn();
     render(
@@ -832,4 +856,26 @@ describe('Composer', () => {
     await userEvent.type(textarea, '{Enter}');
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it(
+    'tags the file input with a stable E2E hook regardless of which render site is live — the ' +
+      'plain attachment picker (no discovery items) or the "+" discovery menu\'s Files group',
+    async () => {
+      const onFiles = vi.fn();
+      // No discoveryGroups -> hasDiscoveryItems is false -> Composer.tsx's own <input> renders.
+      const { unmount } = render(<DiscoveryHarness attachmentPicker={{ onFiles, accept: 'image/*' }} />);
+      expect(screen.getByTestId('composer-attachment-input')).toHaveAttribute('accept', 'image/*');
+      unmount();
+
+      // discoveryGroups present -> hasDiscoveryItems is true -> ComposerDiscovery.tsx's <input> renders.
+      render(
+        <DiscoveryHarness
+          slots={{ discoveryGroups: DISCOVERY_GROUPS }}
+          attachmentPicker={{ onFiles, accept: 'image/*' }}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Add context' }));
+      expect(screen.getByTestId('composer-attachment-input')).toHaveAttribute('accept', 'image/*');
+    },
+  );
 });

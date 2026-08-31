@@ -1,4 +1,4 @@
-import type { ChangeEvent, RefObject } from 'react';
+import type { ChangeEvent, CSSProperties, RefObject } from 'react';
 import { RemixIcon } from '@jini-ai/ui';
 import type { ComposerDiscoveryGroup, ComposerDiscoveryItem } from '../slots.js';
 import type { ComposerDiscoveryMatch } from './composer-discovery.js';
@@ -20,6 +20,12 @@ export interface ComposerDiscoveryMenuProps {
   onSelect: (item: ComposerDiscoveryItem) => void;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
   t: (key: string) => string;
+  /** Viewport-fixed position computed by `Composer.tsx` (see `composerDiscoveryMenuPosition` in
+   *  `composer-discovery.ts`) so the popover escapes any `overflow: hidden` ancestor between the
+   *  composer and the page root. `undefined` for the one synchronous render before that
+   *  measurement lands, during which the reference stylesheet's `position: absolute` default
+   *  still applies — inline `style` always wins once it is set. */
+  style?: CSSProperties | undefined;
 }
 
 /** Generic grouped add-menu; the host owns all inventory labels and items. */
@@ -40,6 +46,7 @@ export function ComposerDiscoveryMenu(props: ComposerDiscoveryMenuProps) {
         <input
           ref={props.attachmentInputRef}
           className="jini-composer-file-input"
+          data-testid="composer-attachment-input"
           type="file"
           multiple
           aria-label={props.t('Attach files')}
@@ -61,7 +68,7 @@ export function ComposerDiscoveryMenu(props: ComposerDiscoveryMenuProps) {
         <RemixIcon name="add-line" size={20} />
       </button>
       {props.open ? (
-        <div className="jini-composer-discovery-menu" role="menu" aria-label={props.t('Add context')}>
+        <div className="jini-composer-discovery-menu" style={props.style} role="menu" aria-label={props.t('Add context')}>
           {props.attachmentPicker ? (
             <div className="jini-composer-discovery-group" role="group" aria-label={props.t('Files')}>
               <span className="jini-composer-discovery-group-label">{props.t('Files')}</span>
@@ -127,6 +134,10 @@ export interface ComposerSlashMenuProps {
    *  nothing else on screen signals that typing filters the list. */
   showFilterHint?: boolean;
   t: (key: string) => string;
+  /** Viewport-fixed position computed by `Composer.tsx` (see `composerSlashMenuPosition` in
+   *  `composer-discovery.ts`) — same escape-the-ancestor-clip mechanism as
+   *  {@link ComposerDiscoveryMenuProps.style}. */
+  style?: CSSProperties | undefined;
 }
 
 /** Keyboard navigation is owned by Composer so focus stays in the textarea. */
@@ -137,6 +148,7 @@ export function ComposerSlashMenu(props: ComposerSlashMenuProps) {
     <div
       id="jini-composer-slash-menu"
       className="jini-composer-slash-menu"
+      style={props.style}
       role="listbox"
       aria-label={props.t('Composer commands')}
     >
