@@ -9,19 +9,27 @@
 <script>
 (function () {
   "use strict";
+  var host = window.parent;
+  var hostOrigin = window.location.origin;
+  if (host === window) return;
+
+  function isFromHost(event) {
+    return event.source === host && event.origin === hostOrigin;
+  }
+
   window.addEventListener("message", function (event) {
+    if (!isFromHost(event)) return;
     var data = event.data;
     if (!data || typeof data !== "object") return;
-    if (data.method === "ui/notifications/sandbox-resource-ready") {
-      var html = data.params && data.params.html;
-      if (typeof html === "string") {
-        document.open();
-        document.write(html);
-        document.close();
-      }
-    }
+    if (data.method !== "ui/notifications/sandbox-resource-ready") return;
+    var html = data.params && data.params.html;
+    if (typeof html !== "string") return;
+    document.open();
+    document.write(html);
+    document.close();
   });
-  window.parent.postMessage({ method: "ui/notifications/sandbox-proxy-ready", params: {} }, "*");
+
+  host.postMessage({ method: "ui/notifications/sandbox-proxy-ready", params: {} }, hostOrigin);
 }());
 </script>
 </body>

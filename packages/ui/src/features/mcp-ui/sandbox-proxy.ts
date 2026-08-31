@@ -80,6 +80,34 @@
  * app, as a same-origin convenience route, reopens exactly the risk this package's `srcdoc` design
  * spent real effort avoiding.** See this session's report for why that tradeoff is left as an
  * explicitly flagged follow-up rather than silently accepted.
+ *
+ * ## Who is allowed to hand this page HTML — the origin check, and why it is shaped this way
+ *
+ * `document.write`-ing a `postMessage` payload is script execution on this page's origin, so the
+ * listener's guard IS the trust boundary. The first version of this file had none: it read
+ * `event.data` without ever looking at `event.origin` or `event.source`, which meant ANY page that
+ * could get a handle on this window — by framing it, or by `window.open`-ing it and keeping the
+ * returned reference — could post `sandbox-resource-ready` and run its own script on the serving
+ * origin. Two checks close that, and both are needed:
+ *
+ * - `event.source === window.parent` binds delivery to the window that actually embedded this page.
+ *   `event.source` is set by the browser and cannot be forged by the sender, and it is the only
+ *   check that covers the `window.open` case at all: an opener is `window.opener`, never
+ *   `window.parent`. The `window.parent === window` early return makes that airtight — a top-level
+ *   (unframed) copy of this page registers no listener and does nothing, which is correct, because
+ *   an unframed sandbox proxy has no host to serve and no handshake to complete.
+ * - `event.origin === window.location.origin` is the second, independent check, and it is what
+ *   makes a hostile FRAMER fail too (that attacker does satisfy `event.source === window.parent`).
+ *   A host serving this page cross-origin from itself — the hardening the section above recommends
+ *   — will need to widen this to an allowlist. That allowlist must be baked into the served bytes
+ *   by the host's own server, NOT read from this page's query string or fragment: an attacker who
+ *   can frame the page also picks the `src`, so a URL-supplied expected origin is attacker-supplied
+ *   and defeats the check entirely. That is deliberately left unbuilt rather than built wrong.
+ *
+ * For the same reason the ready notification is addressed to `window.location.origin` rather than
+ * broadcast with `"*"`: a hostile framer should not even learn that the page loaded. Neither check
+ * hardcodes any particular host — a consumer's origin is discovered at runtime from the page's own
+ * URL — and neither touches the single-hop `document.write` shape the section above depends on.
  */
 
 /**
@@ -89,6 +117,17 @@
  * A host mounts this at whatever URL it then passes as `sandbox={{ url }}` to `AppRenderer`/
  * `AppFrame` (this package's `McpUiHost`/`useMcpUiHost` included) — e.g. an Express route:
  * `app.get('/mcp-ui/sandbox-proxy.html', (_req, res) => res.type('html').send(SANDBOX_PROXY_HTML))`.
+ *
+ * That route SHOULD also send `Content-Security-Policy: frame-ancestors 'self'` (plus
+ * `X-Frame-Options: SAMEORIGIN` for browsers predating it). The page's own origin check already
+ * refuses to `document.write` anything a hostile framer sends it, but the header is what stops the
+ * page being framed by a third party in the first place — and it is the layer that still holds if a
+ * future edit to the script below regresses. `frame-ancestors 'none'`/`X-Frame-Options: DENY` is
+ * NOT the value to reach for: this page exists to be framed by its host, so `DENY` breaks every
+ * surface. Do not add `default-src`/`script-src` directives to that header either: a header CSP
+ * survives `document.open()` and would then apply to the guest HTML written in below, silently
+ * breaking any UIResource whose HTML this package did not build. Surfaces built by
+ * `surfaces/document.ts` already carry their own `SURFACE_CSP` meta tag for exactly that job.
  */
 export const SANDBOX_PROXY_HTML = `<!doctype html>
 <html>
@@ -101,19 +140,27 @@ export const SANDBOX_PROXY_HTML = `<!doctype html>
 <script>
 (function () {
   "use strict";
+  var host = window.parent;
+  var hostOrigin = window.location.origin;
+  if (host === window) return;
+
+  function isFromHost(event) {
+    return event.source === host && event.origin === hostOrigin;
+  }
+
   window.addEventListener("message", function (event) {
+    if (!isFromHost(event)) return;
     var data = event.data;
     if (!data || typeof data !== "object") return;
-    if (data.method === "ui/notifications/sandbox-resource-ready") {
-      var html = data.params && data.params.html;
-      if (typeof html === "string") {
-        document.open();
-        document.write(html);
-        document.close();
-      }
-    }
+    if (data.method !== "ui/notifications/sandbox-resource-ready") return;
+    var html = data.params && data.params.html;
+    if (typeof html !== "string") return;
+    document.open();
+    document.write(html);
+    document.close();
   });
-  window.parent.postMessage({ method: "ui/notifications/sandbox-proxy-ready", params: {} }, "*");
+
+  host.postMessage({ method: "ui/notifications/sandbox-proxy-ready", params: {} }, hostOrigin);
 }());
 </script>
 </body>
