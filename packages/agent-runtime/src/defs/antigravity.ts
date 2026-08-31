@@ -405,4 +405,43 @@ export const antigravityAgentDef = {
   runtimeLock: antigravityModelLock,
   installUrl: 'https://antigravity.google/cli',
   docsUrl: 'https://antigravity.google/docs/cli-overview',
+  // Deliberately left with no `externalMcpInjection` — investigated for a Codex-style relocation
+  // strategy (see `codex.ts`'s `'codex-toml'`) and rejected for lack of a safe, run-scoped delivery
+  // mechanism, not for lack of trying. Evidence, gathered live against the installed CLI (`agy`
+  // v1.1.22), not from docs alone:
+  //
+  //   - No per-run config-path flag. `agy --help` and `agy mcp add --help` were read in full: `mcp
+  //     add/remove/list/enable/disable` only mutate the PERSISTENT global registry — there is no
+  //     `--mcp-config <path>`-shaped flag anywhere on the top-level command or its subcommands.
+  //   - No CODEX_HOME-equivalent env var. `strings` over the `agy` binary itself (not just docs) for
+  //     every all-caps `*HOME*`/`*_DIR`/`*_PATH`/`XDG_*` token found nothing naming a relocatable
+  //     config/data root for Antigravity or Gemini specifically — only the generic `HOME` (relocating
+  //     that would redirect the ENTIRE user profile for the child, not a scoped config dir, and is not
+  //     an "explicit, run-scoped delivery" by any reasonable reading).
+  //   - The workspace-relative `.agents/mcp_config.json` this comment used to cite as unverified is
+  //     now verified NOT to be what it looked like: a project dir was seeded with a real
+  //     `.agents/mcp_config.json` entry, then `agy mcp list` (run from that cwd) showed only the
+  //     REAL global config's servers — the workspace file never appeared. A live headless `agy -p`
+  //     run from that same cwd (both with and without `--new-project`), captured via `--log-file`,
+  //     shows zero mention of "mcp" or the seeded server name anywhere in its diagnostic log, and its
+  //     own log line reports the run scoped to a generic `"CLI Project"` bucket, not the cwd as a
+  //     distinct project. Best read: `.agents/mcp_config.json` belongs to the Antigravity IDE
+  //     extension's own project layer, a different consumer than the bare `agy` CLI binary this
+  //     daemon actually spawns — not a mechanism reachable from a plain `agy -p` invocation at all.
+  //   - The one mechanism that IS real — `~/.gemini/config/mcp_config.json` (global, JSON,
+  //     `{"mcpServers":{"<name>":{"command":...}}}`, confirmed by reading the operator's own file
+  //     read-only after backing it up) — has no relocation path, so using it means mutating the
+  //     operator's real shared config on every spawn. That is the exact class of side effect
+  //     `codex.ts`'s doc rejected the `-c`-override approach for, made concretely worse here: this
+  //     def already fights a real cross-run race on `settings.json` for model selection
+  //     (`antigravityModelLock` above), and a second shared-file race for MCP config would need its
+  //     own serialization/merge/restore discipline with its own live verification — not a strategy
+  //     bolted onto this one on a guess. Also relevant: this same `agy -p` run, on the SAME machine,
+  //     left `~/.gemini/trustedFolders.json` and `~/.gemini/projects.json` byte-identical
+  //     before/after (unlike Codex's `config.toml`, which does grow a project-tracking entry per
+  //     run) — headless print mode does not even register the folder as a project, reinforcing that
+  //     nothing here is scoped per-invocation the way `CODEX_HOME` is.
+  //
+  // No hang was observed on any of these probes (all completed in well under `--print-timeout`'s
+  // default 5m), so the blocker is "no safe delivery mechanism exists", not "the mechanism hangs".
 } satisfies RuntimeAgentDef;

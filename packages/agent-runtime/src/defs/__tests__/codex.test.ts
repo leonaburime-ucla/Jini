@@ -10,6 +10,11 @@ describe('codexAgentDef shape', () => {
     expect(codexAgentDef.capturesSessionIdFromStream).toBe(true);
     expect(codexAgentDef.streamFormat).toBe('json-event-stream');
     expect(codexAgentDef.eventParser).toBe('codex');
+    // Codex gets the caller's external MCP servers via a relocated, run-scoped CODEX_HOME carrying
+    // a `[mcp_servers.jini]` TOML table — see `@jini-ai/daemon`'s `agent-executor.ts`
+    // (`buildMcpBridgeDelivery`'s `'codex-toml'` case, `prepareCodexHomeForRun`), which dispatches
+    // on this declared strategy alone, never on `def.id`.
+    expect(codexAgentDef.externalMcpInjection).toBe('codex-toml');
     expect(codexAgentDef.listModels).toEqual({ args: ['debug', 'models'], parse: parseCodexDebugModels, timeoutMs: 5000 });
     expect(codexAgentDef.authProbe).toEqual({ args: ['login', 'status'], timeoutMs: 5000 });
     expect(codexAgentDef.reasoningOptions?.map((r) => r.id)).toEqual([

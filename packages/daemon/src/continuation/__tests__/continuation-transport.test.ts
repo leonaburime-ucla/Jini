@@ -3,8 +3,10 @@ import { AGENT_DEFS } from '@jini-ai/agent-runtime';
 import { resolveContinuationTransport } from '../continuation-transport.js';
 
 const MCP_CALLBACK_IDS = [
+  'amr',
   'claude',
   'codebuddy',
+  'codex',
   'devin',
   'kilo',
   'opencode',

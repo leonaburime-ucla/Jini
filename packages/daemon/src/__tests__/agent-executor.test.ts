@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunAgentPayload, RunErrorPayload, RunProtocolEvent } from '@jini-ai/protocol';
 import {
   AGENT_DEFS,
@@ -32,6 +33,8 @@ import {
   DEFAULT_BUFFERED_STDOUT_MAX_BYTES,
   assessAgentExecutorCompatibility,
   buildAcpMcpBridgeServers,
+  buildCodexHomeConfigToml,
+  buildCodexMcpServerToml,
   buildMcpBridgeDelivery,
   buildMcpJsonServerEntry,
   createAgentExecutor,
@@ -39,6 +42,7 @@ import {
   isSupportedStreamFormat,
   mergeEnvContentMcpConfig,
   mergeMcpJsonContent,
+  resolveSourceCodexHomeDir,
   translateAgentRuntimeEvent,
   type AgentExecutor,
   type ClassifyFailure,
@@ -4813,6 +4817,100 @@ describe('mergeEnvContentMcpConfig', () => {
   });
 });
 
+describe('buildCodexMcpServerToml', () => {
+  const entry = { command: 'jini-mcp', args: ['--quiet'], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://d' } };
+
+  // Shape verified live against installed Codex CLI 0.151.0 by round-tripping `codex mcp add` /
+  // `codex mcp list` against a scratch CODEX_HOME and reading back the exact TOML it wrote.
+  it('emits the [mcp_servers.jini] table plus a nested .env table', () => {
+    expect(buildCodexMcpServerToml(entry)).toBe(
+      '[mcp_servers.jini]\ncommand = "jini-mcp"\nargs = ["--quiet"]\n\n[mcp_servers.jini.env]\nJINI_RUN_ID = "run-1"\nJINI_DAEMON_URL = "http://d"\n',
+    );
+  });
+
+  // The real type always carries JINI_RUN_ID/JINI_DAEMON_URL (buildMcpJsonServerEntry sets both
+  // unconditionally), so an empty `env` is unreachable through production callers — the `as`
+  // below constructs that state directly to exercise this function's own defensive branch.
+  it('omits the .env table entirely when the entry carries no env vars', () => {
+    const noEnv = { ...entry, env: {} } as typeof entry;
+    expect(buildCodexMcpServerToml(noEnv)).toBe('[mcp_servers.jini]\ncommand = "jini-mcp"\nargs = ["--quiet"]\n');
+  });
+
+  it('serialises multiple argv tokens as a comma-separated TOML array', () => {
+    const toml = buildCodexMcpServerToml({ ...entry, args: ['--a', '--b', '--c'] });
+    expect(toml).toContain('args = ["--a", "--b", "--c"]');
+  });
+
+  it('includes JINI_DAEMON_TOKEN in the .env table when the entry carries a resolved credential', () => {
+    const withToken = { ...entry, env: { ...entry.env, JINI_DAEMON_TOKEN: 'run-scoped-secret' } };
+    const toml = buildCodexMcpServerToml(withToken);
+    expect(toml).toContain('JINI_DAEMON_TOKEN = "run-scoped-secret"');
+    // SEC: the credential must land in the env table, never inside the args array (readable via `ps`).
+    expect(toml.split('args = ')[1]!.split('\n')[0]).not.toContain('run-scoped-secret');
+  });
+
+  // Adversarial: a command/arg/env value carrying TOML-significant characters must not break the
+  // file's syntax or let a value escape its own string.
+  it('escapes backslashes, double quotes, and whitespace control characters in every string field', () => {
+    const hostile = {
+      command: 'C:\\bin\\jini-mcp.exe',
+      args: ['--label', 'say "hi"\tthen\nnewline\r'],
+      env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://d' },
+    };
+    const toml = buildCodexMcpServerToml(hostile);
+    expect(toml).toContain('command = "C:\\\\bin\\\\jini-mcp.exe"');
+    expect(toml).toContain('"say \\"hi\\"\\tthen\\nnewline\\r"');
+  });
+});
+
+describe('buildCodexHomeConfigToml', () => {
+  const entry = { command: 'jini-mcp', args: ['--quiet'], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://d' } };
+
+  it('produces just this run\'s block when there is no existing config (fresh Codex install)', () => {
+    expect(buildCodexHomeConfigToml(undefined, entry)).toBe(buildCodexMcpServerToml(entry));
+  });
+
+  it('appends after existing content that already ends with a newline, with exactly one blank-line separator', () => {
+    const existing = '[sandbox]\nmode = "workspace-write"\n';
+    const result = buildCodexHomeConfigToml(existing, entry);
+    expect(result).toBe(`${existing}\n${buildCodexMcpServerToml(entry)}`);
+  });
+
+  it('finishes a trailing partial line before appending, when existing content has no trailing newline', () => {
+    const existing = '[sandbox]\nmode = "workspace-write"';
+    const result = buildCodexHomeConfigToml(existing, entry);
+    expect(result).toBe(`${existing}\n\n${buildCodexMcpServerToml(entry)}`);
+  });
+
+  // Append-only, never parsed: every pre-existing setting — model choice, sandbox policy, the
+  // operator's own other MCP servers — must survive byte-for-byte, since this driver has no TOML
+  // parser to safely rewrite them with.
+  it('preserves unrelated existing sections byte-for-byte', () => {
+    const existing = '[model]\nselected = "gpt-5.4"\n\n[mcp_servers.supabase]\ncommand = "npx"\n';
+    const result = buildCodexHomeConfigToml(existing, entry);
+    expect(result).toContain(existing);
+    expect(result).toContain('[mcp_servers.jini]');
+  });
+
+  it('treats an empty existing string the same as undefined', () => {
+    expect(buildCodexHomeConfigToml('', entry)).toBe(buildCodexMcpServerToml(entry));
+  });
+});
+
+describe('resolveSourceCodexHomeDir', () => {
+  it('uses hostEnv.CODEX_HOME when set to a non-blank value', () => {
+    expect(resolveSourceCodexHomeDir({ CODEX_HOME: '/custom/codex-home' })).toBe('/custom/codex-home');
+  });
+
+  it('falls back to ~/.codex when CODEX_HOME is unset', () => {
+    expect(resolveSourceCodexHomeDir({})).toBe(path.join(os.homedir(), '.codex'));
+  });
+
+  it('treats a blank/whitespace-only CODEX_HOME the same as unset', () => {
+    expect(resolveSourceCodexHomeDir({ CODEX_HOME: '   ' })).toBe(path.join(os.homedir(), '.codex'));
+  });
+});
+
 describe('buildMcpBridgeDelivery', () => {
   const options: McpJsonInjectionOptions = {
     command: '/usr/bin/jini-mcp',
@@ -4856,14 +4954,31 @@ describe('buildMcpBridgeDelivery', () => {
     });
   });
 
+  // `'codex-toml'` carries no path — unlike `'claude-mcp-json'`'s deterministic `mcpJsonPath`, the
+  // scratch CODEX_HOME directory needs `fs.mkdtemp` (a real, non-deterministic effect), which this
+  // pure, synchronous dispatch cannot perform. `prepareCodexHomeIfNeeded` stages it separately.
+  it('maps codex-toml to a bare serverEntry with no path — the directory is staged separately', () => {
+    const delivery = buildMcpBridgeDelivery({ ...base, strategy: 'codex-toml' });
+    expect(delivery).toEqual({
+      kind: 'codex-toml',
+      serverEntry: {
+        command: '/usr/bin/jini-mcp',
+        args: ['--quiet'],
+        env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+      },
+    });
+  });
+
   it('threads the resolved credential into every mechanism, not just claude-mcp-json', () => {
     const withToken = { ...base, credential: 'run-scoped-secret' };
     const claude = buildMcpBridgeDelivery({ ...withToken, strategy: 'claude-mcp-json' });
     const acp = buildMcpBridgeDelivery({ ...withToken, strategy: 'acp-merge' });
     const env = buildMcpBridgeDelivery({ ...withToken, strategy: 'mimo-env-content' });
+    const codex = buildMcpBridgeDelivery({ ...withToken, strategy: 'codex-toml' });
     expect(claude).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
     expect(acp).toMatchObject({ mcpServers: [{ env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } }] });
     expect(env).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
+    expect(codex).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
   });
 
   // The registry-level invariant this whole task exists to establish: a def earns a working MCP
@@ -4878,9 +4993,10 @@ describe('buildMcpBridgeDelivery', () => {
     expect(undelivered).toEqual([]);
   });
 
-  it('covers the 8 acp-merge defs the review found getting zero MCP tools', () => {
+  it('covers the 9 acp-merge defs — the 8 the review found getting zero MCP tools, plus amr (a later oversight, same fix)', () => {
     const acpMergeDefs = AGENT_DEFS.filter((def) => def.externalMcpInjection === 'acp-merge');
     expect(acpMergeDefs.map((def) => def.id).sort()).toEqual([
+      'amr',
       'devin',
       'hermes',
       'kilo',
@@ -5102,6 +5218,280 @@ describe("AgentExecutor — env-content MCP bridge delivery (opencode / mimo)", 
     const env = spawnedEnv(spawnCalls);
     expect(env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(env.MIMOCODE_CONFIG_CONTENT).toBeUndefined();
+  });
+});
+
+describe("AgentExecutor — 'codex-toml' MCP bridge delivery (Codex CODEX_HOME relocation)", () => {
+  /** Fakes the `'codex-toml'`-only seams (`mkdtemp`/`readFile`/`writeFile`/`removeDir`) — the directory analogue of `createMcpFsSpies` above. `readFile` serves `config.toml`/`auth.json` content by path suffix and ENOENTs everything else; `mkdtemp` returns a fully deterministic `/fake/tmp/<prefix>` directory (no real disk I/O, matching this package's "no real filesystem by default in tests" convention). */
+  function createCodexHomeFsSpies(seed: { existingConfigToml?: string; existingAuthJson?: string } = {}): {
+    mcpJsonInjection: McpJsonInjectionOptions;
+    mkdtempCalls: string[];
+    readCalls: string[];
+    writeCalls: Array<{ path: string; content: string }>;
+    removeDirCalls: string[];
+  } {
+    const mkdtempCalls: string[] = [];
+    const readCalls: string[] = [];
+    const writeCalls: Array<{ path: string; content: string }> = [];
+    const removeDirCalls: string[] = [];
+    const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      args: ['--quiet'],
+      daemonUrl: 'http://127.0.0.1:4242',
+      mkdtemp: async (prefix: string) => {
+        mkdtempCalls.push(prefix);
+        return `/fake/tmp/${prefix}`;
+      },
+      readFile: async (p: string) => {
+        readCalls.push(p);
+        if (p.endsWith('config.toml')) {
+          if (seed.existingConfigToml === undefined) throw enoent();
+          return seed.existingConfigToml;
+        }
+        if (p.endsWith('auth.json')) {
+          if (seed.existingAuthJson === undefined) throw enoent();
+          return seed.existingAuthJson;
+        }
+        throw enoent();
+      },
+      writeFile: async (p: string, content: string) => {
+        writeCalls.push({ path: p, content });
+      },
+      removeDir: async (p: string) => {
+        removeDirCalls.push(p);
+      },
+    };
+    return { mcpJsonInjection, mkdtempCalls, readCalls, writeCalls, removeDirCalls };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('spawns normally with no CODEX_HOME set when mcpJsonInjection is unconfigured, even for a codex-toml def', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('does not stage CODEX_HOME for a def whose externalMcpInjection is not codex-toml, even when configured', async () => {
+    const { mcpJsonInjection, mkdtempCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'acp-merge' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls).toEqual([]);
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('stages a scratch config.toml (real config appended) and sets CODEX_HOME on the spawned env, strictly before spawn', async () => {
+    vi.stubEnv('CODEX_HOME', '/real/codex/home');
+    const { mcpJsonInjection, mkdtempCalls, readCalls, writeCalls } = createCodexHomeFsSpies({
+      existingConfigToml: '[sandbox]\nmode = "workspace-write"\n',
+    });
+    const def = createFakeDef({ id: 'codex', externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'codex', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls).toHaveLength(1);
+    expect(mkdtempCalls[0]).toContain(run.id);
+    const stagedDir = `/fake/tmp/${mkdtempCalls[0]}`;
+
+    expect(readCalls).toEqual(expect.arrayContaining(['/real/codex/home/config.toml']));
+    const configWrite = writeCalls.find((c) => c.path === `${stagedDir}/config.toml`);
+    expect(configWrite?.content).toContain('[sandbox]\nmode = "workspace-write"');
+    expect(configWrite?.content).toContain('[mcp_servers.jini]');
+    expect(configWrite?.content).toContain(`JINI_RUN_ID = "${run.id}"`);
+
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CODEX_HOME).toBe(stagedDir);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('treats a missing real config.toml (ENOENT) as "start fresh", not a failure', async () => {
+    const { mcpJsonInjection, writeCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    const configWrite = writeCalls.find((c) => c.path.endsWith('config.toml'));
+    expect(configWrite?.content).toBe(
+      buildCodexMcpServerToml({
+        command: '/usr/bin/jini-mcp',
+        args: ['--quiet'],
+        env: { JINI_RUN_ID: run.id, JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+      }),
+    );
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('copies the real auth.json into the scratch CODEX_HOME so the spawned CLI stays logged in', async () => {
+    const { mcpJsonInjection, writeCalls } = createCodexHomeFsSpies({ existingAuthJson: '{"token":"real-login"}' });
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    const authWrite = writeCalls.find((c) => c.path.endsWith('auth.json'));
+    expect(authWrite?.content).toBe('{"token":"real-login"}');
+  });
+
+  // Best-effort by design: a real headless spawn against a CODEX_HOME with no auth.json at all was
+  // confirmed (installed Codex CLI 0.151.0) to fail fast with a structured 401, never hang — so a
+  // missing/unreadable credential must not block staging or the run.
+  it('spawns normally with no auth.json staged when the real install has no stored login', async () => {
+    const { mcpJsonInjection, writeCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(writeCalls.some((c) => c.path.endsWith('auth.json'))).toBe(false);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('fails the run before spawn (never a bare throw) when mkdtemp rejects', async () => {
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      daemonUrl: 'http://127.0.0.1:4242',
+      mkdtemp: async () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    };
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+    expect(spawnCalls).toHaveLength(0);
+    const events = await collectEvents(lifecycle, run.id);
+    expect(events.find((e) => e.kind === 'end')?.payload).toMatchObject({ status: 'failed', resumable: false });
+  });
+
+  // Adversarial (partial-failure state leak): a failure AFTER mkdtemp succeeds must not leave an
+  // orphaned directory that may already hold a copied credential.
+  it('removes the already-created directory when writing config.toml fails, so a partial stage does not leak', async () => {
+    const removeDirCalls: string[] = [];
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const mcpJsonInjection: McpJsonInjectionOptions = {
+      command: '/usr/bin/jini-mcp',
+      daemonUrl: 'http://127.0.0.1:4242',
+      mkdtemp: async (prefix: string) => `/fake/tmp/${prefix}`,
+      readFile: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+      writeFile: async () => {
+        throw new Error('EACCES: permission denied');
+      },
+      removeDir: async (p: string) => void removeDirCalls.push(p),
+    };
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+    expect(spawnCalls).toHaveLength(0);
+    expect(removeDirCalls).toHaveLength(1);
+    expect(removeDirCalls[0]).toContain(run.id);
+  });
+
+  it('resolves a per-run credential and writes it into the TOML env table, never into spawn argv', async () => {
+    const { mcpJsonInjection, writeCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      mcpJsonInjection: { ...mcpJsonInjection, credential: (runId: string) => `token-for-${runId}` },
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    const configWrite = writeCalls.find((c) => c.path.endsWith('config.toml'));
+    expect(configWrite?.content).toContain(`JINI_DAEMON_TOKEN = "token-for-${run.id}"`);
+    expect(JSON.stringify(spawnCalls[0]!.args)).not.toContain(`token-for-${run.id}`);
+  });
+
+  it('removes the scratch CODEX_HOME once the child closes, so a copied credential is not left on disk', async () => {
+    const { mcpJsonInjection, writeCalls, removeDirCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ streamFormat: 'plain', externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, child } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+    expect(removeDirCalls).toEqual([]);
+
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(run.id);
+
+    const stagedDir = writeCalls.find((c) => c.path.endsWith('config.toml'))!.path.replace('/config.toml', '');
+    expect(removeDirCalls).toEqual([stagedDir]);
+  });
+
+  it('removes the scratch CODEX_HOME on a pre-spawn failure after it was already staged', async () => {
+    const { mcpJsonInjection, writeCalls, removeDirCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor } = createHarness({ def, mcpJsonInjection, spawnThrows: new Error('EACCES') });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+
+    const stagedDir = writeCalls.find((c) => c.path.endsWith('config.toml'))!.path.replace('/config.toml', '');
+    expect(removeDirCalls).toEqual([stagedDir]);
+  });
+
+  // Removal is best-effort cleanup of a directory the run no longer needs. It must not be able to
+  // do what the guarded post-close steps already exist to prevent — see the identical claude-mcp-json
+  // precedent above.
+  it('still finishes the run when removing the scratch CODEX_HOME fails', async () => {
+    const { mcpJsonInjection } = createCodexHomeFsSpies();
+    const def = createFakeDef({ streamFormat: 'plain', externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor, child, onCleanupFailure } = createHarness({
+      def,
+      mcpJsonInjection: {
+        ...mcpJsonInjection,
+        removeDir: async () => {
+          throw new Error('EPERM: operation not permitted');
+        },
+      },
+    });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+
+    child.emit('close', 0, null);
+    expect((await lifecycle.waitForTerminal(run.id)).state).toBe('succeeded');
+    expect(onCleanupFailure.mock.calls[0]![0]).toMatchObject({ runId: run.id, phase: 'staged-file-cleanup' });
+  });
+
+  // A run id reaches this driver from a host and lands in a mkdtemp prefix. Anything path-like in
+  // it must not be able to steer the staged directory outside os.tmpdir() — same discipline as
+  // claude-mcp-json's identical run-id-in-a-filename guard above.
+  it('sanitizes a path-like run id out of the mkdtemp prefix', async () => {
+    const { mcpJsonInjection, mkdtempCalls } = createCodexHomeFsSpies();
+    const def = createFakeDef({ externalMcpInjection: 'codex-toml' });
+    const { lifecycle, executor } = createHarness({ def, mcpJsonInjection });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1', runId: '../../etc/evil' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls[0]).not.toContain('..');
+    expect(mkdtempCalls[0]).not.toContain('/');
   });
 });
 

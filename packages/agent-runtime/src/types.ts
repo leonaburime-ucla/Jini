@@ -336,6 +336,23 @@ export type RuntimeAgentDef = {
   //                            `OPENCODE_CONFIG_CONTENT` in the spawn env.
   //   'mimo-env-content'     — same schema as opencode-env-content but
   //                            emitted under MiMo's own env namespace.
+  //   'codex-toml'           — Codex CLI has no per-run `--mcp-config`-shaped
+  //                            flag; its own native MCP config is a
+  //                            `[mcp_servers.<name>]` TOML table under
+  //                            `CODEX_HOME` (`~/.codex/config.toml` by
+  //                            default). The caller relocates `CODEX_HOME`
+  //                            to a fresh, run-scoped scratch directory
+  //                            (never the real one) carrying a TOML config
+  //                            seeded from the real install plus this run's
+  //                            bridge table, and a best-effort copy of the
+  //                            real `auth.json` so the spawned CLI is still
+  //                            logged in. See `@jini-ai/daemon`'s
+  //                            `agent-executor.ts` (`prepareCodexHomeForRun`)
+  //                            for why a relocated `CODEX_HOME` — not
+  //                            `codex mcp add`, which mutates the operator's
+  //                            real global config — is the mechanism, and for
+  //                            the live verification that this never blocks
+  //                            on an interactive trust/login prompt.
   //
   // Leave undefined for adapters that have no native MCP transport wired
   // yet.
@@ -343,7 +360,8 @@ export type RuntimeAgentDef = {
     | 'claude-mcp-json'
     | 'acp-merge'
     | 'opencode-env-content'
-    | 'mimo-env-content';
+    | 'mimo-env-content'
+    | 'codex-toml';
   installUrl?: string;
   docsUrl?: string;
   // When `false`, a model picker should hide the "Custom (fill below)"

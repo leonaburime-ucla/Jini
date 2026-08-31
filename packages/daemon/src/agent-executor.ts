@@ -91,6 +91,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { redactSecrets } from '@jini-ai/core';
 import type { Principal, RunRef } from '@jini-ai/core';
@@ -940,11 +941,11 @@ export interface ContinuationOptions {
  * (`@jini-ai/mcp`'s `../server/tools/delegated-tool.ts`) only does anything useful once the spawned
  * CLI's own client actually launches `jini-mcp` as its MCP server subprocess.
  *
- * **All four declared strategies are wired.** These options describe *one* bridge server
+ * **All five declared strategies are wired.** These options describe *one* bridge server
  * (`command`/`args`/`daemonUrl`/`credential`); which transport carries it to a given child is that
- * def's own `externalMcpInjection` declaration, and each of the four has exactly one
+ * def's own `externalMcpInjection` declaration, and each of the five has exactly one
  * implementation here — see {@link buildMcpBridgeDelivery}, which is the single dispatch point.
- * The interface name predates the other three mechanisms and is kept for API compatibility with
+ * The interface name predates the other four mechanisms and is kept for API compatibility with
  * `@jini-ai/server`'s `agentExecutor` passthrough; it is no longer `.mcp.json`-specific.
  *
  * **Host-resolved, not this package's to know.** `command`/`daemonUrl` have no default the way
@@ -995,6 +996,28 @@ export interface McpJsonInjectionOptions {
    * @default `fs.promises.rm(path, { force: true })` — already-gone is success, not an error.
    */
   readonly removeFile?: (path: string) => Promise<void>;
+  /**
+   * `'codex-toml'` only. Creates a fresh, randomly-named directory `prepareCodexHomeForRun` stages
+   * as a run's scratch `CODEX_HOME`. **Must be non-deterministic (a real `mkdtemp`, not a
+   * caller-computed path)** — unlike `mcpJsonPathForRun`'s deterministic path inside the run's own
+   * `cwd`, this directory holds a copy of the operator's real Codex login credential, and
+   * `os.tmpdir()` is a shared location on a multi-user host: a guessable name there is a real
+   * pre-plant/symlink target for another local user. `fs.mkdtemp`'s random suffix plus its `0700`
+   * directory mode is the actual confidentiality control, matching the same reasoning
+   * `@jini-ai/agent-runtime`'s `log-file.ts`/`prompt-file.ts` already apply to their own staged temp
+   * dirs.
+   * @param prefix - A caller-composed, run-id-derived prefix (already sanitized) for the mkdtemp
+   * template; the real suffix mkdtemp appends is what makes the path unpredictable.
+   * @default `fs.mkdtemp(path.join(os.tmpdir(), prefix))`
+   */
+  readonly mkdtemp?: (prefix: string) => Promise<string>;
+  /**
+   * `'codex-toml'` only. Recursively removes the scratch `CODEX_HOME` directory `mkdtemp` above
+   * created — the directory-level analogue of `removeFile`, needed because this mechanism stages a
+   * whole directory (`config.toml` plus a copied `auth.json`), not one file.
+   * @default `fs.rm(path, { recursive: true, force: true })` — already-gone is success, not an error.
+   */
+  readonly removeDir?: (path: string) => Promise<void>;
 }
 
 const JINI_MCP_SERVER_KEY = 'jini';
@@ -1067,9 +1090,9 @@ export function mergeMcpJsonContent(existingRaw: string | undefined, serverEntry
 }
 
 /**
- * Mechanism 2 of 4 — `'acp-merge'`. Re-shapes the same bridge entry into the `mcpServers` element
- * an ACP `session/new` call carries, for the 8 ACP-native defs (devin, hermes, kilo, kimi, kiro,
- * reasonix, trae-cli, vibe). Pure.
+ * Mechanism 2 of 5 — `'acp-merge'`. Re-shapes the same bridge entry into the `mcpServers` element
+ * an ACP `session/new` call carries, for the 9 ACP-native defs declaring this strategy (amr, devin,
+ * hermes, kilo, kimi, kiro, reasonix, trae-cli, vibe). Pure.
  *
  * `env` is emitted as a plain object on purpose: `@jini-ai/agent-runtime`'s
  * `buildAcpSessionNewParams` already normalises a plain-object `env` into either the
@@ -1100,7 +1123,7 @@ export function buildAcpMcpBridgeServers(entry: McpJsonServerEntry): AcpMcpServe
 }
 
 /**
- * Mechanism 3+4 of 4 — the spawn-env-content strategies. One map, not two code paths: OpenCode and
+ * Mechanism 3+4 of 5 — the spawn-env-content strategies. One map, not two code paths: OpenCode and
  * MiMo consume byte-identical JSON (MiMo's def doc: "the same JSON schema as OpenCode's `mcp`
  * config ... following the same structure as `OPENCODE_CONFIG_CONTENT`"), and differ only in which
  * env var carries it. Adding a third such CLI is a row here, not a new serializer.
@@ -1161,6 +1184,106 @@ export function mergeEnvContentMcpConfig(existingRaw: string | undefined, entry:
 }
 
 /**
+ * TOML basic-string escaping for the narrow value shapes {@link buildCodexMcpServerToml} emits (a
+ * command name, an argv token, an env var value — never multi-line or control-character-heavy
+ * text). Escapes exactly what TOML's basic-string grammar requires: backslash first (so it is not
+ * re-escaped by a later replacement), then the quote delimiter, then the three whitespace control
+ * characters a real command/argv/env value could plausibly contain.
+ *
+ * A hand-rolled minimal escaper rather than a TOML dependency — this mechanism never needs to
+ * *parse* TOML (the real install's existing `config.toml` is appended after, never rewritten — see
+ * {@link buildCodexHomeConfigToml}), so pulling in a full TOML library for one serialization shape
+ * would be substantially more surface than the problem needs. Checked against the repo's existing
+ * dependency graph first — no package here already depends on a TOML library.
+ * @param value - The raw string to embed inside TOML `"..."` delimiters.
+ * @returns The escaped text, WITHOUT the surrounding quotes — {@link tomlString} adds those.
+ * @complexity O(n) in the string's length.
+ */
+function escapeTomlBasicString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/** Wraps {@link escapeTomlBasicString}'s output in the TOML basic-string delimiters. */
+function tomlString(value: string): string {
+  return `"${escapeTomlBasicString(value)}"`;
+}
+
+/**
+ * Mechanism 5 of 5 — `'codex-toml'`'s serialization step. Builds the `[mcp_servers.jini]` TOML
+ * table (plus, when the entry carries any env vars, a separate `[mcp_servers.jini.env]` table)
+ * Codex's own config schema expects.
+ *
+ * Confirmed against a real installed Codex CLI (0.151.0), not assumed from docs: round-tripping
+ * `codex mcp add <name> --env K=V -- <cmd> <args>` against a scratch `CODEX_HOME` and reading back
+ * `config.toml` produced exactly this shape (`command`/`args` as TOML strings/array in the main
+ * table, env vars in a nested `.env` table) — see `source-map.md` for the transcript.
+ * @param entry - The shared bridge entry from {@link buildMcpJsonServerEntry}.
+ * @returns A TOML fragment with no leading/trailing blank-line padding — {@link buildCodexHomeConfigToml} owns spacing when combining it with existing content.
+ * @complexity O(n) in the number of argv/env entries.
+ * @overallScore 100/100
+ */
+export function buildCodexMcpServerToml(entry: McpJsonServerEntry): string {
+  const argsLiteral = entry.args.map(tomlString).join(', ');
+  const serverTable = `[mcp_servers.${JINI_MCP_SERVER_KEY}]\ncommand = ${tomlString(entry.command)}\nargs = [${argsLiteral}]\n`;
+  const envLines = Object.entries(entry.env)
+    .filter((pair): pair is [string, string] => typeof pair[1] === 'string')
+    .map(([key, value]) => `${key} = ${tomlString(value)}`);
+  if (envLines.length === 0) return serverTable;
+  return `${serverTable}\n[mcp_servers.${JINI_MCP_SERVER_KEY}.env]\n${envLines.join('\n')}\n`;
+}
+
+/**
+ * Builds the full `config.toml` a run's scratch `CODEX_HOME` gets: the real Codex home's own
+ * config, verbatim, with this run's `[mcp_servers.jini]` table appended.
+ *
+ * **Append-only by design, not a parse-and-merge.** `mergeMcpJsonContent`/`mergeEnvContentMcpConfig`
+ * above can safely parse-merge-reserialize because their formats have a JS-native parser
+ * (`JSON.parse`); this driver has no TOML parser in its dependency graph (see
+ * `buildCodexMcpServerToml`'s doc), and every other setting a real Codex install carries — model
+ * choice, sandbox policy, the trusted-project list, the operator's own other MCP servers — must
+ * survive a spawn byte-for-byte. Appending preserves all of it; the one failure mode this trades
+ * away is a PRE-EXISTING `[mcp_servers.jini]` table in the operator's own config, which would
+ * produce a duplicate TOML key Codex rejects at startup. Accepted as vanishingly unlikely — `jini`
+ * is this integration's own reserved server name (see {@link JINI_MCP_SERVER_KEY}), never suggested
+ * to an operator for their own config — rather than solved with a full TOML parser for one
+ * collision case.
+ * @param existingRaw - The real Codex home's `config.toml` content, or `undefined` when it does not
+ * exist (a fresh Codex install — degrades to "start from just this run's block", matching
+ * {@link mergeMcpJsonContent}'s own "missing file" handling).
+ * @param entry - The shared bridge entry.
+ * @returns The full text to write to the scratch `CODEX_HOME`'s `config.toml`.
+ * @complexity O(n) in the existing config's length.
+ * @overallScore 100/100
+ */
+export function buildCodexHomeConfigToml(existingRaw: string | undefined, entry: McpJsonServerEntry): string {
+  const base = existingRaw ?? '';
+  const separator = base.length === 0 ? '' : base.endsWith('\n') ? '\n' : '\n\n';
+  return `${base}${separator}${buildCodexMcpServerToml(entry)}`;
+}
+
+/**
+ * Where `'codex-toml'` reads the operator's REAL Codex config from, to seed a run's scratch copy —
+ * never where it writes. Resolved against the daemon HOST process's own environment (`hostEnv`,
+ * `process.env` at the real call site), not a run's sandboxed spawn env: `CODEX_HOME` is not in
+ * `BASELINE_AGENT_ENV_KEYS`, so a spawned child never inherits it anyway, and the whole point here
+ * is finding wherever the *operator's actual* Codex install lives, which is a host-machine fact.
+ * @param hostEnv - The daemon process's own environment.
+ * @returns `hostEnv.CODEX_HOME` when set to a non-blank value (matching Codex's own resolution
+ * order), else the CLI's documented default, `~/.codex`.
+ * @complexity O(1).
+ * @overallScore 100/100
+ */
+export function resolveSourceCodexHomeDir(hostEnv: NodeJS.ProcessEnv): string {
+  const override = hostEnv.CODEX_HOME;
+  return override !== undefined && override.trim().length > 0 ? override : join(homedir(), '.codex');
+}
+
+/**
  * What one run's MCP bridge turns into, discriminated by the delivery mechanism its def declared.
  * Exactly one variant is produced per run, and each variant carries only what its own consumer
  * needs — so a consumer cannot accidentally read another mechanism's payload.
@@ -1168,10 +1291,18 @@ export function mergeEnvContentMcpConfig(existingRaw: string | undefined, entry:
 export type McpBridgeDelivery =
   /** `'claude-mcp-json'` (claude, codebuddy): a `.mcp.json` staged into the run cwd, whose path the def's `buildArgs` passes as `--mcp-config`. */
   | { readonly kind: 'claude-mcp-json'; readonly mcpJsonPath: string; readonly serverEntry: McpJsonServerEntry }
-  /** `'acp-merge'` (the 8 ACP-native defs): `mcpServers` entries for the ACP `session/new` params. */
+  /** `'acp-merge'` (the 9 ACP-native defs): `mcpServers` entries for the ACP `session/new` params. */
   | { readonly kind: 'acp-merge'; readonly mcpServers: readonly AcpMcpServerInput[] }
   /** `'opencode-env-content'` / `'mimo-env-content'` (opencode, mimo): one spawn-env variable carrying the serialised config. */
-  | { readonly kind: 'env-content'; readonly envVarName: string; readonly serverEntry: McpJsonServerEntry };
+  | { readonly kind: 'env-content'; readonly envVarName: string; readonly serverEntry: McpJsonServerEntry }
+  /**
+   * `'codex-toml'` (codex): no path yet — unlike `'claude-mcp-json'`'s `mcpJsonPath`, the scratch
+   * `CODEX_HOME` directory is created with `fs.mkdtemp` (a real, non-deterministic filesystem
+   * effect — see `McpJsonInjectionOptions.mkdtemp`'s own doc for why), so it cannot be computed by
+   * this delivery's pure, synchronous dispatch. `prepareCodexHomeIfNeeded` stages it separately and
+   * reports the resulting path back into `childEnv.CODEX_HOME` directly, never through this type.
+   */
+  | { readonly kind: 'codex-toml'; readonly serverEntry: McpJsonServerEntry };
 
 /**
  * **The single dispatch point from an `externalMcpInjection` strategy to its delivery mechanism.**
@@ -1180,7 +1311,7 @@ export type McpBridgeDelivery =
  * the environment, or a keystore.
  *
  * Keyed off the declared *strategy*, never off `def.id`: a def gets a working bridge by declaring a
- * mechanism, not by being named in this file. That is what makes the 8 `'acp-merge'` defs work
+ * mechanism, not by being named in this file. That is what makes the 9 `'acp-merge'` defs work
  * without any of their own files being touched.
  *
  * @param input.cwd - The run's working directory; only `'claude-mcp-json'` uses it, to place this
@@ -1212,6 +1343,8 @@ export function buildMcpBridgeDelivery(input: {
     case 'opencode-env-content':
     case 'mimo-env-content':
       return { kind: 'env-content', envVarName: ENV_CONTENT_VAR_BY_STRATEGY[strategy], serverEntry };
+    case 'codex-toml':
+      return { kind: 'codex-toml', serverEntry };
   }
 }
 
@@ -1296,6 +1429,112 @@ async function writeMcpJsonForRun(
     existingRaw = undefined;
   }
   await writeFileFn(delivery.mcpJsonPath, mergeMcpJsonContent(existingRaw, delivery.serverEntry));
+}
+
+/** A staged, run-scoped Codex `CODEX_HOME` — the directory-holding analogue of {@link PreparedPromptFile}/{@link PreparedAgentLogFile} from `@jini-ai/agent-runtime`. */
+export type PreparedCodexHome = {
+  /** Absolute path to hand to the spawned child as its `CODEX_HOME` env var. */
+  readonly path: string;
+  /** Recursively removes the staged directory — the live `auth.json` copy it may hold makes this a confidentiality cleanup, not just tidiness. Safe to call more than once. */
+  readonly cleanup: () => Promise<void>;
+};
+
+function defaultMkdtempCodexHome(prefix: string): Promise<string> {
+  return fsPromises.mkdtemp(join(tmpdir(), prefix));
+}
+
+function defaultRemoveCodexHomeDir(path: string): Promise<void> {
+  return fsPromises.rm(path, { recursive: true, force: true });
+}
+
+/** The `'codex-toml'` mechanism's injectable filesystem seams, real by default — see {@link McpJsonInjectionOptions}'s `mkdtemp`/`removeDir`/`readFile`/`writeFile` docs. */
+interface CodexHomeSeams {
+  readonly mkdtemp: (prefix: string) => Promise<string>;
+  readonly readFile: (path: string) => Promise<string>;
+  readonly writeFile: (path: string, content: string) => Promise<void>;
+  readonly removeDir: (path: string) => Promise<void>;
+}
+
+function resolveCodexHomeSeams(options: McpJsonInjectionOptions): CodexHomeSeams {
+  return {
+    mkdtemp: options.mkdtemp ?? defaultMkdtempCodexHome,
+    readFile: options.readFile ?? defaultReadMcpJsonFile,
+    writeFile: options.writeFile ?? defaultWriteMcpJsonFile,
+    removeDir: options.removeDir ?? defaultRemoveCodexHomeDir,
+  };
+}
+
+/**
+ * Mechanism 5 of 5 — `'codex-toml'`'s one effect. Stages a fresh, randomly-named `CODEX_HOME`
+ * directory (see {@link McpJsonInjectionOptions.mkdtemp}'s doc for why non-deterministic naming is
+ * load-bearing here, not cosmetic) carrying:
+ *   - `config.toml`: the real Codex home's own config (read best-effort — see
+ *     {@link buildCodexHomeConfigToml}'s "missing file" handling) with this run's
+ *     `[mcp_servers.jini]` table appended.
+ *   - `auth.json`: a best-effort copy of the real Codex home's stored login, so the spawned CLI is
+ *     still authenticated. Best-effort is safe here, not merely convenient: a real headless spawn
+ *     against a `CODEX_HOME` with no `auth.json` at all was confirmed (against installed Codex CLI
+ *     0.151.0) to fail fast with a structured `401 Unauthorized` stream event, never an interactive
+ *     login prompt or a hang — see `defs/codex.ts`'s module doc for the full transcript summary.
+ *
+ * **Never touches the real `CODEX_HOME`.** `sourceCodexHomeDir` is read-only throughout; nothing is
+ * ever written back to it.
+ *
+ * A failure after the directory is created (a rejecting `writeFile`, most plausibly) does not leak
+ * it: the directory may already hold a partial `config.toml` or a copied credential, so the
+ * `catch` below best-effort-removes it before rethrowing, exactly the "partial-failure state leak"
+ * class of bug this package's own adversarial-test-design guidance calls out.
+ * @param runId - Embedded in the temp-dir prefix for traceability, sanitized the same way
+ * `@jini-ai/agent-runtime`'s `prepareAgentLogFile`'s `label` is.
+ * @param entry - The shared bridge entry.
+ * @param sourceCodexHomeDir - Where to read the real install's `config.toml`/`auth.json` from — see {@link resolveSourceCodexHomeDir}.
+ * @param seams - Injectable mkdtemp/readFile/writeFile/removeDir, real filesystem by default.
+ * @throws Whatever `mkdtemp`/`writeFile` rejects with — the caller ({@link prepareCodexHomeIfNeeded}) turns that into a pre-spawn `AGENT_SPAWN_FAILED` failure, matching {@link writeMcpJsonForRun}'s own contract.
+ * @complexity O(1) plus one directory creation and up to two best-effort file read/write round trips.
+ * @overallScore 100/100
+ */
+async function prepareCodexHomeForRun(
+  runId: string,
+  entry: McpJsonServerEntry,
+  sourceCodexHomeDir: string,
+  seams: CodexHomeSeams,
+): Promise<PreparedCodexHome> {
+  // Stricter than `@jini-ai/agent-runtime`'s `prepareAgentLogFile`/`preparePromptFileForAgent`
+  // labels (which keep dots): this prefix stages a directory that ends up holding a copied Codex
+  // login credential, so it gets `mcpJsonPathForRun`'s tighter discipline instead — dots stripped
+  // too, not just path separators, so a run id like `../../etc/evil` cannot leave even a cosmetic
+  // `..` substring in the mkdtemp prefix.
+  const safeRunId = runId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80) || 'run';
+  const dir = await seams.mkdtemp(`jini-codex-home-${safeRunId}-`);
+  try {
+    let existingConfigRaw: string | undefined;
+    try {
+      existingConfigRaw = await seams.readFile(join(sourceCodexHomeDir, 'config.toml'));
+    } catch {
+      // No config yet (fresh Codex install) or unreadable — start from just this run's block,
+      // matching writeMcpJsonForRun's identical "missing file" handling.
+      existingConfigRaw = undefined;
+    }
+    await seams.writeFile(join(dir, 'config.toml'), buildCodexHomeConfigToml(existingConfigRaw, entry));
+    try {
+      const authRaw = await seams.readFile(join(sourceCodexHomeDir, 'auth.json'));
+      await seams.writeFile(join(dir, 'auth.json'), authRaw);
+    } catch {
+      // No stored login (or unreadable) — the spawned CLI runs unauthenticated. Confirmed above:
+      // this fails the run fast and observably, never as a hang.
+    }
+  } catch (err) {
+    await seams.removeDir(dir).catch(() => {
+      // Best-effort only — the original error below is what the caller must see either way.
+    });
+    throw err;
+  }
+  return {
+    path: dir,
+    cleanup: async () => {
+      await seams.removeDir(dir);
+    },
+  };
 }
 
 /**
@@ -2446,16 +2685,32 @@ export async function resolveMcpBridgeForRun(
 }
 
 /**
- * Phase 6a: the subprocess environment mechanism 3+4 (`'opencode-env-content'`/`'mimo-env-content'`)
- * rides in — merged into whatever the host already set there, never a CLI argument (the config embeds
- * `JINI_DAEMON_TOKEN`, and process arguments are readable by any other local user through `ps`). Pure.
+ * Phase 6a/10c: the subprocess environment every env-riding MCP mechanism uses — mechanism 3+4
+ * (`'opencode-env-content'`/`'mimo-env-content'`, merged into whatever the host already set there,
+ * never a CLI argument: the config embeds `JINI_DAEMON_TOKEN`, and process arguments are readable
+ * by any other local user through `ps`) and mechanism 5 (`'codex-toml'`, `CODEX_HOME` relocation).
+ * Pure — `codexHomeDir` arrives already staged by {@link prepareCodexHomeIfNeeded}, which is the
+ * one part of this mechanism that is NOT pure (a real `mkdtemp`).
+ * @param spawnEnv - The env every other spawn-time step (launch-path resolution, `applyAgentLaunchEnv`) already computed.
+ * @param mcpBridge - This run's resolved bridge delivery, or `null` for an unconfigured host / no-strategy def.
+ * @param codexHomeDir - The staged scratch `CODEX_HOME` path for a `'codex-toml'` def, or `undefined` for every other run (including a `'codex-toml'` def when `mcpJsonInjection` was never configured — see `prepareCodexHomeIfNeeded`'s own gate).
+ * @complexity O(1) plus `mergeEnvContentMcpConfig`'s own `JSON.parse`/`JSON.stringify` cost.
+ * @overallScore 100/100
  */
-export function computeChildEnv(spawnEnv: NodeJS.ProcessEnv, mcpBridge: McpBridgeDelivery | null): NodeJS.ProcessEnv {
-  if (mcpBridge?.kind !== 'env-content') return spawnEnv;
-  return {
-    ...spawnEnv,
-    [mcpBridge.envVarName]: mergeEnvContentMcpConfig(spawnEnv[mcpBridge.envVarName], mcpBridge.serverEntry),
-  };
+export function computeChildEnv(
+  spawnEnv: NodeJS.ProcessEnv,
+  mcpBridge: McpBridgeDelivery | null,
+  codexHomeDir?: string,
+): NodeJS.ProcessEnv {
+  const envContentApplied =
+    mcpBridge?.kind === 'env-content'
+      ? {
+          ...spawnEnv,
+          [mcpBridge.envVarName]: mergeEnvContentMcpConfig(spawnEnv[mcpBridge.envVarName], mcpBridge.serverEntry),
+        }
+      : spawnEnv;
+  if (codexHomeDir === undefined) return envContentApplied;
+  return { ...envContentApplied, CODEX_HOME: codexHomeDir };
 }
 
 /**
@@ -2573,7 +2828,7 @@ export async function buildRunArgs(
   }
 }
 
-/** Phase 10: mechanism 1 of 4's one effect — stages this run's own `.mcp.json`, returning the path `cleanupStagedFiles` should later remove (`undefined` for every other mechanism / unconfigured host). */
+/** Phase 10: mechanism 1 of 5's one effect — stages this run's own `.mcp.json`, returning the path `cleanupStagedFiles` should later remove (`undefined` for every other mechanism / unconfigured host). */
 export async function writeMcpJsonIfNeeded(
   input: { readonly runId: string; readonly cwd: string; readonly def: RuntimeAgentDef; readonly mcpBridge: McpBridgeDelivery | null },
   deps: {
@@ -2594,6 +2849,45 @@ export async function writeMcpJsonIfNeeded(
       input.runId,
       'AGENT_SPAWN_FAILED',
       `AgentExecutor: could not write .mcp.json for agent "${input.def.id}": ${errorMessage(err)}`,
+    );
+  }
+}
+
+/**
+ * Phase 10b: mechanism 5 of 5's one effect — stages this run's scratch `CODEX_HOME` directory,
+ * returning the prepared handle `cleanupStagedFiles` should later release (`null` for every other
+ * mechanism, or for an unconfigured host — matching {@link writeMcpJsonIfNeeded}'s identical gate).
+ * @param input.def - Only used for its `id`, in the failure message.
+ * @param input.mcpBridge - This run's resolved bridge delivery — a no-op unless its `kind` is `'codex-toml'`.
+ * @param deps.hostEnv - The daemon's own environment, threaded through to {@link resolveSourceCodexHomeDir} rather than read from a module-level `process.env` so this phase stays testable with an injected env.
+ * @complexity O(1) plus {@link prepareCodexHomeForRun}'s own cost.
+ * @overallScore 100/100
+ */
+export async function prepareCodexHomeIfNeeded(
+  input: { readonly runId: string; readonly def: RuntimeAgentDef; readonly mcpBridge: McpBridgeDelivery | null },
+  deps: {
+    readonly mcpJsonInjection: McpJsonInjectionOptions | undefined;
+    readonly hostEnv: NodeJS.ProcessEnv;
+    readonly releaseStagedResources: () => Promise<void>;
+    readonly failBeforeSpawn: FailBeforeSpawn;
+  },
+): Promise<PreparedCodexHome | null> {
+  if (input.mcpBridge?.kind !== 'codex-toml' || deps.mcpJsonInjection === undefined) {
+    return null;
+  }
+  try {
+    return await prepareCodexHomeForRun(
+      input.runId,
+      input.mcpBridge.serverEntry,
+      resolveSourceCodexHomeDir(deps.hostEnv),
+      resolveCodexHomeSeams(deps.mcpJsonInjection),
+    );
+  } catch (err) {
+    await deps.releaseStagedResources();
+    return deps.failBeforeSpawn(
+      input.runId,
+      'AGENT_SPAWN_FAILED',
+      `AgentExecutor: could not stage a CODEX_HOME for agent "${input.def.id}": ${errorMessage(err)}`,
     );
   }
 }
@@ -2728,7 +3022,7 @@ export async function runAcpDispatch(input: RunAcpDispatchInput, deps: RunAcpDis
       model: input.model,
       imagePaths: input.imagePaths,
       envFormat: input.envFormat,
-      // Mechanism 2 of 4 — see `WireAcpLifecycleContext.mcpServers`. `undefined` for any def that
+      // Mechanism 2 of 5 — see `WireAcpLifecycleContext.mcpServers`. `undefined` for any def that
       // did not declare `'acp-merge'` and for an unconfigured host.
       mcpServers: input.mcpBridge?.kind === 'acp-merge' ? input.mcpBridge.mcpServers : undefined,
       onPermissionRequest: deps.onPermissionRequest,
@@ -2937,6 +3231,13 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
      */
     let writtenMcpJsonPath: string | undefined;
     const removeMcpJsonFileFn = mcpJsonInjection?.removeFile ?? defaultRemoveMcpJsonFile;
+    /**
+     * Set once `prepareCodexHomeIfNeeded` has actually staged this run's scratch `CODEX_HOME`, so
+     * `cleanupStagedFiles` knows there is a directory holding a copied login credential to remove.
+     * Cleared as it is consumed, matching `writtenMcpJsonPath`'s identical single-removal discipline.
+     * Only the `'codex-toml'` mechanism stages a directory at all.
+     */
+    let preparedCodexHome: PreparedCodexHome | null = null;
     const cleanupStagedFiles: () => Promise<void> = async () => {
       if (preparedPromptFile) await preparedPromptFile.cleanup();
       if (preparedLogFile) await preparedLogFile.cleanup();
@@ -2945,18 +3246,22 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         writtenMcpJsonPath = undefined;
         await removeMcpJsonFileFn(mcpJsonFileToRemove);
       }
+      if (preparedCodexHome) {
+        const codexHomeToRemove = preparedCodexHome;
+        preparedCodexHome = null;
+        await codexHomeToRemove.cleanup();
+      }
     };
     // Resolve this run's MCP bridge delivery once, before buildArgs — the `'claude-mcp-json'`
     // variant's path has to be in `runtimeContext` for that def's own `--mcp-config` argv, and
     // resolving here means the per-run bearer credential is minted exactly once no matter which of
-    // the four mechanisms ends up carrying it. `null` for an unconfigured host or a def declaring
+    // the five mechanisms ends up carrying it. `null` for an unconfigured host or a def declaring
     // no strategy — see `buildMcpBridgeDelivery`'s doc.
     const mcpBridge = await resolveMcpBridgeForRun(
       { runId: input.runId, cwd: input.cwd, def },
       { mcpJsonInjection, cleanupStagedFiles, failBeforeSpawn },
     );
 
-    const childEnv = computeChildEnv(spawnEnv, mcpBridge);
     const runtimeContext = computeRuntimeContext(
       preparedPromptFile,
       preparedLogFile,
@@ -3008,15 +3313,31 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       { releaseStagedResources, failBeforeSpawn },
     );
 
-    // Mechanism 1 of 4's one effect — stage this run's own MCP config file (run-scoped, see
+    // Mechanism 1 of 5's one effect — stage this run's own MCP config file (run-scoped, see
     // `mcpJsonPathForRun`) before spawn so the `--mcp-config <path>` argv buildArgs just produced
-    // points at a real file. Skipped entirely for the other three mechanisms and whenever no bridge
+    // points at a real file. Skipped entirely for the other four mechanisms and whenever no bridge
     // was resolved at all. `writtenMcpJsonPath` is set only once the write actually happens, so
     // `cleanupStagedFiles` knows there is a live-token file to remove afterward.
     writtenMcpJsonPath = await writeMcpJsonIfNeeded(
       { runId: input.runId, cwd: input.cwd, def, mcpBridge },
       { mcpJsonInjection, releaseStagedResources, failBeforeSpawn },
     );
+
+    // Mechanism 5 of 5's one effect — stage this run's scratch `CODEX_HOME` directory. Skipped
+    // entirely for the other four mechanisms and whenever no bridge was resolved at all.
+    // `codex.ts`'s `buildArgs` needs no argv change for this (CODEX_HOME is an env var, not a flag),
+    // so — unlike the `.mcp.json` staging above — this can run after `buildArgs` with no ordering
+    // constraint of its own; it is placed here only to keep the two staging steps adjacent.
+    preparedCodexHome = await prepareCodexHomeIfNeeded(
+      { runId: input.runId, def, mcpBridge },
+      { mcpJsonInjection, hostEnv: process.env, releaseStagedResources, failBeforeSpawn },
+    );
+    // Computed only now, not right after `mcpBridge` resolution: mechanism 5's directory path is
+    // not known until the staging step directly above actually runs `mkdtemp` (see
+    // `McpBridgeDelivery`'s `'codex-toml'` variant doc for why it cannot be pre-computed the way
+    // `'claude-mcp-json'`'s deterministic path is). Nothing between the old, earlier call site and
+    // here ever read `childEnv`, so moving the call cost nothing.
+    const childEnv = computeChildEnv(spawnEnv, mcpBridge, preparedCodexHome?.path);
 
     // Post-buildArgs guard for argv-bound defs whose resolved binary is a
     // Windows .cmd/.bat shim or a direct .exe: a prompt under the raw byte

@@ -209,4 +209,38 @@ export const codexAgentDef = {
     capturesSessionIdFromStream: true,
     streamFormat: 'json-event-stream',
     eventParser: 'codex',
+    // `'codex-toml'`: Codex CLI's native MCP config is a `[mcp_servers.<name>]` TOML table under
+    // `CODEX_HOME` (`~/.codex/config.toml` by default) — TOML, not the JSON any of the other four
+    // wired strategies produce, and `codex mcp add`/`-c mcp_servers.<name>...=` both write to (or
+    // resolve against) the OPERATOR'S REAL global config, which this driver must never touch on a
+    // routine agent spawn.
+    //
+    // Confirmed against a real installed Codex CLI (0.151.0), not assumed from docs:
+    //   - `codex mcp add`/`codex mcp list` against a scratch `CODEX_HOME` round-tripped the exact
+    //     `[mcp_servers.<name>]` / `command` / `args` / `[mcp_servers.<name>.env]` TOML shape
+    //     `@jini-ai/daemon`'s `buildCodexMcpServerToml` now serializes.
+    //   - Relocating `CODEX_HOME` (env var) to a fresh scratch directory containing a copied
+    //     `auth.json` plus a `config.toml` carrying `[mcp_servers.jini]` produced a normal, fast
+    //     `codex exec --json` turn — no interactive trust prompt, no hang. `-C` pointing at an
+    //     unrelated, untrusted project directory under `--skip-git-repo-check` behaved identically:
+    //     headless `codex exec` never blocks on the "trust this project" prompt that gates
+    //     *auto-discovered* project `.codex/config.toml` (the exact hazard that ruled out
+    //     `claude-mcp-json`'s auto-discovery-based approach for Claude) — it silently records the
+    //     directory as trusted and proceeds.
+    //   - A scratch `CODEX_HOME` with **no** `auth.json` at all does not hang either: the spawned
+    //     CLI fails fast with a structured `turn.failed` stream event carrying a real `401
+    //     Unauthorized`, after a bounded handful of reconnect attempts (~20s) — never an interactive
+    //     login prompt. This is why `prepareCodexHomeForRun`'s `auth.json` copy is allowed to be
+    //     best-effort: a missing/unreadable source credential degrades to an observable run failure,
+    //     never a stuck run.
+    //   - Using the REAL `CODEX_HOME` at all — even read-only via `-c` override flags, never writing
+    //     through `codex mcp add` — was rejected after live testing showed every `codex exec`
+    //     invocation appends a `[projects."<cwd>"]` trust-tracking entry to the real
+    //     `~/.codex/config.toml` as an undocumented side effect of being run at all, regardless of
+    //     `-c` flags. A relocated, run-scoped `CODEX_HOME` (this strategy) is the only mechanism
+    //     that keeps the operator's real config untouched by routine daemon spawns.
+    //
+    // See `@jini-ai/daemon`'s `agent-executor.ts` (`prepareCodexHomeForRun`, `buildCodexHomeConfigToml`)
+    // for the staging/cleanup implementation and `source-map.md` for the full verification transcript.
+    externalMcpInjection: 'codex-toml',
 } satisfies RuntimeAgentDef;
