@@ -21,7 +21,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from 'react';
-import { RemixIcon } from '@jini-ai/ui';
+import { isMacPlatform, RemixIcon } from '@jini-ai/ui';
 import { useT } from '../hooks/context.js';
 import { AttachmentTray } from './AttachmentTray.js';
 import type { UseComposerResult } from '../hooks/useComposer.js';
@@ -61,6 +61,12 @@ export interface ComposerProps {
   running?: boolean;
   /** Cancels the in-flight run. Required when `running` is true; ignored otherwise. */
   onCancel?: () => void;
+  /**
+   * Cmd/Ctrl+Enter: end the run in flight and send this draft next. Optional — without it the
+   * modifier falls through to the ordinary Enter path, so a host that has not opted in keeps
+   * exactly its previous behavior.
+   */
+  onInterrupt?: () => void;
 }
 
 function reportComposerHostEffectFailure(effectName: string, error: unknown) {
@@ -109,6 +115,27 @@ function runComposerHostEffect(
 }
 
 /**
+ * The two-halves keyboard hint shown beneath the composer only while a run is streaming (see this
+ * component's own JSX below): Enter still queues the draft behind that run, Cmd/Ctrl+Enter instead
+ * cancels it and sends immediately. Stated as a pair deliberately — a user who only learns the
+ * second half would start interrupting runs they actually meant to queue behind. `onInterrupt`
+ * (`Composer.tsx:65`'s own doc) was previously discoverable only by already knowing the convention
+ * from another app; this is the one product-visible place that convention now gets stated, with
+ * `⌘`/`Ctrl` resolved via `@jini-ai/ui`'s existing `isMacPlatform` (the same helper
+ * `packages/ui/src/features/integrations/rules.ts` already uses for its own shortcut labels) rather
+ * than inventing a second platform-detection layer here.
+ * @param t - The active translator; every user-visible word routes through it, matching every
+ * other string in this component.
+ * @returns The fully interpolated hint sentence.
+ * @complexity O(1).
+ */
+function interruptHintText(t: (key: string, vars?: Record<string, string | number>) => string): string {
+  return t('Enter queues this after the run finishes · {modifier}+Enter interrupts it and sends now', {
+    modifier: isMacPlatform() ? '⌘' : 'Ctrl',
+  });
+}
+
+/**
  * Renders the controlled message composer and optional attachment picker.
  *
  * @complexity Time/space: O(n) in rendered attachments and supplied menu items.
@@ -124,6 +151,7 @@ export function Composer({
   attachmentPicker,
   running = false,
   onCancel,
+  onInterrupt,
 }: ComposerProps) {
   const t = useT();
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -322,7 +350,15 @@ export function Composer({
     }
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
-    if (!disabled && !sendDisabled && composer.canSubmit) onSend();
+    if (disabled || !composer.canSubmit) return;
+    // Cmd/Ctrl+Enter ends the current run and sends this next; plain Enter queues behind it.
+    // `sendDisabled` is deliberately NOT consulted on the interrupt path — while a run streams it
+    // is set precisely BECAUSE of that run, which is the one case this modifier exists to act on.
+    if ((event.metaKey || event.ctrlKey) && onInterrupt) {
+      onInterrupt();
+      return;
+    }
+    if (!sendDisabled) onSend();
   }
 
   function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
@@ -353,6 +389,7 @@ export function Composer({
   }
 
   return (
+    <>
     <div className="jini-composer">
       {slots?.leadingAccessories ? <div className="jini-composer-leading">{slots.leadingAccessories}</div> : null}
       <AttachmentTray attachments={composer.attachments} onRemove={composer.removeAttachment} />
@@ -463,5 +500,13 @@ export function Composer({
         )}
       </div>
     </div>
+    {/* Only while a run is actually streaming, and only when a host wired an interrupt handler at
+        all (matches onInterrupt's own doc: "without it the modifier falls through to the ordinary
+        Enter path" — a host that never opted in gets no hint about a capability it doesn't have).
+        The rest of the time this is clutter, not help — see interruptHintText's own doc. */}
+    {running && onInterrupt ? (
+      <p className="jini-composer-interrupt-hint">{interruptHintText(t)}</p>
+    ) : null}
+    </>
   );
 }

@@ -41,9 +41,13 @@ export type RuntimeBuildOptions = {
   permissionMode?: 'bypass' | 'restricted';
   // Text appended to the spawned CLI's own default system prompt (never replacing it), computed
   // by the caller's `PromptAugmenter.systemOverlay()` (see `prompt-augmenter.ts`) if one is
-  // configured. A def with no system-prompt-append mechanism ignores this field; Claude's def
-  // reads it via its own `--append-system-prompt` flag. `null`/`undefined`/empty means no overlay
-  // for this run — identical to today's behavior.
+  // configured. Delivery is centralized, not per-def: `@jini-ai/daemon`'s
+  // `resolveSystemPromptOverlayDelivery` reads this value directly (not via a def's own `buildArgs`
+  // options argument) and dispatches on the target def's `RuntimeAgentDef.systemPromptDelivery`
+  // declaration — an `'append-flag'` def (e.g. `claude`) gets it as its own native argv flag; every
+  // other def gets it prefixed onto the composed prompt text instead, so no def needs to read this
+  // field itself to receive the overlay. `null`/`undefined`/empty means no overlay for this run —
+  // identical to today's behavior.
   systemPromptOverlay?: string | null;
 };
 
@@ -362,6 +366,63 @@ export type RuntimeAgentDef = {
     | 'opencode-env-content'
     | 'mimo-env-content'
     | 'codex-toml';
+  // How a caller-supplied `RuntimeBuildOptions.systemPromptOverlay` reaches this def's CLI — same
+  // "declare a strategy, dispatched centrally" shape as `externalMcpInjection` above, keyed off
+  // this field by `@jini-ai/daemon`'s `resolveSystemPromptOverlayDelivery` (the single dispatch
+  // point; see its own doc), never by `def.id`.
+  //
+  // Leave undefined (the default, and every def's behavior before this field existed) for the
+  // universal fallback: the caller prefixes the overlay directly onto the composed prompt text,
+  // clearly delimited from the user's own request, before `buildArgs` ever sees it — no def code
+  // change needed to receive it. The one thing a def with no declared strategy must still get
+  // right in its own semantics is unaffected: this only changes what `buildArgs`'s `prompt`
+  // argument already contains, not how the def uses it.
+  //
+  //   'append-flag' — the CLI has its own append-only system-prompt argv flag (appends to the
+  //                   CLI's own default instructions, never replaces them — a def whose only
+  //                   native mechanism *replaces* the CLI's baked-in instructions instead should
+  //                   NOT declare this strategy; leave it undefined and take the prefix fallback,
+  //                   which is strictly safer than silently discarding the CLI's own defaults).
+  //                   `flag` names the argv flag. `capabilityKey`, when present, names the
+  //                   `capabilityFlags`/`agentCapabilities` key gating it (an older CLI build
+  //                   rejects an unknown flag with exit 1 — see `defs/claude.ts`'s own doc on this
+  //                   exact hazard); omit it only for a flag already confirmed unconditionally
+  //                   present (e.g. `pi`'s pre-existing, already-in-use `--append-system-prompt`).
+  //   'env-var'     — the CLI reads a dedicated env var as its own system-prompt-append hook
+  //                   (`reasonix`'s `REASONIX_ACP_SYSTEM_APPEND` — see `defs/reasonix.ts`'s own
+  //                   doc for why this shape, distinct from `append-flag`, exists at all: the
+  //                   original OD source read this env var directly and there is no argv
+  //                   equivalent). `varName` is set verbatim to the overlay text — never merged
+  //                   with an existing value, since this is a dedicated single-purpose var, not a
+  //                   shared config channel like `externalMcpInjection`'s env-content strategies.
+  //                   Delivered on every turn like `append-flag` (an env var read at spawn time is
+  //                   no more "stored history" than an argv flag is), and with no capability gate:
+  //                   an unrecognized env var is inert to a CLI, not a fatal "unknown option".
+  //
+  //   'config-instructions-file' — the CLI reads a config document's `instructions` array (file
+  //                   paths or remote URLs — never inline text; confirmed live an inline string is
+  //                   silently ignored) and appends each file's content to its own defaults, never
+  //                   replacing them (`opencode` — see `defs/opencode.ts`'s own doc for the full
+  //                   live-verification transcript: honored, append-not-replace, and coexists with
+  //                   the `mcp` key the same document may already carry, all confirmed against a
+  //                   real installed CLI, not inferred from docs). `varName` names the env var
+  //                   carrying the config document (the SAME var `externalMcpInjection`'s
+  //                   `'*-env-content'` strategies use — duplicated here rather than cross-read from
+  //                   that field, so this strategy stays self-contained: a def wanting this
+  //                   mechanism without also using the MCP env-content strategy needs no unrelated
+  //                   declaration just to make the dispatch work). The daemon stages the overlay to
+  //                   a temp file per run (an inline string will not do — see above) and merges its
+  //                   path into the array, never clobbering an existing entry (`@jini-ai/daemon`'s
+  //                   `mergeEnvContentInstructions`, mirroring `mergeEnvContentMcpConfig`'s "merge,
+  //                   never clobber" discipline for the sibling `mcp` key in the same document).
+  //                   Delivered on every turn like `append-flag`/`env-var` — confirmed live that
+  //                   `instructions` is re-read fresh from the env on every spawn, even a
+  //                   `-s <id>`-resumed turn, so nothing here is ever baked into the CLI's own
+  //                   persisted session state.
+  systemPromptDelivery?:
+    | { readonly strategy: 'append-flag'; readonly flag: string; readonly capabilityKey?: string }
+    | { readonly strategy: 'env-var'; readonly varName: string }
+    | { readonly strategy: 'config-instructions-file'; readonly varName: string };
   installUrl?: string;
   docsUrl?: string;
   // When `false`, a model picker should hide the "Custom (fill below)"

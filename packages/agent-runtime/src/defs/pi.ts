@@ -72,9 +72,11 @@ export const piAgentDef = {
       if (options.reasoning && options.reasoning !== 'default') {
         args.push('--thinking', options.reasoning);
       }
-      // pi supports --append-system-prompt for cwd and extra context.
-      // For now we rely on the composed prompt containing the cwd hint
-      // (same pattern as other agents) rather than using system-prompt flags.
+      // pi supports --append-system-prompt for cwd and extra context. It's repeatable (pi merges
+      // every occurrence), which is what lets this def push its own dir-hint values here AND the
+      // caller's `systemPromptDelivery: 'append-flag'` overlay (declared below, dispatched
+      // centrally by `@jini-ai/daemon`'s `resolveSystemPromptOverlayDelivery`) push a separate
+      // occurrence carrying the overlay text — the two never collide or need to be merged by hand.
       //
       // extraAllowedDirs carries skill seed and design-system directories
       // that live outside the project cwd. pi doesn't have an --add-dir
@@ -98,4 +100,14 @@ export const piAgentDef = {
     // input (base64-encoded). The daemon attaches image paths to the
     // session so attachPiRpcSession can read and forward them.
     imageDelivery: 'native',
+    // No `capabilityKey`: unlike `claude`'s probe-gated flag, this repeatable flag's presence is
+    // already trusted unconditionally by this file's own pre-existing dir-hint usage above (no
+    // `helpArgs`/`capabilityFlags` probe declared for pi at all) — the overlay delivery rides the
+    // same trust, not a new assumption.
+    systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt' },
+    // No `externalMcpInjection`: pi has no MCP client, and never will by
+    // design — its author has stated publicly that pi "does not and will not
+    // support MCP" (MCP servers judged overkill and too much context overhead
+    // for this CLI's scope). There is no config surface to inject a server
+    // into; this is a permanent unwired, not a gap to close later.
 } satisfies RuntimeAgentDef;

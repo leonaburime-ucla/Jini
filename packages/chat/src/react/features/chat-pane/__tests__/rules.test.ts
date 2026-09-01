@@ -4,10 +4,11 @@ import {
   defaultChatPaneSelection,
   findChatPaneSendBlocker,
   isChatPaneApiModeConfigured,
+  isChatPaneQueueableBlocker,
   orderChatPaneAgents,
   resolveChatPaneSelection,
 } from '../rules.js';
-import type { ChatPaneSendability } from '../rules.js';
+import type { ChatPaneSendability, ChatPaneSendBlocker } from '../rules.js';
 import type { ByokRuntimeSummary, ChatPaneAgent } from '../types.js';
 
 const agents: ChatPaneAgent[] = [
@@ -234,6 +235,27 @@ describe('chat-pane selection rules', () => {
       // `apiModeConfigured` omitted entirely (the pre-existing shape every other test in this file
       // uses) must behave identically to explicit `false`.
       expect(findChatPaneSendBlocker(ready)).toBe('no-agent-selected');
+    });
+  });
+
+  describe('isChatPaneQueueableBlocker', () => {
+    it('is true only for the streaming blocker', () => {
+      expect(isChatPaneQueueableBlocker('streaming')).toBe(true);
+    });
+
+    it('is false for null (nothing to queue behind) and every other named blocker', () => {
+      const otherBlockers: readonly ChatPaneSendBlocker[] = [
+        'no-agent-selected',
+        'agent-unavailable',
+        'uploads-pending',
+        'working-directory-pending',
+        'working-directory-invalid',
+        'working-directory-error',
+      ];
+      expect(isChatPaneQueueableBlocker(null)).toBe(false);
+      for (const blocker of otherBlockers) {
+        expect(isChatPaneQueueableBlocker(blocker)).toBe(false);
+      }
     });
   });
 });

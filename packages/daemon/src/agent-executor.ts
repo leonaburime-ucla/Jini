@@ -97,6 +97,7 @@ import { redactSecrets } from '@jini-ai/core';
 import type { Principal, RunRef } from '@jini-ai/core';
 import type { JournalEntry, RunAgentPayload, RunErrorPayload } from '@jini-ai/protocol';
 import {
+  agentCapabilities,
   applyAgentLaunchEnv,
   createClaudeStreamHandler,
   createCopilotStreamHandler,
@@ -1181,6 +1182,59 @@ export function mergeEnvContentMcpConfig(existingRaw: string | undefined, entry:
     },
   };
   return JSON.stringify({ ...doc, mcp });
+}
+
+/**
+ * Merges a staged system-prompt overlay file's path into the `instructions` array of the same
+ * OpenCode-schema config document {@link mergeEnvContentMcpConfig} writes `mcp` into — for a
+ * `systemPromptDelivery: { strategy: 'config-instructions-file' }` def (`opencode` today).
+ *
+ * Confirmed live (2026-09-01, opencode-cli 1.17.10), not inferred from docs alone:
+ *   1. `instructions` is honored — a run configured with it visibly followed the file's directive
+ *      (a required exact-token prefix), while an identical run without it did not.
+ *   2. It appends, never replaces: the same run that followed the custom instruction ALSO still
+ *      answered correctly using opencode's own baked-in environment-context system prompt (asked
+ *      for its cwd, with nothing about cwd anywhere in the custom instructions file) — proof
+ *      opencode's own defaults survive alongside a custom `instructions` entry, not just proof the
+ *      file was read at all.
+ *   3. Adding this key alongside `mcp` in the same `OPENCODE_CONFIG_CONTENT` document disturbs
+ *      neither: in one combined run, the MCP bridge still got its connection attempt (logged
+ *      `key=jini type=local`) AND the custom instruction was still followed — same as running each
+ *      key alone.
+ *   4. `instructions` is re-read fresh from the env on every spawn, including a `-s <id>`-resumed
+ *      turn (proved by swapping in a second instructions file between two turns of one resumed
+ *      session and seeing the second turn immediately reflect it while still recalling
+ *      conversation memory from turn one) — so this mechanism is safe to redeliver every turn like
+ *      `'append-flag'`/`'env-var'`, exempt from the prompt-prefix fallback's create-only gating
+ *      (see {@link resolveSystemPromptOverlayDelivery}'s doc): nothing here is ever baked into
+ *      opencode's own persisted session state the way re-injecting fallback prompt text would be.
+ *
+ * @param existingRaw - Whatever the spawn env already held for this variable (already possibly
+ * carrying `mcp`, if `mergeEnvContentMcpConfig` ran first on the same value — order between the two
+ * doesn't matter, each only touches its own top-level key), or `undefined`.
+ * @param instructionsFilePath - The staged overlay file's absolute path (see
+ * {@link prepareSystemPromptOverlayFileIfNeeded}).
+ * @returns The full JSON string to set as the env var's value. Appends to, never clobbers, any
+ * `instructions` entries already present — the same "merge, never clobber" discipline
+ * {@link mergeEnvContentMcpConfig} applies to `mcp`, in case a host is already using this same
+ * config-content variable to carry the operator's own instruction files.
+ * @complexity O(1) plus `JSON.parse`/`JSON.stringify` over a small config document.
+ * @overallScore 100/100
+ */
+export function mergeEnvContentInstructions(existingRaw: string | undefined, instructionsFilePath: string): string {
+  let doc: Record<string, unknown> = {};
+  if (existingRaw !== undefined && existingRaw.length > 0) {
+    try {
+      const parsed: unknown = JSON.parse(existingRaw);
+      if (isRecord(parsed)) doc = parsed;
+    } catch {
+      doc = {};
+    }
+  }
+  const existingInstructions = Array.isArray(doc.instructions)
+    ? doc.instructions.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  return JSON.stringify({ ...doc, instructions: [...existingInstructions, instructionsFilePath] });
 }
 
 /**
@@ -2685,22 +2739,30 @@ export async function resolveMcpBridgeForRun(
 }
 
 /**
- * Phase 6a/10c: the subprocess environment every env-riding MCP mechanism uses — mechanism 3+4
+ * Phase 6a/10c: the subprocess environment every env-riding mechanism uses — mechanism 3+4
  * (`'opencode-env-content'`/`'mimo-env-content'`, merged into whatever the host already set there,
  * never a CLI argument: the config embeds `JINI_DAEMON_TOKEN`, and process arguments are readable
- * by any other local user through `ps`) and mechanism 5 (`'codex-toml'`, `CODEX_HOME` relocation).
- * Pure — `codexHomeDir` arrives already staged by {@link prepareCodexHomeIfNeeded}, which is the
- * one part of this mechanism that is NOT pure (a real `mkdtemp`).
+ * by any other local user through `ps`), mechanism 5 (`'codex-toml'`, `CODEX_HOME` relocation), a
+ * `systemPromptDelivery: 'env-var'` def's overlay (`reasonix`'s `REASONIX_ACP_SYSTEM_APPEND` today
+ * — see `resolveSystemPromptOverlayDelivery`'s own doc), and a `'config-instructions-file'` def's
+ * staged overlay file (`opencode` today — see {@link mergeEnvContentInstructions}'s own doc). Pure
+ * — `codexHomeDir` and `stagedInstructionsFile` arrive already staged by
+ * {@link prepareCodexHomeIfNeeded} and {@link prepareSystemPromptOverlayFileIfNeeded} respectively,
+ * the only parts of this mechanism that are NOT pure (real `mkdtemp`/`writeFile` calls).
  * @param spawnEnv - The env every other spawn-time step (launch-path resolution, `applyAgentLaunchEnv`) already computed.
  * @param mcpBridge - This run's resolved bridge delivery, or `null` for an unconfigured host / no-strategy def.
  * @param codexHomeDir - The staged scratch `CODEX_HOME` path for a `'codex-toml'` def, or `undefined` for every other run (including a `'codex-toml'` def when `mcpJsonInjection` was never configured — see `prepareCodexHomeIfNeeded`'s own gate).
- * @complexity O(1) plus `mergeEnvContentMcpConfig`'s own `JSON.parse`/`JSON.stringify` cost.
+ * @param systemPromptEnvOverrides - `resolveSystemPromptOverlayDelivery`'s `envOverrides` — `{}` (default) for every def but an `'env-var'`-strategy one with an overlay present, in which case it carries that one var. Applied after `codexHomeDir`, so it can never be shadowed by it — the two never share a key (`CODEX_HOME` vs. e.g. `REASONIX_ACP_SYSTEM_APPEND`), so the ordering is a documentation choice, not a correctness one.
+ * @param stagedInstructionsFile - `varName` (from the def's own `systemPromptDelivery` declaration) and the staged overlay file's `path`, or `undefined` for every def but a `'config-instructions-file'` one with an overlay present. Merged into `varName`'s value AFTER the `mcp` merge above (reading `envContentApplied`, not the original `spawnEnv`, for that same key) so both a `mcp` entry and an `instructions` entry from the two mechanisms survive together in one document — confirmed live this coexistence is safe (see {@link mergeEnvContentInstructions}'s doc).
+ * @complexity O(1) plus `mergeEnvContentMcpConfig`'s and `mergeEnvContentInstructions`'s own `JSON.parse`/`JSON.stringify` cost.
  * @overallScore 100/100
  */
 export function computeChildEnv(
   spawnEnv: NodeJS.ProcessEnv,
   mcpBridge: McpBridgeDelivery | null,
   codexHomeDir?: string,
+  systemPromptEnvOverrides?: Readonly<Record<string, string>>,
+  stagedInstructionsFile?: { readonly varName: string; readonly path: string },
 ): NodeJS.ProcessEnv {
   const envContentApplied =
     mcpBridge?.kind === 'env-content'
@@ -2709,8 +2771,18 @@ export function computeChildEnv(
           [mcpBridge.envVarName]: mergeEnvContentMcpConfig(spawnEnv[mcpBridge.envVarName], mcpBridge.serverEntry),
         }
       : spawnEnv;
-  if (codexHomeDir === undefined) return envContentApplied;
-  return { ...envContentApplied, CODEX_HOME: codexHomeDir };
+  const instructionsApplied =
+    stagedInstructionsFile === undefined
+      ? envContentApplied
+      : {
+          ...envContentApplied,
+          [stagedInstructionsFile.varName]: mergeEnvContentInstructions(
+            envContentApplied[stagedInstructionsFile.varName],
+            stagedInstructionsFile.path,
+          ),
+        };
+  const codexHomeApplied = codexHomeDir === undefined ? instructionsApplied : { ...instructionsApplied, CODEX_HOME: codexHomeDir };
+  return systemPromptEnvOverrides === undefined ? codexHomeApplied : { ...codexHomeApplied, ...systemPromptEnvOverrides };
 }
 
 /**
@@ -2797,6 +2869,124 @@ export function buildAgentBuildArgsOptions(
   };
 }
 
+/**
+ * **The single dispatch point from a computed system-prompt overlay to its delivery mechanism** —
+ * see `RuntimeAgentDef.systemPromptDelivery`'s own doc for the declared shape. Pure and
+ * synchronous, mirroring {@link buildMcpBridgeDelivery}'s "keyed off the declared strategy, never
+ * off the def's id" contract: a def earns overlay delivery by declaring a strategy, not by being
+ * named in this file. That is what makes every def with no declaration work via the fallback
+ * without any of their own files being touched.
+ *
+ * The fallback (no declared strategy — every def but `claude` today) prefixes the overlay directly
+ * onto the composed prompt text, clearly delimited from the user's own request. It is gated on
+ * session state, not merely on whether an overlay exists: a def that carries its own conversation
+ * memory across spawns (`resumesSessionViaCli` / `resumesSessionViaAcpLoad`) persists whatever its
+ * session-creating turn sends it — see `RuntimeContext.resumeSessionId`'s own doc: its presence on
+ * a run means "continue a prior session", not "start one". Prefixing on every later turn of that
+ * same session would therefore bake the overlay into the CLI's own stored history again and again,
+ * compounding without bound turn over turn. So the fallback prefixes only when there is no resume
+ * target yet (the session's own first turn, or a def with no session memory at all, which never
+ * replays anything back at the CLI and so gets it on every turn).
+ *
+ * `'append-flag'` and `'env-var'` defs are the opposite case: the flag/env var is a fresh,
+ * un-stored per-spawn directive — never part of what a resumed session replays — so it is set on
+ * every turn unconditionally, exactly `claude`'s pre-existing (now-centralized) behavior before
+ * this function existed.
+ *
+ * @param input.defId - Looks up this def's probed capabilities for an `'append-flag'` strategy's
+ * `capabilityKey`. Otherwise unused — the dispatch itself is keyed off `systemPromptDelivery`, per
+ * this function's own doc above, never off the id.
+ * @param input.systemPromptDelivery - The def's declared strategy, or `undefined` for the fallback.
+ * @param input.resumesSessionViaCli - The def's own flag (see `RuntimeAgentDef`'s doc).
+ * @param input.resumesSessionViaAcpLoad - The def's own flag (see `RuntimeAgentDef`'s doc).
+ * @param input.overlay - The computed `PromptAugmenter.systemOverlay()` result. `null`/`undefined`/
+ * empty short-circuits to "no delivery" — byte-identical to no `PromptAugmenter` configured at all.
+ * @param input.prompt - The composed prompt `buildArgs` would otherwise receive verbatim.
+ * @param input.resumeSessionId - This run's `RuntimeContext.resumeSessionId`; presence means an
+ * existing session is being continued, not created.
+ * @returns The (possibly prefixed) prompt to hand `buildArgs`, any extra argv to append to
+ * whatever `buildArgs` itself returns, and any env var overrides to merge into the spawn env
+ * (`{}` for every strategy but `'env-var'`).
+ * @complexity O(n) in the overlay/prompt lengths — string concatenation only, no I/O.
+ * @overallScore 100/100
+ */
+export function resolveSystemPromptOverlayDelivery(input: {
+  readonly defId: string;
+  readonly systemPromptDelivery: RuntimeAgentDef['systemPromptDelivery'];
+  readonly resumesSessionViaCli: boolean | undefined;
+  readonly resumesSessionViaAcpLoad: boolean | undefined;
+  readonly overlay: string | null | undefined;
+  readonly prompt: string;
+  readonly resumeSessionId: string | null | undefined;
+}): {
+  readonly prompt: string;
+  readonly extraArgs: readonly string[];
+  readonly envOverrides: Readonly<Record<string, string>>;
+} {
+  const { defId, systemPromptDelivery, resumesSessionViaCli, resumesSessionViaAcpLoad, overlay, prompt, resumeSessionId } = input;
+  if (typeof overlay !== 'string' || overlay.length === 0) {
+    return { prompt, extraArgs: [], envOverrides: {} };
+  }
+
+  if (systemPromptDelivery?.strategy === 'append-flag') {
+    const capabilityKey = systemPromptDelivery.capabilityKey;
+    // `!== false`, not a truthiness check: mirrors `claude.ts`'s own pre-existing
+    // `agentCapabilities.get('claude') || {}` gate exactly (moved here, not changed) — an
+    // undetected/never-probed capability defaults to allowed, and only an EXPLICIT `false` (the
+    // `--help` probe ran and did not find the flag) withholds it. `capabilityKey === undefined`
+    // (e.g. `pi`'s existing `--append-system-prompt`, trusted unconditionally) always passes, same
+    // as an absent key.
+    const capabilityOk = capabilityKey === undefined || agentCapabilities.get(defId)?.[capabilityKey] !== false;
+    return { prompt, extraArgs: capabilityOk ? [systemPromptDelivery.flag, overlay] : [], envOverrides: {} };
+  }
+
+  if (systemPromptDelivery?.strategy === 'env-var') {
+    // No capability gate, unlike `'append-flag'`: an unrecognized env var is inert to a CLI (it
+    // simply never reads it), never a fatal "unknown option" exit — there is no equivalent hazard
+    // to probe-gate against here. Set verbatim, not merged with any existing value — a dedicated
+    // single-purpose var, not a shared config channel (see this field's own `types.ts` doc).
+    return { prompt, extraArgs: [], envOverrides: { [systemPromptDelivery.varName]: overlay } };
+  }
+
+  if (systemPromptDelivery?.strategy === 'config-instructions-file') {
+    // Delivered elsewhere, not here: unlike `'append-flag'`/`'env-var'`, this mechanism needs real
+    // filesystem I/O (staging the overlay to a temp file — `opencode`'s `instructions` array only
+    // accepts a file path or URL, confirmed live, never inline text), which this function's "pure
+    // and synchronous" contract cannot perform. `prepareSystemPromptOverlayFileIfNeeded` (a separate
+    // async phase in `run()`, gated on this same strategy check) stages the file, and
+    // `computeChildEnv` merges its path into the config document via `mergeEnvContentInstructions`.
+    // This branch's only job is to make sure the universal prefix fallback below does NOT ALSO run
+    // for a def that already has this strategy declared — the same "no double delivery" concern
+    // `imageDelivery`'s doc calls out for its own native-vs-fallback split.
+    return { prompt, extraArgs: [], envOverrides: {} };
+  }
+
+  const isContinuingExistingSession =
+    (resumesSessionViaCli === true || resumesSessionViaAcpLoad === true) &&
+    typeof resumeSessionId === 'string' &&
+    resumeSessionId.length > 0;
+  if (isContinuingExistingSession) {
+    return { prompt, extraArgs: [], envOverrides: {} };
+  }
+
+  // KNOWN TRADE-OFF, deliberate: for a resume-capable def with no `'append-flag'`/`'env-var'`
+  // mechanism yet (`codex`, `codebuddy`, `opencode`, `amr` — all four presently on this fallback),
+  // the overlay is therefore only injected on the SESSION-CREATING turn, not every turn. A host
+  // whose `PromptAugmenter.systemOverlay()` result can change mid-conversation (e.g. a host that
+  // lets an operator edit its own stored instructions and re-reads them before every run — see
+  // `prompt-augmenter.ts`'s own doc for the seam) will see NO effect from such an edit until a NEW
+  // session starts for one of these four defs specifically — a real, silent limitation, not a
+  // theoretical one. This is the correct
+  // trade against the alternative (re-injecting every turn would bake the overlay into that def's
+  // own CLI-persisted session history again and again, compounding without bound) — do not change
+  // this gating to "fix" the staleness. The actual fix is giving each of the four its own
+  // `'append-flag'`-equivalent `systemPromptDelivery` (an argv flag or an env var, neither of which
+  // is part of what a resumed session replays), which removes this limitation entirely for that
+  // def. See `reasonix.ts`'s and `opencode.ts`'s module docs for the two already-identified,
+  // not-yet-wired native mechanisms.
+  return { prompt: `${overlay}\n\n---\n\n${prompt}`, extraArgs: [], envOverrides: {} };
+}
+
 /** Phase 9b: calls the def's `buildArgs`, releasing staged resources and failing the run on a throw. */
 export async function buildRunArgs(
   input: {
@@ -2809,15 +2999,34 @@ export async function buildRunArgs(
     readonly runtimeContext: RuntimeContext | undefined;
   },
   deps: { readonly releaseStagedResources: () => Promise<void>; readonly failBeforeSpawn: FailBeforeSpawn },
-): Promise<string[]> {
+): Promise<{ readonly args: string[]; readonly envOverrides: Readonly<Record<string, string>> }> {
   try {
-    return input.def.buildArgs(
-      input.imageDelivery.prompt,
+    // Resolved before `buildArgs` runs so a def with no declared `systemPromptDelivery` sees the
+    // overlay already prefixed into `prompt` — see `resolveSystemPromptOverlayDelivery`'s own doc.
+    const delivery = resolveSystemPromptOverlayDelivery({
+      defId: input.def.id,
+      systemPromptDelivery: input.def.systemPromptDelivery,
+      resumesSessionViaCli: input.def.resumesSessionViaCli,
+      resumesSessionViaAcpLoad: input.def.resumesSessionViaAcpLoad,
+      overlay: input.systemPromptOverlay,
+      prompt: input.imageDelivery.prompt,
+      resumeSessionId: input.runtimeContext?.resumeSessionId,
+    });
+    const args = input.def.buildArgs(
+      delivery.prompt,
       [...(input.imagePaths ?? [])],
       input.imageDelivery.extraAllowedDirs === undefined ? undefined : [...input.imageDelivery.extraAllowedDirs],
       buildAgentBuildArgsOptions(input.runInput, input.systemPromptOverlay),
       input.runtimeContext,
     );
+    // `'append-flag'` delivery's extra argv (empty for every other def/strategy) is appended after
+    // whatever the def's own `buildArgs` returned — safe because it is only ever non-empty for a
+    // `promptViaStdin` def with no trailing positional argv (`claude`/`pi` today; see
+    // `resolveSystemPromptOverlayDelivery`'s doc for why a future 'append-flag' def must keep that
+    // property too). `envOverrides` (non-empty only for `'env-var'` — `reasonix` today) is handed
+    // back rather than applied here, since the spawn env isn't finalized until `computeChildEnv`
+    // runs, later in `run()`.
+    return { args: [...args, ...delivery.extraArgs], envOverrides: delivery.envOverrides };
   } catch (err) {
     await deps.releaseStagedResources();
     return deps.failBeforeSpawn(
@@ -2849,6 +3058,64 @@ export async function writeMcpJsonIfNeeded(
       input.runId,
       'AGENT_SPAWN_FAILED',
       `AgentExecutor: could not write .mcp.json for agent "${input.def.id}": ${errorMessage(err)}`,
+    );
+  }
+}
+
+/** {@link prepareSystemPromptOverlayFileIfNeeded}'s result. */
+export type PreparedSystemPromptOverlayFile = {
+  /** Absolute path to the staged file, ready to merge into a `config-instructions-file` def's `instructions` array. */
+  readonly path: string;
+  /** Recursively removes the staged directory. Safe to call more than once. */
+  readonly cleanup: () => Promise<void>;
+};
+
+/**
+ * Phase 10b1: `systemPromptDelivery: { strategy: 'config-instructions-file' }`'s one effect —
+ * stages the computed overlay to a fresh, run-scoped temp file, so `computeChildEnv` has a real
+ * path to merge into that def's `instructions` config array (see
+ * {@link mergeEnvContentInstructions}'s own doc for the live verification this mechanism rests on).
+ * `null` for every other strategy, an unset `systemPromptDelivery`, or no overlay present at all —
+ * byte-identical to before this mechanism existed, matching {@link writeMcpJsonIfNeeded}'s and
+ * {@link prepareCodexHomeIfNeeded}'s identical no-op-when-inapplicable gate.
+ *
+ * `opencode`'s `instructions` field only accepts a file path or a remote URL — confirmed live
+ * (2026-09-01): a literal instruction string in the array is silently ignored (no error, just never
+ * honored), so an inline-text shortcut is not available and this staging step is load-bearing, not
+ * a defensive extra.
+ * @param input.def - Only used for its `id`, in the failure message, and its `systemPromptDelivery` declaration.
+ * @param input.overlay - The computed `PromptAugmenter.systemOverlay()` result for this run.
+ * @complexity O(1) plus one directory creation and one file write.
+ * @overallScore 100/100
+ */
+export async function prepareSystemPromptOverlayFileIfNeeded(
+  input: { readonly runId: string; readonly def: RuntimeAgentDef; readonly overlay: string | null | undefined },
+  deps: { readonly releaseStagedResources: () => Promise<void>; readonly failBeforeSpawn: FailBeforeSpawn },
+): Promise<PreparedSystemPromptOverlayFile | null> {
+  if (
+    input.def.systemPromptDelivery?.strategy !== 'config-instructions-file' ||
+    typeof input.overlay !== 'string' ||
+    input.overlay.length === 0
+  ) {
+    return null;
+  }
+  try {
+    const safeRunId = input.runId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80) || 'run';
+    const dir = await fsPromises.mkdtemp(join(tmpdir(), `jini-system-prompt-overlay-${safeRunId}-`));
+    const filePath = join(dir, 'overlay.md');
+    await fsPromises.writeFile(filePath, input.overlay, { encoding: 'utf8', mode: 0o600 });
+    return {
+      path: filePath,
+      cleanup: async () => {
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      },
+    };
+  } catch (err) {
+    await deps.releaseStagedResources();
+    return deps.failBeforeSpawn(
+      input.runId,
+      'AGENT_SPAWN_FAILED',
+      `AgentExecutor: could not stage a system-prompt overlay file for agent "${input.def.id}": ${errorMessage(err)}`,
     );
   }
 }
@@ -3238,6 +3505,14 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
      * Only the `'codex-toml'` mechanism stages a directory at all.
      */
     let preparedCodexHome: PreparedCodexHome | null = null;
+    /**
+     * Set once `prepareSystemPromptOverlayFileIfNeeded` has actually staged this run's overlay file
+     * for a `'config-instructions-file'` def, so `cleanupStagedFiles` knows there is a temp
+     * directory to remove. Cleared as it is consumed, matching `preparedCodexHome`'s identical
+     * single-removal discipline. Only that one strategy stages a file this way — `null` for every
+     * other def/strategy/no-overlay run.
+     */
+    let preparedSystemPromptOverlayFile: PreparedSystemPromptOverlayFile | null = null;
     const cleanupStagedFiles: () => Promise<void> = async () => {
       if (preparedPromptFile) await preparedPromptFile.cleanup();
       if (preparedLogFile) await preparedLogFile.cleanup();
@@ -3250,6 +3525,11 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         const codexHomeToRemove = preparedCodexHome;
         preparedCodexHome = null;
         await codexHomeToRemove.cleanup();
+      }
+      if (preparedSystemPromptOverlayFile) {
+        const overlayFileToRemove = preparedSystemPromptOverlayFile;
+        preparedSystemPromptOverlayFile = null;
+        await overlayFileToRemove.cleanup();
       }
     };
     // Resolve this run's MCP bridge delivery once, before buildArgs — the `'claude-mcp-json'`
@@ -3308,7 +3588,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     // `Error` — breaking this driver's "never a bare throw, always an `AgentExecutorError`" contract
     // — and left the run `'running'` forever while still holding the process-global mutex and both
     // staged files, so no later run of that def could ever acquire the lock either.
-    const args = await buildRunArgs(
+    const { args, envOverrides: systemPromptEnvOverrides } = await buildRunArgs(
       { runId: input.runId, def, imageDelivery, imagePaths: input.imagePaths, runInput: input, systemPromptOverlay, runtimeContext },
       { releaseStagedResources, failBeforeSpawn },
     );
@@ -3332,12 +3612,30 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       { runId: input.runId, def, mcpBridge },
       { mcpJsonInjection, hostEnv: process.env, releaseStagedResources, failBeforeSpawn },
     );
+    // `'config-instructions-file'`'s one effect — stage the overlay to a temp file so
+    // `computeChildEnv` below has a real path to merge into that def's `instructions` array. A
+    // no-op (`null`) for every other def/strategy or a run with no overlay at all. Independent of
+    // `mcpBridge`/`preparedCodexHome` above (a different strategy field entirely), so placed here
+    // only to stay adjacent to the other pre-`computeChildEnv` staging steps, not for any ordering
+    // requirement between them.
+    preparedSystemPromptOverlayFile = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: input.runId, def, overlay: systemPromptOverlay },
+      { releaseStagedResources, failBeforeSpawn },
+    );
     // Computed only now, not right after `mcpBridge` resolution: mechanism 5's directory path is
     // not known until the staging step directly above actually runs `mkdtemp` (see
     // `McpBridgeDelivery`'s `'codex-toml'` variant doc for why it cannot be pre-computed the way
     // `'claude-mcp-json'`'s deterministic path is). Nothing between the old, earlier call site and
     // here ever read `childEnv`, so moving the call cost nothing.
-    const childEnv = computeChildEnv(spawnEnv, mcpBridge, preparedCodexHome?.path);
+    const childEnv = computeChildEnv(
+      spawnEnv,
+      mcpBridge,
+      preparedCodexHome?.path,
+      systemPromptEnvOverrides,
+      preparedSystemPromptOverlayFile && def.systemPromptDelivery?.strategy === 'config-instructions-file'
+        ? { varName: def.systemPromptDelivery.varName, path: preparedSystemPromptOverlayFile.path }
+        : undefined,
+    );
 
     // Post-buildArgs guard for argv-bound defs whose resolved binary is a
     // Windows .cmd/.bat shim or a direct .exe: a prompt under the raw byte

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Composer } from '../Composer.js';
 import { useComposer } from '../../hooks/useComposer.js';
 import type { ComposerDiscoveryGroup, ComposerSlots } from '../../slots.js';
@@ -843,6 +843,87 @@ describe('Composer', () => {
     expect(stop).not.toBeDisabled();
     await userEvent.click(stop);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes Cmd/Ctrl+Enter to onInterrupt instead of onSend when supplied', async () => {
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    const { result } = renderHook(() => useComposer());
+    act(() => result.current.setDraft('next turn'));
+    render(
+      <Composer composer={result.current} onSend={onSend} onInterrupt={onInterrupt} sendDisabled />,
+    );
+    const textarea = screen.getByPlaceholderText('Send a message…');
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onInterrupt).toHaveBeenCalledTimes(2);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  describe('interrupt hint', () => {
+    // The discoverability gap this hint exists to close: `onInterrupt` fires from exactly one path
+    // (handleKeyDown's metaKey/ctrlKey branch above) and, before this, "Cmd/Ctrl+Enter" appeared
+    // nowhere a user could see it — only in code comments. Shown only while streaming: a permanent
+    // shortcut legend would be clutter the other ~95% of the time nothing is running to interrupt.
+    const originalPlatform = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+
+    afterEach(() => {
+      if (originalPlatform) Object.defineProperty(window.navigator, 'platform', originalPlatform);
+    });
+
+    function setPlatform(platform: string) {
+      Object.defineProperty(window.navigator, 'platform', { value: platform, configurable: true });
+    }
+
+    it('is absent when nothing is streaming', () => {
+      const { result } = renderHook(() => useComposer());
+      render(<Composer composer={result.current} onSend={() => {}} onInterrupt={() => {}} />);
+      expect(screen.queryByText(/interrupts it and sends now/)).not.toBeInTheDocument();
+    });
+
+    it('is absent while streaming if the host never wired an interrupt handler — nothing to hint at', () => {
+      const { result } = renderHook(() => useComposer());
+      render(<Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} />);
+      expect(screen.queryByText(/interrupts it and sends now/)).not.toBeInTheDocument();
+    });
+
+    it('states both halves — Enter queues, the modifier interrupts and sends now — while streaming with an interrupt handler wired', () => {
+      setPlatform('Win32');
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} onInterrupt={() => {}} />,
+      );
+      const hint = screen.getByText(/Enter queues this after the run finishes/);
+      expect(hint).toHaveTextContent('Enter queues this after the run finishes');
+      expect(hint).toHaveTextContent('Ctrl+Enter interrupts it and sends now');
+    });
+
+    it('labels the modifier ⌘ on a Mac platform, not Ctrl', () => {
+      setPlatform('MacIntel');
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} onInterrupt={() => {}} />,
+      );
+      expect(screen.getByText(/⌘\+Enter interrupts it and sends now/)).toBeInTheDocument();
+    });
+  });
+
+  it('a host with no onInterrupt keeps the original Enter behavior on Cmd/Ctrl+Enter — falls through to onSend, still gated by sendDisabled', async () => {
+    const onSend = vi.fn();
+    const { result } = renderHook(() => useComposer());
+    act(() => result.current.setDraft('hello'));
+    const { rerender } = render(<Composer composer={result.current} onSend={onSend} />);
+    const textarea = screen.getByPlaceholderText('Send a message…');
+
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    rerender(<Composer composer={result.current} onSend={onSend} sendDisabled />);
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it('can disable only submission while keeping draft editing available', async () => {

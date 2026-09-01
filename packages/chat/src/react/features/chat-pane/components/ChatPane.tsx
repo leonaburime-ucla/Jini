@@ -271,7 +271,11 @@ interface ChatPaneComposerAreaProps {
  * that reads/writes the live pane. Cancelling an in-flight run is not a separate control here: it
  * lives in the composer's own trailing button, which swaps from send to stop while streaming (see
  * `Composer`'s `running`/`onCancel` props) — the same control an operator's attention is already
- * on, rather than a second affordance elsewhere in the pane they'd have to go find. */
+ * on, rather than a second affordance elsewhere in the pane they'd have to go find.
+ *
+ * The pending-turn strip previously lived here (a banner bolted above the composer). It now
+ * renders inside `<MessageList>` itself, as the newest transcript entry — see that component's
+ * `pendingPrompt` prop and this component's own call site below. */
 function ChatPaneComposerArea({
   fileDrop,
   uploadAttachments,
@@ -299,10 +303,14 @@ function ChatPaneComposerArea({
       <Composer
         composer={pane.composer}
         onSend={() => void pane.send()}
-        disabled={disabled || unavailable || pane.conversation.isStreaming}
-        sendDisabled={!pane.canSend}
+        // Streaming no longer locks the textarea: `pane.send()` queues a turn typed during a run
+        // rather than refusing it, so the operator can keep writing while the agent thinks.
+        disabled={disabled || unavailable}
+        // The one blocker `send()` handles itself. Every other refusal still greys out the button.
+        sendDisabled={!pane.canSend && pane.sendBlocker !== 'streaming'}
         running={pane.conversation.isStreaming}
         onCancel={pane.conversation.cancel}
+        onInterrupt={pane.interruptSend}
         {...definedProps({ placeholder })}
         slots={slots}
         {...resolveComposerAttachmentPicker(uploadAttachments, pane, attachmentAccept)}
@@ -479,6 +487,7 @@ export function ChatPane({
           isStreaming={pane.conversation.isStreaming}
           scrollIntent={pane.conversation.scrollIntent}
           onScrolled={pane.conversation.acknowledgeScroll}
+          pendingPrompt={pane.queuedPrompt === null ? null : { text: pane.queuedPrompt, onCancel: pane.cancelQueued }}
           {...(projectFileNames === undefined ? {} : { projectFileNames: new Set(projectFileNames) })}
         />
         <div className="jini-chat-pane__controls" ref={controlsRef}>

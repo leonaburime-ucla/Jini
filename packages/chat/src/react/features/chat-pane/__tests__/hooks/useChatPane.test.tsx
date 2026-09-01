@@ -250,6 +250,176 @@ describe('useChatPane', () => {
     expect(transport.calls).toHaveLength(0);
   });
 
+  it('queues an Enter sent while streaming, clearing only the draft and keeping staged attachments', async () => {
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useChatPane({
+      transport,
+      agents,
+      selection: { agentId: 'codex' },
+      initialDraft: 'first turn',
+    }));
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+    expect(result.current.conversation.isStreaming).toBe(true);
+
+    act(() => {
+      result.current.composer.setDraft('second turn');
+      result.current.composer.addAttachment({ path: '/tmp/b.txt', name: 'b.txt', kind: 'file' });
+    });
+    await act(() => result.current.send());
+
+    expect(result.current.queuedPrompt).toBe('second turn');
+    expect(result.current.composer.draft).toBe('');
+    // `send()` uses `composer.setDraft('')`, NOT `composer.reset()` — a reset would also wipe the
+    // attachment this queued turn still needs when it finally goes out.
+    expect(result.current.composer.attachments).toEqual([{ path: '/tmp/b.txt', name: 'b.txt', kind: 'file' }]);
+    // Nothing was sent yet — the second turn is only queued while the first is still streaming.
+    expect(transport.calls).toHaveLength(1);
+  });
+
+  it('flushes the queued prompt exactly once when the run finishes, and never double-sends on extra renders', async () => {
+    const transport = createFakeChatTransport();
+    const { result, rerender } = renderHook(
+      (props: { title?: string }) => useChatPane({ transport, agents, selection: { agentId: 'codex' }, initialDraft: 'first turn', ...props }),
+      { initialProps: {} },
+    );
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+    act(() => result.current.composer.setDraft('second turn'));
+    await act(() => result.current.send());
+    expect(result.current.queuedPrompt).toBe('second turn');
+
+    await act(async () => {
+      transport.finish();
+    });
+
+    await waitFor(() => expect(transport.calls).toHaveLength(2));
+    expect(transport.calls[1]?.input.history.at(-1)?.content).toBe('second turn');
+    expect(result.current.queuedPrompt).toBeNull();
+
+    // Force a few extra re-renders after the flush — the queue slot was cleared before the send
+    // was awaited, so a stray re-render must not resend the same prompt a second time.
+    rerender({ title: 'a' });
+    rerender({ title: 'b' });
+    await waitFor(() => expect(result.current.conversation.isStreaming).toBe(true));
+    expect(transport.calls).toHaveLength(2);
+  });
+
+  it('does NOT flush a queued prompt merely because streaming ended — an unrelated blocker (uploads-pending) still holds it', async () => {
+    // Pins the ordering trap documented on `isChatPaneQueueableBlocker`: `findChatPaneSendBlocker`
+    // reports 'streaming' ahead of 'uploads-pending', so a queueing decision made off 'streaming'
+    // alone does not prove uploads have cleared. The flush effect must wait for a fully-null
+    // blocker, not merely for `isStreaming` to flip false.
+    let resolveUpload!: (attachments: Array<{ path: string; name: string; kind: 'file' }>) => void;
+    const uploadAttachments = vi.fn(() => new Promise<Array<{ path: string; name: string; kind: 'file' }>>((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useChatPane({
+      transport,
+      agents,
+      selection: { agentId: 'codex' },
+      initialDraft: 'first turn',
+      uploadAttachments,
+    }));
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+
+    // Start an upload that never resolves on its own, then queue a second turn behind streaming.
+    act(() => {
+      void result.current.addAttachments([new File(['b'], 'b.txt')]);
+    });
+    expect(result.current.isUploadingAttachments).toBe(true);
+    act(() => result.current.composer.setDraft('second turn'));
+    await act(() => result.current.send());
+    expect(result.current.queuedPrompt).toBe('second turn');
+
+    // End the run. Streaming clears, but the upload is still in flight, so `sendBlocker` becomes
+    // 'uploads-pending', not null — the queued prompt must stay put.
+    await act(async () => {
+      transport.finish();
+    });
+    expect(result.current.conversation.isStreaming).toBe(false);
+    expect(result.current.queuedPrompt).toBe('second turn');
+    expect(transport.calls).toHaveLength(1);
+
+    // Only once the upload itself resolves does the blocker go fully null and the flush fire.
+    await act(async () => {
+      resolveUpload([{ path: '/tmp/b', name: 'b.txt', kind: 'file' }]);
+    });
+    await waitFor(() => expect(transport.calls).toHaveLength(2));
+    expect(transport.calls[1]?.input.history.at(-1)?.content).toBe('second turn');
+    expect(result.current.queuedPrompt).toBeNull();
+  });
+
+  it('interruptSend cancels the in-flight run and queues the draft — held behind any remaining blocker exactly like a plain queued send', async () => {
+    let resolveUpload!: (attachments: Array<{ path: string; name: string; kind: 'file' }>) => void;
+    const uploadAttachments = vi.fn(() => new Promise<Array<{ path: string; name: string; kind: 'file' }>>((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useChatPane({
+      transport,
+      agents,
+      selection: { agentId: 'codex' },
+      initialDraft: 'first turn',
+      uploadAttachments,
+    }));
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+
+    // Keep an upload in flight so the interrupt's own queued turn cannot flush immediately —
+    // this is what proves interruptSend goes through the SAME queue path as a plain queued
+    // `send()`, rather than some separate cancel-then-send-directly branch.
+    act(() => {
+      void result.current.addAttachments([new File(['b'], 'b.txt')]);
+    });
+    act(() => result.current.composer.setDraft('next turn'));
+    act(() => result.current.interruptSend());
+
+    expect(transport.stoppedRunIds).toContain('run-1');
+    expect(result.current.conversation.isStreaming).toBe(false);
+    expect(result.current.queuedPrompt).toBe('next turn');
+    expect(result.current.composer.draft).toBe('');
+    expect(transport.calls).toHaveLength(1);
+
+    await act(async () => {
+      resolveUpload([{ path: '/tmp/b', name: 'b.txt', kind: 'file' }]);
+    });
+    await waitFor(() => expect(transport.calls).toHaveLength(2));
+    expect(transport.calls[1]?.input.history.at(-1)?.content).toBe('next turn');
+  });
+
+  it('cancelQueued drops the queued prompt without ever sending it', async () => {
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useChatPane({
+      transport,
+      agents,
+      selection: { agentId: 'codex' },
+      initialDraft: 'first turn',
+    }));
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+    act(() => result.current.composer.setDraft('never sent'));
+    await act(() => result.current.send());
+    expect(result.current.queuedPrompt).toBe('never sent');
+
+    act(() => result.current.cancelQueued());
+    expect(result.current.queuedPrompt).toBeNull();
+
+    await act(async () => {
+      transport.finish();
+    });
+    // Give the flush effect a chance to run — it must find nothing queued.
+    await waitFor(() => expect(result.current.conversation.isStreaming).toBe(false));
+    expect(transport.calls).toHaveLength(1);
+  });
+
   it('ignores a stale upload failure raised after a reset already started a fresh batch', async () => {
     const pending: Array<{
       resolve: (attachments: Array<{ path: string; name: string; kind: 'file' }>) => void;

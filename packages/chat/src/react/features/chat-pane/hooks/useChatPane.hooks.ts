@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   describeChatPaneSendBlocker,
   findChatPaneSendBlocker,
+  isChatPaneQueueableBlocker,
   resolveChatPaneSelection,
   type ChatPaneSendBlocker,
 } from '../rules.js';
@@ -92,7 +93,32 @@ export interface UseChatPaneResult extends UseChatPaneWorkingDirectoryResult {
    * silent no-op.
    */
   sendPrompt: (prompt: string) => Promise<void>;
+  /**
+   * The prompt waiting for the in-flight run to finish, or `null` when nothing is queued. Exposed
+   * so the pane can SHOW it — a queued turn that is invisible is indistinguishable from one that
+   * was silently swallowed.
+   */
+  queuedPrompt: string | null;
+  /** Drops the queued prompt without ever sending it. */
+  cancelQueued: () => void;
+  /**
+   * Cancels the run in flight and sends the composer draft as soon as it stops — the modifier-key
+   * counterpart to {@link send}, which queues behind the run instead of ending it. Implemented as
+   * queue-then-cancel rather than cancel-then-send so both paths share one flush, and so a cancel
+   * that never lands cannot strand the prompt.
+   */
+  interruptSend: () => void;
   reset: () => void;
+}
+
+/**
+ * The prompt a composer-driven send would carry: the trimmed draft, or a stand-in when only
+ * attachments are staged. Module scope so `send()` and `interruptSend()` cannot drift apart on
+ * what counts as sendable.
+ */
+function composerPrompt(composer: UseComposerResult): string {
+  return composer.draft.trim()
+    || (composer.attachments.length > 0 ? 'Review the attached file(s).' : '');
 }
 
 function createAttachmentBatchId(): string {
@@ -143,6 +169,7 @@ async function uploadAttachmentBatch(
 export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
   const [activeUploadCount, setActiveUploadCount] = useState(0);
   const [attachmentError, setAttachmentError] = useState<Error | null>(null);
+  const [queuedPrompt, setQueuedPrompt] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const attachmentGenerationRef = useRef(0);
   const attachmentBatchIdRef = useRef(createAttachmentBatchId());
@@ -299,11 +326,39 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
   ]);
 
   const send = useCallback(async () => {
-    const prompt = composer.draft.trim()
-      || (composer.attachments.length > 0 ? 'Review the attached file(s).' : '');
-    if (!prompt || !canSend) return;
+    const prompt = composerPrompt(composer);
+    if (!prompt) return;
+    // Queue instead of no-op'ing. `setDraft('')` and NOT `composer.reset()`: reset also discards
+    // staged attachments, which this turn still needs when it finally goes out.
+    if (isChatPaneQueueableBlocker(sendBlocker)) {
+      setQueuedPrompt(prompt);
+      composer.setDraft('');
+      return;
+    }
+    if (!canSend) return;
     await sendPrompt(prompt);
-  }, [canSend, composer, sendPrompt]);
+  }, [canSend, composer, sendBlocker, sendPrompt]);
+
+  const interruptSend = useCallback(() => {
+    const prompt = composerPrompt(composer);
+    if (!prompt) return;
+    setQueuedPrompt(prompt);
+    composer.setDraft('');
+    conversation.cancel();
+  }, [composer, conversation]);
+
+  const cancelQueued = useCallback(() => {
+    setQueuedPrompt(null);
+  }, []);
+
+  // Flush on a FULLY clear blocker, not merely on streaming ending — see
+  // `isChatPaneQueueableBlocker`'s note about `findChatPaneSendBlocker`'s ordering. Clearing the
+  // queue slot BEFORE awaiting keeps a re-render from double-sending the same prompt.
+  useEffect(() => {
+    if (queuedPrompt === null || sendBlocker !== null) return;
+    setQueuedPrompt(null);
+    void sendPrompt(queuedPrompt);
+  }, [queuedPrompt, sendBlocker, sendPrompt]);
 
   const reset = useCallback(() => {
     attachmentGenerationRef.current += 1;
@@ -333,6 +388,9 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
     addAttachments,
     send,
     sendPrompt,
+    queuedPrompt,
+    cancelQueued,
+    interruptSend,
     reset,
   };
 }

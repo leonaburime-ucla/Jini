@@ -147,17 +147,13 @@ export const claudeAgentDef = {
       if (dirs.length > 0 && caps.addDir !== false) {
         args.push('--add-dir', ...dirs);
       }
-      // Appended, never replaces the CLI's own default system prompt — see
-      // `RuntimeBuildOptions.systemPromptOverlay`'s doc. Same probe-gate reasoning as
-      // `--include-partial-messages`/`--effort` above: an older build rejects an unknown option
-      // with exit 1, which kills the chat rather than degrading it.
-      if (
-        caps.appendSystemPrompt !== false
-        && typeof options.systemPromptOverlay === 'string'
-        && options.systemPromptOverlay.length > 0
-      ) {
-        args.push('--append-system-prompt', options.systemPromptOverlay);
-      }
+      // `--append-system-prompt` delivery now lives outside this function — see
+      // `systemPromptDelivery` below and `@jini-ai/daemon`'s `resolveSystemPromptOverlayDelivery`
+      // (the single dispatch point for every def, not just this one). The probe-gate reasoning
+      // (an older build rejects an unknown option with exit 1, which kills the chat rather than
+      // degrading it) is preserved there via `capabilityKey: 'appendSystemPrompt'`, read from the
+      // same `capabilityFlags` probe above — moving the *call site* changed nothing about the gate
+      // itself.
       // Continue Claude's own CLI session across turns so it keeps its
       // working memory (files read, edits made, tool history) instead of
       // re-deriving everything from the rendered transcript each turn.
@@ -188,6 +184,11 @@ export const claudeAgentDef = {
     // so the daemon writes the user's external MCP servers there before
     // launching (server.ts handles the cwd guard).
     externalMcpInjection: 'claude-mcp-json',
+    // Formerly inline in `buildArgs` above (see the comment there) — moved to the declarative
+    // shape every def now uses to receive `RuntimeBuildOptions.systemPromptOverlay`. Same flag,
+    // same probe gate (`capabilityFlags['--append-system-prompt']` above), same "append, never
+    // replace" behavior as before this moved.
+    systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt', capabilityKey: 'appendSystemPrompt' },
     resumesSessionViaCli: true,
     // See this file's module doc's "Image delivery" section — the CLI reads
     // a local file once its path is named in the prompt, so the daemon

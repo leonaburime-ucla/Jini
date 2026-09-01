@@ -8,6 +8,7 @@ import type { RunAgentPayload, RunErrorPayload, RunProtocolEvent } from '@jini-a
 import {
   AGENT_DEFS,
   _resetAntigravityModelLockForTests,
+  agentCapabilities,
   antigravityModelLock,
   attachAcpSession,
   attachPiRpcSession,
@@ -37,16 +38,22 @@ import {
   buildCodexMcpServerToml,
   buildMcpBridgeDelivery,
   buildMcpJsonServerEntry,
+  computeChildEnv,
   createAgentExecutor,
   isAgentExecutorSupported,
   isSupportedStreamFormat,
+  mergeEnvContentInstructions,
   mergeEnvContentMcpConfig,
   mergeMcpJsonContent,
+  prepareSystemPromptOverlayFileIfNeeded,
   resolveSourceCodexHomeDir,
+  resolveSystemPromptOverlayDelivery,
   translateAgentRuntimeEvent,
   type AgentExecutor,
+  type AgentExecutorErrorCode,
   type ClassifyFailure,
   type ContinuationOptions,
+  type McpBridgeDelivery,
   type McpJsonInjectionOptions,
 } from '../agent-executor.js';
 
@@ -5013,6 +5020,305 @@ describe('buildMcpBridgeDelivery', () => {
         kind: 'acp-merge',
       });
     }
+  });
+});
+
+describe('resolveSystemPromptOverlayDelivery', () => {
+  const base = {
+    defId: 'fake-agent',
+    systemPromptDelivery: undefined,
+    resumesSessionViaCli: undefined,
+    resumesSessionViaAcpLoad: undefined,
+    overlay: 'Follow the house rules.',
+    prompt: 'What is the weather doing today?',
+    resumeSessionId: undefined,
+  };
+
+  it('passes the prompt through unchanged and appends nothing when there is no overlay', () => {
+    expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: undefined })).toEqual({
+      prompt: base.prompt,
+      extraArgs: [],
+      envOverrides: {},
+    });
+    expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: null })).toEqual({
+      prompt: base.prompt,
+      extraArgs: [],
+      envOverrides: {},
+    });
+    expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: '' })).toEqual({
+      prompt: base.prompt,
+      extraArgs: [],
+      envOverrides: {},
+    });
+  });
+
+  it("fallback (no declared strategy): prefixes the overlay onto the prompt, clearly delimited", () => {
+    expect(resolveSystemPromptOverlayDelivery(base)).toEqual({
+      prompt: 'Follow the house rules.\n\n---\n\nWhat is the weather doing today?',
+      extraArgs: [],
+      envOverrides: {},
+    });
+  });
+
+  it('fallback: a def with no session memory gets the prefix on every turn, resumeSessionId or not', () => {
+    const withResumeId = resolveSystemPromptOverlayDelivery({ ...base, resumeSessionId: 'sess-1' });
+    expect(withResumeId.prompt.startsWith('Follow the house rules.')).toBe(true);
+  });
+
+  it('fallback: a resumesSessionViaCli def gets the prefix on its session-creating turn (no resumeSessionId yet)', () => {
+    const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaCli: true, resumeSessionId: undefined });
+    expect(delivery.prompt.startsWith('Follow the house rules.')).toBe(true);
+  });
+
+  it('fallback: a resumesSessionViaCli def does NOT get the prefix once a resumeSessionId is present — avoids compounding it into the CLI-owned session history', () => {
+    const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaCli: true, resumeSessionId: 'sess-1' });
+    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+  });
+
+  it('fallback: same resume-in-progress skip applies to resumesSessionViaAcpLoad defs (amr)', () => {
+    const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaAcpLoad: true, resumeSessionId: 'acp-sess-1' });
+    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+  });
+
+  it("fallback: an empty-string resumeSessionId does not count as 'continuing a session'", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaCli: true, resumeSessionId: '' });
+    expect(delivery.prompt.startsWith('Follow the house rules.')).toBe(true);
+  });
+
+  it("'append-flag': leaves the prompt untouched and appends the flag + overlay as extra argv", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt' },
+    });
+    expect(delivery).toEqual({
+      prompt: base.prompt,
+      extraArgs: ['--append-system-prompt', 'Follow the house rules.'],
+      envOverrides: {},
+    });
+  });
+
+  it("'append-flag': pushed on every turn unconditionally, unlike the fallback — a resumed session still gets it", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt' },
+      resumesSessionViaCli: true,
+      resumeSessionId: 'sess-1',
+    });
+    expect(delivery.extraArgs).toEqual(['--append-system-prompt', 'Follow the house rules.']);
+  });
+
+  it("'append-flag' with a capabilityKey: gated on the probed capability, same as claude's own pre-existing behavior", () => {
+    agentCapabilities.set('fake-agent', { appendSystemPrompt: true });
+    const gated = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt', capabilityKey: 'appendSystemPrompt' },
+    });
+    expect(gated.extraArgs).toEqual(['--append-system-prompt', 'Follow the house rules.']);
+    agentCapabilities.delete('fake-agent');
+  });
+
+  it("'append-flag' with a capabilityKey explicitly false: an older build rejected the probe, so the flag is withheld rather than risking exit 1", () => {
+    agentCapabilities.set('fake-agent', { appendSystemPrompt: false });
+    const gated = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt', capabilityKey: 'appendSystemPrompt' },
+    });
+    expect(gated).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+    agentCapabilities.delete('fake-agent');
+  });
+
+  it("'append-flag' with a capabilityKey never probed (agentCapabilities has no entry for this def): allowed by default, matching claude.ts's own pre-existing `agentCapabilities.get(id) || {}` — only an explicit `false` withholds the flag", () => {
+    const gated = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt', capabilityKey: 'appendSystemPrompt' },
+    });
+    expect(gated.extraArgs).toEqual(['--append-system-prompt', 'Follow the house rules.']);
+  });
+
+  it("'env-var': leaves the prompt and extraArgs untouched and returns the overlay as an env override keyed by the declared varName", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'env-var', varName: 'REASONIX_ACP_SYSTEM_APPEND' },
+    });
+    expect(delivery).toEqual({
+      prompt: base.prompt,
+      extraArgs: [],
+      envOverrides: { REASONIX_ACP_SYSTEM_APPEND: 'Follow the house rules.' },
+    });
+  });
+
+  it("'env-var': pushed on every turn unconditionally, same as 'append-flag' — a resumed session still gets it", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'env-var', varName: 'REASONIX_ACP_SYSTEM_APPEND' },
+      resumesSessionViaAcpLoad: true,
+      resumeSessionId: 'acp-sess-1',
+    });
+    expect(delivery.envOverrides).toEqual({ REASONIX_ACP_SYSTEM_APPEND: 'Follow the house rules.' });
+  });
+
+  // The registry-level invariant this whole task exists to establish: every real def gets overlay
+  // delivery one way or another — either it declared `systemPromptDelivery` (native, via argv, env,
+  // or a staged config file), or it falls through to the universal prompt-prefix. Neither path is a
+  // silent no-op for any of the 24 (a def like `reasonix` delivers via `envOverrides` alone,
+  // touching neither `prompt` nor `extraArgs` — the check below has to look at all three channels,
+  // not just two, or it would falsely flag every `'env-var'` def as undelivered).
+  //
+  // `'config-instructions-file'` defs (`opencode` today) are EXCLUDED from this particular check,
+  // not exempted from the invariant itself: that strategy's real delivery happens through a
+  // separate async staging phase (`prepareSystemPromptOverlayFileIfNeeded` +
+  // `computeChildEnv`/`mergeEnvContentInstructions`, since it needs real filesystem I/O this pure
+  // function cannot perform — see its own `'config-instructions-file'` branch's comment), so from
+  // THIS function's point of view alone, a no-op return is the correct, intended result, not a gap.
+  // The registry-wide "does it actually get delivered" coverage for that strategy lives in the
+  // `prepareSystemPromptOverlayFileIfNeeded`/`computeChildEnv` describe blocks below instead.
+  it('every real def in the registry resolves to SOME delivery through this function when an overlay is present — no def is silently dropped, aside from the config-file strategy covered separately below', () => {
+    for (const def of AGENT_DEFS) {
+      if (def.systemPromptDelivery?.strategy === 'config-instructions-file') continue;
+      const delivery = resolveSystemPromptOverlayDelivery({
+        defId: def.id,
+        systemPromptDelivery: def.systemPromptDelivery,
+        resumesSessionViaCli: def.resumesSessionViaCli,
+        resumesSessionViaAcpLoad: def.resumesSessionViaAcpLoad,
+        overlay: 'x',
+        prompt: 'y',
+        resumeSessionId: undefined,
+      });
+      const deliversViaPrompt = delivery.prompt !== 'y';
+      const deliversViaArgs = delivery.extraArgs.length > 0;
+      const deliversViaEnv = Object.keys(delivery.envOverrides).length > 0;
+      expect(deliversViaPrompt || deliversViaArgs || deliversViaEnv, `def "${def.id}" delivered nothing`).toBe(true);
+    }
+  });
+
+  it("'config-instructions-file': resolveSystemPromptOverlayDelivery itself is a deliberate no-op — delivery happens in prepareSystemPromptOverlayFileIfNeeded/computeChildEnv instead", () => {
+    const delivery = resolveSystemPromptOverlayDelivery({
+      ...base,
+      systemPromptDelivery: { strategy: 'config-instructions-file', varName: 'OPENCODE_CONFIG_CONTENT' },
+    });
+    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+  });
+});
+
+describe('prepareSystemPromptOverlayFileIfNeeded', () => {
+  const configInstructionsFileDef = createFakeDef({
+    systemPromptDelivery: { strategy: 'config-instructions-file', varName: 'FAKE_CONFIG_CONTENT' },
+  });
+  const noStrategyDef = createFakeDef();
+  const failBeforeSpawn = async (_runId: string, code: AgentExecutorErrorCode, message: string): Promise<never> => {
+    throw new AgentExecutorError(code, message);
+  };
+
+  it('returns null (no staging) when the def has no systemPromptDelivery at all', async () => {
+    const result = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: 'run-1', def: noStrategyDef, overlay: 'Follow the house rules.' },
+      { releaseStagedResources: async () => {}, failBeforeSpawn },
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns null (no staging) for a def declaring a DIFFERENT strategy', async () => {
+    const result = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: 'run-1', def: { ...configInstructionsFileDef, systemPromptDelivery: { strategy: 'env-var', varName: 'X' } }, overlay: 'Follow the house rules.' },
+      { releaseStagedResources: async () => {}, failBeforeSpawn },
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns null (no staging) when there is no overlay to stage', async () => {
+    const result = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: 'run-1', def: configInstructionsFileDef, overlay: undefined },
+      { releaseStagedResources: async () => {}, failBeforeSpawn },
+    );
+    expect(result).toBeNull();
+  });
+
+  it('stages the overlay text to a real temp file and cleans it up afterward', async () => {
+    const result = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: 'run-1', def: configInstructionsFileDef, overlay: 'Follow the house rules.' },
+      { releaseStagedResources: async () => {}, failBeforeSpawn },
+    );
+    expect(result).not.toBeNull();
+    const staged = await fs.readFile(result!.path, 'utf8');
+    expect(staged).toBe('Follow the house rules.');
+    await result!.cleanup();
+    await expect(fs.readFile(result!.path, 'utf8')).rejects.toThrow();
+  });
+
+  it('cleanup is safe to call more than once', async () => {
+    const result = await prepareSystemPromptOverlayFileIfNeeded(
+      { runId: 'run-1', def: configInstructionsFileDef, overlay: 'Follow the house rules.' },
+      { releaseStagedResources: async () => {}, failBeforeSpawn },
+    );
+    await result!.cleanup();
+    await expect(result!.cleanup()).resolves.toBeUndefined();
+  });
+});
+
+describe('mergeEnvContentInstructions', () => {
+  it('starts a fresh document when there is no existing value', () => {
+    expect(JSON.parse(mergeEnvContentInstructions(undefined, '/tmp/overlay.md'))).toEqual({
+      instructions: ['/tmp/overlay.md'],
+    });
+  });
+
+  it('appends to, never clobbers, an existing instructions array', () => {
+    const existing = JSON.stringify({ instructions: ['/existing/one.md'] });
+    expect(JSON.parse(mergeEnvContentInstructions(existing, '/tmp/overlay.md'))).toEqual({
+      instructions: ['/existing/one.md', '/tmp/overlay.md'],
+    });
+  });
+
+  it('preserves an existing mcp key untouched, alongside the new instructions entry — the coexistence this whole mechanism depends on', () => {
+    const existing = JSON.stringify({ mcp: { jini: { type: 'local', command: ['node', 'x.mjs'], environment: {}, enabled: true } } });
+    const merged = JSON.parse(mergeEnvContentInstructions(existing, '/tmp/overlay.md'));
+    expect(merged).toEqual({
+      mcp: { jini: { type: 'local', command: ['node', 'x.mjs'], environment: {}, enabled: true } },
+      instructions: ['/tmp/overlay.md'],
+    });
+  });
+
+  it('starts fresh (does not throw) when the existing value is unparseable JSON', () => {
+    expect(JSON.parse(mergeEnvContentInstructions('not json{', '/tmp/overlay.md'))).toEqual({
+      instructions: ['/tmp/overlay.md'],
+    });
+  });
+
+  it('ignores non-string entries in an existing instructions array rather than propagating malformed data', () => {
+    const existing = JSON.stringify({ instructions: ['/existing/one.md', 42, null] });
+    expect(JSON.parse(mergeEnvContentInstructions(existing, '/tmp/overlay.md'))).toEqual({
+      instructions: ['/existing/one.md', '/tmp/overlay.md'],
+    });
+  });
+});
+
+describe('computeChildEnv — stagedInstructionsFile param', () => {
+  it('merges the staged instructions file into the named var, alongside an existing mcp-key value on the same var', () => {
+    const mcpBridge: McpBridgeDelivery = {
+      kind: 'env-content',
+      envVarName: 'OPENCODE_CONFIG_CONTENT',
+      serverEntry: { command: '/usr/bin/jini-mcp', args: ['--quiet'], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' } },
+    };
+    const result = computeChildEnv({}, mcpBridge, undefined, undefined, {
+      varName: 'OPENCODE_CONFIG_CONTENT',
+      path: '/tmp/overlay.md',
+    });
+    expect(JSON.parse(result.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      mcp: {
+        jini: {
+          type: 'local',
+          command: ['/usr/bin/jini-mcp', '--quiet'],
+          environment: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+          enabled: true,
+        },
+      },
+      instructions: ['/tmp/overlay.md'],
+    });
+  });
+
+  it('is a no-op when no instructions file was staged (undefined, the default)', () => {
+    const result = computeChildEnv({ FOO: 'bar' }, null);
+    expect(result).toEqual({ FOO: 'bar' });
   });
 });
 

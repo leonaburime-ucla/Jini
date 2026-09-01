@@ -7,6 +7,7 @@ import type { ChatMessage } from '@jini-ai/chat/core';
 import { FILE_SYSTEM_READ_ERROR_MESSAGE } from '@jini-ai/ui';
 import { createFakeChatTransport } from '../../../../hooks/testing/fake-transport.js';
 import { ChatPane } from '../../components/ChatPane.js';
+import { CHAT_PANE_STYLES } from '../../styles.js';
 import type { ChatPaneActivity, ChatPaneAgent, ChatPaneComposerHandle } from '../../types.js';
 
 const agents: ChatPaneAgent[] = [{
@@ -653,6 +654,45 @@ describe('ChatPane', () => {
       expect(screen.getByText('Working directory')).toBeInTheDocument();
       expect(screen.getByText('/Users/test/current')).toBeInTheDocument();
       expect(screen.queryByLabelText('Select working directory')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('injected default styles', () => {
+    // Regression test: the queued-prompt strip's rules used to live ONLY in reference.css, an
+    // opt-in stylesheet no host actually imports (the published 0.3.2 tarball does not even ship
+    // the file) — CHAT_PANE_STYLES, injected automatically into every host by ChatPane.tsx, had
+    // zero '.jini-chat-pane__queued*' rules. Every host rendered the strip unstyled, which in one
+    // host meant `<button>` fell through to that host's own global button styling and painted as
+    // a large primary-colored pill overlapping the transcript. Asserts the rules now live in the
+    // sheet every host actually gets, not just the opt-in one most hosts never import.
+    // Updated when the strip moved from a composer-area banner into the transcript itself
+    // (MessageList.tsx's pendingPrompt row): it now copies .jini-message-user .jini-message-content's
+    // bubble geometry (asserted separately below isn't needed — the shared max-width/border-radius
+    // values live in that class, not duplicated here) and is right-aligned like a real user message,
+    // with a dashed border and reduced opacity standing in for the old boxed-strip-plus-label
+    // treatment as the "not yet sent" signal — a sent bubble has neither.
+    it('marks the queued bubble as pending — right-aligned like a real message, with a dashed border and reduced opacity a sent bubble never carries', () => {
+      const rowRule = CHAT_PANE_STYLES.match(/\.jini-chat-pane__queued \{([^}]*)\}/)?.[1] ?? '';
+      expect(rowRule).toMatch(/align-items:\s*flex-end/);
+
+      const textRule = CHAT_PANE_STYLES.match(/\.jini-chat-pane__queued-text \{([^}]*)\}/)?.[1] ?? '';
+      expect(textRule).toMatch(/border:\s*1px dashed/);
+      expect(textRule).toMatch(/background:\s*var\(--jini-chat-subtle\)/);
+      expect(textRule).toMatch(/opacity:\s*\.\d+/);
+    });
+
+    // The specific failure an operator hit live: without an explicit reset, a host's own global
+    // `button` styling (background/border/padding/border-radius/bold text) turns this plain-text
+    // cancel affordance into a full pill-shaped button. Asserting the reset directly (not just
+    // that some rule exists) is what stops that exact regression from recurring silently.
+    it('resets the queued-cancel button so a host global `button` style cannot repaint it as a pill', () => {
+      const cancelRule = CHAT_PANE_STYLES.match(/\.jini-chat-pane__queued-cancel \{([^}]*)\}/)?.[1] ?? '';
+      expect(cancelRule).toMatch(/background:\s*none/);
+      expect(cancelRule).toMatch(/border:\s*0/);
+      expect(cancelRule).toMatch(/padding:\s*\S+/);
+      expect(cancelRule).toMatch(/border-radius:\s*\S+/);
+      expect(cancelRule).toMatch(/font-size:\s*\S+/);
+      expect(cancelRule).toMatch(/font-weight:\s*\S+/);
     });
   });
 });

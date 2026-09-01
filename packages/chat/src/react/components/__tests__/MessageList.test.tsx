@@ -198,4 +198,39 @@ describe('MessageList', () => {
     render(<MessageList messages={withAttachment} renderAttachment={(a) => <span data-testid="custom-chip">{a.name.toUpperCase()}</span>} />);
     expect(screen.getByTestId('custom-chip')).toHaveTextContent('A.PNG');
   });
+
+  describe('pendingPrompt', () => {
+    // Regression coverage for the queued-turn strip's move from a banner bolted above the
+    // composer (ChatPane's old `ChatPaneQueuedPrompt`) into the transcript itself, as the newest
+    // entry — matching Claude Code/ChatGPT's own pending-turn UX.
+    it('renders nothing when nothing is queued', () => {
+      render(<MessageList messages={messages} pendingPrompt={null} />);
+      expect(screen.queryByTestId('chat-pane-queued')).not.toBeInTheDocument();
+    });
+
+    it('renders the queued text as the newest transcript entry, after every real message', () => {
+      const { container } = render(<MessageList messages={messages} pendingPrompt={{ text: 'third turn', onCancel: () => {} }} />);
+      const el = container.querySelector('.jini-message-list') as HTMLDivElement;
+      expect(el.lastElementChild).toHaveAttribute('data-testid', 'chat-pane-queued');
+      expect(screen.getByText('third turn')).toBeInTheDocument();
+    });
+
+    it('invokes onCancel from the transcript entry\'s own cancel affordance', async () => {
+      const onCancel = vi.fn();
+      render(<MessageList messages={messages} pendingPrompt={{ text: 'third turn', onCancel }} />);
+      await userEvent.click(screen.getByTitle('Cancel queued message'));
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('never mints a message id or writes the pending turn into the messages array it was given', () => {
+      // `pendingPrompt` is pane-local queue state, not a `ChatMessage` — asserting there is no
+      // `data-message-id` on the queued row (unlike every real MessageRow) is what actually proves
+      // it never got treated as one; a fabricated id here could collide with a real persisted
+      // message once the turn is actually sent.
+      const { container } = render(<MessageList messages={messages} pendingPrompt={{ text: 'third turn', onCancel: () => {} }} />);
+      const queuedEl = screen.getByTestId('chat-pane-queued');
+      expect(queuedEl).not.toHaveAttribute('data-message-id');
+      expect(container.querySelectorAll('[data-message-id]')).toHaveLength(messages.length);
+    });
+  });
 });

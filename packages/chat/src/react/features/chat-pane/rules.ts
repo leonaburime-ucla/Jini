@@ -143,6 +143,23 @@ export function describeChatPaneSendBlocker(blocker: ChatPaneSendBlocker): strin
   return SEND_BLOCKER_MESSAGES[blocker];
 }
 
+/**
+ * Whether a refused send should be QUEUED and retried rather than dropped on the floor.
+ *
+ * Only `streaming` qualifies: it is the one blocker guaranteed to clear on its own, from a run
+ * that is already underway. Every other blocker needs an operator action — pick an agent, wait for
+ * uploads, fix the working directory — so queueing behind one would hold a prompt indefinitely
+ * against a condition nothing is going to change.
+ *
+ * Note the ordering dependency in {@link findChatPaneSendBlocker}: `streaming` is reported AHEAD of
+ * `uploads-pending` and the working-directory blockers, so a `streaming` verdict does not prove
+ * those are clear. A flush path must therefore wait for a fully `null` blocker before sending,
+ * not merely for streaming to end.
+ */
+export function isChatPaneQueueableBlocker(blocker: ChatPaneSendBlocker | null): boolean {
+  return blocker === 'streaming';
+}
+
 export function orderChatPaneAgents(
   agents: readonly ChatPaneAgent[],
 ): ChatPaneAgent[] {

@@ -149,6 +149,131 @@ export const CHAT_PANE_STYLES = `
 }
 .jini-chat-pane .jini-message-error { color: var(--danger); font-size: 13px; }
 .jini-chat-pane .jini-message-pending { color: var(--jini-chat-muted); font-size: 13px; font-style: italic; }
+/*
+ * The pending-turn strip: a composer-driven turn typed while a run is already streaming, rendered
+ * as the newest entry in the transcript (MessageList.tsx's pendingPrompt prop) rather than a
+ * banner bolted above the composer — matching Claude Code/ChatGPT's own pending-message UX
+ * (previously ChatPane.tsx's ChatPaneQueuedPrompt, which rendered between the drop-target's drag
+ * announcement and the composer; that component is gone).
+ *
+ * Owner's own framing was "why isn't the queue message just put in the chat" — so
+ * .jini-chat-pane__queued-text below is deliberately NOT a variant banner shape; it copies
+ * .jini-message-user .jini-message-content's bubble geometry line for line (width: fit-content,
+ * max-width: 88%, same padding/border-radius) so it reads as the operator's own message, not a
+ * system notice. What marks it as NOT YET SENT is two properties a real sent bubble never carries:
+ * a dashed border (a sent bubble has none at all) and reduced opacity — chosen over the old boxed
+ * strip-plus-label treatment because those two are legible at a glance without adding a second
+ * visual language next to the transcript's own. The former "QUEUED" chip label is gone for the same
+ * reason: once the bubble itself reads as pending, a label restates it. role="status" plus the
+ * aria-label on the row (MessageList.tsx) still carry that meaning to assistive tech that can't see
+ * the dashed border. The cancel action is a separate, smaller line below the bubble (mirroring
+ * .jini-message-actions--user's own placement under a real message) rather than inline inside it,
+ * so it reads as secondary to the bubble, not competing with it.
+ *
+ * Reuses this theme's own tokens rather than the currentColor/color-mix approach reference.css uses
+ * for the same rules — that file is deliberately token-free because it ships unstyled and undocked
+ * from any root that defines custom properties, but this stylesheet's .jini-chat-pane root already
+ * defines concrete --jini-chat-* values for every other rule here, so matching that (not
+ * reference.css's host-agnostic fallback) is the actual local convention.
+ * NOTE: this comment avoids backtick quoting on purpose, same as the cancel-button comment below —
+ * the whole stylesheet lives inside a JS template literal, so a literal backtick here would
+ * terminate the string, not just this comment.
+ */
+.jini-chat-pane__queued {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin: 4px 0 0;
+}
+.jini-chat-pane__queued-text {
+  width: fit-content;
+  max-width: 88%;
+  padding: 10px 13px;
+  color: var(--jini-chat-text);
+  background: var(--jini-chat-subtle);
+  border: 1px dashed var(--jini-chat-border);
+  border-radius: 12px 12px 3px 12px;
+  opacity: .68;
+  overflow-wrap: break-word;
+}
+.jini-chat-pane__queued-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+/*
+ * A plain-text cancel affordance below the pending bubble, not a primary action — without this
+ * reset a host's own global 'button' styling (background, border, padding, border-radius, bold
+ * text) paints it as a full pill-shaped button that visually competes with (and can overlap) the
+ * transcript around it — the exact failure an operator hit live in one host. '.jini-chat-pane
+ * button { font: inherit }' near the top of this file already resets font-family/line-height/etc
+ * to this pane's own ambient values; font-size/font-weight are redeclared here (not just left at
+ * that inherited ambient size) to size this specific control down to a caption scale, well under
+ * the bubble's own 14px text.
+ * NOTE: this comment avoids backtick quoting on purpose (see this file's own precedent further
+ * down) — the whole stylesheet lives inside a JS template literal, so a literal backtick here
+ * would terminate the string, not just this comment.
+ */
+.jini-chat-pane__queued-cancel {
+  padding: 2px 6px;
+  color: var(--jini-chat-muted);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.jini-chat-pane__queued-cancel:hover {
+  color: var(--jini-chat-text-strong);
+  background: var(--jini-chat-border);
+}
+/*
+ * Per-message action row (MessageRow.tsx's 'CopyMessageButton', Icon.tsx's 'copy' glyph): quiet,
+ * icon-only, always present rather than a hover-only reveal, so keyboard and touch users get the
+ * same access a mouse hover would give. The assistant variant carries a thin left rail (its own
+ * left border) to read as attached to the turn above it without repeating that message's own
+ * chrome; the user variant skips the rail and instead mirrors its bubble's own right alignment.
+ * Copy is the only live button today — 'jini-message-actions--assistant' is an intentional
+ * extension seam, not the finished row; see that row's own call-site comment in MessageRow.tsx.
+ */
+.jini-chat-pane .jini-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+}
+.jini-chat-pane .jini-message-actions--assistant {
+  padding-left: 8px;
+  border-left: 2px solid var(--jini-chat-border-soft);
+}
+.jini-chat-pane .jini-message-actions--user { justify-content: flex-end; }
+.jini-chat-pane .jini-message-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--jini-chat-faint);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.jini-chat-pane .jini-message-action-btn:hover { color: var(--jini-chat-muted); background: var(--jini-chat-subtle); }
+.jini-chat-pane .jini-message-action-btn:focus-visible { outline: 2px solid var(--jini-chat-accent); outline-offset: 1px; }
+/* Visually hidden but present in the DOM (never display:none) so the polite live region beside
+   each copy button still gets announced — same clip-rect technique this package already uses for
+   its other visually-hidden-but-functional controls. */
+.jini-chat-pane .jini-message-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
 .jini-chat-pane__controls {
   position: absolute;
   right: 0;
@@ -437,6 +562,19 @@ export const CHAT_PANE_STYLES = `
   line-height: 1.6;
 }
 .jini-chat-pane .jini-composer-input::placeholder { color: var(--jini-chat-faint); }
+/*
+ * The interrupt-hint caption below the composer box (Composer.tsx's own interruptHintText, gated on
+ * running && onInterrupt): small, muted, single-line text, not a bordered banner — it only needs to
+ * be readable on a glance down after finishing a message, not to compete for attention with the
+ * composer itself. Shown only while a run is actually streaming, so this costs no permanent height
+ * the other ~95% of the time a host renders the composer.
+ */
+.jini-chat-pane .jini-composer-interrupt-hint {
+  margin: 6px 2px 0;
+  color: var(--jini-chat-faint);
+  font-size: 11px;
+  text-align: center;
+}
 .jini-chat-pane .jini-composer-footer {
   display: flex;
   align-items: center;
@@ -1075,6 +1213,203 @@ export const CHAT_PANE_STYLES = `
   margin-top: 2px;
 }
 .jini-chat-pane .jini-message-usage-dot { font-size: 8px; color: #4e875f; }
+/*
+ * Fenced code block ('Markdown.tsx''s 'renderBlock' case 'code') and inline 'code' span visual
+ * treatment — previously entirely unstyled (bare UA-default '<pre><code>', no background, border,
+ * or padding; a downstream admin host's own stylesheet already flagged this gap in a note next to
+ * its unrelated horizontal-scroll fix for the same element). Lives HERE, in the package's own
+ * injected default theme, rather than in a host's stylesheet: a host CAN already remap the exact
+ * '--jini-chat-*' custom properties this rule reads (one such host's '.admin-chat-dock .jini-chat-
+ * pane' block already does, for every other rule in this file), so putting the fix here makes every
+ * Jini host look correct by default AND lets a host match its own palette for free, with no new
+ * host-side override rule needed at all — the reverse (host-only CSS) would leave every other
+ * embedder of '@jini-ai/chat' with the same unstyled '<pre>' this fix exists to correct.
+ * 'max-width'/'overflow-x' here duplicate (harmlessly) a narrower fix that same host's own
+ * '.jini-message-content pre' rule already carries for its own fixed-width dock specifically — this
+ * package cannot assume every host has that rule, so a real host-agnostic default belongs here too.
+ * NOTE: this comment avoids backtick quoting on purpose — this whole stylesheet lives inside a JS
+ * template literal, so a literal backtick here would terminate the string, not just this comment.
+ */
+.jini-chat-pane .jini-message-content pre {
+  margin: 6px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px 12px;
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.jini-chat-pane .jini-message-content pre code {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+}
+.jini-chat-pane .jini-message-content :not(pre) > code {
+  padding: .15em .4em;
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em;
+}
+/*
+ * Copy affordance for a fenced code block ('Markdown.tsx''s 'CodeBlock'/'CopyCodeButton'). The
+ * button lives in its own toolbar row fused to the TOP of the '<pre>' below, not overlaid on top
+ * of the code itself — an overlay would sit over whatever text happens to render at that corner,
+ * and '<pre>' already carries its own horizontal scrollbar along its own bottom edge, so a row
+ * above it can never collide with that scrollbar either. '.jini-md-code-block' takes over the
+ * '<pre>' rule's own top/bottom margin above so the two don't stack, and the toolbar/pre pair
+ * share one rounded box (toolbar keeps the top corners, '<pre>' below loses them) instead of two
+ * separately-bordered boxes stacked on each other.
+ */
+.jini-chat-pane .jini-message-content .jini-md-code-block {
+  margin: 6px 0;
+}
+.jini-chat-pane .jini-message-content .jini-md-code-block pre {
+  margin: 0;
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.jini-chat-pane .jini-md-code-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 3px;
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.jini-chat-pane .jini-md-code-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--jini-chat-faint);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.jini-chat-pane .jini-md-code-copy:hover { color: var(--jini-chat-muted); background: var(--jini-chat-border); }
+.jini-chat-pane .jini-md-code-copy:focus-visible { outline: 2px solid var(--jini-chat-accent); outline-offset: 1px; }
+/* Visually hidden but present in the DOM (never display:none) so this polite live region still
+   gets announced — same clip-rect technique 'jini-message-copy-status' above already uses. */
+.jini-chat-pane .jini-md-code-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+/*
+ * GFM pipe tables ('Markdown.tsx''s 'TableBlock') — same reasoning as the code-block rules directly
+ * above for living in the package's own default theme rather than a host stylesheet. '.jini-md-
+ * table-wrap' gets its own horizontal scrollbar so a wide table scrolls internally instead of
+ * dragging '.jini-message-list' sideways with it (the exact failure mode that same downstream host's
+ * stylesheet documents for the code-block case — the same fix shape applies here). The "Expand
+ * table" button only renders ('TableBlock''s own logic) once the table has genuinely overflowed
+ * that wrap.
+ */
+.jini-md-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.jini-md-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+/*
+ * 'min-width' here, not on '.jini-md-table' itself, and picked per column rather than as one flat
+ * table-wide number -- a flat table minimum sized for a typical 2-column table would leave a
+ * 5-column table crushed just as badly as before (same failure this comment's neighbor above
+ * describes), while one sized for 5 columns would force pointless overflow on a simple 2-column
+ * table. Per-cell 'min-width' scales the effective table floor with the real column count instead.
+ * 130px was picked empirically, not guessed: measured (real Chromium, not jsdom -- 'scrollWidth'/
+ * 'clientWidth' are unimplemented there) against this package's narrowest known real host, an
+ * admin chat dock fixed at 380px wide ('admin-chat-dock' in that host's own stylesheet), which
+ * nets out to roughly 238px of usable width once that dock's own message-list padding, the 80%
+ * message-bubble cap, and this content's own padding are all applied. Below 120px per column the
+ * table still fits inside those 238px and never overflows -- the exact bug this fix exists to
+ * correct. 130px was chosen just above that measured 120px crossover (a small margin so it clears
+ * reliably rather than sitting exactly on the boundary) and reads as a genuinely defensible per-
+ * column floor on its own terms too: with this rule's own 6px/10px cell padding subtracted, it
+ * leaves about 110px of text room, roughly 14-16 characters per wrapped line at this rule's 12.5px
+ * font -- enough that a table cell wraps in short phrases instead of one word per line, which is
+ * the readability floor this fix is actually chasing. One real consequence, verified rather than
+ * hand-waved: at this width, ANY 2-column table in that narrow dock now overflows and gets the
+ * "Expand table" affordance, including ones with short cell content -- there is no per-cell
+ * min-width value that can overflow a long-prose 2-column table without also overflowing a short
+ * one at the same column count, because the browser's own auto-layout table-width algorithm sizes
+ * the table to the greater of its container's width and the sum of each column's own minimum --
+ * content length past that minimum only changes how much a column wraps internally, never whether
+ * the table exceeds its wrap. Accepted here: in a surface already this narrow, showing "Expand
+ * table" a little more eagerly is the better failure mode than silently crushing a table's own
+ * content illegibly, which is the state this whole rule exists to fix.
+ */
+.jini-md-table th,
+.jini-md-table td {
+  padding: 6px 10px;
+  min-width: 130px;
+  border: 1px solid var(--jini-chat-border);
+  text-align: left;
+}
+.jini-md-table th {
+  background: var(--jini-chat-subtle);
+  color: var(--jini-chat-text-strong);
+  font-weight: 650;
+}
+.jini-md-table-expand {
+  margin-top: 4px;
+  padding: 4px 10px;
+  color: var(--jini-chat-muted);
+  background: var(--jini-chat-panel);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.jini-md-table-expand:hover { color: var(--jini-chat-text-strong); }
+.jini-md-table-modal {
+  max-width: min(90vw, 900px);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 20px;
+  color: var(--jini-chat-text);
+  background: var(--jini-chat-panel);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 46px rgba(13, 12, 10, .15), 0 2px 8px rgba(13, 12, 10, .06);
+}
+.jini-md-table-modal::backdrop {
+  background: rgba(0, 0, 0, .4);
+}
+.jini-md-table-modal-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  color: var(--jini-chat-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.jini-md-table-modal-close:hover {
+  color: var(--jini-chat-text-strong);
+  background: var(--jini-chat-subtle);
+}
 @media (max-width: 560px) {
   .jini-chat-pane__header { padding-inline: 16px; }
   .jini-chat-pane .jini-message-list { padding-inline: 16px; }
