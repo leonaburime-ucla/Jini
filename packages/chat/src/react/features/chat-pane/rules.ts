@@ -1,4 +1,4 @@
-import type { ChatPaneAgent, ChatPaneAgentSelection } from './types.js';
+import type { ByokRuntimeSummary, ChatPaneAgent, ChatPaneAgentSelection } from './types.js';
 
 function preferredOptionId(
   options: readonly { id: string }[] | undefined,
@@ -75,6 +75,36 @@ export interface ChatPaneSendability {
   readonly workingDirectoryPending: boolean;
   readonly workingDirectoryInvalid: boolean;
   readonly workingDirectoryError: Error | null;
+  /**
+   * Set by callers that resolved {@link isChatPaneApiModeConfigured} `true`, so a configured
+   * BYOK turn is not refused merely because no CLI is selected. Defaults to `false` when
+   * omitted, which preserves the original all-fail-closed behavior for CLI-only callers.
+   */
+  readonly apiModeConfigured?: boolean;
+}
+
+/**
+ * Whether the API/BYOK execution path is genuinely usable right now, independent of the local CLI
+ * runtime inventory.
+ *
+ * A BYOK turn calls the configured provider directly over HTTP and never touches a detected CLI,
+ * so `selectedAgent === undefined` must not fail-closed a working BYOK setup (e.g. a host with
+ * zero agent CLIs on PATH). Being in API mode is not sufficient on its own, though:
+ * `apiModeAvailable` says the mode is selectable at all, and `byokRuntime.model` says a model was
+ * actually chosen — without one there is nothing to send the turn to (see
+ * `RuntimeByokDetails`'s "No model configured" state), so this stays `false` until all three
+ * line up.
+ */
+export function isChatPaneApiModeConfigured({
+  executionMode,
+  apiModeAvailable,
+  byokRuntime,
+}: {
+  readonly executionMode: 'local' | 'api';
+  readonly apiModeAvailable: boolean;
+  readonly byokRuntime: ByokRuntimeSummary | undefined;
+}): boolean {
+  return executionMode === 'api' && apiModeAvailable && Boolean(byokRuntime?.model?.trim());
 }
 
 /**
@@ -85,8 +115,11 @@ export interface ChatPaneSendability {
  * @returns The first blocker found, or `null` when sending is allowed.
  */
 export function findChatPaneSendBlocker(state: ChatPaneSendability): ChatPaneSendBlocker | null {
-  if (state.selectedAgent === undefined) return 'no-agent-selected';
-  if (state.selectedAgent.available === false) return 'agent-unavailable';
+  if (state.selectedAgent === undefined) {
+    if (!state.apiModeConfigured) return 'no-agent-selected';
+  } else if (state.selectedAgent.available === false) {
+    return 'agent-unavailable';
+  }
   if (state.isStreaming) return 'streaming';
   if (state.activeUploadCount > 0) return 'uploads-pending';
   if (state.workingDirectoryPending) return 'working-directory-pending';

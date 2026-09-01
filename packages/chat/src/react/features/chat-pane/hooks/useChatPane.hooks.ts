@@ -47,6 +47,12 @@ export interface UseChatPaneOptions {
   initialWorkingDirectory?: string | null;
   onChangeWorkingDirectory?: (workingDirectory: string | null) => void;
   workingDirectoryAccess?: ChatPaneWorkingDirectoryAccess;
+  /**
+   * Whether a configured BYOK/API turn should bypass the CLI-selection blocker below — the
+   * caller's resolved {@link isChatPaneApiModeConfigured}. Omitted (or `false`) keeps today's
+   * behavior: no selected agent always blocks sending.
+   */
+  apiModeConfigured?: boolean;
 }
 
 export interface UseChatPaneResult extends UseChatPaneWorkingDirectoryResult {
@@ -224,6 +230,11 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
     workingDirectoryPending: workingDirectoryState.workingDirectoryPending,
     workingDirectoryInvalid: workingDirectoryState.workingDirectoryInvalid,
     workingDirectoryError: workingDirectoryState.workingDirectoryError,
+    // `exactOptionalPropertyTypes` rejects `apiModeConfigured: undefined` outright, so this stays a
+    // ternary rather than routing through `definedProps` — that helper would also make
+    // `selectedAgent` optional in its return type (its value type already includes `undefined`),
+    // which no longer structurally matches `ChatPaneSendability`'s required `selectedAgent` key.
+    ...(options.apiModeConfigured === undefined ? {} : { apiModeConfigured: options.apiModeConfigured }),
   });
   const canSend = sendBlocker === null && composer.canSubmit;
 

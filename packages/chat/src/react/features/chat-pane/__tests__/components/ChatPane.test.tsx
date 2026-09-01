@@ -483,6 +483,41 @@ describe('ChatPane', () => {
     expect(onExecutionModeChange).toHaveBeenCalledWith('api');
   });
 
+  it('lets a configured BYOK turn use the composer with zero agent CLIs available', async () => {
+    // Reproduces the owner-reported bug: `unavailable` gated purely on CLI selection, so a
+    // correctly-configured BYOK setup (which calls the provider directly over HTTP, no CLI
+    // involved) could never be used on a host with zero agent CLIs on PATH, e.g. a Docker
+    // container.
+    const transport = createFakeChatTransport();
+    render(
+      <ChatPane
+        transport={transport}
+        agents={[]}
+        executionMode="api"
+        apiModeAvailable
+        byokRuntime={{ providerLabel: 'Google Gemini', model: 'gemini-2.5-flash-lite' }}
+      />,
+    );
+
+    expect(screen.queryByText('No usable CLI is selected.')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Send a message…')).not.toBeDisabled();
+
+    await userEvent.type(screen.getByPlaceholderText('Send a message…'), 'Hello from BYOK');
+    expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+  });
+
+  it('still fails closed in local-CLI mode with zero agents on PATH — no regression', () => {
+    const transport = createFakeChatTransport();
+    render(<ChatPane transport={transport} agents={[]} />);
+
+    expect(screen.getByText('No usable CLI is selected.')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Send a message…')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   describe('composerHandle', () => {
     it('publishes insertText once mounted, appends onto an existing draft, and clears on unmount', () => {
       const composerHandle = createRef<ChatPaneComposerHandle | null>();

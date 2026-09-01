@@ -14,6 +14,7 @@ import type {
   ChatPaneVariant,
   ChatPaneWorkingDirectoryAccess,
 } from '../types.js';
+import { isChatPaneApiModeConfigured } from '../rules.js';
 import { useChatPane, type UseChatPaneResult } from '../hooks/useChatPane.hooks.js';
 import { useChatPaneAgentControl } from '../hooks/useChatPaneAgentControl.hooks.js';
 import { useChatPaneControlsHeight } from '../hooks/useChatPaneControlsHeight.hooks.js';
@@ -376,6 +377,10 @@ export function ChatPane({
     onRescanAgents,
     inventory,
   );
+  // Computed once and threaded into both `useChatPane` (so `sendBlocker` agrees) and this
+  // component's own `unavailable` below (so the status banner and composer agree) — see
+  // `isChatPaneApiModeConfigured` for why API mode alone isn't enough.
+  const apiModeConfigured = isChatPaneApiModeConfigured({ executionMode, apiModeAvailable, byokRuntime });
   const pane = useChatPane(definedProps({
     transport,
     agents: runtimeView.agents,
@@ -393,6 +398,7 @@ export function ChatPane({
     initialWorkingDirectory,
     onChangeWorkingDirectory,
     workingDirectoryAccess,
+    apiModeConfigured,
   }));
   // Mirrors `Composer.tsx`'s own `draftRef`: `composerHandle.insertText` (below) is called from
   // OUTSIDE any render, so it cannot close over `pane.composer.draft` directly — that would freeze
@@ -422,9 +428,10 @@ export function ChatPane({
     enabled: agentControl?.enabled ?? false,
     bridgeAccess: agentControl?.bridgeAccess,
   }));
-  // Selection resolution only returns available agents, so absence is the
-  // single fail-closed state the view needs to represent.
-  const unavailable = pane.selectedAgent === undefined;
+  // Selection resolution only returns available agents, so absence normally means nothing usable
+  // is selected — except a configured BYOK turn (`apiModeConfigured`, computed above), which calls
+  // the provider directly over HTTP and never touches the CLI inventory.
+  const unavailable = pane.selectedAgent === undefined && !apiModeConfigured;
   const fileDrop = useChatPaneFileDrop({
     enabled: uploadAttachments !== undefined
       && !disabled
