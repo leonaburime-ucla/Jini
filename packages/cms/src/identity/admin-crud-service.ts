@@ -207,10 +207,11 @@ export async function resetUserPassword(required: {
   if (!input.password) {
     throw new IdentityValidationError("password is required");
   }
-  // Same NIST SP 800-63B length-only policy `createUser` applies. Both write paths must enforce
-  // it or neither does: a reset that accepted a 1-character password would be a strictly easier
-  // way to reach the state the create-side check exists to prevent. Never reaches `seed.ts`'s
-  // owner password or the login path — see `password-policy.ts`'s header for why.
+  // Same presence-and-upper-bound-only policy `createUser` applies (no minimum length). Both
+  // write paths must enforce it or neither does: a reset that accepted an empty password would be
+  // a strictly easier way to reach the state the create-side check exists to prevent. Never
+  // reaches `seed.ts`'s owner password or the login path — see `password-policy.ts`'s header for
+  // why.
   const passwordError = validatePasswordPolicy(input.password);
   if (passwordError) {
     throw new IdentityValidationError(passwordError);
