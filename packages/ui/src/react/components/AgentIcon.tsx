@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import { AGENT_ICON_DATA_URIS } from './agent-icon-data-uris.generated.js';
 
 interface Props {
   id: string;
@@ -58,41 +59,28 @@ const MONO_ICONS = new Set([
 ]);
 
 /**
- * This package's own bundled brand marks, resolved relative to wherever `@jini-ai/ui` itself was
- * loaded from. `new URL('./file', import.meta.url)` is rewritten correctly by Vite/Rollup/webpack
- * at build time — the same fix already applied to `RemixIcon.tsx`'s font loading — so it resolves
- * under a bundler dev server AND after a production build loaded over `file://`, unlike the old
- * hardcoded `/agent-icons` root-absolute default: that default 404s outright under `file://` (an
- * absolute path resolves against the OS filesystem root there, not the app bundle) and required
- * every host to vendor the actual image files themselves, which none had — every agent icon 404'd
- * with no host-facing way to fix it, since `basePath` was never threaded through `ChatPane`.
+ * This package's own bundled brand marks, as inline `data:` URIs generated from
+ * `agent-icons/*.svg` by `scripts/generate-agent-icon-data-uris.mjs` — see that script for why
+ * data URIs rather than a `new URL('./file', import.meta.url)` runtime lookup (the previous
+ * approach here, and still how `RemixIcon.tsx` loads its font). That pattern is rewritten
+ * correctly by Vite/Rollup/webpack for first-party source and for a production bundle of a
+ * dependency, but it silently breaks whenever the *referencing module itself* gets flattened into
+ * a different file before it runs — e.g. Vite's esbuild-based dev-server dependency pre-bundling,
+ * which changes `import.meta.url` to the flattened chunk's own served URL and leaves the computed
+ * relative path pointing at nothing. Confirmed live against a downstream Vite app whose dev server
+ * pre-bundles `@jini-ai/chat` (and this package through it): the resulting
+ * `.../agent-icons/codex.svg` request came back `200 text/html` (Vite's SPA fallback for the
+ * unmatched path) instead of the SVG, which every non-mono icon rendered as a browser broken-image
+ * glyph and every `MONO_ICONS` mask-image icon rendered as nothing at all. A `data:` URI needs no
+ * separate request and no bundler-specific asset handling, so it works identically under `file://`
+ * (an Electron shell with no bundler in front of it), any bundler's dev or production mode, and
+ * Vitest/jsdom.
  *
  * Only lists ids this package actually ships artwork for (a subset of `ICON_EXT` — the three PNG
  * brands aren't bundled here yet). A host that already vendors its own assets and passes an
  * explicit `basePath` is unaffected by this map; see the `basePath` branch below.
  */
-const BUNDLED_ICON_URLS: Partial<Record<string, string>> = {
-  amr: new URL('./agent-icons/amr.svg', import.meta.url).href,
-  claude: new URL('./agent-icons/claude.svg', import.meta.url).href,
-  codex: new URL('./agent-icons/codex.svg', import.meta.url).href,
-  gemini: new URL('./agent-icons/gemini.svg', import.meta.url).href,
-  opencode: new URL('./agent-icons/opencode.svg', import.meta.url).href,
-  'cursor-agent': new URL('./agent-icons/cursor-agent.svg', import.meta.url).href,
-  copilot: new URL('./agent-icons/copilot.svg', import.meta.url).href,
-  qwen: new URL('./agent-icons/qwen.svg', import.meta.url).href,
-  qoder: new URL('./agent-icons/qoder.svg', import.meta.url).href,
-  deepseek: new URL('./agent-icons/deepseek.svg', import.meta.url).href,
-  reasonix: new URL('./agent-icons/reasonix.svg', import.meta.url).href,
-  mimo: new URL('./agent-icons/mimo.svg', import.meta.url).href,
-  hermes: new URL('./agent-icons/hermes.svg', import.meta.url).href,
-  'grok-build': new URL('./agent-icons/grok-build.svg', import.meta.url).href,
-  kimi: new URL('./agent-icons/kimi.svg', import.meta.url).href,
-  pi: new URL('./agent-icons/pi.svg', import.meta.url).href,
-  kiro: new URL('./agent-icons/kiro.svg', import.meta.url).href,
-  kilo: new URL('./agent-icons/kilo.svg', import.meta.url).href,
-  vibe: new URL('./agent-icons/vibe.svg', import.meta.url).href,
-  antigravity: new URL('./agent-icons/antigravity.svg', import.meta.url).href,
-};
+const BUNDLED_ICON_URLS: Partial<Record<string, string>> = AGENT_ICON_DATA_URIS;
 
 /**
  * Renders a coding-agent's brand mark by id, with a graceful initial-letter

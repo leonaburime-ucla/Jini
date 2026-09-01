@@ -158,8 +158,16 @@ describe('AgentRuntimePicker', () => {
     expect(screen.getByText('Code agent')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /Claude Code/ })).toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: /Missing Agent/ })).not.toBeInTheDocument();
-    expect(document.querySelector('img[src="/agent-icons/codex.svg"]')).toBeInTheDocument();
-    expect(document.querySelector('img[src="/agent-icons/claude.svg"]')).toBeInTheDocument();
+    // Each rendered agent's own icon is @jini-ai/ui's bundled data URI (see AgentIcon.tsx's
+    // BUNDLED_ICON_URLS doc) rather than a `/agent-icons/<id>.svg` host path — scoped per-radio
+    // rather than a document-wide selector so this still proves each specific agent got an icon,
+    // not just that some data-URI <img> exists somewhere on the page.
+    expect(
+      screen.getByRole('radio', { name: /Codex CLI/ }).querySelector('img[src^="data:image/svg+xml;base64,"]'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('radio', { name: /Claude Code/ }).querySelector('img[src^="data:image/svg+xml;base64,"]'),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-5.6-terra');
     expect(screen.getByLabelText('Reasoning')).toHaveValue('medium');
   });
@@ -272,7 +280,9 @@ describe('AgentRuntimePicker', () => {
     it('shows the provider brand mark on the trigger when byokRuntime supplies an iconId', async () => {
       renderApi({ providerLabel: 'Google Gemini', model: 'gemini-2.5-flash-lite', iconId: 'gemini' });
       const trigger = screen.getByRole('button', { name: 'Choose AI runtime' });
-      expect(trigger.querySelector('img[src="/agent-icons/gemini.svg"]')).toBeInTheDocument();
+      // @jini-ai/ui's bundled data URI, not a `/agent-icons/<id>.svg` host path — see the comment
+      // on the reference-structure test above.
+      expect(trigger.querySelector('img[src^="data:image/svg+xml;base64,"]')).toBeInTheDocument();
     });
 
     it('falls back to a generic link glyph when byokRuntime has no iconId', async () => {
