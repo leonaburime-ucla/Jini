@@ -4,6 +4,9 @@ import { resolveContinuationTransport } from '../continuation-transport.js';
 
 const MCP_CALLBACK_IDS = [
   'amr',
+  // Joined this set once its externalMcpInjection moved from undefined to 'env-passthrough' —
+  // see `@jini-ai/agent-runtime`'s `defs/antigravity.ts` own doc for why that strategy is safe.
+  'antigravity',
   'claude',
   'codebuddy',
   'codex',

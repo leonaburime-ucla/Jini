@@ -91,9 +91,16 @@ describe('detectAgents / detectAgentsStream — full probe pipeline (via the rea
   // `stripFns` builds its result by spreading `...rest`, so any new
   // `RuntimeAgentDef` field is published into this API response *by default*
   // unless explicitly destructured out. antigravity is the only def declaring
-  // the three spawn-orchestration fields, and two of them carry closures —
-  // `JSON.stringify` would drop the functions but keep their wrappers,
-  // publishing a misleading `{"buffering":"until-close"}` / `{}`.
+  // `needsAgentLogFile`/`stdoutPolicy`, and `stdoutPolicy` carries a closure —
+  // `JSON.stringify` would drop the function but keep its wrapper, publishing
+  // a misleading `{"buffering":"until-close"}`.
+  //
+  // `runtimeLock` is asserted stripped too even though no registered def
+  // currently declares one (antigravity's own model-selection lock was
+  // retired once `agy` gained a real `--model` flag — see `defs/
+  // antigravity.ts`'s own doc): this is `stripFns`' general contract for the
+  // field, not evidence a real closure was exercised here, and it keeps this
+  // test from silently losing coverage if a future def declares one again.
   it("strips antigravity's spawn-orchestration fields out of the registry projection", async () => {
     const results = await detectAgents(scopedEnv(path.join(dir, 'nonexistent-cursor-agent')));
     const antigravity = results.find((a) => a.id === 'antigravity')!;

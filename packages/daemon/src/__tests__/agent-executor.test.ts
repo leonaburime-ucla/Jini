@@ -7,9 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunAgentPayload, RunErrorPayload, RunProtocolEvent } from '@jini-ai/protocol';
 import {
   AGENT_DEFS,
-  _resetAntigravityModelLockForTests,
   agentCapabilities,
-  antigravityModelLock,
   attachAcpSession,
   attachPiRpcSession,
   getAgentDef,
@@ -3098,7 +3096,13 @@ describe('AgentExecutor — needsAgentLogFile staging (antigravity)', () => {
   });
 });
 
-describe('AgentExecutor — runtimeLock (antigravity model-selection mutex)', () => {
+// `antigravity`'s own `runtimeLock` (the settings.json-write mutex this generic mechanism was
+// built for) is gone — retired along with the settings.json write once `agy` gained a real
+// `--model` flag (see `defs/antigravity.ts`'s own doc). The mechanism itself stays: it is a
+// generic, still-supported `RuntimeAgentDef` extension point (Phase 7 acquire / Phase 14 handoff
+// watcher in this file), so these tests keep exercising it against synthetic `RuntimeLock`
+// fixtures rather than the now-deleted concrete implementation.
+describe('AgentExecutor — runtimeLock (a def-declared process-global buildArgs mutex hook)', () => {
   /** A `RuntimeLock` whose acquire/handoff/release are fully caller-controlled. */
   function createRecordingLock(options: { waitForHandoff?: boolean } = {}) {
     const events: string[] = [];
@@ -3135,6 +3139,30 @@ describe('AgentExecutor — runtimeLock (antigravity model-selection mutex)', ()
       seen,
       settleHandoff: () => releaseHandoff?.(),
       failHandoff: (err: unknown) => rejectHandoff?.(err),
+    };
+  }
+
+  /**
+   * A `RuntimeLock` backed by a REAL promise chain — each `acquire` awaits the previous hold's
+   * `release` — standing in for a concrete implementation like the now-deleted
+   * `antigravityModelLock` (whose settings.json-write mutex used exactly this shape). Declares no
+   * `waitForHandoff`, so release is governed by the executor's own generic "hold until child exit"
+   * default (already proven by the `'holds until child exit when the def declares a lock with no
+   * waitForHandoff at all'` test above) — this fixture exists to prove genuine cross-run
+   * serialization via a real chain, not to re-prove that default.
+   */
+  function createChainedLock(): RuntimeLock {
+    let chain: Promise<void> = Promise.resolve();
+    return {
+      acquire: async () => {
+        const previous = chain;
+        let release!: () => void;
+        chain = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await previous;
+        return { release };
+      },
     };
   }
 
@@ -3365,115 +3393,107 @@ describe('AgentExecutor — runtimeLock (antigravity model-selection mutex)', ()
     expect((await lifecycle.get(run.id))?.state).toBe('failed');
   });
 
-  it('leaves the real antigravity lock acquirable by a later run after a buildArgs failure', async () => {
-    // The consequence test for the one above, against the REAL mutex: a wedged
-    // hold is only observable as the NEXT run hanging, which is the actual
-    // production symptom (all later concrete-model runs dead for the daemon's
-    // lifetime).
-    _resetAntigravityModelLockForTests();
-    try {
-      const stager = createFakeLogFileStager();
-      let shouldThrow = true;
-      const def = createLockedDef(antigravityModelLock, {
+  it('leaves a real chained lock acquirable by a later run after a buildArgs failure', async () => {
+    // The consequence test for the one above, against a REAL mutex (not the recording fake): a
+    // wedged hold is only observable as the NEXT run hanging, which is the actual production
+    // symptom a def-declared lock exists to avoid (every later run on that lock dead for the
+    // daemon's lifetime).
+    const lock = createChainedLock();
+    const stager = createFakeLogFileStager();
+    let shouldThrow = true;
+    const def = createLockedDef(lock, {
+      buildArgs: () => {
+        if (shouldThrow) throw new Error('EROFS: read-only file system');
+        return ['-p', '-'];
+      },
+    });
+    const { lifecycle, executor, child } = createHarness({ def, prepareAgentLogFile: stager.prepareAgentLogFile });
+
+    const { run: runA } = await lifecycle.start({ contextRef: 'ctx-a' });
+    await expect(
+      executor.run({ runId: runA.id, agentId: 'fake-antigravity', prompt: 'x', cwd: '/work', model: 'M' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+
+    shouldThrow = false;
+    const { run: runB } = await lifecycle.start({ contextRef: 'ctx-b' });
+    let bSettled = false;
+    const runBPromise = executor
+      .run({ runId: runB.id, agentId: 'fake-antigravity', prompt: 'y', cwd: '/work', model: 'M' })
+      .then(() => {
+        bSettled = true;
+      });
+    await flushAsync();
+
+    // Without the fix, run A's hold is still outstanding and run B's acquire
+    // never resolves, so this stays false forever.
+    expect(bSettled).toBe(true);
+    await runBPromise;
+
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(runB.id);
+  });
+
+  it('proves two overlapping runs of a real chained lock genuinely serialize', async () => {
+    // Uses a real promise-chain lock (not the recording fake), driven through two concurrent
+    // executor runs sharing one lock instance — the actual race a def-declared lock exists to
+    // close, reproduced generically now that antigravity no longer needs one of its own.
+    const lock = createChainedLock();
+    const buildOrder: string[] = [];
+    const makeDef = (id: string): RuntimeAgentDef =>
+      createFakeDef({
+        id,
+        streamFormat: 'plain',
+        promptViaStdin: true,
+        needsAgentLogFile: true,
+        runtimeLock: lock,
         buildArgs: () => {
-          if (shouldThrow) throw new Error('EROFS: read-only file system');
+          buildOrder.push(id);
           return ['-p', '-'];
         },
       });
-      const { lifecycle, executor, child } = createHarness({ def, prepareAgentLogFile: stager.prepareAgentLogFile });
 
-      const { run: runA } = await lifecycle.start({ contextRef: 'ctx-a' });
-      await expect(
-        executor.run({ runId: runA.id, agentId: 'fake-antigravity', prompt: 'x', cwd: '/work', model: 'M' }),
-      ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+    const defA = makeDef('run-a');
+    const defB = makeDef('run-b');
+    const stagerA = createFakeLogFileStager();
+    const stagerB = createFakeLogFileStager();
+    const harnessA = createHarness({ def: defA, prepareAgentLogFile: stagerA.prepareAgentLogFile });
+    const harnessB = createHarness({ def: defB, prepareAgentLogFile: stagerB.prepareAgentLogFile });
+    const { run: runA } = await harnessA.lifecycle.start({ contextRef: 'ctx-a' });
+    const { run: runB } = await harnessB.lifecycle.start({ contextRef: 'ctx-b' });
 
-      shouldThrow = false;
-      const { run: runB } = await lifecycle.start({ contextRef: 'ctx-b' });
-      let bSettled = false;
-      const runBPromise = executor
-        .run({ runId: runB.id, agentId: 'fake-antigravity', prompt: 'y', cwd: '/work', model: 'M' })
-        .then(() => {
-          bSettled = true;
-        });
-      await flushAsync();
+    const promiseA = harnessA.executor.run({
+      runId: runA.id,
+      agentId: 'run-a',
+      prompt: 'x',
+      cwd: '/work',
+      model: 'model-a',
+    });
+    const promiseB = harnessB.executor.run({
+      runId: runB.id,
+      agentId: 'run-b',
+      prompt: 'x',
+      cwd: '/work',
+      model: 'model-b',
+    });
 
-      // Without the fix, run A's hold is still outstanding and run B's acquire
-      // never resolves, so this stays false forever.
-      expect(bSettled).toBe(true);
-      await runBPromise;
+    await promiseA;
+    // A holds the lock (no waitForHandoff declared, so the executor's generic default holds it
+    // until child exit), so B's buildArgs must not have run yet.
+    await flushAsync();
+    expect(buildOrder).toEqual(['run-a']);
 
-      child.emit('exit', 0, null);
-      child.emit('close', 0, null);
-      await lifecycle.waitForTerminal(runB.id);
-    } finally {
-      _resetAntigravityModelLockForTests();
-    }
-  });
+    // A's process exits, releasing.
+    harnessA.child.emit('exit', 0, null);
+    harnessA.child.emit('close', 0, null);
+    await harnessA.lifecycle.waitForTerminal(runA.id);
 
-  it('proves two overlapping runs of the real antigravity lock genuinely serialize', async () => {
-    // Uses the REAL antigravityModelLock (not a fake), driven through two
-    // concurrent executor runs — the actual race this feature closes.
-    _resetAntigravityModelLockForTests();
-    try {
-      const buildOrder: string[] = [];
-      const makeDef = (id: string): RuntimeAgentDef =>
-        createFakeDef({
-          id,
-          streamFormat: 'plain',
-          promptViaStdin: true,
-          needsAgentLogFile: true,
-          runtimeLock: antigravityModelLock,
-          buildArgs: () => {
-            buildOrder.push(id);
-            return ['-p', '-'];
-          },
-        });
+    await promiseB;
+    expect(buildOrder).toEqual(['run-a', 'run-b']);
 
-      const defA = makeDef('run-a');
-      const defB = makeDef('run-b');
-      const stagerA = createFakeLogFileStager();
-      const stagerB = createFakeLogFileStager();
-      const harnessA = createHarness({ def: defA, prepareAgentLogFile: stagerA.prepareAgentLogFile });
-      const harnessB = createHarness({ def: defB, prepareAgentLogFile: stagerB.prepareAgentLogFile });
-      const { run: runA } = await harnessA.lifecycle.start({ contextRef: 'ctx-a' });
-      const { run: runB } = await harnessB.lifecycle.start({ contextRef: 'ctx-b' });
-
-      const promiseA = harnessA.executor.run({
-        runId: runA.id,
-        agentId: 'run-a',
-        prompt: 'x',
-        cwd: '/work',
-        model: 'Gemini 3.1 Pro (High)',
-      });
-      const promiseB = harnessB.executor.run({
-        runId: runB.id,
-        agentId: 'run-b',
-        prompt: 'x',
-        cwd: '/work',
-        model: 'Claude Opus 4.6 (Thinking)',
-      });
-
-      await promiseA;
-      // A holds the lock (its handoff watcher is polling a log file that will
-      // never contain the line), so B's buildArgs — the settings.json write —
-      // must not have run yet.
-      await flushAsync();
-      expect(buildOrder).toEqual(['run-a']);
-
-      // A's process exits, releasing.
-      harnessA.child.emit('exit', 0, null);
-      harnessA.child.emit('close', 0, null);
-      await harnessA.lifecycle.waitForTerminal(runA.id);
-
-      await promiseB;
-      expect(buildOrder).toEqual(['run-a', 'run-b']);
-
-      harnessB.child.emit('exit', 0, null);
-      harnessB.child.emit('close', 0, null);
-      await harnessB.lifecycle.waitForTerminal(runB.id);
-    } finally {
-      _resetAntigravityModelLockForTests();
-    }
+    harnessB.child.emit('exit', 0, null);
+    harnessB.child.emit('close', 0, null);
+    await harnessB.lifecycle.waitForTerminal(runB.id);
   });
 });
 
@@ -5972,13 +5992,16 @@ describe('isAgentExecutorSupported / assessAgentExecutorCompatibility', () => {
   // Antigravity was the one registered def this predicate rejected. It is now
   // accepted, and its two former blockers are met by def fields the driver
   // reads generically — asserted here from the *real registry def*, not a fake,
-  // so the def and the driver cannot drift apart silently.
-  it('accepts the real antigravity def, which declares all three spawn-orchestration fields', () => {
+  // so the def and the driver cannot drift apart silently. It no longer
+  // declares `runtimeLock`: that was the settings.json-write mutex, retired
+  // once `agy` gained a real `--model` flag (see `defs/antigravity.ts`'s own
+  // doc) — `isAgentExecutorSupported` never required it in the first place.
+  it('accepts the real antigravity def, which declares both spawn-orchestration fields it still needs', () => {
     const def = defOf('antigravity');
     expect(def.needsAgentLogFile).toBe(true);
     expect(def.stdoutPolicy?.buffering).toBe('until-close');
     expect(def.stdoutPolicy?.buffering === 'until-close' && typeof def.stdoutPolicy.sanitize).toBe('function');
-    expect(typeof def.runtimeLock?.acquire).toBe('function');
+    expect(def.runtimeLock).toBeUndefined();
     expect(isAgentExecutorSupported(def)).toBe(true);
   });
 

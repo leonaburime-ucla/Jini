@@ -68,11 +68,6 @@ export type RuntimeContext = {
   // equivalent flag ignore this field; the caller cleans the file up after
   // reading.
   agentLogFilePath?: string;
-  // Override for an adapter's model-selection settings file path.
-  // Production code leaves this undefined (adapters fall back to their own
-  // default). Tests pass a temp path so unit assertions against buildArgs
-  // do not touch the real home dir.
-  antigravitySettingsPath?: string;
   // Daemon-owned path to a temp file containing the composed prompt.
   // Adapters with `promptViaFile: true` read this instead of receiving the
   // prompt via argv or stdin. The caller creates the file before buildArgs
