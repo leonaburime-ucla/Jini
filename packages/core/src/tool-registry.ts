@@ -56,6 +56,39 @@ export interface ToolDescriptor {
   readonly timeoutMs?: number;
   /** Byte/character ceiling `ToolExecutor` truncates string output to. Omit for no truncation. */
   readonly maxOutputBytes?: number;
+  /**
+   * True when running this tool changes nothing a later read could observe — no durable write, no
+   * token minted, no external side effect. Consumed by {@link isReadOnlyTool}, which is the one
+   * place the question is ever answered.
+   *
+   * The kernel does not derive it: a tool's risk must not be self-declared by the layer that also
+   * decides to run it, so the value is set by whatever wiring layer independently classifies what a
+   * handler calls (`@jini-ai/cms`'s `buildDomainRegistrations` maps its domains' `sideEffects`
+   * vocabulary onto it, after `assertToolIsWirable` has already refused any tool whose declaration
+   * disagrees with the derived classification).
+   *
+   * Optional and additive, so no existing registration changes shape — and deliberately NOT
+   * defaulted to `true`: an omitted flag means "nobody has classified this", which
+   * {@link isReadOnlyTool} treats as not-read-only. A read-only gate that read silence as safety
+   * would admit every unclassified write, which is the exact failure the flag exists to prevent.
+   */
+  readonly readOnly?: boolean;
+}
+
+/**
+ * The single read-only determination: may this tool run through a surface that has promised its
+ * caller it only reads?
+ *
+ * Every read-only gate in the system asks this one function rather than testing the field itself,
+ * so the rule lives in exactly one place — a change to what counts as read-only is a change to this
+ * body, not a sweep across transports.
+ *
+ * @param descriptor - The registered descriptor, or `undefined` for an id that resolved to nothing.
+ * @returns `true` only for a descriptor that explicitly declares `readOnly: true`.
+ * @complexity O(1).
+ */
+export function isReadOnlyTool(descriptor: ToolDescriptor | undefined): boolean {
+  return descriptor?.readOnly === true;
 }
 
 /**

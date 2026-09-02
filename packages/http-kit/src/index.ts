@@ -280,7 +280,12 @@ export type {
   DelegatedToolsHttpDeps,
   DelegatedToolsInternalErrorContext,
 } from './delegated-tools.js';
-export { delegatedToolExecuteRoute, registerDelegatedToolRoutes } from './delegated-tools.js';
+export {
+  delegatedToolExecuteRoute,
+  readOnlyRefusalMessage,
+  READ_ONLY_UNVERIFIABLE_MESSAGE,
+  registerDelegatedToolRoutes,
+} from './delegated-tools.js';
 export type {
   RemoteRunEventHttpDeps,
   RemoteRunEventResponse,

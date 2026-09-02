@@ -445,7 +445,23 @@ export function buildDomainRegistrations(spec: {
       );
     }
     registrations.push({
-      descriptor: { id, description: catalogEntry.description, inputSchema: catalogEntry.inputSchema },
+      descriptor: {
+        id,
+        description: catalogEntry.description,
+        inputSchema: catalogEntry.inputSchema,
+        // The ONE place a domain's declared risk becomes the descriptor flag every read-only gate
+        // reads (`@jini-ai/core`'s `isReadOnlyTool`). Placed here rather than in each domain's
+        // `tool-registrations.ts` for the same reason the drift tripwire is: twelve copies of this
+        // line is twelve chances for one to say something different. Change what counts as
+        // read-only and every domain follows.
+        //
+        // Safe to derive from the declaration only because `assertToolIsWirable` has ALREADY run
+        // two lines above and refused any tool whose declared `sideEffects` disagrees with the
+        // wiring layer's own `DERIVED_RISK_BY_TOOL_ID` classification — so by this point the
+        // declaration has been independently corroborated, and a catalog entry cannot make itself
+        // read-only by editing one word.
+        readOnly: catalogEntry.sideEffects === "none",
+      },
       handler,
       policy: { authorize: () => "allow" },
     });

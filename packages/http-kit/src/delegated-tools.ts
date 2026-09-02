@@ -28,7 +28,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import { createApiError } from '@jini-ai/protocol';
-import type { Principal } from '@jini-ai/core';
+import { isReadOnlyTool, type Principal, type ToolRegistry } from '@jini-ai/core';
 import { createDelegatedToolBridge, type RunLifecycle, type ToolExecutionResult, type ToolExecutor } from '@jini-ai/daemon';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
 import { validationError } from './request.js';
@@ -39,6 +39,20 @@ export interface DelegatedToolExecuteRequest {
   readonly toolUseId: string;
   readonly toolId: string;
   readonly input?: unknown;
+  /**
+   * When `true`, the call is refused unless `toolId`'s registration declares itself read-only
+   * (`@jini-ai/core`'s `isReadOnlyTool`). Set by a caller that has already promised ITS own caller
+   * that the surface only reads — `@jini-ai/mcp`'s `execute_readonly_delegated_tool`, whose
+   * `readOnlyHint: true` annotation is exactly such a promise.
+   *
+   * The constraint is enforced HERE rather than in the calling process because only this side can
+   * resolve a tool id against the live `ToolRegistry`. A caller-side check would be a claim; this
+   * is the fact.
+   *
+   * Omitted means unconstrained, which is what every existing caller sends — the original
+   * `execute_delegated_tool` path is untouched by this field's existence.
+   */
+  readonly requireReadOnly?: boolean;
 }
 
 export interface DelegatedToolExecuteResponse {
@@ -65,6 +79,66 @@ export interface DelegatedToolsHttpDeps {
   readonly resolvePrincipal: (request: DelegatedToolExecuteRequest) => Principal | Promise<Principal>;
   /** Host-owned sink for the real exception behind a generic `INTERNAL_ERROR` response (SEC-005). Defaults to `console.error`. */
   readonly onInternalError?: (context: DelegatedToolsInternalErrorContext) => void;
+  /**
+   * The same `ToolRegistry` `deps.toolExecutor` was built over, supplied so a
+   * {@link DelegatedToolExecuteRequest.requireReadOnly} call can be checked against the descriptor
+   * that will actually run. Descriptors only — this route never gains a way to reach a handler.
+   *
+   * Optional so that mounting this route stays a non-breaking one-liner for every host that
+   * predates the constraint. A host that omits it does not get a WEAKER gate: a `requireReadOnly`
+   * call it cannot verify is refused outright ({@link READ_ONLY_UNVERIFIABLE_MESSAGE}), never
+   * waived. Unconstrained calls behave identically with or without it.
+   */
+  readonly toolRegistry?: ToolRegistry;
+}
+
+/**
+ * Refusal text for a `requireReadOnly` call naming a tool that is not registered read-only —
+ * including one that is not registered at all, which is the same answer for the same reason
+ * (nothing corroborates that it only reads).
+ *
+ * Names the tool and the remedy, because the caller is a model choosing between two gateways and
+ * "denied" alone would leave it guessing which one to try. `describe_tool` already discloses
+ * whether an id exists, so distinguishing "unknown" from "writes" here would buy the caller nothing
+ * and cost a second message to keep in step.
+ */
+export function readOnlyRefusalMessage(toolId: string): string {
+  return `tool "${toolId}" is not registered as read-only — this gateway executes only tools whose registration declares readOnly; call it through execute_delegated_tool instead`;
+}
+
+/**
+ * Refusal text for a `requireReadOnly` call this host has no way to check, because it mounted the
+ * route without {@link DelegatedToolsHttpDeps.toolRegistry}.
+ *
+ * Refusing is the only safe answer: the alternative — running the call because the constraint could
+ * not be evaluated — would let a write through a caller that annotated itself read-only, which is
+ * strictly worse than having no read-only gateway at all. The message names the missing dep so the
+ * fix is one line in the host's own wiring rather than an investigation.
+ */
+export const READ_ONLY_UNVERIFIABLE_MESSAGE =
+  'this host cannot verify read-only tools — POST /api/delegated-tool-calls was mounted without DelegatedToolsHttpDeps.toolRegistry, so a requireReadOnly call cannot be checked and is refused';
+
+/**
+ * Evaluates a request's read-only constraint against the live registry.
+ *
+ * @param deps - Supplies the optional `toolRegistry` the check reads.
+ * @param input - The parsed request; an absent/false `requireReadOnly` short-circuits to `null`.
+ * @returns `null` when the call may proceed, or the `ApiError` to answer with.
+ * @complexity O(n) in registered tool count on a constrained call only (`ToolRegistry` exposes
+ *   enumeration, not lookup by id); O(1) — a single boolean test — on every unconstrained call,
+ *   which is every call the pre-existing gateway makes.
+ */
+function checkReadOnlyConstraint(
+  deps: DelegatedToolsHttpDeps,
+  input: DelegatedToolExecuteRequest,
+): ReturnType<typeof createApiError> | null {
+  if (input.requireReadOnly !== true) return null;
+  if (deps.toolRegistry === undefined) {
+    return createApiError('TOOL_OPERATION_DENIED', READ_ONLY_UNVERIFIABLE_MESSAGE);
+  }
+  const descriptor = deps.toolRegistry.list().find((candidate) => candidate.id === input.toolId);
+  if (isReadOnlyTool(descriptor)) return null;
+  return createApiError('TOOL_OPERATION_DENIED', readOnlyRefusalMessage(input.toolId));
 }
 
 /** Logs the real failure server-side and returns the generic, correlation-id-bearing public error (SEC-005: never the raw exception). */
@@ -110,7 +184,15 @@ function parseDelegatedToolExecute(input: RouteInputContext): Result<DelegatedTo
   if (toolId === undefined) {
     return err(validationError('toolId must be a non-empty string', [{ path: 'toolId', message: 'required non-empty string' }]));
   }
-  return ok({ runId, toolUseId, toolId, input: input.body.input });
+  // Spread-in rather than always-present so an unconstrained body parses to exactly the object it
+  // parsed to before this field existed — the existing gateway's request shape is byte-identical,
+  // which is what the "additive only" constraint means at the wire.
+  //
+  // Only a literal `true` arms the constraint. Anything else (absent, `false`, a truthy string) is
+  // "unconstrained", never a parse error: this field can only ever TIGHTEN a call, so a malformed
+  // value that fell through to the normal gateway is the same outcome as not sending it at all.
+  const requireReadOnly = input.body['requireReadOnly'] === true ? { requireReadOnly: true } : {};
+  return ok({ runId, toolUseId, toolId, input: input.body.input, ...requireReadOnly });
 }
 
 /**
@@ -177,6 +259,13 @@ export const delegatedToolExecuteRoute = defineJsonRoute<
     if (run === undefined) {
       return err(createApiError('NOT_FOUND', `run "${input.runId}" was not found`));
     }
+
+    // Before `resolvePrincipal`, and long before the bridge: a refused call must cost nothing
+    // downstream and must leave no trace of an execution that was never going to happen. It sits
+    // after the run-existence check only so that a bad `runId` still answers 404 the way it always
+    // did, regardless of the constraint.
+    const readOnlyRefusal = checkReadOnlyConstraint(deps, input);
+    if (readOnlyRefusal !== null) return err(readOnlyRefusal);
 
     let principal: Principal;
     try {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { ToolInputError } from '@jini-ai/core';
+import { isReadOnlyTool, ToolInputError } from '@jini-ai/core';
 
 import {
+  buildDomainRegistrations,
   decorateWithSchema,
   optionalBoolean,
   optionalNumber,
@@ -12,6 +13,7 @@ import {
   requireObject,
   requireString,
   withSchemaOnRejection,
+  type AgentToolSideEffect,
 } from '../registration-kit.js';
 
 /**
@@ -96,5 +98,56 @@ describe('decorateWithSchema / withSchemaOnRejection preserve the ToolInputError
         throw new Error('a genuine internal failure');
       }),
     ).rejects.not.toBeInstanceOf(ToolInputError);
+  });
+});
+
+/**
+ * @file (cont.) The one place a domain's declared `sideEffects` becomes the descriptor flag every
+ * read-only gate reads. Change the mapping here and every one of the twelve domains follows; there
+ * is no per-domain copy to keep in step.
+ */
+describe('buildDomainRegistrations projects sideEffects onto ToolDescriptor.readOnly', () => {
+  const inputSchema = { type: "object", additionalProperties: false, properties: {} } as const;
+
+  function build(entries: Array<{ name: string; sideEffects: AgentToolSideEffect }>): ReturnType<typeof buildDomainRegistrations> {
+    const catalog = new Map(
+      entries.map((e) => [
+        e.name,
+        { name: e.name, description: `${e.name} description`, sideEffects: e.sideEffects, authorization: { permission: "p" }, inputSchema },
+      ]),
+    );
+    return buildDomainRegistrations({
+      domain: "test",
+      catalogModule: "test/agent-tools.ts",
+      catalog,
+      handlers: Object.fromEntries(entries.map((e) => [e.name, async () => "ok"])),
+      derivedRisk: new Map(entries.map((e) => [e.name, e.sideEffects])),
+    });
+  }
+
+  it('marks a sideEffects:"none" tool readOnly: true', () => {
+    const [registration] = build([{ name: "thing_list", sideEffects: "none" }]);
+    expect(registration!.descriptor).toMatchObject({ id: "thing_list", readOnly: true });
+  });
+
+  it('marks every state-changing classification readOnly: false — including a delete and a token mint', () => {
+    const registrations = build([
+      { name: "thing_update", sideEffects: "mutates-durable-state" },
+      { name: "thing_delete", sideEffects: "deletes-durable-state" },
+      { name: "thing_token", sideEffects: "mints-token" },
+    ]);
+    expect(registrations.map((r) => [r.descriptor.id, r.descriptor.readOnly])).toEqual([
+      ["thing_update", false],
+      ["thing_delete", false],
+      ["thing_token", false],
+    ]);
+  });
+
+  it('agrees with @jini-ai/core\'s isReadOnlyTool, the single determination every gate consults', () => {
+    const registrations = build([
+      { name: "thing_list", sideEffects: "none" },
+      { name: "thing_update", sideEffects: "mutates-durable-state" },
+    ]);
+    expect(registrations.map((r) => isReadOnlyTool(r.descriptor))).toEqual([true, false]);
   });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createToolRegistry, ToolInputError, type Principal } from '@jini-ai/core';
+import { createToolRegistry, ToolInputError, type Principal, type ToolRegistry } from '@jini-ai/core';
 import {
   createInMemoryEventLog,
   createRunLifecycle,
@@ -484,5 +484,156 @@ describe('registerDelegatedToolRoutes', () => {
       res,
     );
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () => {
+  /**
+   * A registry carrying the two cases the gate exists to separate: a tool whose registration
+   * DECLARES `readOnly: true`, and one that does not. Both are otherwise identical and both would
+   * execute happily through the unconstrained gateway — the only thing separating them is the
+   * declaration, which is the point.
+   */
+  function makeReadOnlyStack(): { registry: ToolRegistry; toolExecutor: ToolExecutor; ran: string[] } {
+    const ran: string[] = [];
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'reader', readOnly: true },
+      policy: { authorize: () => 'allow' },
+      handler: async (ctx) => {
+        ran.push('reader');
+        return { read: ctx.input };
+      },
+    });
+    registry.register({
+      descriptor: { id: 'writer' },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        ran.push('writer');
+        return 'wrote something durable';
+      },
+    });
+    return { registry, toolExecutor: createToolExecutor({ registry }), ran };
+  }
+
+  it('parses requireReadOnly off the body', () => {
+    const result = delegatedToolExecuteRoute.parse({
+      body: { runId: 'r1', toolUseId: 'tu-1', toolId: 't1', requireReadOnly: true },
+      query: {},
+      params: {},
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: { runId: 'r1', toolUseId: 'tu-1', toolId: 't1', input: undefined, requireReadOnly: true },
+    });
+  });
+
+  it('leaves requireReadOnly undefined when the body omits it, so the existing gateway is byte-identical', () => {
+    const result = delegatedToolExecuteRoute.parse({ body: { runId: 'r1', toolUseId: 'tu-1', toolId: 't1' }, query: {}, params: {} });
+    expect(result).toEqual({ ok: true, value: { runId: 'r1', toolUseId: 'tu-1', toolId: 't1', input: undefined } });
+  });
+
+  it('refuses a tool that is not declared read-only, with the exact remedy-bearing message, WITHOUT running its handler', async () => {
+    const { registry, toolExecutor, ran } = makeReadOnlyStack();
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle(
+      { runId: run.id, toolUseId: 'tu-1', toolId: 'writer', requireReadOnly: true },
+      deps,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'TOOL_OPERATION_DENIED',
+        message:
+          'tool "writer" is not registered as read-only — this gateway executes only tools whose registration declares readOnly; call it through execute_delegated_tool instead',
+      },
+    });
+    // The heart of the task: a readOnlyHint:true gateway that let a write through would launder a
+    // write past the caller's own safety gate. The handler must never have been reached.
+    expect(ran).toEqual([]);
+  });
+
+  it('executes a tool whose registration declares readOnly: true', async () => {
+    const { registry, toolExecutor, ran } = makeReadOnlyStack();
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle(
+      { runId: run.id, toolUseId: 'tu-1', toolId: 'reader', input: { q: 1 }, requireReadOnly: true },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.result).toMatchObject({ status: 'completed', output: { read: { q: 1 } } });
+    }
+    expect(ran).toEqual(['reader']);
+  });
+
+  it('refuses an unregistered toolId under the constraint rather than falling through to ToolExecutor', async () => {
+    const { registry, toolExecutor } = makeReadOnlyStack();
+    const onInternalError = vi.fn();
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry, onInternalError });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle(
+      { runId: run.id, toolUseId: 'tu-1', toolId: 'nope', requireReadOnly: true },
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('TOOL_OPERATION_DENIED');
+      expect(result.error.message).toContain('"nope" is not registered as read-only');
+    }
+    expect(onInternalError).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the host mounted the route without a toolRegistry — an unverifiable constraint is refused, never waived', async () => {
+    const { toolExecutor, ran } = makeReadOnlyStack();
+    const deps = makeDeps({ toolExecutor });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle(
+      { runId: run.id, toolUseId: 'tu-1', toolId: 'reader', requireReadOnly: true },
+      deps,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'TOOL_OPERATION_DENIED',
+        message:
+          'this host cannot verify read-only tools — POST /api/delegated-tool-calls was mounted without DelegatedToolsHttpDeps.toolRegistry, so a requireReadOnly call cannot be checked and is refused',
+      },
+    });
+    expect(ran).toEqual([]);
+  });
+
+  it('leaves the unconstrained gateway unchanged: the same write tool still executes when requireReadOnly is absent', async () => {
+    const { registry, toolExecutor, ran } = makeReadOnlyStack();
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    const result = await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'writer' }, deps);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.result).toMatchObject({ status: 'completed', output: 'wrote something durable' });
+    }
+    expect(ran).toEqual(['writer']);
+  });
+
+  it('routes a permitted read-only call through the SAME bridge as the unconstrained gateway — identical tool_use/tool_result run events', async () => {
+    const { registry, toolExecutor } = makeReadOnlyStack();
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'reader', requireReadOnly: true }, deps);
+    const events: unknown[] = [];
+    await deps.lifecycle.stream(run.id, (event) => events.push(event));
+    const agentEvents = (events as { kind: string; payload: { type: string } }[]).filter((e) => e.kind === 'agent');
+    expect(agentEvents.map((e) => e.payload.type)).toEqual(['tool_use', 'tool_result']);
+  });
+
+  it('checks the constraint before resolvePrincipal, so a refused call costs nothing downstream', async () => {
+    const { registry, toolExecutor } = makeReadOnlyStack();
+    const resolvePrincipal = vi.fn(() => TEST_PRINCIPAL);
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry, resolvePrincipal });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+    await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'writer', requireReadOnly: true }, deps);
+    expect(resolvePrincipal).not.toHaveBeenCalled();
   });
 });

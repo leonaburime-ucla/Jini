@@ -1,7 +1,8 @@
 /**
  * @module @jini-ai/mcp/server/tools/delegated-tool
  *
- * `execute_delegated_tool` — the MCP-callback half of gap 3's continuation transport (see
+ * `execute_delegated_tool` and its read-only companion `execute_readonly_delegated_tool` — the
+ * MCP-callback half of gap 3's continuation transport (see
  * `packages/daemon/source-map.md`'s "run/chat orchestration gap 3, part 1" addition and this
  * package's own dated section in `source-map.md` for the rest of the spike). The swarm-consensus
  * Final Recommendation asked for exactly this: "inject the already-shipped MCP host into one
@@ -23,6 +24,14 @@
  * confused-deputy path (one run's MCP subprocess executing a tool call "as" a different run).
  * `toolUseId` is likewise generated per call (`randomUUID` by default), not model-supplied — a
  * model has no legitimate reason to choose its own correlation id either.
+ *
+ * TWO defs, ONE code path. `createDelegatedGateway` builds both; the factories differ only in the
+ * name/title/description they present and in whether the request carries `requireReadOnly: true`.
+ * The read-only companion exists because MCP annotations are static per tool declaration — a
+ * surface that promises "this only reads" can only be a second declaration, never a per-call mode —
+ * and it ENFORCES that promise daemon-side rather than asserting it, because a `readOnlyHint: true`
+ * tool that could still reach writes would launder a write past its caller's own safety gate. See
+ * {@link createExecuteReadonlyDelegatedToolTool} for the failure that motivated it.
  */
 import { randomUUID } from 'node:crypto';
 import { postDaemonJson } from '../daemon-client.js';
@@ -109,12 +118,34 @@ export interface CreateExecuteDelegatedToolToolOptions {
 }
 
 /**
- * Builds the `execute_delegated_tool` tool def for one specific `runId`. A fresh MCP server
- * process (one per spawned `claude` run, see `../../bin/serve.js`) calls this once at startup;
- * every `tools/call` for the returned def's `name` during that process's lifetime executes
- * against the same run.
+ * The half of a gateway def that differs between the two: how it presents itself, and whether it
+ * asks the daemon to enforce a read-only constraint. Everything else — schema, timeout resolution,
+ * `runId`/`toolUseId` handling, the route it posts to, the response unwrap — is shared below, so
+ * the two gateways cannot drift into behaving differently.
  */
-export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedToolToolOptions): McpToolDef {
+interface DelegatedGatewayVariant {
+  readonly name: string;
+  readonly title: string;
+  readonly description: string;
+  readonly readOnlyHint: boolean;
+  readonly idempotentHint: boolean;
+  /** Sent as `requireReadOnly: true`, which is what makes `readOnlyHint: true` a fact rather than a claim. Omitted entirely by the unconstrained gateway. */
+  readonly requireReadOnly?: true;
+}
+
+/**
+ * Builds one gateway def. Both exported factories call this; there is no second copy of the
+ * request body, the timeout rule, or the unwrap.
+ *
+ * @param variant - The presentation/constraint half (see {@link DelegatedGatewayVariant}).
+ * @param options - The per-process run scope and its optional overrides.
+ * @returns The `McpToolDef` to host.
+ * @complexity O(1) at construction; each call is one HTTP round trip.
+ */
+function createDelegatedGateway(
+  variant: DelegatedGatewayVariant,
+  options: CreateExecuteDelegatedToolToolOptions,
+): McpToolDef {
   const { runId } = options;
   const generateToolUseId = options.generateToolUseId ?? randomUUID;
   const requested = options.delegatedToolTimeoutMs;
@@ -124,9 +155,8 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
       : DEFAULT_DELEGATED_TOOL_TIMEOUT_MS;
 
   return {
-    name: 'execute_delegated_tool',
-    description:
-      'Execute a Jini-registered tool (never an agent-vendor-specific tool name) against the current run, routed through the daemon\'s ToolExecutor deny-by-default gate — the same authorization/confirmation/audit path every other tool-execution mechanism in this host uses. On a completed outcome, returns {result} normally. Any other outcome surfaces as an HTTP error the caller must catch, not a status field in a 200 body: denied/confirmation-denied raise a 403 TOOL_OPERATION_DENIED; timed-out/cancelled/failed raise a 500 INTERNAL_ERROR.',
+    name: variant.name,
+    description: variant.description,
     inputSchema: {
       type: 'object',
       properties: {
@@ -154,11 +184,11 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
       additionalProperties: false,
     },
     annotations: {
-      readOnlyHint: false,
-      idempotentHint: false,
+      readOnlyHint: variant.readOnlyHint,
+      idempotentHint: variant.idempotentHint,
       destructiveHint: false,
       openWorldHint: false,
-      title: 'Execute a Jini-registered tool',
+      title: variant.title,
     },
     handler: async (args, ctx) => {
       requireString(args.toolId, 'toolId');
@@ -167,6 +197,7 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
         toolUseId: generateToolUseId(),
         toolId: args.toolId,
         input: args.input,
+        ...(variant.requireReadOnly === undefined ? {} : { requireReadOnly: variant.requireReadOnly }),
       };
       const data = await postDaemonJson<DelegatedToolExecuteResponse>(ctx.baseUrl, '/api/delegated-tool-calls', body, {
         ...daemonCallOptions(ctx),
@@ -175,4 +206,74 @@ export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedTo
       return unwrapMcpContentEnvelope(data.result);
     },
   };
+}
+
+/**
+ * Builds the `execute_delegated_tool` tool def for one specific `runId`. A fresh MCP server
+ * process (one per spawned `claude` run, see `../../bin/serve.js`) calls this once at startup;
+ * every `tools/call` for the returned def's `name` during that process's lifetime executes
+ * against the same run.
+ *
+ * Declares `readOnlyHint: false`, which is the truth about a gateway that reaches the entire
+ * registry — reads and writes alike. See {@link createExecuteReadonlyDelegatedToolTool} for what
+ * that costs under a host that gates on the annotation, and for the companion that answers it.
+ */
+export function createExecuteDelegatedToolTool(options: CreateExecuteDelegatedToolToolOptions): McpToolDef {
+  return createDelegatedGateway(
+    {
+      name: 'execute_delegated_tool',
+      title: 'Execute a Jini-registered tool',
+      description:
+        'Execute a Jini-registered tool (never an agent-vendor-specific tool name) against the current run, routed through the daemon\'s ToolExecutor deny-by-default gate — the same authorization/confirmation/audit path every other tool-execution mechanism in this host uses. On a completed outcome, returns {result} normally. Any other outcome surfaces as an HTTP error the caller must catch, not a status field in a 200 body: denied/confirmation-denied raise a 403 TOOL_OPERATION_DENIED; timed-out/cancelled/failed raise a 500 INTERNAL_ERROR.',
+      readOnlyHint: false,
+      idempotentHint: false,
+    },
+    options,
+  );
+}
+
+/**
+ * Builds the `execute_readonly_delegated_tool` companion for one specific `runId` — the same
+ * gateway, narrowed to tools whose registration declares them read-only, and annotated
+ * `readOnlyHint: true`.
+ *
+ * WHY IT EXISTS. `execute_delegated_tool` is the sole route from an externally-injected MCP client
+ * into this host's entire native tool catalog, and it correctly annotates itself
+ * `readOnlyHint: false`. A runtime that auto-denies any MCP tool lacking `readOnlyHint: true`
+ * (headless `codex exec`, observed) therefore kills 100% of delegated calls — reads included —
+ * before they leave the client process. Nothing reaches the daemon, so no execution row is written
+ * and no error surfaces; the model, given no grounding signal at all, narrates a tool call that
+ * never happened. Meanwhile `search_tools`/`describe_tool` work, so discovery succeeds and only
+ * execution silently dies, which is the worst possible shape for the failure.
+ *
+ * WHY IT ENFORCES RATHER THAN ASSERTS. MCP annotations are static per tool declaration — the
+ * protocol has no way to vary one per call — so a read-only surface can only be a SECOND
+ * declaration, never a mode of the first. And a tool that declared `readOnlyHint: true` while
+ * still reaching writes would be worse than the bug it fixes: it would launder a write past a
+ * caller's own safety gate, and that caller has no way to audit the claim. The check is therefore
+ * made where it can be a fact rather than a claim — the daemon, via
+ * `@jini-ai/http-kit`'s `requireReadOnly`, resolving the id against the live `ToolRegistry` and
+ * `@jini-ai/core`'s `isReadOnlyTool`. Refusal is deny-by-default: an id that is unregistered, or
+ * registered without a read-only classification, is refused with a message naming the tool and
+ * pointing at `execute_delegated_tool`.
+ *
+ * Flipping the existing tool's annotation instead was rejected for the same reason: it would lie to
+ * every caller, including the ones the annotation exists to protect.
+ */
+export function createExecuteReadonlyDelegatedToolTool(options: CreateExecuteDelegatedToolToolOptions): McpToolDef {
+  return createDelegatedGateway(
+    {
+      name: 'execute_readonly_delegated_tool',
+      title: 'Execute a read-only Jini-registered tool',
+      description:
+        'Execute a READ-ONLY Jini-registered tool (never an agent-vendor-specific tool name) against the current run. Identical to execute_delegated_tool — same ToolExecutor deny-by-default authorization/confirmation/audit path, same {result} envelope, same errors — except that the daemon first checks the requested toolId against the live registry and refuses anything not registered as read-only, with a 403 TOOL_OPERATION_DENIED naming the tool. Use this for any tool that only reads. For a tool that creates, updates, deletes, publishes, or mints anything, call execute_delegated_tool instead; this one will refuse it.',
+      readOnlyHint: true,
+      // A read-only call has no state to advance, so repeating it is the same call. Matches
+      // `tool-catalog-tools.ts`'s and `run-tools.ts`'s own read annotations rather than inventing a
+      // third convention for the same claim.
+      idempotentHint: true,
+      requireReadOnly: true,
+    },
+    options,
+  );
 }
