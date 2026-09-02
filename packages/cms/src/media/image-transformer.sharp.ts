@@ -37,6 +37,22 @@ const require = createRequire(import.meta.url);
 /** Thrown by {@link SharpImageTransformer.transform} when the `sharp` package cannot be loaded. */
 export class ImageTransformUnavailableError extends Error {}
 
+/**
+ * Thrown by {@link SharpImageTransformer.transform} when `sharp` itself rejects the SOURCE bytes —
+ * a decode/re-encode failure the codec surfaces (a corrupt file, a format-specific edge case libvips
+ * won't process, truncated data, ...), as opposed to {@link ImageTransformUnavailableError}'s
+ * "the codec itself couldn't even be loaded".
+ *
+ * This is a DATA condition on the stored blob, not a server fault: bytes can pass this package's own
+ * allowlist upload check and even its magic-byte sniff (`content-type-sniffer.ts`) while still being
+ * bytes libvips refuses to decode (an intentionally-crafted upload, a partial/interrupted write, a
+ * container variant this codec build doesn't support, ...). A caller (a serving route) is expected to
+ * catch this specifically and answer a controlled 4xx, never an opaque 500 — same "named, thrown
+ * error, never a silently faked/passed-through image" discipline this file's own header already
+ * states for the sibling `ImageTransformUnavailableError` case.
+ */
+export class ImageSourceCorruptError extends Error {}
+
 /** The narrow slice of `sharp`'s fluent API this adapter calls. */
 interface SharpInstance {
   resize(
@@ -92,20 +108,34 @@ function loadSharpFactory(): SharpFactory {
 export class SharpImageTransformer implements ImageTransformerPort {
   async transform(input: TransformImageInput): Promise<TransformImageOutput> {
     const sharpFactory = loadSharpFactory();
-    let pipeline = sharpFactory(Buffer.from(input.bytes));
 
-    if (input.params.width !== undefined || input.params.height !== undefined) {
-      pipeline = pipeline.resize(input.params.width, input.params.height, {
-        fit: input.params.fit ?? "cover",
-      });
+    // Pipeline construction through `toBuffer()` all live in one try/catch: any of these steps can
+    // reject on bad SOURCE bytes (`sharp`'s decode is lazy — a malformed file often only surfaces
+    // once a downstream operation like `toBuffer()` actually reads it), and every such rejection
+    // means the same thing to a caller — "this source could not be processed" — regardless of which
+    // call in the chain actually threw. See {@link ImageSourceCorruptError}'s own doc for why this is
+    // named/rethrown rather than left as an undifferentiated `sharp` error.
+    try {
+      let pipeline = sharpFactory(Buffer.from(input.bytes));
+
+      if (input.params.width !== undefined || input.params.height !== undefined) {
+        pipeline = pipeline.resize(input.params.width, input.params.height, {
+          fit: input.params.fit ?? "cover",
+        });
+      }
+
+      pipeline = pipeline.toFormat(input.params.format);
+      const outBuffer = await pipeline.toBuffer();
+
+      return {
+        bytes: new Uint8Array(outBuffer),
+        contentType: mimeForTransformFormat(input.params.format),
+      };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ImageSourceCorruptError(
+        `the source image could not be decoded/re-encoded (target format '${input.params.format}'): ${detail}`
+      );
     }
-
-    pipeline = pipeline.toFormat(input.params.format);
-    const outBuffer = await pipeline.toBuffer();
-
-    return {
-      bytes: new Uint8Array(outBuffer),
-      contentType: mimeForTransformFormat(input.params.format),
-    };
   }
 }

@@ -116,7 +116,7 @@ export {
 export type { ImageTransformerPort, TransformImageInput, TransformImageOutput } from "./image-transformer.js";
 export { InMemoryImageTransformer } from "./image-transformer.js";
 
-export { SharpImageTransformer, ImageTransformUnavailableError } from "./image-transformer.sharp.js";
+export { SharpImageTransformer, ImageTransformUnavailableError, ImageSourceCorruptError } from "./image-transformer.sharp.js";
 
 // -----------------------------------------------------------------------------
 // Original-bytes admin preview route support. See `content-type-sniffer.ts`'s

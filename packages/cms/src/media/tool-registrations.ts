@@ -71,6 +71,32 @@ export interface MediaToolDeps {
    * field's own pre-2026-09-02 absence for every host that has not opted in yet.
    */
   resolvePublicUrls?: (assets: readonly MediaRecord[]) => Promise<ReadonlyMap<string, string | null>>;
+  /**
+   * Optional hook run once, right after `media_upload_asset`'s own `uploadMedia()` call succeeds —
+   * the fix for a defect where a tool-driven upload recorded NO content type anywhere. `uploadMedia`
+   * (`media-service.ts`) validates the caller's `contentType` string against an advisory allowlist
+   * and then discards it by design (see that file's own header) — neither `AssetBlobRecord` nor
+   * `MediaRecord` has a field for it, so this package cannot persist one itself. A host that wants
+   * one recorded (e.g. so an admin "Images"/"Videos" filter or a public rendition route can answer
+   * "what type is this blob") wires this hook to its own content-type store, exactly the same
+   * pattern {@link resolvePublicUrls} already established for `publicUrl`.
+   *
+   * Deliberately given the RAW UPLOADED BYTES, not the caller's declared `contentType` string: a
+   * host is expected to derive the real type from bytes (a magic-byte sniff), never trust the
+   * declared string outright — the same "an attacker-controlled `contentType` header is trusted,
+   * which the real ingress policy would never do" gap `uploadMedia`'s own header already discloses
+   * for the validation step. This hook is this package's only chance to hand a host those bytes
+   * before they go out of scope; asking a host to re-read them later would mean either persisting
+   * the client-declared string untrusted (the exact gap this hook exists to avoid) or a second blob
+   * read the host does not otherwise need.
+   *
+   * Any rejection from this hook propagates out of the `media_upload_asset` handler uncaught — a
+   * failure to record the type is a real failure, not swallowed to report a false success (mirrors
+   * `resolveCredentialForProvider`'s "never silently fall through" discipline elsewhere in this
+   * package's siblings). Omitted entirely: never called, matching this field's own pre-fix absence
+   * for every host that has not opted in yet — the exact `resolvePublicUrls`-precedent contract.
+   */
+  recordUploadContentType?: (params: { media: MediaRecord; bytes: Uint8Array }) => Promise<void>;
 }
 
 /**
@@ -187,6 +213,9 @@ export function buildMediaRegistrations(routeDeps: MediaToolDeps): ToolRegistrat
             createdByPrincipal: ctx.principal.id,
           },
         });
+        if (routeDeps.recordUploadContentType) {
+          await routeDeps.recordUploadContentType({ media, bytes });
+        }
         const [view] = await toMediaToolViewsWithPublicUrls(routeDeps, [media]);
         return { media: view };
       });
