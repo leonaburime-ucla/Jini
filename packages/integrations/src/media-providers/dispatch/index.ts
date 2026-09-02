@@ -37,9 +37,11 @@ export { createHexEnvelopeAudioParser, createRawBytesParser } from './response-p
 // vendors that hand back a job handle instead of finishing inside one request/response. See
 // `operation-runtime.ts`'s module doc for the persist-before-fetch design.
 export {
-  createInMemoryAsyncOperationStore,
+  ASYNC_OPERATION_SCHEMA_VERSION,
   assertNoCredentialMaterial,
+  createInMemoryAsyncOperationStore,
   CREDENTIAL_IN_STATE_MESSAGE,
+  hydrateAsyncOperationRecord,
 } from './async-operation-store.js';
 export type {
   AsyncOperationClaimOptions,

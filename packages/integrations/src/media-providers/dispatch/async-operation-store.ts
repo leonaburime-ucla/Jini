@@ -29,6 +29,17 @@
  */
 export type AsyncOperationStatus = 'submitted' | 'polling' | 'succeeded' | 'failed' | 'unknown';
 
+/**
+ * The persisted shape's version discriminator. Bumped whenever `AsyncOperationRecord`'s stored
+ * shape changes; `hydrateAsyncOperationRecord` branches on it so an old row is upgraded on read
+ * rather than rescued by a migration script.
+ *
+ * This is deliberately the same mechanism `ffb5ce44` used to close the AAD gap — a version column,
+ * a read path that branches on it, and an idempotent backfill only where one is actually needed —
+ * rather than a second migration playbook.
+ */
+export const ASYNC_OPERATION_SCHEMA_VERSION = 1;
+
 const TERMINAL_STATUSES: ReadonlySet<AsyncOperationStatus> = new Set(['succeeded', 'failed', 'unknown']);
 
 const ALLOWED_TRANSITIONS: Readonly<Record<AsyncOperationStatus, ReadonlySet<AsyncOperationStatus>>> = {
@@ -65,6 +76,8 @@ export interface AsyncOperationResult {
 }
 
 export interface AsyncOperationRecord {
+  /** Shape discriminator — see `ASYNC_OPERATION_SCHEMA_VERSION`. Stamped once at create and never rewritten. */
+  readonly schemaVersion: number;
   readonly id: string;
   readonly providerId: string;
   readonly routeKey: string;
@@ -170,6 +183,48 @@ export function assertNoCredentialMaterial(state: Readonly<Record<string, unknow
   walk(state, 0);
 }
 
+/**
+ * The branching read path for a persisted operation row.
+ *
+ * A durable adapter calls this on every row it loads. A row with no discriminator predates
+ * versioning (v0) and is upgraded in place on read; a row from a newer build is refused loudly
+ * rather than misread, because silently reinterpreting an unknown shape is how a stored operation
+ * becomes a duplicate vendor charge.
+ *
+ * @throws When `schemaVersion` is newer than this build understands.
+ * @complexity O(1).
+ */
+export function hydrateAsyncOperationRecord(raw: Record<string, unknown>): AsyncOperationRecord {
+  const stored = typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 0;
+  if (stored > ASYNC_OPERATION_SCHEMA_VERSION) {
+    throw new Error(
+      `async operation row was written at schema version ${stored}, newer than this build understands (${ASYNC_OPERATION_SCHEMA_VERSION}) — upgrade rather than risk misreading it`,
+    );
+  }
+  // v0 -> v1 added only the discriminator itself, so the upgrade is a stamp. A later version adds
+  // its own branch here; the row is never rewritten on disk just to be readable.
+  const now = Date.now();
+  return {
+    schemaVersion: ASYNC_OPERATION_SCHEMA_VERSION,
+    id: String(raw.id),
+    providerId: String(raw.providerId),
+    routeKey: String(raw.routeKey),
+    ownerRef: String(raw.ownerRef),
+    status: (raw.status as AsyncOperationStatus | undefined) ?? 'submitted',
+    attempts: typeof raw.attempts === 'number' ? raw.attempts : 0,
+    maxAttempts: Number(raw.maxAttempts),
+    deadlineAt: Number(raw.deadlineAt),
+    nextPollAt: typeof raw.nextPollAt === 'number' ? raw.nextPollAt : now,
+    leaseOwner: (raw.leaseOwner as string | null | undefined) ?? null,
+    leaseExpiresAt: (raw.leaseExpiresAt as number | null | undefined) ?? null,
+    state: (raw.state as Readonly<Record<string, unknown>> | null | undefined) ?? null,
+    result: (raw.result as AsyncOperationResult | null | undefined) ?? null,
+    error: (raw.error as AsyncOperationError | null | undefined) ?? null,
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+  };
+}
+
 function cloneRecord(row: AsyncOperationRecord): AsyncOperationRecord {
   return {
     ...row,
@@ -213,6 +268,7 @@ export function createInMemoryAsyncOperationStore(): AsyncOperationStore {
 
       const now = Date.now();
       const row: AsyncOperationRecord = {
+        schemaVersion: ASYNC_OPERATION_SCHEMA_VERSION,
         id: input.id,
         providerId: input.providerId,
         routeKey: input.routeKey,
@@ -249,6 +305,7 @@ export function createInMemoryAsyncOperationStore(): AsyncOperationStore {
 
       const next: AsyncOperationRecord = {
         ...existing,
+        schemaVersion: existing.schemaVersion,
         status,
         attempts: patch.attempts ?? existing.attempts,
         nextPollAt: patch.nextPollAt ?? existing.nextPollAt,
