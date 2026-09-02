@@ -5,7 +5,7 @@
  * against Anthropic's real, current public API docs (`platform.claude.com/
  * docs/en/build-with-claude/streaming`, `.../api/messages-streaming`),
  * following this repo's established "verify against real API docs, don't
- * guess from memory" convention (see `packages/deploy/src/netlify.ts`'s
+ * guess from memory" convention (see `packages/devops/src/deploy/netlify.ts`'s
  * doc comment for the precedent) — not a byte-for-byte OD port. Only the
  * *shape* is modeled on OD's `apps/daemon/src/routes/chat.ts`'s
  * `runAnthropicToolTurn` (per `ADS-memory/reports/proposals/

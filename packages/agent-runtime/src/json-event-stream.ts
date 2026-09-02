@@ -2,7 +2,7 @@
  * @module json-event-stream
  *
  * Ported verbatim from OD's
- * `apps/daemon/src/runtimes/stream/json-event-stream.ts`. Self-contained —
+ * `apps/daemon/src/runtimes/json-event-stream.ts`. Self-contained —
  * no imports, no product coupling. See `source-map.md`.
  */
 type JsonObject = Record<string, unknown>;

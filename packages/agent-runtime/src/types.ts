@@ -8,7 +8,7 @@
  * stream-parsing modules — operates on this type or on `DetectedAgent`, its
  * runtime-probed sibling.
  *
- * Ported from OD's `apps/daemon/src/runtimes/core/types.ts`. Product-neutral
+ * Ported from OD's `apps/daemon/src/runtimes/types.ts`. Product-neutral
  * as found — see `source-map.md` for the full provenance table.
  */
 import type { ExecFileOptions } from 'node:child_process';
