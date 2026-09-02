@@ -405,10 +405,34 @@ export const antigravityAgentDef = {
   runtimeLock: antigravityModelLock,
   installUrl: 'https://antigravity.google/cli',
   docsUrl: 'https://antigravity.google/docs/cli-overview',
-  // Deliberately left with no `externalMcpInjection` — investigated for a Codex-style relocation
-  // strategy (see `codex.ts`'s `'codex-toml'`) and rejected for lack of a safe, run-scoped delivery
-  // mechanism, not for lack of trying. Evidence, gathered live against the installed CLI (`agy`
-  // v1.1.22), not from docs alone:
+  // `externalMcpInjection: 'env-passthrough'` — the prior verdict here ("no safe, run-scoped
+  // delivery mechanism exists") stood as long as the only candidates were a per-run config
+  // flag/relocatable home dir, neither of which `agy` has (see the probes below, still accurate).
+  // What flips the verdict is a THIRD property, verified live and not previously tested: `agy`
+  // passes its own parent process environment through to the stdio MCP server children it spawns
+  // for servers already sitting in its persistent global registry.
+  //
+  //   - Proven with a probe MCP server registered under a relocated `HOME`'s
+  //     `.gemini/config/mcp_config.json`: booted under `agy -p`, it read a marker variable
+  //     (`TOVU_ENV_PASSTHROUGH_PROBE`) straight out of its own `process.env` — no config field, no
+  //     argv, nothing but inherited environment. Full MCP handshake observed on the same run:
+  //     `server/discover` → `initialize` → `notifications/initialized` → `tools/list`
+  //     (protocolVersion `2025-11-25`, clientInfo `antigravity-client`).
+  //   - That makes the registration itself a STATIC, one-time operation — the operator adds one
+  //     `tovu` entry to their real `~/.gemini/config/mcp_config.json` (confirmed still the one real
+  //     mechanism; see the probes below) with a bare, env-free `command` pointing at this package's
+  //     own `jini-mcp` bin, resolving its credential from the environment at spawn time instead of
+  //     a baked-in value. No per-spawn config mutation, no lock, no restore discipline — the exact
+  //     "safe, run-scoped delivery" gap the old verdict cited is closed by inheritance, not by
+  //     relocation.
+  //   - So this def's job shrinks to exactly what `'env-passthrough'` describes in `types.ts`: put
+  //     the bridge entry's `JINI_RUN_ID`/`JINI_DAEMON_URL`/`JINI_DAEMON_TOKEN` onto `agy`'s OWN
+  //     spawn env (done centrally by `@jini-ai/daemon`'s `computeChildEnv`, not by this def's
+  //     `buildArgs`), and `agy` carries them the rest of the way to the already-registered server on
+  //     its own.
+  //
+  // The prior probes into a per-run/relocatable mechanism remain accurate and are kept as the
+  // record of what does NOT work, so a future reader does not re-walk the same dead ends:
   //
   //   - No per-run config-path flag. `agy --help` and `agy mcp add --help` were read in full: `mcp
   //     add/remove/list/enable/disable` only mutate the PERSISTENT global registry — there is no
@@ -417,7 +441,9 @@ export const antigravityAgentDef = {
   //     every all-caps `*HOME*`/`*_DIR`/`*_PATH`/`XDG_*` token found nothing naming a relocatable
   //     config/data root for Antigravity or Gemini specifically — only the generic `HOME` (relocating
   //     that would redirect the ENTIRE user profile for the child, not a scoped config dir, and is not
-  //     an "explicit, run-scoped delivery" by any reasonable reading).
+  //     an "explicit, run-scoped delivery" by any reasonable reading). Also why the passthrough probe
+  //     above used a relocated `HOME` only to prove inheritance in isolation — production spawns
+  //     always use the operator's real `HOME`, since relocating it breaks `agy`'s own auth.
   //   - The workspace-relative `.agents/mcp_config.json` this comment used to cite as unverified is
   //     now verified NOT to be what it looked like: a project dir was seeded with a real
   //     `.agents/mcp_config.json` entry, then `agy mcp list` (run from that cwd) showed only the
@@ -428,20 +454,16 @@ export const antigravityAgentDef = {
   //     distinct project. Best read: `.agents/mcp_config.json` belongs to the Antigravity IDE
   //     extension's own project layer, a different consumer than the bare `agy` CLI binary this
   //     daemon actually spawns — not a mechanism reachable from a plain `agy -p` invocation at all.
-  //   - The one mechanism that IS real — `~/.gemini/config/mcp_config.json` (global, JSON,
-  //     `{"mcpServers":{"<name>":{"command":...}}}`, confirmed by reading the operator's own file
-  //     read-only after backing it up) — has no relocation path, so using it means mutating the
-  //     operator's real shared config on every spawn. That is the exact class of side effect
-  //     `codex.ts`'s doc rejected the `-c`-override approach for, made concretely worse here: this
-  //     def already fights a real cross-run race on `settings.json` for model selection
-  //     (`antigravityModelLock` above), and a second shared-file race for MCP config would need its
-  //     own serialization/merge/restore discipline with its own live verification — not a strategy
-  //     bolted onto this one on a guess. Also relevant: this same `agy -p` run, on the SAME machine,
-  //     left `~/.gemini/trustedFolders.json` and `~/.gemini/projects.json` byte-identical
-  //     before/after (unlike Codex's `config.toml`, which does grow a project-tracking entry per
-  //     run) — headless print mode does not even register the folder as a project, reinforcing that
-  //     nothing here is scoped per-invocation the way `CODEX_HOME` is.
+  //     Confirmed independently upstream: antigravity-cli issue #60 (open, no maintainer response)
+  //     reports the identical "project-local mcp_config.json is read but ignored" symptom.
+  //   - `~/.gemini/config/mcp_config.json` (global, JSON, `{"mcpServers":{"<name>":{"command":...}}}`,
+  //     confirmed by reading the operator's own file read-only after backing it up) has no relocation
+  //     path — but per the passthrough finding above, this def never needs to write to it at all
+  //     outside the one-time operator registration, so the shared-file race this comment used to
+  //     warn about (a second race alongside `antigravityModelLock`'s settings.json one) never
+  //     materializes: nothing here mutates that file per run.
   //
   // No hang was observed on any of these probes (all completed in well under `--print-timeout`'s
-  // default 5m), so the blocker is "no safe delivery mechanism exists", not "the mechanism hangs".
+  // default 5m).
+  externalMcpInjection: 'env-passthrough',
 } satisfies RuntimeAgentDef;

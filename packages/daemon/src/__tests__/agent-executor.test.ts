@@ -4976,16 +4976,34 @@ describe('buildMcpBridgeDelivery', () => {
     });
   });
 
+  // `'env-passthrough'` (antigravity): like `'codex-toml'`, a bare serverEntry — but unlike it,
+  // there is no directory or file to stage at all. The whole delivery IS the env triple; a
+  // consumer applies `serverEntry.env` directly to the child's own environment (see
+  // `computeChildEnv`'s tests below), never to a config document or a named carrier variable.
+  it('maps env-passthrough to a bare serverEntry, carrying no path and no carrier variable', () => {
+    const delivery = buildMcpBridgeDelivery({ ...base, strategy: 'env-passthrough' });
+    expect(delivery).toEqual({
+      kind: 'env-passthrough',
+      serverEntry: {
+        command: '/usr/bin/jini-mcp',
+        args: ['--quiet'],
+        env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' },
+      },
+    });
+  });
+
   it('threads the resolved credential into every mechanism, not just claude-mcp-json', () => {
     const withToken = { ...base, credential: 'run-scoped-secret' };
     const claude = buildMcpBridgeDelivery({ ...withToken, strategy: 'claude-mcp-json' });
     const acp = buildMcpBridgeDelivery({ ...withToken, strategy: 'acp-merge' });
     const env = buildMcpBridgeDelivery({ ...withToken, strategy: 'mimo-env-content' });
     const codex = buildMcpBridgeDelivery({ ...withToken, strategy: 'codex-toml' });
+    const passthrough = buildMcpBridgeDelivery({ ...withToken, strategy: 'env-passthrough' });
     expect(claude).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
     expect(acp).toMatchObject({ mcpServers: [{ env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } }] });
     expect(env).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
     expect(codex).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
+    expect(passthrough).toMatchObject({ serverEntry: { env: { JINI_DAEMON_TOKEN: 'run-scoped-secret' } } });
   });
 
   // The registry-level invariant this whole task exists to establish: a def earns a working MCP
@@ -5319,6 +5337,47 @@ describe('computeChildEnv — stagedInstructionsFile param', () => {
   it('is a no-op when no instructions file was staged (undefined, the default)', () => {
     const result = computeChildEnv({ FOO: 'bar' }, null);
     expect(result).toEqual({ FOO: 'bar' });
+  });
+});
+
+describe("computeChildEnv — 'env-passthrough' kind (antigravity)", () => {
+  it('sets the bridge entry env keys directly on the child env, alongside whatever the host already set', () => {
+    const mcpBridge: McpBridgeDelivery = {
+      kind: 'env-passthrough',
+      serverEntry: {
+        command: '/usr/bin/jini-mcp',
+        args: ['--quiet'],
+        env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242', JINI_DAEMON_TOKEN: 'run-scoped-secret' },
+      },
+    };
+    const result = computeChildEnv({ PATH: '/usr/bin', HOME: '/home/op' }, mcpBridge);
+    // Existing, unrelated spawn env is preserved...
+    expect(result.PATH).toBe('/usr/bin');
+    expect(result.HOME).toBe('/home/op');
+    // ...and the bridge's env lands as flat top-level vars, not nested in any document/carrier var.
+    expect(result.JINI_RUN_ID).toBe('run-1');
+    expect(result.JINI_DAEMON_URL).toBe('http://127.0.0.1:4242');
+    expect(result.JINI_DAEMON_TOKEN).toBe('run-scoped-secret');
+  });
+
+  it('omits JINI_DAEMON_TOKEN when no credential was resolved, matching every other mechanism', () => {
+    const mcpBridge: McpBridgeDelivery = {
+      kind: 'env-passthrough',
+      serverEntry: { command: '/usr/bin/jini-mcp', args: [], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' } },
+    };
+    const result = computeChildEnv({}, mcpBridge);
+    expect(result.JINI_DAEMON_TOKEN).toBeUndefined();
+  });
+
+  it('is a no-op for every other bridge kind — env-passthrough only applies to its own kind', () => {
+    const claudeBridge: McpBridgeDelivery = {
+      kind: 'claude-mcp-json',
+      mcpJsonPath: '/work/.mcp.jini-run-1.json',
+      serverEntry: { command: '/usr/bin/jini-mcp', args: [], env: { JINI_RUN_ID: 'run-1', JINI_DAEMON_URL: 'http://127.0.0.1:4242' } },
+    };
+    const result = computeChildEnv({ FOO: 'bar' }, claudeBridge);
+    expect(result).toEqual({ FOO: 'bar' });
+    expect(result.JINI_RUN_ID).toBeUndefined();
   });
 });
 

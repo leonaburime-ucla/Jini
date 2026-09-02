@@ -107,10 +107,14 @@ describe('registry', () => {
         .sort();
 
       expect(toolLess).toEqual(
-        ['aider', 'amp', 'antigravity', 'copilot', 'cursor-agent', 'deepseek', 'grok-build', 'pi', 'qoder', 'qwen'].sort(),
+        ['aider', 'amp', 'copilot', 'cursor-agent', 'deepseek', 'grok-build', 'pi', 'qoder', 'qwen'].sort(),
       );
       expect(toolCapable.length).toBe(BASE_AGENT_DEFS.length - toolLess.length);
       expect(toolCapable).toContain('claude');
+      // antigravity moved from tool-less to tool-capable once its stdio MCP server can be
+      // statically pre-registered and reached via inherited env (`'env-passthrough'`) — see
+      // `defs/antigravity.ts`'s own doc for the live evidence behind the move.
+      expect(toolCapable).toContain('antigravity');
     });
   });
 });

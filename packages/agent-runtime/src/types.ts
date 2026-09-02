@@ -357,6 +357,35 @@ export type RuntimeAgentDef = {
   //                            real global config — is the mechanism, and for
   //                            the live verification that this never blocks
   //                            on an interactive trust/login prompt.
+  //   'env-passthrough'      — for a CLI whose MCP client is a GLOBAL,
+  //                            statically pre-registered stdio server (no
+  //                            per-run `--mcp-config` flag, no relocatable
+  //                            home directory), but which DOES inherit its
+  //                            spawning parent's process environment down to
+  //                            that stdio child. There is nothing to write or
+  //                            relocate per run — the operator registers the
+  //                            bridge server once, out of band, into the
+  //                            CLI's own persistent global config (verified
+  //                            live for `agy`/Antigravity: `~/.gemini/
+  //                            config/mcp_config.json`, unrelated to and
+  //                            never touched by this strategy) — so the
+  //                            caller's only per-run job is delivering the
+  //                            bridge entry's `env` (the same
+  //                            `JINI_RUN_ID`/`JINI_DAEMON_URL`/
+  //                            `JINI_DAEMON_TOKEN` triple every other
+  //                            strategy carries) directly onto the spawned
+  //                            CLI's own OS environment, for the CLI's own
+  //                            child to inherit in turn. See `defs/
+  //                            antigravity.ts`'s own doc for the live
+  //                            evidence this inheritance chain actually
+  //                            works end to end (`server/discover` →
+  //                            `initialize` → `tools/list` observed against
+  //                            a real spawn). Distinct from
+  //                            `'opencode-env-content'`/`'mimo-env-content'`:
+  //                            those pack a serialized config *document*
+  //                            into one named env var; this strategy sets
+  //                            the flat credential vars themselves, with no
+  //                            document and no CLI-specific schema.
   //
   // Leave undefined for adapters that have no native MCP transport wired
   // yet.
@@ -365,7 +394,8 @@ export type RuntimeAgentDef = {
     | 'acp-merge'
     | 'opencode-env-content'
     | 'mimo-env-content'
-    | 'codex-toml';
+    | 'codex-toml'
+    | 'env-passthrough';
   // How a caller-supplied `RuntimeBuildOptions.systemPromptOverlay` reaches this def's CLI — same
   // "declare a strategy, dispatched centrally" shape as `externalMcpInjection` above, keyed off
   // this field by `@jini-ai/daemon`'s `resolveSystemPromptOverlayDelivery` (the single dispatch

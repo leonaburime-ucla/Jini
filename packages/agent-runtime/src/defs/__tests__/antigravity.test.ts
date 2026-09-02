@@ -48,6 +48,15 @@ describe('antigravityAgentDef shape', () => {
     expect(antigravityAgentDef.fallbackModels[0]?.id).toBe('default');
   });
 
+  // `agy` passes its own parent process env through to the stdio MCP children it spawns for
+  // servers already sitting in its persistent global registry — verified live (see this def's own
+  // doc). That makes a one-time, out-of-band global registration a real, safe delivery mechanism,
+  // reversing the prior "no safe run-scoped mechanism" verdict this field used to encode as
+  // `undefined`.
+  it('declares the env-passthrough external MCP injection strategy', () => {
+    expect(antigravityAgentDef.externalMcpInjection).toBe('env-passthrough');
+  });
+
   // The three fields that make a generic driver able to run agy at all — see
   // packages/daemon/src/agent-executor.ts's "Antigravity's two extra needs,
   // met declaratively" section. Pinned here because a driver reads them by

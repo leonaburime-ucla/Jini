@@ -88,9 +88,10 @@ export function getAgentDef(id: string): RuntimeAgentDef | null {
 
 /**
  * Whether a caller can inject external MCP servers (Tovu/Jini tools) into a session run by this
- * def, per its own `externalMcpInjection` declaration (`types.ts`'s own doc names the five wired
+ * def, per its own `externalMcpInjection` declaration (`types.ts`'s own doc names the six wired
  * strategies and the defs that leave the field `undefined` because the CLI has no mechanism to
- * receive one — `aider`, `antigravity`, and `pi` today, each documenting why in its own def file).
+ * receive one — `aider`, `amp`, `copilot`, `cursor-agent`, `deepseek`, `grok-build`, `pi`,
+ * `qoder`, and `qwen` today, each documenting why in its own def file).
  *
  * This is the single seam a tool-availability UI (e.g. the chat runtime picker's "No tools" badge)
  * should read instead of hardcoding a runtime-id list: that list goes stale the moment a def gains

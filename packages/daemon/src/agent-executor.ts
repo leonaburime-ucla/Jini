@@ -942,11 +942,11 @@ export interface ContinuationOptions {
  * (`@jini-ai/mcp`'s `../server/tools/delegated-tool.ts`) only does anything useful once the spawned
  * CLI's own client actually launches `jini-mcp` as its MCP server subprocess.
  *
- * **All five declared strategies are wired.** These options describe *one* bridge server
+ * **All six declared strategies are wired.** These options describe *one* bridge server
  * (`command`/`args`/`daemonUrl`/`credential`); which transport carries it to a given child is that
- * def's own `externalMcpInjection` declaration, and each of the five has exactly one
+ * def's own `externalMcpInjection` declaration, and each of the six has exactly one
  * implementation here — see {@link buildMcpBridgeDelivery}, which is the single dispatch point.
- * The interface name predates the other four mechanisms and is kept for API compatibility with
+ * The interface name predates the other five mechanisms and is kept for API compatibility with
  * `@jini-ai/server`'s `agentExecutor` passthrough; it is no longer `.mcp.json`-specific.
  *
  * **Host-resolved, not this package's to know.** `command`/`daemonUrl` have no default the way
@@ -1356,7 +1356,15 @@ export type McpBridgeDelivery =
    * this delivery's pure, synchronous dispatch. `prepareCodexHomeIfNeeded` stages it separately and
    * reports the resulting path back into `childEnv.CODEX_HOME` directly, never through this type.
    */
-  | { readonly kind: 'codex-toml'; readonly serverEntry: McpJsonServerEntry };
+  | { readonly kind: 'codex-toml'; readonly serverEntry: McpJsonServerEntry }
+  /**
+   * `'env-passthrough'` (antigravity): the bridge entry's `env` triple (`JINI_RUN_ID`/
+   * `JINI_DAEMON_URL`/`JINI_DAEMON_TOKEN`) is set directly on the spawned CLI's own OS
+   * environment — no config document, no file, no CLI-specific schema. Correct only because this
+   * strategy's CLI already inherits its own env down to the stdio MCP child it launches for a
+   * server registered once, globally, out of band (see `types.ts`'s own doc on this strategy).
+   */
+  | { readonly kind: 'env-passthrough'; readonly serverEntry: McpJsonServerEntry };
 
 /**
  * **The single dispatch point from an `externalMcpInjection` strategy to its delivery mechanism.**
@@ -1399,6 +1407,8 @@ export function buildMcpBridgeDelivery(input: {
       return { kind: 'env-content', envVarName: ENV_CONTENT_VAR_BY_STRATEGY[strategy], serverEntry };
     case 'codex-toml':
       return { kind: 'codex-toml', serverEntry };
+    case 'env-passthrough':
+      return { kind: 'env-passthrough', serverEntry };
   }
 }
 
@@ -2742,7 +2752,9 @@ export async function resolveMcpBridgeForRun(
  * Phase 6a/10c: the subprocess environment every env-riding mechanism uses — mechanism 3+4
  * (`'opencode-env-content'`/`'mimo-env-content'`, merged into whatever the host already set there,
  * never a CLI argument: the config embeds `JINI_DAEMON_TOKEN`, and process arguments are readable
- * by any other local user through `ps`), mechanism 5 (`'codex-toml'`, `CODEX_HOME` relocation), a
+ * by any other local user through `ps`), mechanism 5 (`'codex-toml'`, `CODEX_HOME` relocation),
+ * mechanism 6 (`'env-passthrough'`, the bridge entry's flat env vars set directly with no carrier
+ * document — see {@link McpBridgeDelivery}'s own doc), a
  * `systemPromptDelivery: 'env-var'` def's overlay (`reasonix`'s `REASONIX_ACP_SYSTEM_APPEND` today
  * — see `resolveSystemPromptOverlayDelivery`'s own doc), and a `'config-instructions-file'` def's
  * staged overlay file (`opencode` today — see {@link mergeEnvContentInstructions}'s own doc). Pure
@@ -2771,13 +2783,20 @@ export function computeChildEnv(
           [mcpBridge.envVarName]: mergeEnvContentMcpConfig(spawnEnv[mcpBridge.envVarName], mcpBridge.serverEntry),
         }
       : spawnEnv;
+  // `'env-passthrough'` (antigravity): no document, no named carrier variable — the bridge
+  // entry's own `env` keys (`JINI_RUN_ID`/`JINI_DAEMON_URL`/`JINI_DAEMON_TOKEN`) are set directly
+  // on the child's environment, for the spawned CLI to inherit down to its own globally
+  // pre-registered MCP child in turn. See `McpBridgeDelivery`'s own doc for why this def has no
+  // config document to merge into at all.
+  const envPassthroughApplied =
+    mcpBridge?.kind === 'env-passthrough' ? { ...envContentApplied, ...mcpBridge.serverEntry.env } : envContentApplied;
   const instructionsApplied =
     stagedInstructionsFile === undefined
-      ? envContentApplied
+      ? envPassthroughApplied
       : {
-          ...envContentApplied,
+          ...envPassthroughApplied,
           [stagedInstructionsFile.varName]: mergeEnvContentInstructions(
-            envContentApplied[stagedInstructionsFile.varName],
+            envPassthroughApplied[stagedInstructionsFile.varName],
             stagedInstructionsFile.path,
           ),
         };
