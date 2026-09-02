@@ -1092,6 +1092,21 @@ export const CHAT_PANE_STYLES = `
   white-space: nowrap;
 }
 .jini-runtime-check { flex: 0 0 auto; color: var(--jini-chat-text); }
+/* Matches .jini-message-attachment-chip/.jini-md-table-expand's pill chrome (same
+   background/border/radius formula) so this reads as the same badge language already used
+   elsewhere in the pane, not a new one. Sits between the agent name and its status column —
+   flex: 0 0 auto keeps it from stretching or shrinking when the row is tight. */
+.jini-runtime-agent__badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  color: var(--jini-chat-muted);
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 .jini-runtime-section-label {
   padding: 12px 11px 5px;
   color: var(--jini-chat-faint);

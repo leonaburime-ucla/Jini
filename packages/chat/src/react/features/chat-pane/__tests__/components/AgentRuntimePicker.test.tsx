@@ -565,6 +565,38 @@ describe('AgentRuntimePicker', () => {
     expect(firstControl).toHaveFocus();
   });
 
+  /**
+   * The defect: a runtime with no MCP-injection mechanism (aider, antigravity, pi — see
+   * `@jini-ai/agent-runtime`'s `runtimeSupportsExternalTools` doc) silently ran with zero tools,
+   * with nothing in the picker telling the operator why. `ChatPaneAgent.supportsTools` is the host's
+   * per-agent projection of that def-level fact; this only asserts the picker's own reaction to it,
+   * not the derivation itself (covered by `registry.test.ts`).
+   */
+  it('badges a runtime that cannot receive tools, and leaves tool-capable ones unbadged', async () => {
+    const mixedAgents: ChatPaneAgent[] = [
+      { id: 'claude', name: 'Claude Code', available: true, supportsTools: true },
+      { id: 'pi', name: 'Pi', available: true, supportsTools: false },
+      // No `supportsTools` at all (older host payload) must not be treated as tool-less.
+      { id: 'zed', name: 'Zed Agent', available: true },
+    ];
+    render(
+      <AgentRuntimePicker agents={mixedAgents} value={{ agentId: 'claude' }} onChange={() => {}} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Choose AI runtime' }));
+
+    const piRow = screen.getByRole('radio', { name: /Pi/ });
+    expect(within(piRow).getByText('No tools')).toBeInTheDocument();
+    expect(within(piRow).getByText('No tools')).toHaveAttribute(
+      'title',
+      'This CLI has no MCP support, so it cannot use Tovu tools.',
+    );
+
+    const claudeRow = screen.getByRole('radio', { name: /Claude Code/ });
+    expect(within(claudeRow).queryByText('No tools')).not.toBeInTheDocument();
+    const zedRow = screen.getByRole('radio', { name: /Zed Agent/ });
+    expect(within(zedRow).queryByText('No tools')).not.toBeInTheDocument();
+  });
+
   it('safely no-ops Tab navigation when the popover has no focusable control at all', async () => {
     const user = userEvent.setup();
     render(

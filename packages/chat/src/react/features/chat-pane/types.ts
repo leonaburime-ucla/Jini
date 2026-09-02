@@ -24,6 +24,14 @@ export interface ChatPaneAgent {
   reasoningOptions?: readonly ChatPaneAgentOption[];
   supportsCustomModel?: boolean;
   diagnostic?: string;
+  /**
+   * Whether this runtime can receive external MCP servers (Tovu/Jini tools) at all — mirrors
+   * `@jini-ai/http-kit`'s `AgentSummary.supportsTools`, itself derived from
+   * `@jini-ai/agent-runtime`'s `runtimeSupportsExternalTools(def)`. `AgentRuntimePicker` reads this
+   * to show a "No tools" badge; `undefined` (a host on an older wire payload) is treated the same
+   * as `true` — no badge — since there is no signal either way.
+   */
+  supportsTools?: boolean;
 }
 
 export interface ChatPaneAgentSelection {

@@ -39,6 +39,14 @@ export interface AgentSummary {
   readonly modelsSource?: 'live' | 'fallback';
   readonly supportsCustomModel?: boolean;
   readonly diagnostic?: string;
+  /**
+   * Whether this runtime can receive external MCP servers (Tovu/Jini tools) at all, per
+   * `@jini-ai/agent-runtime`'s `runtimeSupportsExternalTools(def)` — the def-level source of
+   * truth. `undefined` means the host did not populate this field (pre-existing hosts on an older
+   * `@jini-ai/http-kit` continue to omit it); a UI gating on this should treat `undefined` the same
+   * as `true` (no known reason to warn) rather than assuming the worst.
+   */
+  readonly supportsTools?: boolean;
 }
 
 export interface AgentsHttpDeps {

@@ -118,6 +118,14 @@ function RuntimeAgentList({
             <span className="jini-runtime-agent__copy">
               <strong>{agent.name}</strong>
             </span>
+            {agent.supportsTools === false ? (
+              <span
+                className="jini-runtime-agent__badge"
+                title={t('This CLI has no MCP support, so it cannot use Tovu tools.')}
+              >
+                {t('No tools')}
+              </span>
+            ) : null}
             <span className="jini-runtime-agent__status">
               {active ? t('selected') : status}
             </span>
