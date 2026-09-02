@@ -8,6 +8,24 @@
  * internal `authorize()` call of their own — every admin HTTP route a host builds gates inline
  * instead. Every handler here does the same via the kit's `requireToolPermission`, which is the
  * single evaluation for these tools, located where a real route would locate it.
+ *
+ * `publicUrl` (2026-09-02, closing the same capability gap `features/post/tool-registrations.ts`'s
+ * own `publicUrl` addition closed there: an agent could upload/list an asset but had no tool-facing
+ * way to learn a URL usable to embed it in a post/page). Unlike `post`, this package has no host to
+ * resolve a public URL against — the `/m/{assetId}/{transformName}.v{version}/...` contract
+ * (ADR-027 §4) is a HOST decision (which URL prefix, which transform pipeline, whether one even
+ * exists), not a `@jini-ai/cms` one; this package deliberately has zero `/m/`-shaped string
+ * literals anywhere. So `publicUrl` is resolved through an OPTIONAL, host-injected
+ * {@link MediaToolDeps.resolvePublicUrls}, batch-shaped (one call per `media_list_assets`/
+ * `media_upload_asset` invocation, not one per asset) so a host backing it with a real lookup
+ * (content-type/blob-store reads) never pays N queries for an N-row list. A host that omits it gets
+ * today's exact behavior unchanged — `publicUrl` simply never appears on the response, which is why
+ * this stays additive rather than a breaking change to every existing consumer of this file.
+ *
+ * Deliberately NOT added to `media_update_metadata`/`media_trash_asset` — mirrors
+ * `features/post/tool-registrations.ts`'s identical reasoning for skipping `content_post_update`/
+ * `content_post_delete`: those two return the row incidentally, to confirm what was just
+ * edited/trashed, not to answer "where does this live".
  */
 import type { AuthorizeFn } from "../core/commands/command.js";
 import {
@@ -44,6 +62,15 @@ export interface MediaToolDeps {
   assetBlobRepo: AssetBlobRepoPort;
   assetRenditionRepo: AssetRenditionRepoPort;
   blobStore: BlobStorePort;
+  /**
+   * Optional, batch-shaped resolver for each listed asset's host-served public URL — see this
+   * file's header, "`publicUrl`". Called with every asset `media_list_assets`/`media_upload_asset`
+   * is about to return, at most once per tool call; the returned map's key is `MediaRecord.id`, and
+   * a missing/`null` entry means "no public URL for this asset" (e.g. trashed, or the host's own
+   * resolution failed soft). Omitted entirely: every response's `publicUrl` is `null`, matching this
+   * field's own pre-2026-09-02 absence for every host that has not opted in yet.
+   */
+  resolvePublicUrls?: (assets: readonly MediaRecord[]) => Promise<ReadonlyMap<string, string | null>>;
 }
 
 /**
@@ -98,6 +125,27 @@ function toMediaToolView(record: MediaRecord): MediaToolView {
   };
 }
 
+/** {@link MediaToolView} plus the resolved public URL — see this file's header ("`publicUrl`") for
+ *  why this is a separate type rather than a field added to the base shape. */
+interface MediaToolViewWithPublicUrl extends MediaToolView {
+  publicUrl: string | null;
+}
+
+/**
+ * Batch-resolves `publicUrl` for every listed asset via {@link MediaToolDeps.resolvePublicUrls},
+ * then projects each into {@link MediaToolViewWithPublicUrl}. A single call regardless of
+ * `records.length` — see this file's header for why this is batch-shaped rather than per-asset.
+ * When `routeDeps.resolvePublicUrls` is not provided, every row's `publicUrl` is `null` (the field
+ * still appears — the caller always gets the same shape back, only the value differs).
+ *
+ * @complexity O(1) beyond the injected resolver's own cost (documented as its own caller's
+ * responsibility — see `MediaToolDeps.resolvePublicUrls`'s own doc).
+ */
+async function toMediaToolViewsWithPublicUrls(routeDeps: MediaToolDeps, records: readonly MediaRecord[]): Promise<MediaToolViewWithPublicUrl[]> {
+  const urls = routeDeps.resolvePublicUrls ? await routeDeps.resolvePublicUrls(records) : new Map<string, string | null>();
+  return records.map((record) => ({ ...toMediaToolView(record), publicUrl: urls.get(record.id) ?? null }));
+}
+
 export function buildMediaRegistrations(routeDeps: MediaToolDeps): ToolRegistration[] {
   const mediaWriteDeps = () => ({
     clock: routeDeps.clock,
@@ -112,7 +160,7 @@ export function buildMediaRegistrations(routeDeps: MediaToolDeps): ToolRegistrat
     media_list_assets: async (ctx) => {
       await requireToolPermission(routeDeps, { principalId: ctx.principal.id, permission: "media.read", entityType: "media" });
       const { media } = await listMedia({ deps: { mediaRepo: routeDeps.mediaRepo }, input: { workspaceId: routeDeps.workspaceId } });
-      return { media: media.map(toMediaToolView) };
+      return { media: await toMediaToolViewsWithPublicUrls(routeDeps, media) };
     },
 
     media_upload_asset: async (ctx) => {
@@ -139,7 +187,8 @@ export function buildMediaRegistrations(routeDeps: MediaToolDeps): ToolRegistrat
             createdByPrincipal: ctx.principal.id,
           },
         });
-        return { media: toMediaToolView(media) };
+        const [view] = await toMediaToolViewsWithPublicUrls(routeDeps, [media]);
+        return { media: view };
       });
     },
 
