@@ -312,6 +312,17 @@ export const CHAT_PANE_STYLES = `
   border-radius: 8px;
   font-size: 12px;
 }
+.jini-chat-pane__error-action {
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.jini-chat-pane__error-action:hover { opacity: .82; }
 .jini-chat-pane__status {
   margin: 0 2px 8px;
   padding: 8px 10px;
@@ -562,19 +573,6 @@ export const CHAT_PANE_STYLES = `
   line-height: 1.6;
 }
 .jini-chat-pane .jini-composer-input::placeholder { color: var(--jini-chat-faint); }
-/*
- * The interrupt-hint caption below the composer box (Composer.tsx's own interruptHintText, gated on
- * running && onInterrupt): small, muted, single-line text, not a bordered banner — it only needs to
- * be readable on a glance down after finishing a message, not to compete for attention with the
- * composer itself. Shown only while a run is actually streaming, so this costs no permanent height
- * the other ~95% of the time a host renders the composer.
- */
-.jini-chat-pane .jini-composer-interrupt-hint {
-  margin: 6px 2px 0;
-  color: var(--jini-chat-faint);
-  font-size: 11px;
-  text-align: center;
-}
 .jini-chat-pane .jini-composer-footer {
   display: flex;
   align-items: center;
@@ -743,6 +741,45 @@ export const CHAT_PANE_STYLES = `
   border-color: var(--jini-chat-border);
 }
 .jini-chat-pane .jini-composer-attach:disabled { opacity: .45; cursor: default; }
+/* The working-directory trigger button reuses '.jini-composer-attach' itself (Composer.tsx) rather
+   than a class duplicated here, so it is byte-identical in size/hit-area/hover/focus to its
+   neighbour rather than an approximation that could drift out of sync. Only the wrapper and its
+   popover are new. NOT 'position: relative' on the wrapper, for the same reason noted above
+   '.jini-composer-discovery': the popover's un-measured first paint (before the layout effect sets
+   its 'position: fixed' inline style) falls back to this rule's 'position: absolute', which needs
+   '.jini-composer' itself — the nearest positioned ancestor — not this wrapper, to anchor against. */
+.jini-chat-pane .jini-composer-workdir { display: inline-flex; }
+.jini-chat-pane .jini-composer-workdir-panel {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--jini-chat-panel);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 14%);
+}
+.jini-chat-pane .jini-composer-workdir-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 8px;
+  color: var(--jini-chat-text);
+  font: inherit;
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 6px;
+}
+.jini-chat-pane .jini-composer-workdir-confirm {
+  padding: 6px 10px;
+  color: white;
+  white-space: nowrap;
+  background: var(--jini-chat-text-strong);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
 .jini-composer-spinner,
 .jini-runtime-spinner { animation: jini-chat-spin .8s linear infinite; }
 @keyframes jini-chat-spin { to { transform: rotate(360deg); } }

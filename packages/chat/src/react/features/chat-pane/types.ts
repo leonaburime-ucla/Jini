@@ -169,6 +169,23 @@ export interface ChatPaneProps {
   onChangeWorkingDirectory?: (workingDirectory: string | null) => void;
   /** Optional native filesystem effects used by the package-owned picker. */
   workingDirectoryAccess?: ChatPaneWorkingDirectoryAccess;
+  /**
+   * Where the working-directory control renders when `workingDirectoryAccess` is supplied.
+   * Ignored when `workingDirectoryAccess` is absent — that case always uses the composer's own
+   * lightweight text-input popover, regardless of this prop.
+   *
+   * - `'below'` (default): the package's own `WorkingDirPicker` renders beneath the composer, as
+   *   it always has. Existing hosts (e.g. the reference-web example's desktop bridge) that never
+   *   set this prop keep this exact behavior unchanged.
+   * - `'composer'`: the control moves into the composer's action row instead, next to the
+   *   attach/discovery button — clicking it calls `workingDirectoryAccess.pickWorkingDirectory`
+   *   directly (the native OS dialog IS the picker, so there is no popover to open). Nothing
+   *   renders below the composer in this mode. Opt in when a host wants a single working-directory
+   *   control living next to "+" rather than two competing ones.
+   *
+   * @default 'below'
+   */
+  workingDirectoryControlPlacement?: 'below' | 'composer';
   projectFileNames?: ReadonlySet<string>;
   uploadAttachments?: (
     files: File[],

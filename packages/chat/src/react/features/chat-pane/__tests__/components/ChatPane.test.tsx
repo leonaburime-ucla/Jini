@@ -519,6 +519,55 @@ describe('ChatPane', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
+  it('turns the unavailable banner into a working BYOK switch when the host wired onExecutionModeChange', async () => {
+    // Owner-reported bug: a host with zero agent CLIs (e.g. a hosted container image) showed the
+    // same dead-end "No usable CLI is selected." with no way forward, even though BYOK was a real,
+    // configured way out. The banner must both say so AND actually flip the mode when a host has
+    // wired the callback that makes that true.
+    const transport = createFakeChatTransport();
+    const onExecutionModeChange = vi.fn();
+    render(
+      <ChatPane
+        transport={transport}
+        agents={[]}
+        executionMode="local"
+        apiModeAvailable
+        onExecutionModeChange={onExecutionModeChange}
+      />,
+    );
+
+    expect(screen.getByText('No usable CLI is selected.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Switch to BYOK' }));
+    expect(onExecutionModeChange).toHaveBeenCalledWith('api');
+  });
+
+  it('falls back to copy-only BYOK pointer when apiModeAvailable but no onExecutionModeChange is wired', () => {
+    // A host may report `apiModeAvailable` without wiring the callback that would make a button
+    // meaningful. The pane must still point at BYOK as prose, never inventing an affordance it
+    // cannot actually perform.
+    const transport = createFakeChatTransport();
+    render(<ChatPane transport={transport} agents={[]} executionMode="local" apiModeAvailable />);
+
+    expect(
+      screen.getByText('No usable CLI is selected — switch to BYOK to use your own API key.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Switch to BYOK' })).not.toBeInTheDocument();
+  });
+
+  it('does not offer to switch to BYOK when it is not actually available — the honest case', () => {
+    // `apiModeAvailable` false means BYOK genuinely is not a way forward here (e.g. no key saved
+    // anywhere). Telling the operator to "try BYOK" would be a lie, so the original message stands
+    // alone with no pointer and no button.
+    const transport = createFakeChatTransport();
+    render(<ChatPane transport={transport} agents={[]} executionMode="local" apiModeAvailable={false} />);
+
+    expect(screen.getByText('No usable CLI is selected.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('No usable CLI is selected — switch to BYOK to use your own API key.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Switch to BYOK' })).not.toBeInTheDocument();
+  });
+
   describe('composerHandle', () => {
     it('publishes insertText once mounted, appends onto an existing draft, and clears on unmount', () => {
       const composerHandle = createRef<ChatPaneComposerHandle | null>();
@@ -642,7 +691,7 @@ describe('ChatPane', () => {
       expect(screen.getByTestId('working-dir-trigger')).not.toHaveTextContent('Select working directory');
     });
 
-    it('shows the plain working directory, without a picker, when no access is supplied', () => {
+    it('shows the composer\'s folder-icon working-directory trigger, not the native picker, when no access is supplied', () => {
       render(
         <ChatPane
           transport={createFakeChatTransport()}
@@ -651,9 +700,85 @@ describe('ChatPane', () => {
         />,
       );
 
-      expect(screen.getByText('Working directory')).toBeInTheDocument();
-      expect(screen.getByText('/Users/test/current')).toBeInTheDocument();
-      expect(screen.queryByLabelText('Select working directory')).not.toBeInTheDocument();
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+        'Working directory: /Users/test/current',
+      );
+      expect(screen.queryByTestId('working-dir-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByText('Working directory')).not.toBeInTheDocument();
+    });
+
+    it('changes the working directory through the composer\'s lightweight popover when no native access is supplied', async () => {
+      render(
+        <ChatPane
+          transport={createFakeChatTransport()}
+          agents={agents}
+          initialWorkingDirectory="/Users/test/current"
+        />,
+      );
+
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      const input = screen.getByTestId('composer-workdir-input');
+      await userEvent.clear(input);
+      await userEvent.type(input, '/Users/test/new{Enter}');
+
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+        'Working directory: /Users/test/new',
+      );
+    });
+
+    // Regression: a host with a native `workingDirectoryAccess` that opts into
+    // `workingDirectoryControlPlacement="composer"` must get the composer's folder-icon trigger
+    // wired to the NATIVE dialog — not the below-composer `WorkingDirPicker` this used to render
+    // unconditionally whenever `workingDirectoryAccess` was supplied (the regression the owner
+    // reported: the control appeared below the composer instead of next to "+").
+    it('places the trigger in the composer, not below it, when access is supplied with placement="composer"', () => {
+      const access = {
+        pickWorkingDirectory: vi.fn(async () => '/Users/test/selected'),
+        recentDirectories: vi.fn(async () => []),
+        directoryExists: vi.fn(async () => true),
+      };
+      render(
+        <ChatPane
+          transport={createFakeChatTransport()}
+          agents={agents}
+          initialWorkingDirectory="/Users/test/current"
+          workingDirectoryAccess={access}
+          workingDirectoryControlPlacement="composer"
+        />,
+      );
+
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+        'Working directory: /Users/test/current',
+      );
+      expect(screen.queryByTestId('working-dir-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByText('Select working directory')).not.toBeInTheDocument();
+    });
+
+    it('clicking the composer trigger in placement="composer" calls the native picker directly, with no popover', async () => {
+      const access = {
+        pickWorkingDirectory: vi.fn(async () => '/Users/test/selected'),
+        recentDirectories: vi.fn(async () => []),
+        directoryExists: vi.fn(async () => true),
+      };
+      render(
+        <ChatPane
+          transport={createFakeChatTransport()}
+          agents={agents}
+          initialWorkingDirectory="/Users/test/current"
+          workingDirectoryAccess={access}
+          workingDirectoryControlPlacement="composer"
+        />,
+      );
+
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+
+      expect(access.pickWorkingDirectory).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('composer-workdir-panel')).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+          'Working directory: /Users/test/selected',
+        );
+      });
     });
   });
 

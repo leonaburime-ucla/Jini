@@ -117,9 +117,65 @@ function ChatPaneSuggestionsRow({ suggestions, onSelect, t }: ChatPaneSuggestion
   );
 }
 
+/**
+ * The `unavailable` banner's copy and, where reachable, its actual fix — distinguishing three
+ * CLI-less states so a pointer at BYOK is never shown as an option that would not actually help:
+ *
+ * - `executionMode === 'local'` with BYOK available: switching mode is a real fix. When the host
+ *   wired `onExecutionModeChange` (the same callback the runtime picker's own mode buttons already
+ *   call — see `AgentRuntimePicker.tsx`), this renders as a button that performs the switch
+ *   directly rather than prose telling the operator to go hunting for the control themselves. A
+ *   host that reports `apiModeAvailable` without wiring the callback still gets an honest, if
+ *   inert, pointer as plain copy.
+ * - `executionMode === 'local'` with BYOK NOT available: switching would not help — offering it
+ *   anyway would be a lie — so this falls back to the original, unconditional message.
+ * - `executionMode === 'api'` already: the operator is already on the one path that could work,
+ *   so a "switch to BYOK" pointer would be nonsensical here; whatever is still missing (e.g. no
+ *   model chosen) is `RuntimeByokDetails`' own job to explain inside the runtime picker, not this
+ *   banner's.
+ */
+function ChatPaneNoUsableCliMessage({
+  executionMode,
+  apiModeAvailable,
+  onExecutionModeChange,
+  t,
+}: {
+  executionMode: 'local' | 'api';
+  apiModeAvailable: boolean;
+  onExecutionModeChange: ((mode: 'local' | 'api') => void) | undefined;
+  t: (key: string) => string;
+}): ReactNode {
+  const byokIsARealFix = executionMode === 'local' && apiModeAvailable;
+  if (!byokIsARealFix) {
+    return <div className="jini-chat-pane__error" role="alert">{t('No usable CLI is selected.')}</div>;
+  }
+  if (!onExecutionModeChange) {
+    return (
+      <div className="jini-chat-pane__error" role="alert">
+        {t('No usable CLI is selected — switch to BYOK to use your own API key.')}
+      </div>
+    );
+  }
+  return (
+    <div className="jini-chat-pane__error" role="alert">
+      {t('No usable CLI is selected.')}{' '}
+      <button
+        type="button"
+        className="jini-chat-pane__error-action"
+        onClick={() => onExecutionModeChange('api')}
+      >
+        {t('Switch to BYOK')}
+      </button>
+    </div>
+  );
+}
+
 interface ChatPaneStatusMessagesProps {
   unavailable: boolean;
   scanningAgents: boolean;
+  executionMode: 'local' | 'api';
+  apiModeAvailable: boolean;
+  onExecutionModeChange: ((mode: 'local' | 'api') => void) | undefined;
   conversationError: Error | null;
   attachmentError: Error | null;
   dropReadError: string | null;
@@ -135,6 +191,9 @@ interface ChatPaneStatusMessagesProps {
 function ChatPaneStatusMessages({
   unavailable,
   scanningAgents,
+  executionMode,
+  apiModeAvailable,
+  onExecutionModeChange,
   conversationError,
   attachmentError,
   dropReadError,
@@ -156,7 +215,12 @@ function ChatPaneStatusMessages({
           {t('Loading available CLIs')}
         </div>
       ) : unavailable ? (
-        <div className="jini-chat-pane__error" role="alert">{t('No usable CLI is selected.')}</div>
+        <ChatPaneNoUsableCliMessage
+          executionMode={executionMode}
+          apiModeAvailable={apiModeAvailable}
+          onExecutionModeChange={onExecutionModeChange}
+          t={t}
+        />
       ) : null}
       {conversationError ? (
         <div className="jini-chat-pane__error" role="alert">{conversationError.message}</div>
@@ -190,16 +254,18 @@ function ChatPaneStatusMessages({
 
 interface ChatPaneWorkingDirectoryBlockProps {
   workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined;
+  workingDirectoryControlPlacement: 'below' | 'composer';
   pane: UseChatPaneResult;
   t: (key: string) => string;
 }
 
 function ChatPaneWorkingDirectoryBlock({
   workingDirectoryAccess,
+  workingDirectoryControlPlacement,
   pane,
   t,
 }: ChatPaneWorkingDirectoryBlockProps): ReactNode {
-  if (workingDirectoryAccess) {
+  if (workingDirectoryAccess && workingDirectoryControlPlacement === 'below') {
     return (
       <div className="jini-chat-pane__workdir">
         <WorkingDirPicker
@@ -216,14 +282,16 @@ function ChatPaneWorkingDirectoryBlock({
       </div>
     );
   }
-  if (pane.workingDirectory) {
-    return (
-      <div className="jini-chat-pane__workdir">
-        <strong>{t('Working directory')}</strong>
-        <code>{pane.workingDirectory}</code>
-      </div>
-    );
-  }
+  // Two cases render nothing here, for different reasons:
+  // - No native `workingDirectoryAccess`: the static text line this replaced is gone entirely —
+  //   see `ChatPaneComposerArea` below, which threads `pane.workingDirectory` and
+  //   `pane.selectRecentDirectory` into `Composer`'s own folder-icon (popover) trigger instead.
+  // - `workingDirectoryAccess` present but `workingDirectoryControlPlacement === 'composer'`: the
+  //   host asked for the control next to "+" instead — `resolveComposerWorkingDirectory` wires
+  //   `Composer`'s trigger straight to `pane.pickWorkingDirectory` in that case, so rendering this
+  //   block too would put up a second, competing control below the composer.
+  // Either way, the trigger this defers to already covers both "nothing set yet" and "a value is
+  // set", so this block has nothing left to render.
   return null;
 }
 
@@ -254,6 +322,47 @@ function resolveComposerAttachmentPicker(
   };
 }
 
+/**
+ * Resolves which of `Composer`'s two mutually-exclusive working-directory props (if either) this
+ * render should supply, mirroring `ChatPaneWorkingDirectoryBlock`'s own three-way branch above so
+ * the two never disagree about which control owns the composer's folder-icon slot:
+ *
+ * - No `workingDirectoryAccess`: the composer's lightweight text-input popover, via
+ *   `onChangeWorkingDirectory`. `pane.selectRecentDirectory` is reused as the plain setter here
+ *   rather than inventing one — `useChatPaneWorkingDirectory`'s own doc confirms it already writes
+ *   the value directly (no native validation) whenever `access` is absent, which is exactly this
+ *   case.
+ * - `workingDirectoryAccess` present and `workingDirectoryControlPlacement === 'composer'`: the
+ *   SAME folder-icon trigger, but wired to `onPickWorkingDirectory` instead — clicking it invokes
+ *   the native OS dialog (`pane.pickWorkingDirectory`) directly, with no popover in between.
+ * - `workingDirectoryAccess` present and placement is (default) `'below'`: neither prop — the
+ *   composer renders no folder icon at all, and `ChatPaneWorkingDirectoryBlock` renders the richer
+ *   `WorkingDirPicker` below instead, unchanged from every host's prior behavior.
+ */
+function resolveComposerWorkingDirectory(
+  workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined,
+  workingDirectoryControlPlacement: 'below' | 'composer',
+  pane: UseChatPaneResult,
+): {
+  workingDirectory?: string | null;
+  onChangeWorkingDirectory?: (workingDirectory: string) => void;
+  onPickWorkingDirectory?: () => void;
+} {
+  if (!workingDirectoryAccess) {
+    return {
+      workingDirectory: pane.workingDirectory,
+      onChangeWorkingDirectory: (directory: string) => void pane.selectRecentDirectory(directory),
+    };
+  }
+  if (workingDirectoryControlPlacement === 'composer') {
+    return {
+      workingDirectory: pane.workingDirectory,
+      onPickWorkingDirectory: () => void pane.pickWorkingDirectory(),
+    };
+  }
+  return {};
+}
+
 interface ChatPaneComposerAreaProps {
   fileDrop: UseChatPaneFileDropResult;
   uploadAttachments: ChatPaneProps['uploadAttachments'];
@@ -264,6 +373,7 @@ interface ChatPaneComposerAreaProps {
   slots: ComposerSlots;
   attachmentAccept: ChatPaneProps['attachmentAccept'];
   workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined;
+  workingDirectoryControlPlacement: 'below' | 'composer';
   t: (key: string) => string;
 }
 
@@ -286,6 +396,7 @@ function ChatPaneComposerArea({
   slots,
   attachmentAccept,
   workingDirectoryAccess,
+  workingDirectoryControlPlacement,
   t,
 }: ChatPaneComposerAreaProps): ReactNode {
   return (
@@ -314,8 +425,14 @@ function ChatPaneComposerArea({
         {...definedProps({ placeholder })}
         slots={slots}
         {...resolveComposerAttachmentPicker(uploadAttachments, pane, attachmentAccept)}
+        {...resolveComposerWorkingDirectory(workingDirectoryAccess, workingDirectoryControlPlacement, pane)}
       />
-      <ChatPaneWorkingDirectoryBlock workingDirectoryAccess={workingDirectoryAccess} pane={pane} t={t} />
+      <ChatPaneWorkingDirectoryBlock
+        workingDirectoryAccess={workingDirectoryAccess}
+        workingDirectoryControlPlacement={workingDirectoryControlPlacement}
+        pane={pane}
+        t={t}
+      />
     </div>
   );
 }
@@ -359,6 +476,7 @@ export function ChatPane({
   initialWorkingDirectory,
   onChangeWorkingDirectory,
   workingDirectoryAccess,
+  workingDirectoryControlPlacement = 'below',
   projectFileNames,
   uploadAttachments,
   attachmentAccept,
@@ -495,6 +613,9 @@ export function ChatPane({
           <ChatPaneStatusMessages
             unavailable={unavailable}
             scanningAgents={runtimeView.scanningAgents}
+            executionMode={executionMode}
+            apiModeAvailable={apiModeAvailable}
+            onExecutionModeChange={onExecutionModeChange}
             conversationError={pane.conversation.error}
             attachmentError={pane.attachmentError}
             dropReadError={fileDrop.dropReadError}
@@ -514,6 +635,7 @@ export function ChatPane({
             slots={slots}
             attachmentAccept={attachmentAccept}
             workingDirectoryAccess={workingDirectoryAccess}
+            workingDirectoryControlPlacement={workingDirectoryControlPlacement}
             t={t}
           />
         </div>

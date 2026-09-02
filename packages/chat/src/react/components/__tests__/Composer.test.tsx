@@ -1,6 +1,6 @@
 import { act, fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Composer } from '../Composer.js';
 import { useComposer } from '../../hooks/useComposer.js';
 import type { ComposerDiscoveryGroup, ComposerSlots } from '../../slots.js';
@@ -863,54 +863,6 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  describe('interrupt hint', () => {
-    // The discoverability gap this hint exists to close: `onInterrupt` fires from exactly one path
-    // (handleKeyDown's metaKey/ctrlKey branch above) and, before this, "Cmd/Ctrl+Enter" appeared
-    // nowhere a user could see it — only in code comments. Shown only while streaming: a permanent
-    // shortcut legend would be clutter the other ~95% of the time nothing is running to interrupt.
-    const originalPlatform = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
-
-    afterEach(() => {
-      if (originalPlatform) Object.defineProperty(window.navigator, 'platform', originalPlatform);
-    });
-
-    function setPlatform(platform: string) {
-      Object.defineProperty(window.navigator, 'platform', { value: platform, configurable: true });
-    }
-
-    it('is absent when nothing is streaming', () => {
-      const { result } = renderHook(() => useComposer());
-      render(<Composer composer={result.current} onSend={() => {}} onInterrupt={() => {}} />);
-      expect(screen.queryByText(/interrupts it and sends now/)).not.toBeInTheDocument();
-    });
-
-    it('is absent while streaming if the host never wired an interrupt handler — nothing to hint at', () => {
-      const { result } = renderHook(() => useComposer());
-      render(<Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} />);
-      expect(screen.queryByText(/interrupts it and sends now/)).not.toBeInTheDocument();
-    });
-
-    it('states both halves — Enter queues, the modifier interrupts and sends now — while streaming with an interrupt handler wired', () => {
-      setPlatform('Win32');
-      const { result } = renderHook(() => useComposer());
-      render(
-        <Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} onInterrupt={() => {}} />,
-      );
-      const hint = screen.getByText(/Enter queues this after the run finishes/);
-      expect(hint).toHaveTextContent('Enter queues this after the run finishes');
-      expect(hint).toHaveTextContent('Ctrl+Enter interrupts it and sends now');
-    });
-
-    it('labels the modifier ⌘ on a Mac platform, not Ctrl', () => {
-      setPlatform('MacIntel');
-      const { result } = renderHook(() => useComposer());
-      render(
-        <Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} onInterrupt={() => {}} />,
-      );
-      expect(screen.getByText(/⌘\+Enter interrupts it and sends now/)).toBeInTheDocument();
-    });
-  });
-
   it('a host with no onInterrupt keeps the original Enter behavior on Cmd/Ctrl+Enter — falls through to onSend, still gated by sendDisabled', async () => {
     const onSend = vi.fn();
     const { result } = renderHook(() => useComposer());
@@ -959,4 +911,147 @@ describe('Composer', () => {
       expect(screen.getByTestId('composer-attachment-input')).toHaveAttribute('accept', 'image/*');
     },
   );
+
+  it('no longer renders any streaming interrupt hint — the queueing behavior itself is unchanged (see the Cmd/Ctrl+Enter tests above)', () => {
+    const { result } = renderHook(() => useComposer());
+    render(
+      <Composer composer={result.current} onSend={() => {}} running onCancel={() => {}} onInterrupt={() => {}} />,
+    );
+    expect(screen.queryByText(/queues this after the run finishes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/interrupts it and sends now/)).not.toBeInTheDocument();
+  });
+
+  describe('working directory trigger', () => {
+    it('is absent when the host has not wired onChangeWorkingDirectory', () => {
+      const { result } = renderHook(() => useComposer());
+      render(<Composer composer={result.current} onSend={() => {}} workingDirectory="/repo" />);
+      expect(screen.queryByTestId('composer-workdir')).not.toBeInTheDocument();
+    });
+
+    it('labels the trigger with the current directory, or a fallback when none is set', () => {
+      const { result } = renderHook(() => useComposer());
+      const { rerender } = render(
+        <Composer composer={result.current} onSend={() => {}} onChangeWorkingDirectory={() => {}} />,
+      );
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName('Set working directory');
+
+      rerender(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/Users/test/project"
+          onChangeWorkingDirectory={() => {}}
+        />,
+      );
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+        'Working directory: /Users/test/project',
+      );
+    });
+
+    it('confirming a typed path calls onChangeWorkingDirectory and closes the popover', async () => {
+      const onChangeWorkingDirectory = vi.fn();
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/repo"
+          onChangeWorkingDirectory={onChangeWorkingDirectory}
+        />,
+      );
+
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      const input = screen.getByTestId('composer-workdir-input');
+      expect(input).toHaveValue('/repo');
+      await userEvent.clear(input);
+      await userEvent.type(input, '/repo/subdir');
+      await userEvent.click(screen.getByTestId('composer-workdir-confirm'));
+
+      expect(onChangeWorkingDirectory).toHaveBeenCalledTimes(1);
+      expect(onChangeWorkingDirectory).toHaveBeenCalledWith('/repo/subdir');
+      expect(screen.queryByTestId('composer-workdir-panel')).not.toBeInTheDocument();
+    });
+
+    it('confirming via Enter has the same effect as clicking the confirm button', async () => {
+      const onChangeWorkingDirectory = vi.fn();
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer composer={result.current} onSend={() => {}} onChangeWorkingDirectory={onChangeWorkingDirectory} />,
+      );
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      await userEvent.type(screen.getByTestId('composer-workdir-input'), '/new/dir{Enter}');
+      expect(onChangeWorkingDirectory).toHaveBeenCalledTimes(1);
+      expect(onChangeWorkingDirectory).toHaveBeenCalledWith('/new/dir');
+    });
+
+    it('Escape closes the popover without calling onChangeWorkingDirectory', async () => {
+      const onChangeWorkingDirectory = vi.fn();
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/repo"
+          onChangeWorkingDirectory={onChangeWorkingDirectory}
+        />,
+      );
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      await userEvent.type(screen.getByTestId('composer-workdir-input'), '{Escape}');
+      expect(screen.queryByTestId('composer-workdir-panel')).not.toBeInTheDocument();
+      expect(onChangeWorkingDirectory).not.toHaveBeenCalled();
+    });
+
+    it('confirming a blank draft closes without calling the host — there is no clear affordance here', async () => {
+      const onChangeWorkingDirectory = vi.fn();
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/repo"
+          onChangeWorkingDirectory={onChangeWorkingDirectory}
+        />,
+      );
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      await userEvent.clear(screen.getByTestId('composer-workdir-input'));
+      await userEvent.click(screen.getByTestId('composer-workdir-confirm'));
+      expect(onChangeWorkingDirectory).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('composer-workdir-panel')).not.toBeInTheDocument();
+    });
+
+    // Regression: when a host has a native `ChatPaneWorkingDirectoryAccess`, `ChatPane` wires this
+    // trigger to `onPickWorkingDirectory` instead of `onChangeWorkingDirectory` — clicking must
+    // invoke the native dialog directly, never open the in-page text popover.
+    it('renders the trigger for onPickWorkingDirectory alone, with no onChangeWorkingDirectory', () => {
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/Users/test/project"
+          onPickWorkingDirectory={() => {}}
+        />,
+      );
+      expect(screen.getByTestId('composer-workdir-trigger')).toHaveAccessibleName(
+        'Working directory: /Users/test/project',
+      );
+    });
+
+    it('clicking the trigger calls onPickWorkingDirectory directly, never opening the text popover', async () => {
+      const onPickWorkingDirectory = vi.fn();
+      const { result } = renderHook(() => useComposer());
+      render(
+        <Composer
+          composer={result.current}
+          onSend={() => {}}
+          workingDirectory="/repo"
+          onPickWorkingDirectory={onPickWorkingDirectory}
+        />,
+      );
+      await userEvent.click(screen.getByTestId('composer-workdir-trigger'));
+      expect(onPickWorkingDirectory).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('composer-workdir-panel')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('composer-workdir-input')).not.toBeInTheDocument();
+    });
+  });
 });

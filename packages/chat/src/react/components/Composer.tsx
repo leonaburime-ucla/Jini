@@ -21,7 +21,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from 'react';
-import { isMacPlatform, RemixIcon } from '@jini-ai/ui';
+import { RemixIcon } from '@jini-ai/ui';
 import { useT } from '../hooks/context.js';
 import { AttachmentTray } from './AttachmentTray.js';
 import type { UseComposerResult } from '../hooks/useComposer.js';
@@ -67,6 +67,35 @@ export interface ComposerProps {
    * exactly its previous behavior.
    */
   onInterrupt?: () => void;
+  /**
+   * Current working directory, or null/undefined when none is set yet. Paired with
+   * `onChangeWorkingDirectory` — see that prop's own doc for why the trigger's presence is gated
+   * on the handler rather than on this value.
+   */
+  workingDirectory?: string | null;
+  /**
+   * Confirms a directory typed into the working-directory popover. Its presence (not
+   * `workingDirectory`'s) is what renders the folder-icon trigger in "popover" mode, next to the
+   * attach/discovery button — for a host with no native picker to offer instead. A host that has
+   * `ChatPaneWorkingDirectoryAccess` and wants the SAME trigger wired to the native dialog instead
+   * passes `onPickWorkingDirectory` (below) in place of this prop, never both. A host relying on
+   * `ChatPane`'s richer below-composer `WorkingDirPicker` passes neither, so it gets no second,
+   * competing control here. This is the same working-directory value
+   * `ChatPane`/`useChatPaneWorkingDirectory` already own — threaded one level deeper into this
+   * presentational component, not a parallel concept.
+   */
+  onChangeWorkingDirectory?: (workingDirectory: string) => void;
+  /**
+   * Triggers the host's native OS directory dialog directly. Supplied instead of
+   * `onChangeWorkingDirectory` (never alongside it) when the host has a
+   * `ChatPaneWorkingDirectoryAccess` implementation and asked `ChatPane` to place the
+   * working-directory control in the composer rather than below it
+   * (`workingDirectoryControlPlacement="composer"`). Renders the exact same folder-icon trigger as
+   * the popover mode — byte-identical `jini-composer-attach` styling, hit area, hover, and focus —
+   * but clicking it calls this directly instead of opening the in-page text-input popover: there is
+   * nothing to type, the native dialog IS the picker.
+   */
+  onPickWorkingDirectory?: () => void;
 }
 
 function reportComposerHostEffectFailure(effectName: string, error: unknown) {
@@ -115,27 +144,6 @@ function runComposerHostEffect(
 }
 
 /**
- * The two-halves keyboard hint shown beneath the composer only while a run is streaming (see this
- * component's own JSX below): Enter still queues the draft behind that run, Cmd/Ctrl+Enter instead
- * cancels it and sends immediately. Stated as a pair deliberately — a user who only learns the
- * second half would start interrupting runs they actually meant to queue behind. `onInterrupt`
- * (`Composer.tsx:65`'s own doc) was previously discoverable only by already knowing the convention
- * from another app; this is the one product-visible place that convention now gets stated, with
- * `⌘`/`Ctrl` resolved via `@jini-ai/ui`'s existing `isMacPlatform` (the same helper
- * `packages/ui/src/features/integrations/rules.ts` already uses for its own shortcut labels) rather
- * than inventing a second platform-detection layer here.
- * @param t - The active translator; every user-visible word routes through it, matching every
- * other string in this component.
- * @returns The fully interpolated hint sentence.
- * @complexity O(1).
- */
-function interruptHintText(t: (key: string, vars?: Record<string, string | number>) => string): string {
-  return t('Enter queues this after the run finishes · {modifier}+Enter interrupts it and sends now', {
-    modifier: isMacPlatform() ? '⌘' : 'Ctrl',
-  });
-}
-
-/**
  * Renders the controlled message composer and optional attachment picker.
  *
  * @complexity Time/space: O(n) in rendered attachments and supplied menu items.
@@ -152,6 +160,9 @@ export function Composer({
   running = false,
   onCancel,
   onInterrupt,
+  workingDirectory,
+  onChangeWorkingDirectory,
+  onPickWorkingDirectory,
 }: ComposerProps) {
   const t = useT();
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -172,6 +183,9 @@ export function Composer({
   const [dismissedSlashDraft, setDismissedSlashDraft] = useState<string | null>(null);
   const [discoveryMenuPosition, setDiscoveryMenuPosition] = useState<CSSProperties>();
   const [slashMenuPosition, setSlashMenuPosition] = useState<CSSProperties>();
+  const [workdirOpen, setWorkdirOpen] = useState(false);
+  const [workdirDraft, setWorkdirDraft] = useState('');
+  const [workdirPosition, setWorkdirPosition] = useState<CSSProperties>();
   const resolvedPlaceholder = placeholder ?? t('Send a message…');
   const discoveryGroups = slots?.discoveryGroups ?? [];
   const hasDiscoveryItems = discoveryGroups.some((group) => group.items.length > 0);
@@ -206,7 +220,7 @@ export function Composer({
    * component doesn't otherwise need direct handles to.
    */
   useEffect(() => {
-    if (!discoveryMenuOpen && !slashOpen) return;
+    if (!discoveryMenuOpen && !slashOpen && !workdirOpen) return;
     const composerRoot = textareaRef.current?.closest('.jini-composer');
     if (!composerRoot) return;
 
@@ -222,11 +236,15 @@ export function Composer({
         const insideTextarea = textareaRef.current?.contains(target) ?? false;
         if (!insideTextarea && !menu?.contains(target)) setDismissedSlashDraft(composer.draft);
       }
+      if (workdirOpen) {
+        const trigger = composerRoot!.querySelector('.jini-composer-workdir');
+        if (!trigger?.contains(target)) setWorkdirOpen(false);
+      }
     }
 
     document.addEventListener('mousedown', handleOutsideMouseDown);
     return () => document.removeEventListener('mousedown', handleOutsideMouseDown);
-  }, [discoveryMenuOpen, slashOpen, composer.draft]);
+  }, [discoveryMenuOpen, slashOpen, workdirOpen, composer.draft]);
 
   /**
    * Anchors the "+" menu and slash palette to `.jini-composer`'s live on-screen rect via
@@ -239,7 +257,7 @@ export function Composer({
    * composer's on-screen position can change under an open popover without it ever unmounting.
    */
   useLayoutEffect(() => {
-    if (!discoveryMenuOpen && !slashOpen) return undefined;
+    if (!discoveryMenuOpen && !slashOpen && !workdirOpen) return undefined;
     const composerRoot = textareaRef.current?.closest('.jini-composer');
     if (!composerRoot) return undefined;
 
@@ -247,6 +265,10 @@ export function Composer({
       const rect = composerRoot!.getBoundingClientRect();
       if (discoveryMenuOpen) setDiscoveryMenuPosition(composerDiscoveryMenuPosition(rect));
       if (slashOpen) setSlashMenuPosition(composerSlashMenuPosition(rect));
+      // Shares the discovery menu's own anchor math (same left inset off `.jini-composer`) rather
+      // than measuring the working-dir button's own rect — one less measurement to keep in sync,
+      // and the two popovers already never open at once (each is gated on its own trigger).
+      if (workdirOpen) setWorkdirPosition(composerDiscoveryMenuPosition(rect));
     }
 
     update();
@@ -256,7 +278,7 @@ export function Composer({
       window.removeEventListener('scroll', update, true);
       window.removeEventListener('resize', update);
     };
-  }, [discoveryMenuOpen, slashOpen]);
+  }, [discoveryMenuOpen, slashOpen, workdirOpen]);
 
   /**
    * `expectedDraft` is the draft as the user last saw it at the moment of selection — what the
@@ -332,6 +354,23 @@ export function Composer({
     restoreComposerFocus();
   }
 
+  /** Opens the working-directory popover, seeding its draft from the live value so a reopen never
+   *  shows a stale edit from a previously-dismissed attempt. */
+  function toggleWorkdir() {
+    if (!workdirOpen) setWorkdirDraft(workingDirectory ?? '');
+    setWorkdirOpen((open) => !open);
+  }
+
+  /** Confirms the popover's draft. Blank input is treated as "no change" (closes without calling
+   *  the host) rather than clearing the directory — this lightweight control has no clear
+   *  affordance of its own; `onChangeWorkingDirectory`'s own doc points to the native picker
+   *  (`ChatPaneWorkingDirectoryAccess`) that does support clearing. */
+  function confirmWorkdir() {
+    const trimmed = workdirDraft.trim();
+    if (trimmed) onChangeWorkingDirectory?.(trimmed);
+    setWorkdirOpen(false);
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing) return;
     if (slashOpen) {
@@ -389,7 +428,6 @@ export function Composer({
   }
 
   return (
-    <>
     <div className="jini-composer">
       {slots?.leadingAccessories ? <div className="jini-composer-leading">{slots.leadingAccessories}</div> : null}
       <AttachmentTray attachments={composer.attachments} onRemove={composer.removeAttachment} />
@@ -470,6 +508,63 @@ export function Composer({
             t={t}
           />
         ) : null}
+        {onChangeWorkingDirectory || onPickWorkingDirectory ? (
+          <div className="jini-composer-workdir" data-testid="composer-workdir">
+            <button
+              type="button"
+              className="jini-composer-attach"
+              data-testid="composer-workdir-trigger"
+              disabled={disabled}
+              onClick={onPickWorkingDirectory ? () => onPickWorkingDirectory() : toggleWorkdir}
+              {...(onPickWorkingDirectory ? {} : { 'aria-haspopup': 'dialog' as const, 'aria-expanded': workdirOpen })}
+              title={workingDirectory ?? t('Set working directory')}
+              aria-label={
+                workingDirectory
+                  ? t('Working directory: {dir}', { dir: workingDirectory })
+                  : t('Set working directory')
+              }
+            >
+              <RemixIcon name="folder-line" size={20} />
+            </button>
+            {!onPickWorkingDirectory && workdirOpen ? (
+              <div
+                className="jini-composer-workdir-panel"
+                data-testid="composer-workdir-panel"
+                role="dialog"
+                aria-label={t('Working directory')}
+                style={workdirPosition}
+              >
+                <input
+                  type="text"
+                  className="jini-composer-workdir-input"
+                  data-testid="composer-workdir-input"
+                  value={workdirDraft}
+                  onChange={(e) => setWorkdirDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      confirmWorkdir();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setWorkdirOpen(false);
+                    }
+                  }}
+                  placeholder={t('Working directory path')}
+                  aria-label={t('Working directory path')}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="jini-composer-workdir-confirm"
+                  data-testid="composer-workdir-confirm"
+                  onClick={confirmWorkdir}
+                >
+                  {t('Set')}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {slots?.footerAccessories ? (
           <div className="jini-composer-footer-accessories">{slots.footerAccessories}</div>
         ) : null}
@@ -500,13 +595,5 @@ export function Composer({
         )}
       </div>
     </div>
-    {/* Only while a run is actually streaming, and only when a host wired an interrupt handler at
-        all (matches onInterrupt's own doc: "without it the modifier falls through to the ordinary
-        Enter path" — a host that never opted in gets no hint about a capability it doesn't have).
-        The rest of the time this is clutter, not help — see interruptHintText's own doc. */}
-    {running && onInterrupt ? (
-      <p className="jini-composer-interrupt-hint">{interruptHintText(t)}</p>
-    ) : null}
-    </>
   );
 }
