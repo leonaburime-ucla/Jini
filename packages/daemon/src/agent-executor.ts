@@ -1292,30 +1292,59 @@ export function buildCodexMcpServerToml(entry: McpJsonServerEntry): string {
 }
 
 /**
- * Builds the full `config.toml` a run's scratch `CODEX_HOME` gets: the real Codex home's own
- * config, verbatim, with this run's `[mcp_servers.jini]` table appended.
+ * Removes any pre-existing `[mcp_servers.{@link JINI_MCP_SERVER_KEY}]` table — and its
+ * `[mcp_servers.{@link JINI_MCP_SERVER_KEY}.*]` subtables (e.g. `.env`) — from a real Codex
+ * `config.toml`'s raw text, so {@link buildCodexHomeConfigToml} can append this run's own table
+ * without producing the duplicate TOML key Codex's parser rejects at startup.
  *
- * **Append-only by design, not a parse-and-merge.** `mergeMcpJsonContent`/`mergeEnvContentMcpConfig`
- * above can safely parse-merge-reserialize because their formats have a JS-native parser
- * (`JSON.parse`); this driver has no TOML parser in its dependency graph (see
- * `buildCodexMcpServerToml`'s doc), and every other setting a real Codex install carries — model
- * choice, sandbox policy, the trusted-project list, the operator's own other MCP servers — must
- * survive a spawn byte-for-byte. Appending preserves all of it; the one failure mode this trades
- * away is a PRE-EXISTING `[mcp_servers.jini]` table in the operator's own config, which would
- * produce a duplicate TOML key Codex rejects at startup. Accepted as vanishingly unlikely — `jini`
- * is this integration's own reserved server name (see {@link JINI_MCP_SERVER_KEY}), never suggested
- * to an operator for their own config — rather than solved with a full TOML parser for one
- * collision case.
+ * Line-oriented, not a real TOML parser (matching {@link buildCodexMcpServerToml}'s own
+ * no-TOML-dependency constraint): a table header is any line that is, after trimming, exactly
+ * `[...]`. Once such a header's key matches the jini table or one of its subtables, every following
+ * line is dropped until the next table header (of any name) or EOF. Every other table, key, and
+ * blank line is passed through untouched.
+ * @param existingRaw - The real Codex home's `config.toml` content, already known to be defined
+ * (callers pass `''` for a missing file).
+ * @returns `existingRaw` with any jini table/subtable removed.
+ * @complexity O(n) in the number of lines.
+ */
+function stripExistingJiniMcpServerTable(existingRaw: string): string {
+  const jiniTableKey = `mcp_servers.${JINI_MCP_SERVER_KEY}`;
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of existingRaw.split('\n')) {
+    const header = /^\s*\[([^[\]]+)\]\s*$/.exec(line);
+    if (header) {
+      const key = (header[1] ?? '').trim();
+      skipping = key === jiniTableKey || key.startsWith(`${jiniTableKey}.`);
+      if (skipping) continue;
+    }
+    if (!skipping) kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+/**
+ * Builds the full `config.toml` a run's scratch `CODEX_HOME` gets: the real Codex home's own
+ * config, with any pre-existing `[mcp_servers.jini]` table removed (see
+ * {@link stripExistingJiniMcpServerTable}), then this run's own table appended.
+ *
+ * **Append-only by design, not a parse-and-merge, for everything but the jini table itself.**
+ * `mergeMcpJsonContent`/`mergeEnvContentMcpConfig` above can safely parse-merge-reserialize because
+ * their formats have a JS-native parser (`JSON.parse`); this driver has no general TOML parser in
+ * its dependency graph (see `buildCodexMcpServerToml`'s doc), and every other setting a real Codex
+ * install carries — model choice, sandbox policy, the trusted-project list, the operator's own
+ * other MCP servers — must survive a spawn byte-for-byte. Only the one table this driver itself
+ * owns (`jini` is this integration's own reserved server name — see {@link JINI_MCP_SERVER_KEY}) is
+ * ever removed, via the narrow line-oriented scan above, never a full TOML parse.
  * @param existingRaw - The real Codex home's `config.toml` content, or `undefined` when it does not
  * exist (a fresh Codex install — degrades to "start from just this run's block", matching
  * {@link mergeMcpJsonContent}'s own "missing file" handling).
  * @param entry - The shared bridge entry.
  * @returns The full text to write to the scratch `CODEX_HOME`'s `config.toml`.
  * @complexity O(n) in the existing config's length.
- * @overallScore 100/100
  */
 export function buildCodexHomeConfigToml(existingRaw: string | undefined, entry: McpJsonServerEntry): string {
-  const base = existingRaw ?? '';
+  const base = stripExistingJiniMcpServerTable(existingRaw ?? '');
   const separator = base.length === 0 ? '' : base.endsWith('\n') ? '\n' : '\n\n';
   return `${base}${separator}${buildCodexMcpServerToml(entry)}`;
 }
