@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 
+import type { DataTableSortDirection, DataTableSortState } from '../../core/data-table/types.js';
+
 /**
  * @file The admin list table.
  *
@@ -65,14 +67,9 @@ import type { ReactNode } from 'react';
  * out to `document.body` rather than positioning inside this box.
  */
 
-export type DataTableSortDirection = 'asc' | 'desc';
-
-/** Controlled sort state: the active column's `key` plus its direction. See `sort`/`onSortChange`
- *  on {@link DataTableProps} — `DataTable` never holds this itself. */
-export interface DataTableSortState {
-  column: string;
-  direction: DataTableSortDirection;
-}
+// `DataTableSortDirection`/`DataTableSortState` are defined in `core/data-table/types.ts` (plain
+// data, no React) and re-exported here so existing consumers of this file keep working unchanged.
+export type { DataTableSortDirection, DataTableSortState };
 
 /** Enables click-to-sort on one column (`DataTableColumn.sort`). Everything a host needs to decide
  *  is here; `DataTable` only wires the click, renders the caret, and sets `aria-sort`. */
