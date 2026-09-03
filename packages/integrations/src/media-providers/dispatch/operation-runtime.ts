@@ -267,35 +267,47 @@ export async function pollDueOperations(deps: OperationRuntimeDeps, params: Poll
       const at = now();
 
       if (row.deadlineAt <= at) {
-        await deps.store.update(row.id, {
-          status: 'unknown',
-          error: {
-            message: 'async operation passed its absolute deadline — vendor-side effect is undetermined',
-            code: 'DEADLINE_EXPIRED',
+        await deps.store.update(
+          row.id,
+          {
+            status: 'unknown',
+            error: {
+              message: 'async operation passed its absolute deadline — vendor-side effect is undetermined',
+              code: 'DEADLINE_EXPIRED',
+            },
           },
-        });
+          { leaseOwner: params.leaseOwner },
+        );
         unknown += 1;
         continue;
       }
 
       if (row.attempts >= row.maxAttempts) {
-        await deps.store.update(row.id, {
-          status: 'failed',
-          error: {
-            message: `async operation exhausted its ${row.maxAttempts} poll attempts without a terminal answer`,
-            code: 'ATTEMPTS_EXHAUSTED',
+        await deps.store.update(
+          row.id,
+          {
+            status: 'failed',
+            error: {
+              message: `async operation exhausted its ${row.maxAttempts} poll attempts without a terminal answer`,
+              code: 'ATTEMPTS_EXHAUSTED',
+            },
           },
-        });
+          { leaseOwner: params.leaseOwner },
+        );
         failed += 1;
         continue;
       }
 
       const adapter = params.adapters(row.providerId, row.routeKey);
       if (!adapter) {
-        await deps.store.update(row.id, {
-          status: 'failed',
-          error: { message: `no polling adapter registered for "${row.providerId}" / "${row.routeKey}"`, code: 'NO_ADAPTER' },
-        });
+        await deps.store.update(
+          row.id,
+          {
+            status: 'failed',
+            error: { message: `no polling adapter registered for "${row.providerId}" / "${row.routeKey}"`, code: 'NO_ADAPTER' },
+          },
+          { leaseOwner: params.leaseOwner },
+        );
         failed += 1;
         continue;
       }
@@ -306,37 +318,56 @@ export async function pollDueOperations(deps: OperationRuntimeDeps, params: Poll
       const resp = await performSigned(deps, request as UnsignedVendorRequest<unknown>, FETCH_TIMEOUT_MS.QUICK);
       const outcome = await adapter.parsePollResponse(resp, ctx, row.state ?? {});
 
+      // Every write below is fenced on the lease this tick claimed: if it expired and another
+      // worker has since reclaimed (or finished) the row, this write must not clobber that newer
+      // outcome — see `AsyncOperationUpdateOptions`.
       if (outcome.kind === 'complete') {
-        await deps.store.update(row.id, {
-          status: 'succeeded',
-          attempts: row.attempts + 1,
-          result: resultToPayload(outcome.result),
-        });
+        await deps.store.update(
+          row.id,
+          {
+            status: 'succeeded',
+            attempts: row.attempts + 1,
+            result: resultToPayload(outcome.result),
+          },
+          { leaseOwner: params.leaseOwner },
+        );
         completed += 1;
       } else if (outcome.kind === 'failed') {
-        await deps.store.update(row.id, {
-          status: 'failed',
-          attempts: row.attempts + 1,
-          error: { message: outcome.message, ...(outcome.code !== undefined ? { code: outcome.code } : {}) },
-        });
+        await deps.store.update(
+          row.id,
+          {
+            status: 'failed',
+            attempts: row.attempts + 1,
+            error: { message: outcome.message, ...(outcome.code !== undefined ? { code: outcome.code } : {}) },
+          },
+          { leaseOwner: params.leaseOwner },
+        );
         failed += 1;
       } else {
-        await deps.store.update(row.id, {
-          status: 'polling',
-          attempts: row.attempts + 1,
-          nextPollAt: at + (outcome.retryAfterMs ?? DEFAULT_POLL_INTERVAL_MS),
-        });
+        await deps.store.update(
+          row.id,
+          {
+            status: 'polling',
+            attempts: row.attempts + 1,
+            nextPollAt: at + (outcome.retryAfterMs ?? DEFAULT_POLL_INTERVAL_MS),
+          },
+          { leaseOwner: params.leaseOwner },
+        );
         pending += 1;
       }
     } catch (error) {
       // A transport failure is not a vendor verdict: keep the row pollable and let the attempt cap
       // or the deadline end it, rather than reporting a definitive failure we cannot support.
-      await deps.store.update(row.id, {
-        status: 'polling',
-        attempts: row.attempts + 1,
-        nextPollAt: now() + DEFAULT_POLL_INTERVAL_MS,
-        error: toOperationError(error),
-      });
+      await deps.store.update(
+        row.id,
+        {
+          status: 'polling',
+          attempts: row.attempts + 1,
+          nextPollAt: now() + DEFAULT_POLL_INTERVAL_MS,
+          error: toOperationError(error),
+        },
+        { leaseOwner: params.leaseOwner },
+      );
       pending += 1;
     } finally {
       await deps.store.releaseLease(row.id, params.leaseOwner);

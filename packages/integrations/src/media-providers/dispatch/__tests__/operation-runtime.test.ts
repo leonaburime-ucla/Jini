@@ -303,6 +303,35 @@ describe('pollDueOperations', () => {
     expect(row?.error?.code).toBe('ATTEMPTS_EXHAUSTED');
   });
 
+  it('does not let a stale worker clobber a newer owner that reclaimed and advanced the row mid-poll', async () => {
+    // Regression: `pollDueOperations`'s per-row `store.update()` calls carried no lease fence, so
+    // a worker whose lease expired mid-flight (a slow vendor round trip past `leaseMs`) could still
+    // overwrite whatever a worker that legitimately reclaimed the row had already written.
+    const store = createInMemoryAsyncOperationStore();
+    await seedPolling(store, 'op-1');
+
+    const fetchImpl = vi.fn(async () => {
+      // While worker A's poll request is "in flight", worker B reclaims the row (A's lease has
+      // since expired in wall-clock terms) and durably records a NEWER poll outcome, then
+      // releases its own lease — all before A's response ever comes back.
+      await store.claimDue({ now: Date.now() + 1000, leaseOwner: 'worker-B', leaseMs: 1000 });
+      await store.update('op-1', { status: 'polling', attempts: 7, nextPollAt: 99_999 }, { leaseOwner: 'worker-B' });
+      await store.releaseLease('op-1', 'worker-B');
+      return json({ status: 'pending' });
+    });
+
+    await pollDueOperations(
+      { store, signer, fetchImpl: fetchImpl as unknown as typeof fetch },
+      { adapters: () => fastAdapter(), resolveContext, leaseOwner: 'worker-A', leaseMs: 5 },
+    );
+
+    // Worker A's own write (attempts: 1, a fresh nextPollAt) must have been dropped as stale —
+    // B's newer state must survive untouched.
+    const row = await store.get('op-1');
+    expect(row?.attempts).toBe(7);
+    expect(row?.nextPollAt).toBe(99_999);
+  });
+
   it('marks an operation past its absolute deadline "unknown", never "failed"', async () => {
     const store = createInMemoryAsyncOperationStore();
     await seedPolling(store, 'op-1', { deadlineAt: Date.now() - 1 });

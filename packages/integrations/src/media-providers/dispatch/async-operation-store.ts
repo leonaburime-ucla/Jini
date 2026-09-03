@@ -131,6 +131,22 @@ export interface AsyncOperationPatch {
   readonly leaseExpiresAt?: number | null;
 }
 
+export interface AsyncOperationUpdateOptions {
+  /**
+   * Fences the write to a specific lease, the same way `releaseLease` fences its own write: the
+   * patch is applied only while the row's current `leaseOwner` still equals this value. Omit for
+   * writes that happen outside a lease (e.g. `startOperation`'s pre-claim persistence) — those
+   * apply unconditionally, as before.
+   *
+   * Without this, a worker whose lease expired and was reclaimed by another worker can still
+   * overwrite whatever that newer owner has since written (`update` took no ownership check at
+   * all), breaking the single-worker guarantee `claimDue` exists to provide. A mismatched fence is
+   * a no-op, not an error — the caller's write intent is stale, not wrong — and the row is
+   * returned unchanged.
+   */
+  readonly leaseOwner?: string;
+}
+
 export interface AsyncOperationClaimOptions {
   readonly now: number;
   readonly leaseOwner: string;
@@ -148,7 +164,12 @@ export interface AsyncOperationReconcileResult {
 export interface AsyncOperationStore {
   create(input: AsyncOperationCreateInput): Promise<AsyncOperationRecord>;
   get(id: string): Promise<AsyncOperationRecord | null>;
-  update(id: string, patch: AsyncOperationPatch): Promise<AsyncOperationRecord | null>;
+  /**
+   * Applies `patch`. Pass `options.leaseOwner` to fence the write to a lease the caller believes it
+   * holds — see `AsyncOperationUpdateOptions`. Omitted, the write applies unconditionally (the
+   * pre-lease case, e.g. `startOperation`'s initial persistence).
+   */
+  update(id: string, patch: AsyncOperationPatch, options?: AsyncOperationUpdateOptions): Promise<AsyncOperationRecord | null>;
   listByOwner(ownerRef: string): Promise<AsyncOperationRecord[]>;
   /** Atomically leases every due, unleased, non-terminal operation and returns the leased rows. */
   claimDue(options: AsyncOperationClaimOptions): Promise<AsyncOperationRecord[]>;
@@ -317,9 +338,14 @@ export function createInMemoryAsyncOperationStore(): AsyncOperationStore {
       return row ? cloneRecord(row) : null;
     },
 
-    async update(id: string, patch: AsyncOperationPatch): Promise<AsyncOperationRecord | null> {
+    async update(id: string, patch: AsyncOperationPatch, options?: AsyncOperationUpdateOptions): Promise<AsyncOperationRecord | null> {
       const existing = requireRow(id);
       if (!existing) return null;
+      // Fenced, like releaseLease: a caller writing against a lease it no longer holds gets a
+      // no-op, not an overwrite of whoever holds (or now holds none of) it.
+      if (options?.leaseOwner !== undefined && existing.leaseOwner !== options.leaseOwner) {
+        return cloneRecord(existing);
+      }
       if ('state' in patch) assertNoCredentialMaterial(patch.state);
 
       const status = patch.status ?? existing.status;

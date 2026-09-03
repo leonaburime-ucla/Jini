@@ -181,4 +181,33 @@ describe('createInMemoryAsyncOperationStore', () => {
     expect(result.deadlineExpired).toBe(1);
     expect((await store.get('expired'))?.status).toBe('unknown');
   });
+
+  it('fences update() on lease ownership — a stale worker cannot overwrite the row a newer owner already claimed', async () => {
+    // Regression: `update` previously took no ownership check at all (only `releaseLease` did),
+    // so a worker whose lease was reclaimed by another worker could still clobber whatever that
+    // newer owner had already written.
+    const store = createInMemoryAsyncOperationStore();
+    await store.create({ ...BASE, id: 'due', nextPollAt: 0 });
+    await store.claimDue({ now: 0, leaseOwner: 'worker-A', leaseMs: 10 });
+    await store.claimDue({ now: 100, leaseOwner: 'worker-B', leaseMs: 1000 });
+    await store.update('due', { status: 'polling', attempts: 7 }, { leaseOwner: 'worker-B' });
+
+    // Worker A's late write, fenced on the lease it (no longer) holds, must be a no-op.
+    const result = await store.update('due', { status: 'polling', attempts: 1 }, { leaseOwner: 'worker-A' });
+
+    const row = await store.get('due');
+    expect(row?.attempts).toBe(7);
+    expect(result?.attempts).toBe(7); // returns the current row unchanged, not an error
+  });
+
+  it('applies an update unconditionally when no leaseOwner fence is given, preserving the pre-lease write path', async () => {
+    const store = createInMemoryAsyncOperationStore();
+    await store.create({ ...BASE, id: 'op-1' });
+
+    // No lease has ever been claimed on this row (mirrors startOperation's pre-claim persistence).
+    const result = await store.update('op-1', { status: 'polling', attempts: 3 });
+
+    expect(result?.attempts).toBe(3);
+    expect((await store.get('op-1'))?.status).toBe('polling');
+  });
 });
