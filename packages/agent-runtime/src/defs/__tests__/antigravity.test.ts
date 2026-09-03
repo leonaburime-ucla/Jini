@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { antigravityAgentDef, redactAntigravityAuthUrls } from '../antigravity.js';
+import { antigravityAgentDef, parseAgyModels, redactAntigravityAuthUrls } from '../antigravity.js';
 
 describe('antigravityAgentDef shape', () => {
   it('declares the expected identity and transport fields', () => {
@@ -14,6 +14,17 @@ describe('antigravityAgentDef shape', () => {
     expect(antigravityAgentDef.maxPromptArgBytes).toBe(30_000);
     expect(antigravityAgentDef.streamFormat).toBe('plain');
     expect(antigravityAgentDef.fallbackModels[0]?.id).toBe('default');
+  });
+
+  // `agy models` gives this def a live catalog (unlike the old fallback-only
+  // list) — 10s rather than codex's 5s because it does a real network fetch
+  // (its own stdout announces "Fetching available models...").
+  it('declares a live listModels probe backed by parseAgyModels', () => {
+    expect(antigravityAgentDef.listModels).toEqual({
+      args: ['models'],
+      parse: parseAgyModels,
+      timeoutMs: 10_000,
+    });
   });
 
   // `agy` passes its own parent process env through to the stdio MCP children it spawns for
@@ -87,6 +98,118 @@ describe('redactAntigravityAuthUrls', () => {
 
   it('returns empty text unchanged', () => {
     expect(redactAntigravityAuthUrls('')).toBe('');
+  });
+});
+
+describe('parseAgyModels', () => {
+  // Real `agy models` stdout as of agy v1.1.24 (captured live, 2026-09-02):
+  // one progress line, then one `<slug>\t<label>` pair per line.
+  const REAL_STDOUT =
+    'Fetching available models...\n' +
+    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n' +
+    'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n' +
+    'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n' +
+    'gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n' +
+    'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)\n' +
+    'gemini-3.7-flash-low\tGemini 3.7 Flash (Low)\n' +
+    'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n' +
+    'gemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)\n' +
+    'gemini-3.6-flash-low\tGemini 3.6 Flash (Low)\n' +
+    'gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n' +
+    'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n' +
+    'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n' +
+    'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n' +
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n';
+
+  it('drops the leading progress line and parses all 14 real entries', () => {
+    const result = parseAgyModels(REAL_STDOUT);
+    expect(result?.map((m) => m.id)).toEqual([
+      'default',
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'gemini-3.7-flash-low',
+      'gemini-3.6-flash-high',
+      'gemini-3.6-flash-medium',
+      'gemini-3.6-flash-low',
+      'gemini-3.1-pro-high',
+      'gemini-3.1-pro-low',
+      'claude-sonnet-4-6',
+      'claude-opus-4-6-thinking',
+      'gpt-oss-120b-medium',
+    ]);
+  });
+
+  it('splits id and label on the first tab, matching agy\'s real labels verbatim', () => {
+    const result = parseAgyModels(REAL_STDOUT);
+    expect(result?.find((m) => m.id === 'gemini-3.1-pro-high')).toEqual({
+      id: 'gemini-3.1-pro-high',
+      label: 'Gemini 3.1 Pro (High)',
+    });
+    expect(result?.find((m) => m.id === 'claude-opus-4-6-thinking')).toEqual({
+      id: 'claude-opus-4-6-thinking',
+      label: 'Claude Opus 4.6 (Thinking)',
+    });
+  });
+
+  it('drops the progress line case-insensitively regardless of surrounding whitespace', () => {
+    const result = parseAgyModels('  Fetching Available Models...  \nfoo\tFoo Label\n');
+    expect(result?.map((m) => m.id)).toEqual(['default', 'foo']);
+  });
+
+  it('splits on the FIRST tab only, so a label containing extra tabs is preserved intact and never bleeds into the id', () => {
+    const result = parseAgyModels('gemini-3.1-pro-high\tGemini 3.1 Pro\t(High)\textra\n');
+    expect(result).toEqual([
+      { id: 'default', label: 'Default (CLI config)' },
+      { id: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro\t(High)\textra' },
+    ]);
+  });
+
+  it('trims surrounding whitespace from both id and label without corrupting either', () => {
+    const result = parseAgyModels('  gemini-3.1-pro-high  \t   Gemini 3.1 Pro (High)   \n');
+    expect(result).toEqual([
+      { id: 'default', label: 'Default (CLI config)' },
+      { id: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' },
+    ]);
+  });
+
+  it('skips a line with no tab at all rather than mis-parsing it', () => {
+    const result = parseAgyModels('Fetching available models...\nno-tab-here\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)\n');
+    expect(result?.map((m) => m.id)).toEqual(['default', 'gemini-3.1-pro-high']);
+  });
+
+  it('de-duplicates a repeated id, keeping the first occurrence', () => {
+    const result = parseAgyModels('foo\tFirst\nfoo\tSecond\n');
+    expect(result?.filter((m) => m.id === 'foo')).toHaveLength(1);
+    expect(result?.find((m) => m.id === 'foo')?.label).toBe('First');
+  });
+
+  it('returns null for empty stdout, so detection.ts falls back rather than showing an empty picker', () => {
+    expect(parseAgyModels('')).toBeNull();
+  });
+
+  it('returns null for whitespace-only stdout', () => {
+    expect(parseAgyModels('   \n  \n')).toBeNull();
+  });
+
+  it('returns null when stdout is only the progress line (offline/errored fetch never yielded a real entry)', () => {
+    expect(parseAgyModels('Fetching available models...\n')).toBeNull();
+  });
+});
+
+describe('antigravityAgentDef.listModels.parse', () => {
+  it('delegates to parseAgyModels for real output', () => {
+    const result = antigravityAgentDef.listModels!.parse('gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n');
+    expect(result).toEqual([
+      { id: 'default', label: 'Default (CLI config)' },
+      { id: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' },
+    ]);
+  });
+
+  it('returns null for blank stdout', () => {
+    expect(antigravityAgentDef.listModels!.parse('   ')).toBeNull();
   });
 });
 

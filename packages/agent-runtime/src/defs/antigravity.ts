@@ -1,6 +1,6 @@
 /** Ported verbatim from OD's `apps/daemon/src/runtimes/defs/antigravity.ts` (import path adjusted only). See `source-map.md`. */
 import { DEFAULT_MODEL_OPTION } from './shared.js';
-import type { RuntimeAgentDef } from '../types.js';
+import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
 
 // `agy` v1.1.24 has a real `--model <id>` flag (`agy --help`: "Model for the current CLI
 // session") plus a machine-readable `agy models` subcommand that lists every selectable model as
@@ -87,11 +87,61 @@ export function redactAntigravityAuthUrls(fullText: string): string {
   return fullText.replace(OAUTH_URL_PATTERN, OAUTH_URL_PLACEHOLDER);
 }
 
+/**
+ * Parses `agy models`' stdout into the shared `RuntimeModelOption[]` shape.
+ *
+ * The CLI's real output (agy v1.1.24, verified live — see this file's header
+ * comment for the exact captured transcript) is one `Fetching available
+ * models...` progress line followed by one `<slug>\t<label>` pair per line.
+ * Each data line is split on the FIRST tab only, so a label that itself
+ * contains a tab or extra whitespace never bleeds into the id.
+ *
+ * @param stdout - Raw stdout from `agy models`.
+ * @returns The synthetic default option prepended to every parsed entry, or
+ * `null` when no real entry was found (empty stdout, or only the progress
+ * line survives filtering) — mirrors `parseCursorAgentModels`'s same-shape
+ * null contract, which `detection.ts#fetchModels` already treats the same
+ * as an empty array: fall back to `fallbackModels`.
+ * @complexity O(n) in the stdout length.
+ */
+export function parseAgyModels(stdout: string): RuntimeModelOption[] | null {
+  const lines = String(stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return null;
+
+  const out = [DEFAULT_MODEL_OPTION];
+  const seen = new Set<string>([DEFAULT_MODEL_OPTION.id]);
+  for (const line of lines) {
+    if (/^fetching available models\.\.\.$/i.test(line)) continue;
+    const tabIndex = line.indexOf('\t');
+    if (tabIndex === -1) continue;
+    const id = line.slice(0, tabIndex).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const label = line.slice(tabIndex + 1).trim();
+    out.push({ id, label: label || id });
+  }
+
+  return out.length > 1 ? out : null;
+}
+
 export const antigravityAgentDef = {
   id: 'antigravity',
   name: 'Antigravity',
   bin: 'agy',
   versionArgs: ['--version'],
+  // `agy models` does a real network fetch (its own stdout says "Fetching
+  // available models..."), so this gets a longer budget than codex's 5s
+  // local-cache read — 10s to absorb ordinary network latency without
+  // making every detection pass wait needlessly long on a slow/offline run
+  // (`detection.ts#fetchModels` falls back to `fallbackModels` on timeout).
+  listModels: {
+    args: ['models'],
+    parse: parseAgyModels,
+    timeoutMs: 10_000,
+  },
   fallbackModels: [
     DEFAULT_MODEL_OPTION,
     { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
