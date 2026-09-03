@@ -25,6 +25,41 @@ export type RuntimeModelSource = 'live' | 'fallback';
 
 export type RuntimeReasoningOption = RuntimeModelOption;
 
+/**
+ * Declares that a runtime carries its reasoning-effort choice INSIDE the model
+ * id — as a trailing `-<level>` on the slug — rather than in a flag of its own.
+ *
+ * The distinction is not cosmetic, and it is why this is a separate field from
+ * `RuntimeAgentDef.reasoningOptions` rather than another shape of it:
+ *
+ *   - A `reasoningOptions` def (claude, codex) has ONE effort vocabulary that
+ *     applies to every model it can run, and the chosen level travels to the
+ *     CLI as its own argv (`--effort high`, `-c model_reasoning_effort="high"`)
+ *     via `RuntimeBuildOptions.reasoning`.
+ *   - A `reasoningInModelId` def (antigravity) has NO effort flag at all. Its
+ *     level is already part of `--model`'s value, so `buildArgs` emits nothing
+ *     extra, and — critically — **the available levels differ per base model**.
+ *     Verified live against `agy models` (v1.1.25): `gemini-3.8-flash` has
+ *     high/medium/low, `gemini-3.1-pro` has ONLY high and low,
+ *     `gpt-oss-120b` has only medium, and `claude-sonnet-4-6` has none.
+ *     `agy --model gemini-3.1-pro-medium` is rejected outright.
+ *
+ * So this field declares only the suffix VOCABULARY — which trailing tokens
+ * are effort levels at all, in the order a picker should offer them. Which of
+ * them exist for a given base model is DERIVED from that runtime's own model
+ * list (live or fallback), never listed here: a hand-written per-model table
+ * would be a second copy of the CLI's catalog, free to drift the moment
+ * upstream adds a variant.
+ *
+ * `levels` doubles as the guard against over-parsing: `claude-opus-4-6-thinking`
+ * ends in `-thinking`, which is NOT an effort level, so it must stay part of
+ * the base id. Only a trailing token that appears in `levels` is a level.
+ */
+export type RuntimeReasoningInModelId = {
+  /** The recognized effort suffixes, in picker display order. */
+  levels: readonly RuntimeReasoningOption[];
+};
+
 export type RuntimeBuildOptions = {
   model?: string | null;
   reasoning?: string | null;
@@ -283,6 +318,16 @@ export type RuntimeAgentDef = {
     env: RuntimeEnv,
   ) => Promise<RuntimeModelOption[] | null>;
   reasoningOptions?: RuntimeReasoningOption[];
+  /**
+   * See {@link RuntimeReasoningInModelId}. Mutually exclusive with
+   * `reasoningOptions` in practice: a def declaring both would tell a picker
+   * that the same choice lives in two different places at once.
+   *
+   * Survives `detection.ts#stripFns` (plain data, no closure), so a UI reading
+   * a `DetectedAgent` off the wire gets the vocabulary it needs to do the
+   * per-base-model derivation itself.
+   */
+  reasoningInModelId?: RuntimeReasoningInModelId;
   /**
    * How this def's CLI/protocol receives user-supplied image attachments.
    * Supersedes the old `supportsImagePaths: boolean` field (which was never

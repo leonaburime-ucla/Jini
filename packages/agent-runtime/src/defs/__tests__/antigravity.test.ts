@@ -298,3 +298,38 @@ describe('antigravityAgentDef.buildArgs', () => {
     expect(() => antigravityAgentDef.buildArgs('hi', [])).not.toThrow();
   });
 });
+
+describe('antigravityAgentDef reasoning-effort declaration', () => {
+  // agy has NO effort flag: `agy --help` exposes `--model` and nothing that
+  // takes a reasoning level. Effort is encoded as a trailing `-<level>` on the
+  // model slug itself (`gemini-3.1-pro-high`), so this def declares the
+  // suffix VOCABULARY and lets the picker derive which levels each base model
+  // actually has from the live `agy models` list. Declaring a flat
+  // `reasoningOptions` here instead would be a lie: it would offer
+  // `gemini-3.1-pro-medium`, which does not exist and which `agy --model`
+  // rejects outright.
+  it('declares reasoning-in-model-id with exactly the three recognized suffixes', () => {
+    expect(antigravityAgentDef.reasoningInModelId?.levels).toEqual([
+      { id: 'high', label: 'High' },
+      { id: 'medium', label: 'Medium' },
+      { id: 'low', label: 'Low' },
+    ]);
+  });
+
+  // Mutually exclusive with `reasoningOptions` on purpose — a def carrying
+  // both would render two effort controls that disagree about where the
+  // choice goes.
+  it('declares no flat reasoningOptions, because the effort rides in the model id', () => {
+    expect('reasoningOptions' in antigravityAgentDef).toBe(false);
+  });
+
+  it('emits no extra argv for a reasoning selection — the effort is already inside --model', () => {
+    const args = antigravityAgentDef.buildArgs('hi', [], [], {
+      model: 'gemini-3.1-pro-high',
+      reasoning: 'high',
+    });
+    expect(args).toEqual(['--model', 'gemini-3.1-pro-high', '-p', 'hi']);
+    expect(args.join(' ')).not.toContain('--effort');
+    expect(args.join(' ')).not.toContain('reasoning');
+  });
+});

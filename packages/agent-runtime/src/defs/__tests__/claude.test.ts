@@ -77,6 +77,33 @@ describe('claudeAgentDef.buildArgs', () => {
     expect(args).not.toContain('--model');
   });
 
+  // The picker's reasoning-effort choice has to reach the CLI as real argv,
+  // not merely be stored: `claude --effort <level>` is the flag, and it is
+  // probe-gated on `capabilityFlags['--effort']` because an older build
+  // rejects an unknown option with exit 1 rather than degrading.
+  it('adds --effort <level> for every level the CLI accepts, once the probe recorded the capability', () => {
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      agentCapabilities.set('claude', { effort: true });
+      const args = claudeAgentDef.buildArgs('hi', [], [], { reasoning: level });
+      expect(args).toContain('--effort');
+      expect(args[args.indexOf('--effort') + 1]).toBe(level);
+    }
+  });
+
+  it('omits --effort when the capability probe never saw the flag, so an older build is not killed by an unknown option', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], { reasoning: 'high' });
+    expect(args).not.toContain('--effort');
+  });
+
+  // 'ultra' is codex's vocabulary, not Claude Code's — the CLI answers an
+  // unrecognized level with a stderr warning and then runs at its default, so
+  // forwarding one would look like the setting applied while doing nothing.
+  it('drops a level from another runtime\'s vocabulary rather than forwarding it', () => {
+    agentCapabilities.set('claude', { effort: true });
+    expect(claudeAgentDef.buildArgs('hi', [], [], { reasoning: 'ultra' })).not.toContain('--effort');
+    expect(claudeAgentDef.buildArgs('hi', [], [], { reasoning: 'default' })).not.toContain('--effort');
+  });
+
   it('omits --model when falsy', () => {
     const args = claudeAgentDef.buildArgs('hi', [], [], { model: '' });
     expect(args).not.toContain('--model');

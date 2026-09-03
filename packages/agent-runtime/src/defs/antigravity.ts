@@ -160,6 +160,22 @@ export const antigravityAgentDef = {
     { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
   ],
   supportsCustomModel: false,
+  // agy has no `--effort`-shaped flag: reasoning effort is a trailing `-high`/
+  // `-medium`/`-low` on the model slug `--model` already carries (see the
+  // `fallbackModels` list above, which is `agy models`' real output). So this
+  // def declares the suffix VOCABULARY only — see `types.ts`'s
+  // `RuntimeReasoningInModelId` for why the per-base-model availability is
+  // derived from the model list instead of enumerated here, and why
+  // `-thinking` on `claude-opus-4-6-thinking` must not be read as a level.
+  // `buildArgs` below is deliberately unchanged: the effort is already inside
+  // `--model`'s value, so there is no second argv to emit.
+  reasoningInModelId: {
+    levels: [
+      { id: 'high', label: 'High' },
+      { id: 'medium', label: 'Medium' },
+      { id: 'low', label: 'Low' },
+    ],
+  },
   // We deliberately do NOT opt into `resumesSessionViaCli` / agy's `-c`
   // resume flag on follow-up turns. Tested both shapes; `-c` activates
   // agy's internal agentic loop (multi-step model retries, tool calls,
