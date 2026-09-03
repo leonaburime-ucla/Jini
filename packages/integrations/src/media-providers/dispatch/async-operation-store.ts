@@ -67,6 +67,14 @@ const ALLOWED_TRANSITIONS: Readonly<Record<AsyncOperationStatus, ReadonlySet<Asy
  */
 const ALLOWED_STATE_KEYS: ReadonlySet<string> = new Set(['jobId']);
 
+/**
+ * Depth bound for `assertNoCredentialMaterial`'s walk. A cyclic or pathologically nested `state`
+ * object must not hang the check forever, but the bound must fail *closed*: a key past this depth
+ * is refused outright (see the walk in `assertNoCredentialMaterial`), not silently skipped — a
+ * silent skip would let a key nested past this depth carry credential material undetected.
+ */
+const MAX_STATE_DEPTH = 12;
+
 export const CREDENTIAL_IN_STATE_MESSAGE =
   'async operation state must never carry credential material — credentials are re-resolved per poll tick through the signer seam';
 
@@ -207,7 +215,12 @@ export function assertNoCredentialMaterial(state: Readonly<Record<string, unknow
   if (state == null) return;
   const seen = new Set<unknown>();
   const walk = (value: unknown, depth: number): void => {
-    if (depth > 12 || value === null || typeof value !== 'object') return;
+    if (value === null || typeof value !== 'object') return;
+    if (depth > MAX_STATE_DEPTH) {
+      throw new Error(
+        `${CREDENTIAL_IN_STATE_MESSAGE} (state nesting exceeds ${MAX_STATE_DEPTH} levels — this allowlist cannot verify keys past that depth, so the object is rejected outright rather than silently accepted)`,
+      );
+    }
     if (seen.has(value)) return;
     seen.add(value);
     if (Array.isArray(value)) {

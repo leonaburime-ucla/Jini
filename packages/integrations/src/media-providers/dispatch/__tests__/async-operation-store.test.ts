@@ -58,6 +58,17 @@ describe('createInMemoryAsyncOperationStore', () => {
     ).rejects.toThrow(CREDENTIAL_IN_STATE_MESSAGE);
   });
 
+  it('rejects a non-allowlisted key buried past the depth bound instead of silently skipping it', async () => {
+    // Regression: the walk's depth guard used to return silently once `depth > 12`, so a
+    // credential-shaped key nested 13+ levels deep was never checked against the allowlist at
+    // all — the object was accepted with the secret intact.
+    const store = createInMemoryAsyncOperationStore();
+    let buried: Record<string, unknown> = { secretApiToken: 'sk-live-buried-secret' };
+    for (let i = 0; i < 13; i += 1) buried = { jobId: buried };
+
+    await expect(store.create({ ...BASE, state: buried })).rejects.toThrow(CREDENTIAL_IN_STATE_MESSAGE);
+  });
+
   it('rejects ANY key outside the resumption-handle allowlist, not just names that look like credentials', async () => {
     // Proves the mechanism is a fail-closed allowlist, not a wider denylist that would rot the
     // same way: an entirely innocuous-looking, non-credential-shaped key is rejected too, because
