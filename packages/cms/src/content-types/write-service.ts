@@ -47,11 +47,22 @@ import {
  * `errors.ts`/`index-provisioning.ts`/`types.ts` — no adapter, no other feature.
  */
 
-/** Matches every other feature's chokepoint `AuthorizeFn` shape structurally — no shared import, kept decoupled. */
+/**
+ * Matches every other feature's chokepoint `AuthorizeFn` shape structurally — no shared import,
+ * kept decoupled. `entityType`/`entityId` let `registerContentType`/`updateContentTypeFields`
+ * (and `lifecycle.ts`'s three transitions, which import this same type) pass
+ * `entityType: "content-type"` — matching every fronting HTTP route's own
+ * `entityType: "content-type"` pre-check. See `entries/write-service.ts`'s identical `AuthorizeFn`
+ * doc for why an omitted `entityType` here previously denied a content-type-scoped-only grant with
+ * `resource_scope_mismatch` even though the route's pre-check allowed it, and why this chokepoint —
+ * not the route — is the one that must stay at least as expressive.
+ */
 export type AuthorizeFn = (params: {
   principalId: string;
   permission: string;
   workspaceId: string;
+  entityType?: string | undefined;
+  entityId?: string | undefined;
 }) => Promise<{ allowed: boolean; reason: string }>;
 
 export interface ContentTypeRevisionInput {
@@ -147,6 +158,7 @@ export async function registerContentType(
     principalId: input.actorId,
     permission: "admin.collections.manage",
     workspaceId: input.workspaceId,
+    entityType: "content-type",
   });
   if (!authResult.allowed) {
     return { ok: false, error: new ForbiddenError(`principal '${input.actorId}' cannot register a content type (${authResult.reason})`) };
@@ -240,6 +252,7 @@ export async function updateContentTypeFields(
     principalId: input.actorId,
     permission: "admin.collections.manage",
     workspaceId: input.workspaceId,
+    entityType: "content-type",
   });
   if (!authResult.allowed) {
     return { ok: false, error: new ForbiddenError(`principal '${input.actorId}' cannot update content type '${input.key}' (${authResult.reason})`) };
