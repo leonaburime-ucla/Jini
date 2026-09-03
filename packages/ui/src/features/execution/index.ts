@@ -31,6 +31,7 @@ export {
   isProviderConfigured,
   isValidApiBaseUrl,
   missingRequiredFields,
+  modelIdForReasoningLevel,
   nextConfigForAgentCliEnvChange,
   nextConfigForAgentModel,
   nextConfigForAgentReasoning,
@@ -41,12 +42,15 @@ export {
   parseMaxTokens,
   presetRequiresApiKey,
   presetsForProtocol,
+  reasoningModelGroupFor,
+  reasoningModelGroups,
   resolveSelectedPreset,
   selectedAgentModel,
   selectedAgentReasoning,
   shouldShowCustomModelInput,
   showsBaseUrlField,
   sortDetectedAgents,
+  splitReasoningModelId,
 } from './rules.js';
 export type {
   AgentAuthStatus,
@@ -75,6 +79,7 @@ export type {
   ModelDiscoveryState,
   ProviderPreset,
   ProviderPresetKind,
+  ReasoningModelGroup,
 } from './types.js';
 
 export { ExecutionTab } from './react/components/ExecutionTab.js';

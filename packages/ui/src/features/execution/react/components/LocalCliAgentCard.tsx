@@ -6,9 +6,13 @@ import {
   agentMetaLabel,
   agentModelSummary,
   binPathEnvField,
+  modelIdForReasoningLevel,
+  reasoningModelGroupFor,
+  reasoningModelGroups,
   selectedAgentModel,
   selectedAgentReasoning,
   shouldShowCustomModelInput,
+  splitReasoningModelId,
 } from '../../rules.js';
 import type {
   AgentCliEnvFieldSpec,
@@ -92,22 +96,58 @@ export function LocalCliAgentCard({
   });
   const models = agent.models ?? [];
   const hasModels = models.length > 0;
-  const reasoningOptions = agent.reasoningOptions ?? [];
-  const hasReasoning = reasoningOptions.length > 0;
   const resolvedModel = selectedAgentModel(config, agent);
   const rawModel = config.modelByAgentId?.[agent.id] ?? '';
   const summary = agentModelSummary(config, agent);
-  const reasoningValue = selectedAgentReasoning(config, agent);
+
+  // Two ways an agent can expose a reasoning-effort axis, and the card branches on the DECLARATION
+  // rather than on the agent's id — adding a third runtime with either shape is a def change, not
+  // an edit here.
+  //
+  //   `reasoningOptions`     — one flat vocabulary that travels to the CLI as its own flag
+  //                            (`claude --effort high`, codex's `-c model_reasoning_effort=...`).
+  //                            The choice is its own persisted value; `onReasoningChange` owns it.
+  //   `reasoningInModelId`   — no effort flag exists; the level is a suffix on the model id itself
+  //                            (antigravity's `gemini-3.1-pro-high`). The choice IS the model, so
+  //                            it goes through `onModelChange`, and the available levels are
+  //                            derived PER BASE MODEL from the agent's own catalog — they are not
+  //                            uniform (`gemini-3.1-pro` has no `-medium`, and `agy --model`
+  //                            rejects one), so a fixed dropdown would offer ids the CLI refuses.
+  const suffixLevels = agent.reasoningInModelId?.levels ?? [];
+  const suffixLevelIds = suffixLevels.map((level) => level.id);
+  const modelGroups = suffixLevels.length > 0 ? reasoningModelGroups(models, suffixLevels) : null;
+  const activeGroup = modelGroups ? reasoningModelGroupFor(modelGroups, resolvedModel, suffixLevelIds) : null;
+  const activeLevel = modelGroups ? splitReasoningModelId(resolvedModel, suffixLevelIds).level : null;
+
+  const flatReasoningOptions = agent.reasoningOptions ?? [];
+  // Exactly one effort control, whichever shape declared it. `reasoningOptions` wins if a def ever
+  // declares both, rather than rendering two controls that disagree about where the choice lands.
+  const reasoningOptions = flatReasoningOptions.length > 0 ? flatReasoningOptions : (activeGroup?.levels ?? []);
+  const hasReasoning = reasoningOptions.length > 0;
+  const reasoningValue =
+    flatReasoningOptions.length > 0 ? selectedAgentReasoning(config, agent) : (activeLevel ?? reasoningOptions[0]?.id ?? '');
+  // A base model with exactly one variant has a real, fixed level worth showing — but nothing to
+  // choose between, so the control is shown disabled rather than offering an illusion of choice.
+  const reasoningDisabled = flatReasoningOptions.length === 0 && reasoningOptions.length < 2;
 
   // Adapters opt out via `supportsCustomModel: false` when their CLI has no
   // free-text model flag, or validates the id against a live catalog and
   // rejects unknown ones. `undefined` allows it, matching every adapter's
   // default before this field existed.
-  const allowCustomModel = agent.supportsCustomModel !== false;
+  const allowCustomModel = agent.supportsCustomModel !== false && modelGroups === null;
   const knownModelIds = models.map((model) => model.id);
   const customActive =
     allowCustomModel && hasModels && shouldShowCustomModelInput(resolvedModel, knownModelIds, explicitCustomMode);
-  const selectValue = customActive ? CUSTOM_MODEL_SENTINEL : resolvedModel;
+  // A model-suffix agent picks a BASE model here; the effort control below supplies the rest of the
+  // id. Everything else about the field — search, labels, provenance badge — is unchanged.
+  const modelChoices = modelGroups
+    ? modelGroups.map((group) => ({ id: group.baseId, label: group.label }))
+    : models;
+  const selectValue = customActive
+    ? CUSTOM_MODEL_SENTINEL
+    : modelGroups
+      ? (activeGroup?.baseId ?? '')
+      : resolvedModel;
   // While the custom box is open, the text field must show the operator's raw
   // typed text (which may not resolve to anything yet) rather than the
   // resolved-with-fallback value — otherwise every keystroke would show a
@@ -267,16 +307,25 @@ export function LocalCliAgentCard({
                   testId={`jini-agent-model-${agent.id}`}
                   searchInputTestId={`jini-agent-model-search-${agent.id}`}
                   value={selectValue}
-                  models={models}
+                  models={modelChoices}
                   additionalOptions={allowCustomModel ? [{ value: CUSTOM_MODEL_SENTINEL, label: t('Custom…') }] : undefined}
                   onChange={(nextValue) => {
                     if (nextValue === CUSTOM_MODEL_SENTINEL) {
                       setExplicitCustomMode(true);
                       onModelChange(agent.id, '');
-                    } else {
-                      setExplicitCustomMode(false);
-                      onModelChange(agent.id, nextValue);
+                      return;
                     }
+                    setExplicitCustomMode(false);
+                    if (!modelGroups) {
+                      onModelChange(agent.id, nextValue);
+                      return;
+                    }
+                    // Switching base carries the current effort level over when the new base
+                    // really has it, and lands on one it does have otherwise — never composes a
+                    // slug (see `modelIdForReasoningLevel`), so `gemini-3.1-pro-medium` cannot be
+                    // produced from a `medium` carried off `gemini-3.8-flash`.
+                    const nextGroup = modelGroups.find((group) => group.baseId === nextValue);
+                    onModelChange(agent.id, nextGroup ? modelIdForReasoningLevel(nextGroup, activeLevel) : nextValue);
                   }}
                 />
               </label>
@@ -306,7 +355,16 @@ export function LocalCliAgentCard({
                 className="jini-input"
                 data-testid={`jini-agent-reasoning-${agent.id}`}
                 value={reasoningValue}
-                onChange={(event) => onReasoningChange(agent.id, event.target.value)}
+                disabled={reasoningDisabled}
+                onChange={(event) => {
+                  // A model-suffix agent has no reasoning value of its own to record: the choice
+                  // is which model id runs, so it goes back out through `onModelChange`.
+                  if (activeGroup) {
+                    onModelChange(agent.id, modelIdForReasoningLevel(activeGroup, event.target.value));
+                    return;
+                  }
+                  onReasoningChange(agent.id, event.target.value);
+                }}
               >
                 {reasoningOptions.map((option) => (
                   <option key={option.id} value={option.id}>
