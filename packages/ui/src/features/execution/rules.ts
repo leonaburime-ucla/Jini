@@ -125,6 +125,36 @@ export function missingRequiredFields(
 }
 
 /**
+ * The advisory "that key is the wrong shape" message for the current draft, or `null` for silence.
+ *
+ * Fails fast on the client so an obviously-wrong string is named as such BEFORE it is sent, instead
+ * of coming back as the vendor's own rejection. The reported case: a browser autofilled a saved
+ * password into the API-key field and Google answered "API key not valid. Please pass a valid API
+ * key." — faithfully relayed, and unactionable, because it described a string the operator had
+ * never typed and could not see.
+ *
+ * ADVISORY ONLY, by construction: this returns a message, not a validity verdict. No caller may use
+ * it to disable a control or gate a submit — see `ProviderPreset.apiKeyPattern` for why a
+ * client-side format guess must never be able to block a working credential. It is deliberately
+ * absent from {@link missingRequiredFields}, which IS a gate.
+ *
+ * Silent for an empty field (nothing to judge yet, and a stored-key screen legitimately renders
+ * one), for a preset carrying no pattern, and for a key that matches.
+ *
+ * @param config - The active BYOK draft; only `apiKey` is read.
+ * @param preset - The resolved preset, or `null` on custom/manual — which carries no pattern and so
+ *   is always silent.
+ * @returns The preset's `apiKeyFormatHint`, or `null` when there is nothing to warn about.
+ * @complexity O(n) in the key's length — one regex test against an authored pattern. Presets are
+ *   catalog data, not operator input, so no untrusted expression reaches this.
+ */
+export function apiKeyFormatWarning(config: ByokConfig, preset: ProviderPreset | null): string | null {
+  const key = config.apiKey.trim();
+  if (!key || !preset?.apiKeyPattern || !preset.apiKeyFormatHint) return null;
+  return preset.apiKeyPattern.test(key) ? null : preset.apiKeyFormatHint;
+}
+
+/**
  * The credentials a given preset would use — the active selection's live
  * top-level fields when `preset` IS the current selection, otherwise that
  * preset's own saved draft (`config.savedByProviderId`), or blank/preset

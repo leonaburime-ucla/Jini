@@ -16,6 +16,7 @@ export {
   agentMetaLabel,
   type AgentMetaLabels,
   agentModelSummary,
+  apiKeyFormatWarning,
   binPathEnvField,
   cleanAgentVersionLabel,
   cliEnvFieldsForAgent,

@@ -202,7 +202,11 @@ export function MediaProvidersTab({
                   <input
                     className="jini-input"
                     type={keyVisible ? 'text' : 'password'}
-                    autoComplete="off"
+                    /* `new-password`, NOT `"off"` — Chrome deliberately ignores `off` on
+                       credential-shaped fields, which is how a saved password gets autofilled into
+                       an API-key box. Same defect, same fix, same reasoning as
+                       `ByokProviderForm`'s own API-key input; see its comment. */
+                    autoComplete="new-password"
                     spellCheck={false}
                     placeholder={saved ? maskedLabel! : apiKeyPlaceholder}
                     aria-label={`${option.label} ${apiKeyLabel}`}

@@ -51,6 +51,27 @@ export interface ProviderPreset {
   requiresApiKey?: boolean;
   /** Optional "Get key" deep link rendered beside the API-key field. */
   apiKeyConsoleUrl?: string;
+  /**
+   * Optional shape check for a pasted key. When set, a NON-EMPTY key that does not match renders
+   * {@link apiKeyFormatHint} under the field — a warning only. Nothing is disabled, no dialog is
+   * raised, and Save/Test still send exactly what was typed: vendors change key formats without
+   * telling anyone, and a client-side guess must never be able to lock an operator out of their
+   * own working credential.
+   *
+   * Data rather than an `if (providerId === …)` chain in the component, so adding a provider is a
+   * row in the preset catalog — including for a host that supplies its own `presets` and never
+   * touches this package. A preset with no pattern produces no warning; silence is the default.
+   *
+   * Deliberately a PREFIX check in `DEFAULT_PROVIDER_PRESETS` rather than a full-length regex.
+   * The cost of a false positive (crying wolf at a valid key) is higher than the cost of missing
+   * an oddly-shaped one, and the failure this exists to catch — a browser autofilling a saved
+   * PASSWORD into the key field — never carries the vendor's prefix.
+   */
+  apiKeyPattern?: RegExp;
+  /** Operator-facing message for a key that fails {@link apiKeyPattern}. Plain English, which is
+   *  also its i18n key (this package's convention — see `DEFAULT_AGENT_DESCRIPTIONS`). Ignored
+   *  without a pattern. */
+  apiKeyFormatHint?: string;
   /** The synthetic "Custom" preset. Exactly one may carry this flag; it is
    *  never treated as configured-by-preset and never hides the Base URL. */
   custom?: boolean;

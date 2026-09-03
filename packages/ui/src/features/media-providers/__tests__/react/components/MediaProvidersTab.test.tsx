@@ -259,6 +259,17 @@ describe('MediaProvidersTab', () => {
     expect(await screen.findByText('Custom unsaved')).toBeInTheDocument();
   });
 
+  it('the API-key input renders autocomplete="new-password", NOT "off"', async () => {
+    // Same defect as `ByokProviderForm`'s API-key field (see that component's own
+    // `credential-hygiene` suite): Chrome deliberately ignores `autoComplete="off"` on
+    // credential-shaped fields, so `off` here let a saved password autofill an API-key box.
+    // Asserts the RENDERED ATTRIBUTE, because the prop is not what Chrome reads.
+    const port = createFakeMediaProvidersPort();
+    render(<MediaProvidersTab port={port} catalog={CATALOG} />);
+    const keyInput = await screen.findByLabelText('Alpha Images API key');
+    expect(keyInput.getAttribute('autocomplete')).toBe('new-password');
+  });
+
   it('renders translated copy when mounted under an I18nProvider with a matching dictionary', async () => {
     const port = createFakeMediaProvidersPort();
     render(

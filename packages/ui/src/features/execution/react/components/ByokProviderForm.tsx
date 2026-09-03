@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
 import { CUSTOM_MODEL_SENTINEL } from '../../constants.js';
 import {
+  apiKeyFormatWarning,
   isBaseUrlInvalid,
   missingRequiredFields,
   parseMaxTokens,
@@ -130,6 +131,9 @@ export function ByokProviderForm({
   // about the HOST's storage, which does not belong in the config shape.
   if (apiKeyStoredExternally) missing.delete('apiKey');
   const baseUrlInvalid = isBaseUrlInvalid(config);
+  /** Deliberately NOT folded into `missing` above: that set drives `is-missing` styling and the
+   *  Test-connection disable, and a wrong-SHAPED key must never reach either. */
+  const keyFormatWarning = apiKeyFormatWarning(config, preset);
   const suggestions = modelDiscovery.status === 'ok' ? modelDiscovery.models : (preset?.preferredModels ?? []);
   const modelListId = 'jini-byok-model-options';
 
@@ -190,7 +194,17 @@ export function ByokProviderForm({
             <input
               className={'jini-input' + (missing.has('apiKey') ? ' is-missing' : '')}
               type={revealKey ? 'text' : 'password'}
-              autoComplete="off"
+              /* `new-password`, NOT `"off"` — Chrome deliberately ignores `off` on credential-shaped
+                 fields (a long-standing intentional decision, not a bug). `off` here is what let the
+                 reported autofill through: Chrome filled this field with the admin's own saved
+                 PASSWORD, the form sent it, and the provider answered with its own "API key not
+                 valid" — a true message about a string the operator never typed. `new-password` is
+                 the value Chrome/Safari/Firefox actually honor for "this is not a saved-login
+                 field", which suppresses both the credential dropdown and the silent fill.
+
+                 Known trade-off, not fixed here: Chrome may now offer to GENERATE a password on
+                 this field — a suggestion popup, not a silently wrong value. */
+              autoComplete="new-password"
               spellCheck={false}
               placeholder={apiKeyPlaceholder}
               value={config.apiKey}
@@ -206,6 +220,19 @@ export function ByokProviderForm({
             </button>
           </span>
           <span className="jini-field-hint">{t('Stored only by this host.')}</span>
+          {/* Advisory, never a gate: `Save`/`Test connection` stay exactly as enabled as they were,
+              and the typed key is still sent verbatim. See `apiKeyFormatWarning`'s own doc for why
+              a client-side format guess must not be allowed to block a credential.
+
+              `role="status"` rather than `alert`: this is a suggestion the operator may correctly
+              ignore, not a failure. It reuses the `is-error` hint styling because that is the one
+              emphasised hint style this package ships and a silent-looking warning would not do the
+              job — the emphasis is the point, the blocking is not. */}
+          {keyFormatWarning ? (
+            <span className="jini-field-hint is-error" role="status">
+              {t(keyFormatWarning)}
+            </span>
+          ) : null}
         </label>
         {/* No wrapper styling of its own — `.jini-byok-card` is a flex column with a 14px gap, so a
             bare sibling inherits the card's own field rhythm. A host that wants a tighter coupling to

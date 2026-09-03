@@ -41,6 +41,8 @@ export const DEFAULT_PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: 'https://api.anthropic.com',
     preferredModels: ['claude-sonnet-4-5', 'claude-opus-4-5', 'claude-haiku-4-5'],
     kind: 'protocol',
+    apiKeyPattern: /^sk-ant-/,
+    apiKeyFormatHint: 'This does not look like an Anthropic API key — those start with "sk-ant-". You can still save and test it.',
   },
   {
     id: 'openai',
@@ -49,6 +51,8 @@ export const DEFAULT_PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: 'https://api.openai.com/v1',
     preferredModels: ['gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
     kind: 'protocol',
+    apiKeyPattern: /^sk-/,
+    apiKeyFormatHint: 'This does not look like an OpenAI API key — those start with "sk-". You can still save and test it.',
   },
   {
     id: 'azure-openai',
@@ -57,6 +61,9 @@ export const DEFAULT_PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: '',
     preferredModels: [],
     kind: 'protocol',
+    // No `apiKeyPattern` deliberately: an Azure OpenAI key is a bare hex string with no vendor
+    // prefix, so any check here would be a guess that fires on valid keys. Silence is the default
+    // — see `ProviderPreset.apiKeyPattern`.
   },
   {
     id: 'google-gemini',
@@ -70,6 +77,13 @@ export const DEFAULT_PROVIDER_PRESETS: readonly ProviderPreset[] = [
     // prefers live `listModels` discovery and drops back here when that call fails.
     preferredModels: ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'],
     kind: 'protocol',
+    // The reported case this catalog gained patterns for: Chrome autofilled a saved PASSWORD into
+    // this field, the form sent it, and Google answered with its own "API key not valid. Please
+    // pass a valid API key." — a true message about a string the operator never typed. A Google
+    // key is `AIza` + 35 characters; the prefix alone separates it from anything a password
+    // manager would put there.
+    apiKeyPattern: /^AIza/,
+    apiKeyFormatHint: 'This does not look like a Google API key — those start with "AIza". You can still save and test it.',
   },
   {
     id: 'openrouter',
@@ -78,6 +92,8 @@ export const DEFAULT_PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
     preferredModels: ['anthropic/claude-3.7-sonnet', 'google/gemini-2.5-pro', 'openai/gpt-4o'],
     kind: 'gateway',
+    apiKeyPattern: /^sk-or-/,
+    apiKeyFormatHint: 'This does not look like an OpenRouter API key — those start with "sk-or-". You can still save and test it.',
   },
   {
     id: 'ollama',
