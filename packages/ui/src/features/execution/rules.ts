@@ -1,11 +1,18 @@
 import { isAllowedEndpointUrl } from '../../utils/endpoint-policy.js';
-import { CUSTOM_PRESET_ID, DEFAULT_BASE_URL_BY_PROTOCOL } from './constants.js';
+import {
+  API_KEY_CROSS_VENDOR_WARNING,
+  API_KEY_TOO_SHORT_WARNING,
+  CUSTOM_PRESET_ID,
+  DEFAULT_BASE_URL_BY_PROTOCOL,
+  MIN_PLAUSIBLE_API_KEY_LENGTH,
+} from './constants.js';
 import type {
   AgentCliEnvFieldSpec,
   AgentDiagnostic,
   AgentExecutableRepair,
   AgentExecutableSource,
   AgentModelOption,
+  ApiKeyWarning,
   ByokConfig,
   ByokProviderCredentials,
   ByokRequiredField,
@@ -125,33 +132,93 @@ export function missingRequiredFields(
 }
 
 /**
- * The advisory "that key is the wrong shape" message for the current draft, or `null` for silence.
+ * The catalog entry that claims this key MORE specifically than the selected preset does — i.e. the
+ * vendor the operator most likely meant to paste it into. `null` when no other row recognises the
+ * string, or when the selection's own claim is at least as specific as any rival's.
  *
- * Fails fast on the client so an obviously-wrong string is named as such BEFORE it is sent, instead
- * of coming back as the vendor's own rejection. The reported case: a browser autofilled a saved
- * password into the API-key field and Google answered "API key not valid. Please pass a valid API
- * key." — faithfully relayed, and unactionable, because it described a string the operator had
- * never typed and could not see.
+ * "More specific" is prefix LENGTH, not catalog order. `sk-or-v1-…` starts with both OpenRouter's
+ * `sk-or-` and OpenAI's `sk-`; the longer prefix is the truer claim, and deciding it by row position
+ * would make the message move when someone reorders the catalog. The same comparison gives the
+ * selected preset a tie: a host row that legitimately takes `sk-ant-` keys (an Anthropic-compatible
+ * proxy) claims them exactly as strongly as Anthropic does and so keeps them, silently.
  *
- * ADVISORY ONLY, by construction: this returns a message, not a validity verdict. No caller may use
- * it to disable a control or gate a submit — see `ProviderPreset.apiKeyPattern` for why a
- * client-side format guess must never be able to block a working credential. It is deliberately
- * absent from {@link missingRequiredFields}, which IS a gate.
+ * @param key - The trimmed key text as typed.
+ * @param preset - The selected preset. Required: with no selection there is no "wrong field" to be
+ *   in, and on custom/manual any vendor's key may be exactly right.
+ * @param presets - The catalog to recognise foreign keys against.
+ * @returns The foreign owner, or `null` for silence.
+ * @complexity O(n·m) — n presets, m the length of the longest prefix. Catalogs are single-digit
+ *   rows of authored data, and `startsWith` short-circuits on the first differing character.
+ */
+function foreignKeyOwner(
+  key: string,
+  preset: ProviderPreset,
+  presets: readonly ProviderPreset[],
+): ProviderPreset | null {
+  // -1, not 0, so a preset with no prefix of its own still loses every comparison rather than tying
+  // with one. Azure ships no prefix and must still be told when it is holding an Anthropic key.
+  let bestClaim =
+    preset.apiKeyPrefix && key.startsWith(preset.apiKeyPrefix) ? preset.apiKeyPrefix.length : -1;
+  let owner: ProviderPreset | null = null;
+  for (const candidate of presets) {
+    const prefix = candidate.apiKeyPrefix;
+    if (!prefix || candidate.custom || candidate.id === preset.id) continue;
+    if (prefix.length <= bestClaim || !key.startsWith(prefix)) continue;
+    owner = candidate;
+    bestClaim = prefix.length;
+  }
+  return owner;
+}
+
+/**
+ * The advisory "that key looks wrong" remark for the current draft, or `null` for silence.
  *
- * Silent for an empty field (nothing to judge yet, and a stored-key screen legitimately renders
- * one), for a preset carrying no pattern, and for a key that matches.
+ * Warns ONLY on what it can positively recognise as wrong, and there are exactly two such things:
+ * a key wearing another catalogued vendor's prefix (pasted into the wrong provider's field), and a
+ * key shorter than {@link MIN_PLAUSIBLE_API_KEY_LENGTH} (the reported Chrome-autofilled PASSWORD).
+ * Everything else — including every shape this package has never seen — is silence.
+ *
+ * That direction is the whole design, and it is the fix for a real reported defect. This function
+ * used to ask "does the key match the selected preset's pattern?" and warn when it did not: a
+ * positive allowlist, which false-positives the instant a vendor issues a shape the catalog has not
+ * been taught. That happened within hours of shipping — an operator pasted a working Google Gemini
+ * key and was told it did not look like a Google API key. A catalog can prove a string belongs to
+ * vendor X; it can never prove a string belongs to nobody. Do not re-derive an allowlist here, and
+ * do not add a per-provider branch: the conditions above are the only two that hold without one.
+ *
+ * ADVISORY ONLY, also by construction: this returns a message, not a validity verdict. No caller may
+ * use it to disable a control or gate a submit — a client-side guess must never be able to block a
+ * working credential. It is deliberately absent from {@link missingRequiredFields}, which IS a gate.
  *
  * @param config - The active BYOK draft; only `apiKey` is read.
- * @param preset - The resolved preset, or `null` on custom/manual — which carries no pattern and so
- *   is always silent.
- * @returns The preset's `apiKeyFormatHint`, or `null` when there is nothing to warn about.
- * @complexity O(n) in the key's length — one regex test against an authored pattern. Presets are
- *   catalog data, not operator input, so no untrusted expression reaches this.
+ * @param preset - The resolved preset, or `null` on custom/manual, which is exempt from the
+ *   cross-vendor arm (see {@link foreignKeyOwner}) but not from the length floor.
+ * @param presets - The catalog to recognise foreign keys against. Defaults to empty, which is why
+ *   omitting it costs the cross-vendor arm and gains nothing else: an under-informed rule must
+ *   degrade toward silence, never toward guessing.
+ * @returns A translatable {@link ApiKeyWarning}, or `null` when there is nothing to say.
+ * @complexity O(n·m) via {@link foreignKeyOwner}; the length check is O(1).
  */
-export function apiKeyFormatWarning(config: ByokConfig, preset: ProviderPreset | null): string | null {
+export function apiKeyFormatWarning(
+  config: ByokConfig,
+  preset: ProviderPreset | null,
+  presets: readonly ProviderPreset[] = [],
+): ApiKeyWarning | null {
   const key = config.apiKey.trim();
-  if (!key || !preset?.apiKeyPattern || !preset.apiKeyFormatHint) return null;
-  return preset.apiKeyPattern.test(key) ? null : preset.apiKeyFormatHint;
+  if (!key) return null;
+  if (preset) {
+    const owner = foreignKeyOwner(key, preset, presets);
+    if (owner) {
+      return {
+        message: API_KEY_CROSS_VENDOR_WARNING,
+        vars: { vendor: owner.title, provider: preset.title },
+      };
+    }
+  }
+  if (key.length < MIN_PLAUSIBLE_API_KEY_LENGTH) {
+    return { message: API_KEY_TOO_SHORT_WARNING, vars: {} };
+  }
+  return null;
 }
 
 /**

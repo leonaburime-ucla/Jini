@@ -1,10 +1,13 @@
 export {
+  API_KEY_CROSS_VENDOR_WARNING,
+  API_KEY_TOO_SHORT_WARNING,
   CUSTOM_MODEL_SENTINEL,
   CUSTOM_PRESET_ID,
   DEFAULT_AGENT_CLI_ENV_FIELDS,
   DEFAULT_AGENT_DESCRIPTIONS,
   DEFAULT_BASE_URL_BY_PROTOCOL,
   DEFAULT_PROVIDER_PRESETS,
+  MIN_PLAUSIBLE_API_KEY_LENGTH,
   PROTOCOL_OPTIONS,
 } from './constants.js';
 export { createFakeExecutionPort, type FakeExecutionPortOptions } from './dependencies.js';
@@ -57,6 +60,7 @@ export type {
   AgentModelOption,
   AgentModelSource,
   AgentScanState,
+  ApiKeyWarning,
   AgentSupportsCustomModel,
   AgentTestState,
   ApiProtocol,

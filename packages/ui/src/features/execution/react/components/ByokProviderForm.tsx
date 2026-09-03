@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useT } from '../../../i18n/index.js';
-import { CUSTOM_MODEL_SENTINEL } from '../../constants.js';
+import { CUSTOM_MODEL_SENTINEL, DEFAULT_PROVIDER_PRESETS } from '../../constants.js';
 import {
   apiKeyFormatWarning,
   isBaseUrlInvalid,
@@ -23,6 +23,17 @@ export interface ByokProviderFormProps {
   onConfigChange: (config: ByokConfig) => void;
   /** The resolved preset, or `null` when the operator is on custom/manual. */
   preset: ProviderPreset | null;
+  /**
+   * The catalog {@link preset} was resolved from. Read for one thing only: recognising a pasted key
+   * as ANOTHER row's, so `apiKeyFormatWarning` can say whose it looks like. Never used to validate
+   * the selected preset's own key — see that function for why that direction is forbidden.
+   *
+   * Defaults to `DEFAULT_PROVIDER_PRESETS`, matching `ExecutionTab`'s own default for the same
+   * prop, so a host rendering this card standalone still gets the shipped vendor prefixes rather
+   * than losing the check silently. A host with its own catalog should pass it, exactly as
+   * `ExecutionTab` does.
+   */
+  presets?: readonly ProviderPreset[];
   /** Live model-discovery result. `'ok'` suggestions win over the preset's
    *  static `preferredModels`; any other status (including `'error'`) falls
    *  back to them so the field stays usable — but an `'error'` is ALSO
@@ -92,6 +103,7 @@ export function ByokProviderForm({
   config,
   onConfigChange,
   preset,
+  presets = DEFAULT_PROVIDER_PRESETS,
   modelDiscovery,
   connectionTest,
   onTestConnection,
@@ -133,7 +145,7 @@ export function ByokProviderForm({
   const baseUrlInvalid = isBaseUrlInvalid(config);
   /** Deliberately NOT folded into `missing` above: that set drives `is-missing` styling and the
    *  Test-connection disable, and a wrong-SHAPED key must never reach either. */
-  const keyFormatWarning = apiKeyFormatWarning(config, preset);
+  const keyFormatWarning = apiKeyFormatWarning(config, preset, presets);
   const suggestions = modelDiscovery.status === 'ok' ? modelDiscovery.models : (preset?.preferredModels ?? []);
   const modelListId = 'jini-byok-model-options';
 
@@ -230,7 +242,7 @@ export function ByokProviderForm({
               job — the emphasis is the point, the blocking is not. */}
           {keyFormatWarning ? (
             <span className="jini-field-hint is-error" role="status">
-              {t(keyFormatWarning)}
+              {t(keyFormatWarning.message, keyFormatWarning.vars)}
             </span>
           ) : null}
         </label>

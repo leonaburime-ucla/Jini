@@ -246,6 +246,10 @@ export function ExecutionTab({
             config={config.byok}
             onConfigChange={(byok) => onConfigChange({ ...config, byok })}
             preset={selectedPreset}
+            // The WHOLE catalog, not the `protocols`/`gateways` halves the chip rows take: the card
+            // only reads it to recognise a pasted key as some other row's, and a key pasted from a
+            // gateway into a protocol field is exactly the mistake worth naming.
+            presets={presets}
             modelDiscovery={modelDiscovery}
             connectionTest={connectionTest}
             // Also re-runs discovery with the CURRENT byok config, not just the

@@ -6,13 +6,20 @@ import { createFakeExecutionPort } from '../../../dependencies.js';
 import type { ExecutionConfig, ProviderPreset } from '../../../types.js';
 import { ExecutionTab } from '../../../react/components/ExecutionTab.js';
 
+/** Synthetic throughout — never a real credential shape anyone issues. */
+const SYNTHETIC_API_KEY = `sk-test-${'0'.repeat(32)}`;
+
 function config(overrides: Partial<ExecutionConfig> = {}): ExecutionConfig {
   return {
     mode: 'byok',
     byok: {
       protocol: 'anthropic',
       providerId: 'anthropic',
-      apiKey: 'sk-test',
+      // Long enough to be a plausible secret, and matching no prefix in `PRESETS`, so
+      // `apiKeyFormatWarning` stays silent about it. A 7-character placeholder trips the
+      // implausibly-short floor and puts a second `role="status"` region into every render here,
+      // which is noise in a file whose subject is mode switching and connection tests.
+      apiKey: SYNTHETIC_API_KEY,
       baseUrl: 'https://api.example.com',
       model: 'example-model',
     },
@@ -57,7 +64,7 @@ describe('ExecutionTab', () => {
     expect(onConfigChange).toHaveBeenCalledTimes(1);
     const next = onConfigChange.mock.calls[0]![0] as ExecutionConfig;
     expect(next.mode).toBe('local-cli');
-    expect(next.byok.apiKey).toBe('sk-test');
+    expect(next.byok.apiKey).toBe(SYNTHETIC_API_KEY);
   });
 
   it('renders protocol and gateway chip rows and adopts a preset on select', async () => {
