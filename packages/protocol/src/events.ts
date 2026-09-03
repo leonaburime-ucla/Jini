@@ -178,7 +178,25 @@ export type RunAgentPayload =
    * A chat host renders these by calling `@jini-ai/chat`'s `registerMcpUiSurfaceRenderer()` once;
    * this `type` deliberately matches that renderer's `MCP_UI_EXT_EVENT_NAME`.
    */
-  | { type: 'mcp-ui'; toolUseId: string; resource: unknown };
+  | { type: 'mcp-ui'; toolUseId: string; resource: unknown }
+  /**
+   * The wall-clock "still working" signal (`@jini-ai/daemon`'s `run-lifecycle.ts` slow-run notice,
+   * armed kernel-wide by default): a run has gone `slowRunThresholdMs` with no `emit()`, WITHOUT
+   * being finished — a status report, never a termination; the run stays `'running'`.
+   *
+   * Its own `type` rather than reuse of the pre-existing `'status'` variant above, deliberately: no
+   * host in this codebase renders `'status'` events today (verified by reading every consumer of
+   * `@jini-ai/chat`'s reducer output — `MessageRow.tsx`/`message-blocks.ts` have no branch for it,
+   * and Tovu's own admin — `assistant-transport.ts`'s `terminalReasonNotice` — builds a `'status'`
+   * event the exact same way and it is equally unrendered there). A chat host's generic `ext`
+   * escape hatch (`kind: 'ext'`, the fallback every unrecognized `type` already receives from a
+   * transport's translation switch) is a rendering path already proven live by this codebase's
+   * `mcp-ui`/`a2ui` ext renderers, so a new, distinctly-named `type` here is what actually reaches
+   * an operator instead of silently joining `'status'` in an unrendered dead end. A host that
+   * registers no `'slow_running'` ext renderer sees nothing new — additive to every existing
+   * consumer, the same guarantee every other addition to this union already gives.
+   */
+  | { type: 'slow_running'; detail: string };
 
 export type RunProtocolEvent =
   | RunEvent<'start', RunStartPayload>
