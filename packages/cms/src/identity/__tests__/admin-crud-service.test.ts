@@ -365,7 +365,13 @@ test("AC-29: RESET_USER_PASSWORD changes the hash and revokes every active sessi
 
   const { user } = await resetUserPassword({
     deps,
-    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "new-pw-123456" },
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: ownerPrincipalId,
+      principalId: target.id,
+      password: "new-pw-123456",
+      seededOwnerPrincipalId: ownerPrincipalId,
+    },
   });
   assert.notEqual(user.passwordHash, before?.passwordHash);
 
@@ -402,7 +408,13 @@ test("AC-29: RESET_USER_PASSWORD is denied for a caller holding only member.mana
     () =>
       resetUserPassword({
         deps,
-        input: { workspaceId: WORKSPACE, callerPrincipalId: "member-only-caller", principalId: target.id, password: "new-pw-123456" },
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: "member-only-caller",
+          principalId: target.id,
+          password: "new-pw-123456",
+          seededOwnerPrincipalId: ownerPrincipalId,
+        },
       }),
     IdentityForbiddenError
   );
@@ -417,7 +429,13 @@ test("EC-16: RESET_USER_PASSWORD on a user with zero sessions is a no-op revoke,
 
   const { user } = await resetUserPassword({
     deps,
-    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "new-pw-123456" },
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: ownerPrincipalId,
+      principalId: target.id,
+      password: "new-pw-123456",
+      seededOwnerPrincipalId: ownerPrincipalId,
+    },
   });
   assert.ok(user.passwordHash);
 });
@@ -433,7 +451,13 @@ test("RESET_USER_PASSWORD: rejects a blank password", async () => {
     () =>
       resetUserPassword({
         deps,
-        input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "" },
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: ownerPrincipalId,
+          principalId: target.id,
+          password: "",
+          seededOwnerPrincipalId: ownerPrincipalId,
+        },
       }),
     IdentityValidationError
   );
@@ -456,7 +480,13 @@ test("RESET_USER_PASSWORD: the new password authenticates end-to-end through log
 
   await resetUserPassword({
     deps,
-    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "brand-new-pw-998877" },
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: ownerPrincipalId,
+      principalId: target.id,
+      password: "brand-new-pw-998877",
+      seededOwnerPrincipalId: ownerPrincipalId,
+    },
   });
 
   const { principal } = await login({
@@ -470,6 +500,80 @@ test("RESET_USER_PASSWORD: the new password authenticates end-to-end through log
     AuthInvalidCredentialsError,
     "the pre-reset password must no longer authenticate"
   );
+});
+
+/**
+ * 2026-09-03 privilege-escalation finding: `user.manage` is independently grantable and NOT
+ * owner-exclusive (`permissions.ts` — "Create/disable operator users and principals"). Before this
+ * fix, a caller holding only that one delegated permission could call RESET_USER_PASSWORD against
+ * the seeded owner's account, set a password of their own choosing, and log in as owner — a full
+ * takeover from a routine delegation. Mirrors `disablePrincipal`'s own "the seeded owner can never
+ * be [transition]ed [by another caller]" proof above.
+ */
+test("SECURITY: RESET_USER_PASSWORD refuses a THIRD-PARTY caller resetting the seeded owner's password, even with user.manage", async () => {
+  const { deps, repos, ownerPrincipalId } = await buildSeededDeps();
+
+  const { policy } = await createPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, name: "delegated-user-manage" },
+  });
+  await repos.policyPermissions.save({
+    id: "pp-delegated-user-manage",
+    workspaceId: WORKSPACE,
+    policyId: policy.id,
+    permission: "user.manage",
+    resourceType: null,
+    constraintJson: null,
+  });
+  await seedBarePrincipal(repos, "mid-level-admin");
+  await attachPolicy({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: "mid-level-admin", policyId: policy.id },
+  });
+
+  const ownerBefore = await repos.users.findByPrincipalId({ workspaceId: WORKSPACE, principalId: ownerPrincipalId });
+  assert.ok(ownerBefore);
+
+  await assert.rejects(
+    () =>
+      resetUserPassword({
+        deps,
+        input: {
+          workspaceId: WORKSPACE,
+          callerPrincipalId: "mid-level-admin",
+          principalId: ownerPrincipalId,
+          password: "attacker-chosen-pw-123456",
+          seededOwnerPrincipalId: ownerPrincipalId,
+        },
+      }),
+    OwnerRequiredError
+  );
+
+  const ownerAfter = await repos.users.findByPrincipalId({ workspaceId: WORKSPACE, principalId: ownerPrincipalId });
+  assert.equal(ownerAfter?.passwordHash, ownerBefore?.passwordHash, "a refused reset must not have changed the owner's credential");
+});
+
+/**
+ * The refusal above must NOT break the owner's own credential-rotation/incident-recovery path
+ * (`reset-admin-password-self-verified.ts`'s `callerPrincipalId === principalId` self-caller
+ * convention, driven by the `TOVU_ADMIN_RESET_PASSWORD` boot hook and the
+ * `backfill-reset-admin-password.ts` CLI script) — unlike `disablePrincipal`'s unconditional
+ * refusal, this guard exempts the owner acting on itself.
+ */
+test("RESET_USER_PASSWORD: the seeded owner CAN reset its own password (self-service/recovery is not the escalation this guard blocks)", async () => {
+  const { deps, ownerPrincipalId } = await buildSeededDeps();
+
+  const { user } = await resetUserPassword({
+    deps,
+    input: {
+      workspaceId: WORKSPACE,
+      callerPrincipalId: ownerPrincipalId,
+      principalId: ownerPrincipalId,
+      password: "owner-self-rotated-pw-123456",
+      seededOwnerPrincipalId: ownerPrincipalId,
+    },
+  });
+  assert.ok(user.passwordHash);
 });
 
 // ---------------------------------------------------------------------------

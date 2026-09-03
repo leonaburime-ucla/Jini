@@ -181,13 +181,40 @@ export async function updateUser(required: {
  * INV-05), then revokes every one of the target's active sessions (idempotent no-op if it has none,
  * EC-16) — a reset that left old sessions alive would not actually contain a compromised account.
  *
+ * Refuses a THIRD PARTY resetting the seeded owner's password (REQ-11/REQ-13's reasoning, same
+ * `OwnerRequiredError` `disablePrincipal` uses): `user.manage` is independently grantable and not
+ * owner-exclusive (`permissions.ts` — "Create/disable operator users and principals"), so without
+ * this check a caller holding only that one delegated permission could set a password of their own
+ * choosing on the seeded owner's account and log in as owner — a full takeover from a routine
+ * delegation. Checked before the password-policy validation so the refusal doesn't depend on the
+ * caller supplying a well-formed password first.
+ *
+ * Deliberately NOT unconditional the way `disablePrincipal`'s owner check is: the owner resetting
+ * ITS OWN password (`callerPrincipalId === principalId === seededOwnerPrincipalId`) is refused
+ * nothing — that self-service path is real, shipped infrastructure
+ * (`reset-admin-password-self-verified.ts`, driven by both the `TOVU_ADMIN_RESET_PASSWORD`
+ * boot-time incident-recovery hook and the `backfill-reset-admin-password.ts` CLI script), added
+ * specifically to let an operator recover a locked-out owner account out-of-band. Disabling has no
+ * legitimate self-case (an owner disabling itself only ever stands the workspace down), so
+ * `disablePrincipal` can refuse unconditionally; a credential rotation the owner performs on itself
+ * is ordinary hygiene and the documented recovery path, so only a MISMATCHED caller — the actual
+ * escalation shape — is refused here.
+ *
+ * Deliberately NOT INV-08-clamped (unlike `disablePrincipal`'s second guard): a reset changes a
+ * credential, it never changes `status`, so it can never drop the workspace's active owner-`*`
+ * count — INV-08's headcount guard has nothing to protect here.
+ *
+ * `input.seededOwnerPrincipalId` is the caller's job to resolve (`await deps.ownerPrincipalId` at
+ * the route layer, mirroring `disablePrincipal`'s own contract above) — this function takes the
+ * already-resolved id so it stays a plain, directly-testable function.
+ *
  * @complexity O(s) in the target's session count, s = active session rows to revoke — bounded by
  * the same operator-managed-roster scale assumption every other identity list call here makes.
  * @overallScore 100
  */
 export async function resetUserPassword(required: {
   deps: AuthServiceDeps;
-  input: { workspaceId: UUID; callerPrincipalId: UUID; principalId: UUID; password: string };
+  input: { workspaceId: UUID; callerPrincipalId: UUID; principalId: UUID; password: string; seededOwnerPrincipalId: UUID };
 }): Promise<{ user: UserRecord }> {
   const { deps, input } = required;
 
@@ -203,6 +230,12 @@ export async function resetUserPassword(required: {
     principalId: input.principalId,
   });
   if (!target) throw new IdentityNotFoundError(`user '${input.principalId}' was not found`);
+
+  if (target.principalId === input.seededOwnerPrincipalId && input.callerPrincipalId !== input.seededOwnerPrincipalId) {
+    throw new OwnerRequiredError(
+      "the seeded owner's password can only be reset by the owner itself, never by another caller (REQ-11/REQ-13)"
+    );
+  }
 
   if (!input.password) {
     throw new IdentityValidationError("password is required");
