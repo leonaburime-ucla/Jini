@@ -51,13 +51,21 @@ const ALLOWED_TRANSITIONS: Readonly<Record<AsyncOperationStatus, ReadonlySet<Asy
 };
 
 /**
- * Keys whose presence in `state` indicates credential material. Matched case-insensitively against
- * every key at every depth. Deliberately a closed denylist of the shapes this package's own
- * adapters actually produce (`ProviderCredentials.apiKey`, an `authorization` header, a raw
- * bearer/secret/token) rather than a heuristic on values, so the failure is a loud, explainable
- * rejection instead of a guess.
+ * The complete set of key names an operation `state` object may carry, at any depth — this
+ * package's own `PollingVendorAdapter`s' resumption handles (currently only `jobId`; see
+ * `providers/imagerouter-video-async.ts`), never anything a `RequestSigner` needs.
+ *
+ * This is deliberately an allowlist, not a denylist. A denylist of "known credential-shaped
+ * names" was tried first (`apiKey`, `authorization`, `secret`, ...) and it missed `clientSecret` /
+ * `client_secret` on the very first adapter shape that could plausibly return one — and it can
+ * never be complete, because the set of names a vendor's response body (and the adapter written
+ * against it) might use for a credential is unbounded and outside this package's control. An
+ * allowlist inverts the failure mode: it fails *closed*. A legitimate new field an adapter starts
+ * returning is a loud registration error here — extend this set, deliberately, one entry at a
+ * time — never a silent path for a secret to become durable under a name this file never
+ * anticipated.
  */
-const CREDENTIAL_KEY_PATTERN = /^(apikey|api_key|authorization|bearer|secret|password|access_token|accesstoken|refresh_token|refreshtoken)$/i;
+const ALLOWED_STATE_KEYS: ReadonlySet<string> = new Set(['jobId']);
 
 export const CREDENTIAL_IN_STATE_MESSAGE =
   'async operation state must never carry credential material — credentials are re-resolved per poll tick through the signer seam';
@@ -155,10 +163,12 @@ export interface AsyncOperationStore {
 }
 
 /**
- * Rejects credential material anywhere in an operation `state` object.
+ * Rejects anything in an operation `state` object outside the resumption-handle allowlist —
+ * which, as a consequence, rejects credential material regardless of what key name it arrives
+ * under (see `ALLOWED_STATE_KEYS`).
  *
- * @throws `Error(CREDENTIAL_IN_STATE_MESSAGE)` when any key at any depth matches
- *   `CREDENTIAL_KEY_PATTERN`.
+ * @throws `Error` (message starts with `CREDENTIAL_IN_STATE_MESSAGE`, naming the offending key)
+ *   when any key at any depth is not in `ALLOWED_STATE_KEYS`.
  * @complexity O(n) in the total number of keys, bounded by `MAX_STATE_DEPTH` against a cyclic or
  *   pathologically nested object.
  */
@@ -174,8 +184,10 @@ export function assertNoCredentialMaterial(state: Readonly<Record<string, unknow
       return;
     }
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (CREDENTIAL_KEY_PATTERN.test(key)) {
-        throw new Error(CREDENTIAL_IN_STATE_MESSAGE);
+      if (!ALLOWED_STATE_KEYS.has(key)) {
+        throw new Error(
+          `${CREDENTIAL_IN_STATE_MESSAGE} (key "${key}" is not in the resumption-handle allowlist — add it there if it is genuinely not credential material)`,
+        );
       }
       walk(entry, depth + 1);
     }

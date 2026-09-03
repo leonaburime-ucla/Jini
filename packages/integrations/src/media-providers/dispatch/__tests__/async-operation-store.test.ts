@@ -45,6 +45,30 @@ describe('createInMemoryAsyncOperationStore', () => {
     ).rejects.toThrow(CREDENTIAL_IN_STATE_MESSAGE);
   });
 
+  it('rejects a credential-shaped key the old denylist missed (clientSecret)', async () => {
+    // Regression for the concrete bypass: `CREDENTIAL_KEY_PATTERN` never matched `clientSecret` /
+    // `client_secret`, so an adapter returning `{jobId, clientSecret}` cloned the secret straight
+    // into durable state. The fix replaced the denylist with an allowlist of the shapes this
+    // package's adapters actually emit, so this is rejected for not being `jobId` — not because
+    // the key name was pattern-matched as "credential-shaped".
+    const store = createInMemoryAsyncOperationStore();
+
+    await expect(
+      store.create({ ...BASE, state: { jobId: 'job-77', clientSecret: 'vendor-secret' } }),
+    ).rejects.toThrow(CREDENTIAL_IN_STATE_MESSAGE);
+  });
+
+  it('rejects ANY key outside the resumption-handle allowlist, not just names that look like credentials', async () => {
+    // Proves the mechanism is a fail-closed allowlist, not a wider denylist that would rot the
+    // same way: an entirely innocuous-looking, non-credential-shaped key is rejected too, because
+    // it was never registered as a legitimate resumption-handle field.
+    const store = createInMemoryAsyncOperationStore();
+
+    await expect(
+      store.create({ ...BASE, state: { jobId: 'job-77', someBrandNewVendorField: 'anything' } }),
+    ).rejects.toThrow(CREDENTIAL_IN_STATE_MESSAGE);
+  });
+
   it('claims only operations that are due and unleased', async () => {
     const store = createInMemoryAsyncOperationStore();
     await store.create({ ...BASE, id: 'due', nextPollAt: 100 });
