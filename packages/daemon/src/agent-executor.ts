@@ -1292,16 +1292,77 @@ export function buildCodexMcpServerToml(entry: McpJsonServerEntry): string {
 }
 
 /**
+ * Splits a TOML table header's dotted key into its individual segments, honoring quoted parts
+ * (`"basic"` or `'literal'`) that may themselves contain a literal `.` — a bare `.` only
+ * separates segments outside of quotes. Each segment is trimmed and, if quoted, unwrapped.
+ *
+ * Not a full TOML parser: it does not resolve escape sequences (`\"`, `\u...`) inside basic
+ * strings. That is deliberately out of scope — see {@link stripExistingJiniMcpServerTable}'s doc
+ * for why it is safe to skip for this specific comparison.
+ * @param rawKey - The raw text between a table header's `[` and `]`.
+ * @returns The dotted key's segments, dequoted and trimmed.
+ * @complexity O(n) in the length of `rawKey`.
+ */
+function splitTomlDottedKey(rawKey: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (const ch of rawKey) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '.') {
+      segments.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current.trim());
+  return segments;
+}
+
+/**
  * Removes any pre-existing `[mcp_servers.{@link JINI_MCP_SERVER_KEY}]` table — and its
  * `[mcp_servers.{@link JINI_MCP_SERVER_KEY}.*]` subtables (e.g. `.env`) — from a real Codex
  * `config.toml`'s raw text, so {@link buildCodexHomeConfigToml} can append this run's own table
  * without producing the duplicate TOML key Codex's parser rejects at startup.
  *
  * Line-oriented, not a real TOML parser (matching {@link buildCodexMcpServerToml}'s own
- * no-TOML-dependency constraint): a table header is any line that is, after trimming, exactly
- * `[...]`. Once such a header's key matches the jini table or one of its subtables, every following
- * line is dropped until the next table header (of any name) or EOF. Every other table, key, and
- * blank line is passed through untouched.
+ * no-TOML-dependency constraint), but wide enough to survive a hand-edited config, which is the
+ * scenario this whole function exists for. A table header line is recognized when, after
+ * trimming, it is `[<key>]` optionally followed only by a `# comment` (TOML's own grammar allows
+ * nothing else there) — so it tolerates leading indentation, whitespace inside the brackets, a
+ * trailing line comment, and a dotted key written with quoted segments (`["mcp_servers"."jini"]`),
+ * via {@link splitTomlDottedKey}. Once such a header's key matches the jini table or one of its
+ * subtables, every following line is dropped until the next table header (of any name) or EOF.
+ * Every other table, key, comment-only, and blank line is passed through untouched.
+ *
+ * Deliberately unhandled, and why it is safe to leave that way:
+ * - **Escape sequences inside quoted key segments** (e.g. a segment containing `\"`) — neither
+ *   `mcp_servers` nor {@link JINI_MCP_SERVER_KEY} ever needs escaping, and this driver's own
+ *   writer ({@link buildCodexMcpServerToml}) never emits a quoted form at all, so no real
+ *   `config.toml` this driver produced can exercise this gap; a hand-edit that goes out of its
+ *   way to escape a character inside a key that is supposed to spell "jini" would fail to match
+ *   and fall back to today's pre-fix behavior (append a duplicate) rather than silently doing
+ *   something worse.
+ * - **`[[array-of-tables]]` syntax** — Codex's schema has no array-of-tables shape for
+ *   `mcp_servers`, and the header regex's `[^[\]]+` capture cannot match a line starting with a
+ *   second `[`, so `[[mcp_servers.jini]]` is not recognized as a header before or after this fix
+ *   — unchanged, not a new gap.
+ * - **A single quoted segment that happens to spell the same characters with the dot included**
+ *   (e.g. `["mcp_servers.jini"]`, which in real TOML names one key literally containing a `.`,
+ *   not two nested tables) — this collapses to the same joined string as the real nested-table
+ *   spelling and is therefore treated as a match. This is a false positive in the conservative
+ *   direction the reported bug calls for: a missed detection duplicates a key and crashes Codex,
+ *   so on this axis over-matching a spelling nobody would plausibly hand-write for an MCP server
+ *   table is preferable to under-matching the real one.
  * @param existingRaw - The real Codex home's `config.toml` content, already known to be defined
  * (callers pass `''` for a missing file).
  * @returns `existingRaw` with any jini table/subtable removed.
@@ -1312,9 +1373,9 @@ function stripExistingJiniMcpServerTable(existingRaw: string): string {
   const kept: string[] = [];
   let skipping = false;
   for (const line of existingRaw.split('\n')) {
-    const header = /^\s*\[([^[\]]+)\]\s*$/.exec(line);
+    const header = /^\s*\[([^[\]]+)\]\s*(#.*)?$/.exec(line);
     if (header) {
-      const key = (header[1] ?? '').trim();
+      const key = splitTomlDottedKey(header[1] ?? '').join('.');
       skipping = key === jiniTableKey || key.startsWith(`${jiniTableKey}.`);
       if (skipping) continue;
     }
