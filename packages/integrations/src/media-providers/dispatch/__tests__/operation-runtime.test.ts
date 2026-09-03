@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createInMemoryAsyncOperationStore } from '../async-operation-store.js';
-import type { AsyncOperationStore } from '../async-operation-store.js';
+import type { AsyncOperationPatch, AsyncOperationStore } from '../async-operation-store.js';
 import { createBearerSigner } from '../polling-adapter.js';
 import type { PollingVendorAdapter } from '../polling-adapter.js';
 import {
@@ -61,6 +61,24 @@ function fastAdapter(overrides: Partial<PollingVendorAdapter> = {}): PollingVend
       return { kind: 'pending' };
     },
     ...overrides,
+  };
+}
+
+/**
+ * Wraps a real store so its `update` throws for the first `failTimes` calls (or forever, when
+ * `failTimes === Infinity`) before delegating — simulating the transient persistence failure the
+ * audit describes: the vendor round trip already succeeded, and only the write that records it is
+ * unlucky.
+ */
+function withFlakyUpdate(store: AsyncOperationStore, failTimes: number): AsyncOperationStore {
+  let calls = 0;
+  return {
+    ...store,
+    update: async (id: string, patch: AsyncOperationPatch) => {
+      calls += 1;
+      if (calls <= failTimes) throw new Error('transient store outage');
+      return store.update(id, patch);
+    },
   };
 }
 
@@ -160,6 +178,55 @@ describe('startOperation', () => {
     // What the adapter produced carried no auth; the signer added it beneath the adapter.
     expect((unsignedInit?.headers as Record<string, string> | undefined)?.authorization).toBeUndefined();
     expect(seenAuth).toBe('Bearer sk-test-secret');
+  });
+
+  it('retries a transient persistence failure after a successful submit instead of losing the job handle to a "failed" label', async () => {
+    // Regression: the vendor accepted and (presumably) billed the submit, returning `job-77`. The
+    // very next write — persisting that handle as `polling` — fails once, transiently. The old
+    // code's catch marked the row terminally `'failed'` with no state, stranding a paid vendor job
+    // that boot recovery would never look at again (it ignores terminal rows).
+    const realStore = createInMemoryAsyncOperationStore();
+    const flakyStore = withFlakyUpdate(realStore, 1); // fails once, then the retry succeeds
+    const fetchImpl = vi.fn(async () => json({ id: 'job-77' }));
+
+    const outcome = await startOperation(
+      { store: flakyStore, signer, fetchImpl: fetchImpl as unknown as typeof fetch, persistRetryDelaysMs: [1] },
+      { adapter: fastAdapter(), ctx: CTX, providerId: 'imagerouter', routeKey: 'video', ownerRef: 'run-1', graceMs: 500 },
+    );
+
+    const row = await realStore.get(outcome.operationId);
+    expect(row?.status).toBe('polling');
+    expect(row?.state).toEqual({ jobId: 'job-77' });
+    expect(row?.status).not.toBe('failed');
+  });
+
+  it('leaves the row "submitted" rather than falsely "failed" when the post-submit write keeps failing, so boot recovery can still reconcile it', async () => {
+    // Regression, sustained-outage variant: every retry of the post-submit write fails. The row
+    // must not be silently marked `'failed'` (which boot recovery ignores as terminal) — it must
+    // stay at `'submitted'`, which `recoverAfterRestart`'s crash-gap handling already knows how to
+    // pick up and route to `'unknown'` for manual reconciliation rather than lose entirely.
+    const realStore = createInMemoryAsyncOperationStore();
+    const flakyStore = withFlakyUpdate(realStore, Infinity); // never recovers
+    const fetchImpl = vi.fn(async () => json({ id: 'job-77' }));
+
+    const outcome = await startOperation(
+      { store: flakyStore, signer, fetchImpl: fetchImpl as unknown as typeof fetch, persistRetryDelaysMs: [1, 1] },
+      { adapter: fastAdapter(), ctx: CTX, providerId: 'imagerouter', routeKey: 'video', ownerRef: 'run-1', graceMs: 500 },
+    );
+
+    const row = await realStore.get(outcome.operationId);
+    expect(row?.status).toBe('submitted');
+    expect(row?.status).not.toBe('failed');
+
+    // Prove the row is not actually lost: boot recovery reaches it precisely because it is
+    // "submitted", and routes it to "unknown" for a non-idempotent adapter rather than never
+    // seeing it again.
+    const recovery = await recoverAfterRestart(
+      { store: realStore, signer, fetchImpl: fetchImpl as unknown as typeof fetch },
+      { adapters: () => fastAdapter({ submitIsIdempotent: false }), now: Date.now() },
+    );
+    expect(recovery.unknownCrashGap).toBe(1);
+    expect((await realStore.get(outcome.operationId))?.status).toBe('unknown');
   });
 });
 

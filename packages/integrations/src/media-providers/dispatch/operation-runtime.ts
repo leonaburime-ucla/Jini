@@ -27,10 +27,11 @@ import { FETCH_TIMEOUT_MS, fetchWithTimeout } from '@jini-ai/platform';
 
 import type {
   AsyncOperationError,
+  AsyncOperationPatch,
   AsyncOperationRecord,
   AsyncOperationStore,
 } from './async-operation-store.js';
-import type { AnyPollingVendorAdapter, PollingVendorAdapter, RequestSigner, UnsignedVendorRequest } from './polling-adapter.js';
+import type { AnyPollingVendorAdapter, PollingVendorAdapter, RequestSigner, SubmitOutcome, UnsignedVendorRequest } from './polling-adapter.js';
 import type { RenderContext, RenderResult } from './types.js';
 
 /** Interactive budget for the inline attempt. Deliberately NOT `FETCH_TIMEOUT_MS.GENERATE` (10min) — that is the backstop for the *request*, this is the ceiling on making a human wait. */
@@ -38,6 +39,12 @@ export const DEFAULT_GRACE_MS = 4_000;
 export const DEFAULT_MAX_ATTEMPTS = 60;
 export const DEFAULT_DEADLINE_MS = 15 * 60_000;
 export const DEFAULT_POLL_INTERVAL_MS = 5_000;
+/**
+ * Backoff between retries of the write that records a vendor job handle after a successful
+ * submit. A handle that made it past the vendor round trip must not be dropped just because the
+ * very next write is transiently unlucky — see `startOperation`'s post-submit persistence.
+ */
+export const DEFAULT_PERSIST_RETRY_DELAYS_MS: readonly number[] = [50, 150, 400];
 
 /** The lease identity used by boot recovery's claim-then-release read, distinct from any real worker. */
 const RECOVERY_LEASE_OWNER = '__recovery__';
@@ -48,6 +55,8 @@ export interface OperationRuntimeDeps {
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => number;
   readonly newId?: () => string;
+  /** Overrides `DEFAULT_PERSIST_RETRY_DELAYS_MS`. Tests pass a short/empty array to avoid real delays. */
+  readonly persistRetryDelaysMs?: readonly number[];
 }
 
 export interface StartOperationParams<Meta> {
@@ -88,6 +97,50 @@ async function performSigned(
   return fetchWithTimeout(signed.url, signed.init, { timeoutMs });
 }
 
+/** Issues the submit call and parses it. Isolated from persistence so callers can tell "nothing was obtained from the vendor" apart from "a handle was obtained but recording it failed" — only the former is safe to treat as terminal. */
+async function submitAndParse<Meta>(
+  deps: OperationRuntimeDeps,
+  params: StartOperationParams<Meta>,
+): Promise<{ readonly ok: true; readonly outcome: SubmitOutcome } | { readonly ok: false; readonly error: unknown }> {
+  try {
+    const request = params.adapter.buildSubmitRequest(params.ctx);
+    const resp = await performSigned(deps, request as UnsignedVendorRequest<unknown>, FETCH_TIMEOUT_MS.GENERATE);
+    const outcome = await params.adapter.parseSubmitResponse(resp, params.ctx, request);
+    return { ok: true, outcome };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+/**
+ * Applies a store patch, retrying on failure per `retryDelaysMs`. Never throws — callers past
+ * this point already hold a real vendor job handle or a finished result, so the write is retried
+ * rather than let a transient failure fall through to a `'failed'` label that would erase it.
+ *
+ * @returns Whether the write eventually succeeded. On `false`, the row is left exactly as it was
+ *   before this call — for the post-submit write, that means `'submitted'`, which
+ *   `recoverAfterRestart`'s crash-gap handling already knows how to reconcile safely, rather than
+ *   a `'failed'` row that recovery ignores as terminal.
+ * @complexity O(retryDelaysMs.length) store round trips in the worst case.
+ */
+async function persistWithRetry(
+  store: AsyncOperationStore,
+  operationId: string,
+  patch: AsyncOperationPatch,
+  retryDelaysMs: readonly number[],
+): Promise<boolean> {
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      await store.update(operationId, patch);
+      return true;
+    } catch {
+      if (attempt === retryDelaysMs.length) return false;
+      await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+    }
+  }
+  return false;
+}
+
 /**
  * Persists the operation row, issues the submit, and races it against the grace window.
  *
@@ -116,25 +169,33 @@ export async function startOperation<Meta>(
   });
 
   const settle = (async (): Promise<StartOperationOutcome> => {
-    try {
-      const request = params.adapter.buildSubmitRequest(params.ctx);
-      const resp = await performSigned(deps, request as UnsignedVendorRequest<unknown>, FETCH_TIMEOUT_MS.GENERATE);
-      const outcome = await params.adapter.parseSubmitResponse(resp, params.ctx, request);
+    const submitted = await submitAndParse(deps, params);
 
-      if (outcome.kind === 'complete') {
-        await deps.store.update(operationId, { status: 'succeeded', result: resultToPayload(outcome.result) });
-        return { done: true, operationId, result: outcome.result };
-      }
-      await deps.store.update(operationId, {
-        status: 'polling',
-        state: outcome.state,
-        nextPollAt: now() + (outcome.retryAfterMs ?? DEFAULT_POLL_INTERVAL_MS),
-      });
-      return { done: false, operationId };
-    } catch (error) {
-      await deps.store.update(operationId, { status: 'failed', error: toOperationError(error) });
+    if (!submitted.ok) {
+      // Nothing was obtained from the vendor — no job handle exists to protect, so a single
+      // terminal write is safe. Best-effort even here: a write failure at this point must not
+      // reject `settle` (see the `finally` below) and leaves the row `'submitted'`, which is at
+      // least as safe as `'failed'` would have been.
+      await deps.store.update(operationId, { status: 'failed', error: toOperationError(submitted.error) }).catch(() => undefined);
       return { done: false, operationId };
     }
+
+    const { outcome } = submitted;
+    // Past this point a vendor job handle exists (or the job already finished) — losing either
+    // to a transient store write is strictly worse than the failure it would otherwise record,
+    // so the write is retried before anything is allowed to fall back to a `'failed'` label.
+    const patch: AsyncOperationPatch =
+      outcome.kind === 'complete'
+        ? { status: 'succeeded', result: resultToPayload(outcome.result) }
+        : { status: 'polling', state: outcome.state, nextPollAt: now() + (outcome.retryAfterMs ?? DEFAULT_POLL_INTERVAL_MS) };
+
+    await persistWithRetry(deps.store, operationId, patch, deps.persistRetryDelaysMs ?? DEFAULT_PERSIST_RETRY_DELAYS_MS);
+    // Even on exhausted retries there is nothing safer left to do here: the row stays exactly as
+    // `create()` left it (`'submitted'`), and `recoverAfterRestart`'s crash-gap handling exists
+    // precisely for a row whose outcome could not be confirmed durable.
+
+    if (outcome.kind === 'complete') return { done: true, operationId, result: outcome.result };
+    return { done: false, operationId };
   })();
 
   const graceMs = params.graceMs ?? DEFAULT_GRACE_MS;
