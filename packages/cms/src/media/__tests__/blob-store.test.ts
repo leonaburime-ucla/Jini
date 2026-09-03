@@ -40,6 +40,36 @@ async function exerciseContract(store: BlobStorePort, label: string) {
   await store.remove({ storageKey });
 }
 
+/**
+ * `putIfAbsent`'s create-only contract, exercised against both adapters — the property
+ * `hydrateBlobStoreFromSeed()` (Tovu) depends on to close its check-then-overwrite race: a second
+ * `putIfAbsent` for an already-occupied key must report `written: false` AND must leave the
+ * FIRST writer's bytes untouched, never silently replace them with the second caller's bytes.
+ */
+async function exercisePutIfAbsentContract(store: BlobStorePort, label: string) {
+  const workspaceId = "workspace-put-if-absent";
+  const sha256 = "b".repeat(64);
+  const storageKey = computeBlobStorageKey({ workspaceId, sha256 });
+  const firstBytes = new TextEncoder().encode(`${label}-first-writer`);
+  const secondBytes = new TextEncoder().encode(`${label}-second-writer`);
+
+  const first = await store.putIfAbsent({ workspaceId, sha256, bytes: firstBytes });
+  assert.equal(first.written, true, `${label}: first putIfAbsent for a fresh key must write`);
+  assert.equal(first.storageKey, storageKey, `${label}: putIfAbsent storage key shape`);
+
+  const second = await store.putIfAbsent({ workspaceId, sha256, bytes: secondBytes });
+  assert.equal(second.written, false, `${label}: putIfAbsent for an occupied key must report written: false`);
+
+  const stored = await store.get({ storageKey });
+  assert.deepEqual(
+    new Uint8Array(stored),
+    firstBytes,
+    `${label}: the first writer's bytes must survive a second putIfAbsent untouched`
+  );
+
+  await store.remove({ storageKey });
+}
+
 test("InMemoryBlobStore satisfies the BlobStorePort contract", async () => {
   await exerciseContract(new InMemoryBlobStore(), "memory");
 });
@@ -49,6 +79,17 @@ test("LocalFsBlobStore satisfies the BlobStorePort contract", async (t) => {
   t.onTestFinished(() => rm(rootDir, { recursive: true, force: true }));
 
   await exerciseContract(new LocalFsBlobStore({ rootDir }), "fs");
+});
+
+test("InMemoryBlobStore.putIfAbsent satisfies the create-only contract", async () => {
+  await exercisePutIfAbsentContract(new InMemoryBlobStore(), "memory");
+});
+
+test("LocalFsBlobStore.putIfAbsent satisfies the create-only contract", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "media-blobstore-put-if-absent-"));
+  t.onTestFinished(() => rm(rootDir, { recursive: true, force: true }));
+
+  await exercisePutIfAbsentContract(new LocalFsBlobStore({ rootDir }), "fs");
 });
 
 test("computeBlobStorageKey shards by the first two hex chars of the hash", () => {

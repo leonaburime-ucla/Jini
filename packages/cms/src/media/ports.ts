@@ -103,6 +103,26 @@ export interface PutBlobInput {
  */
 export interface BlobStorePort {
   put(input: PutBlobInput): Promise<{ storageKey: string }>;
+  /**
+   * Create-only write: writes `input.bytes` under `computeBlobStorageKey(input)` iff no object
+   * currently occupies that key, atomically with respect to any other concurrent writer targeting
+   * the SAME key — no adapter may implement this as a separate `exists()` check followed by a
+   * separate `put()`, since that pair is exactly the TOCTOU gap this method exists to close (a
+   * second writer's object can land in the window between the two calls and get silently
+   * clobbered by the first writer's `put()`).
+   *
+   * Safe to use as an unconditional substitute for "check, then put" specifically because this
+   * store is content-addressed: `computeBlobStorageKey` derives the key from `sha256`, so two
+   * writers who ever contend for the same key are — short of a sha256 collision — writing
+   * identical bytes. Whichever writer's bytes end up stored, `get()` on that key is correct either
+   * way; `putIfAbsent` only needs to guarantee the WRITE itself lands whole (no torn/interleaved
+   * bytes from two concurrent writers touching the same key at once), not that any particular
+   * writer's copy of the bytes wins.
+   *
+   * @returns `written: true` when this call created the object; `written: false` when the key was
+   *   already occupied and this call left it untouched.
+   */
+  putIfAbsent(input: PutBlobInput): Promise<{ storageKey: string; written: boolean }>;
   get(input: { storageKey: string }): Promise<Uint8Array>;
   exists(input: { storageKey: string }): Promise<boolean>;
   /** Idempotent — removing an already-absent key is not an error. */
