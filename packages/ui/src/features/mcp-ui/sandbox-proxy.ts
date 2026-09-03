@@ -196,6 +196,13 @@ export const SANDBOX_PROXY_HTML = `<!doctype html>
  */
 export function buildIsolatedSandboxProxyHtml(hostOrigin: string): string {
   const hostOriginLiteral = JSON.stringify(hostOrigin);
+  // A `data:` document has no HTTP response of its own to carry a CSP header, so per CSP3's
+  // "local scheme" inheritance rule this inline <script> runs under whatever CSP the embedder's
+  // OWN document currently has (none, for Tovu's admin app today — verified 2026-09-03: no
+  // helmet/blanket CSP is applied to admin HTML responses). If a future hardening pass adds a
+  // strict `script-src` CSP to the embedder, this inline script will need `'unsafe-inline'` (or a
+  // nonce this template does not currently support) to keep running — check that before assuming
+  // this proxy still renders under a new admin CSP.
   return `<!doctype html>
 <html>
 <head>
