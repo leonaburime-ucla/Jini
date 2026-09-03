@@ -254,7 +254,7 @@ function ChatPaneStatusMessages({
 
 interface ChatPaneWorkingDirectoryBlockProps {
   workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined;
-  workingDirectoryControlPlacement: 'below' | 'composer';
+  workingDirectoryControlPlacement: 'below' | 'composer' | 'none';
   pane: UseChatPaneResult;
   t: (key: string) => string;
 }
@@ -282,7 +282,7 @@ function ChatPaneWorkingDirectoryBlock({
       </div>
     );
   }
-  // Two cases render nothing here, for different reasons:
+  // Three cases render nothing here, for different reasons:
   // - No native `workingDirectoryAccess`: the static text line this replaced is gone entirely —
   //   see `ChatPaneComposerArea` below, which threads `pane.workingDirectory` and
   //   `pane.selectRecentDirectory` into `Composer`'s own folder-icon (popover) trigger instead.
@@ -290,8 +290,12 @@ function ChatPaneWorkingDirectoryBlock({
   //   host asked for the control next to "+" instead — `resolveComposerWorkingDirectory` wires
   //   `Composer`'s trigger straight to `pane.pickWorkingDirectory` in that case, so rendering this
   //   block too would put up a second, competing control below the composer.
-  // Either way, the trigger this defers to already covers both "nothing set yet" and "a value is
-  // set", so this block has nothing left to render.
+  // - `workingDirectoryControlPlacement === 'none'`: the host asked for no working-directory
+  //   control anywhere — `resolveComposerWorkingDirectory` supplies neither composer handler in
+  //   this case either, so `Composer`'s own folder-icon gate (`onChangeWorkingDirectory ||
+  //   onPickWorkingDirectory`) renders nothing too. Nothing here has a trigger to defer to.
+  // In every case but `'none'`, the trigger this defers to already covers both "nothing set yet"
+  // and "a value is set", so this block has nothing left to render.
   return null;
 }
 
@@ -324,9 +328,13 @@ function resolveComposerAttachmentPicker(
 
 /**
  * Resolves which of `Composer`'s two mutually-exclusive working-directory props (if either) this
- * render should supply, mirroring `ChatPaneWorkingDirectoryBlock`'s own three-way branch above so
+ * render should supply, mirroring `ChatPaneWorkingDirectoryBlock`'s own four-way branch above so
  * the two never disagree about which control owns the composer's folder-icon slot:
  *
+ * - `workingDirectoryControlPlacement === 'none'`: neither prop, regardless of whether
+ *   `workingDirectoryAccess` is present — the host asked for no working-directory control
+ *   anywhere, so `Composer`'s own gate (`onChangeWorkingDirectory || onPickWorkingDirectory`)
+ *   renders nothing. Checked first because it overrides both cases below.
  * - No `workingDirectoryAccess`: the composer's lightweight text-input popover, via
  *   `onChangeWorkingDirectory`. `pane.selectRecentDirectory` is reused as the plain setter here
  *   rather than inventing one — `useChatPaneWorkingDirectory`'s own doc confirms it already writes
@@ -341,13 +349,16 @@ function resolveComposerAttachmentPicker(
  */
 function resolveComposerWorkingDirectory(
   workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined,
-  workingDirectoryControlPlacement: 'below' | 'composer',
+  workingDirectoryControlPlacement: 'below' | 'composer' | 'none',
   pane: UseChatPaneResult,
 ): {
   workingDirectory?: string | null;
   onChangeWorkingDirectory?: (workingDirectory: string) => void;
   onPickWorkingDirectory?: () => void;
 } {
+  if (workingDirectoryControlPlacement === 'none') {
+    return {};
+  }
   if (!workingDirectoryAccess) {
     return {
       workingDirectory: pane.workingDirectory,
@@ -373,7 +384,7 @@ interface ChatPaneComposerAreaProps {
   slots: ComposerSlots;
   attachmentAccept: ChatPaneProps['attachmentAccept'];
   workingDirectoryAccess: ChatPaneWorkingDirectoryAccess | undefined;
-  workingDirectoryControlPlacement: 'below' | 'composer';
+  workingDirectoryControlPlacement: 'below' | 'composer' | 'none';
   t: (key: string) => string;
 }
 

@@ -190,10 +190,14 @@ export interface ChatPaneProps {
    *   directly (the native OS dialog IS the picker, so there is no popover to open). Nothing
    *   renders below the composer in this mode. Opt in when a host wants a single working-directory
    *   control living next to "+" rather than two competing ones.
+   * - `'none'`: no working-directory control renders anywhere — not the composer's folder icon,
+   *   not the below-composer `WorkingDirPicker`. Opt in when a host has no real filesystem path to
+   *   offer (e.g. a browser context where a directory picker can only ever yield a folder name, not
+   *   a path the agent runtime can use) and a non-functional control would be worse than none.
    *
    * @default 'below'
    */
-  workingDirectoryControlPlacement?: 'below' | 'composer';
+  workingDirectoryControlPlacement?: 'below' | 'composer' | 'none';
   projectFileNames?: ReadonlySet<string>;
   uploadAttachments?: (
     files: File[],

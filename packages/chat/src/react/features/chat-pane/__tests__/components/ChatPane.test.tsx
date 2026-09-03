@@ -780,6 +780,45 @@ describe('ChatPane', () => {
         );
       });
     });
+
+    // Regression: `workingDirectoryControlPlacement="none"` must suppress every
+    // working-directory control, including the composer's own lightweight popover trigger that
+    // `resolveComposerWorkingDirectory` otherwise supplies whenever `workingDirectoryAccess` is
+    // absent, regardless of placement. A host with no real filesystem path to offer (e.g. a
+    // browser context) needs a way to render nothing rather than a non-functional control.
+    it('renders no composer folder-icon trigger when placement="none", even without native access', () => {
+      render(
+        <ChatPane
+          transport={createFakeChatTransport()}
+          agents={agents}
+          initialWorkingDirectory="/Users/test/current"
+          workingDirectoryControlPlacement="none"
+        />,
+      );
+
+      expect(screen.queryByTestId('composer-workdir-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('working-dir-trigger')).not.toBeInTheDocument();
+    });
+
+    it('renders neither the composer trigger nor the below-composer picker when placement="none" with native access supplied', () => {
+      const access = {
+        pickWorkingDirectory: vi.fn(async () => '/Users/test/selected'),
+        recentDirectories: vi.fn(async () => []),
+        directoryExists: vi.fn(async () => true),
+      };
+      render(
+        <ChatPane
+          transport={createFakeChatTransport()}
+          agents={agents}
+          initialWorkingDirectory="/Users/test/current"
+          workingDirectoryAccess={access}
+          workingDirectoryControlPlacement="none"
+        />,
+      );
+
+      expect(screen.queryByTestId('composer-workdir-trigger')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('working-dir-trigger')).not.toBeInTheDocument();
+    });
   });
 
   describe('injected default styles', () => {
