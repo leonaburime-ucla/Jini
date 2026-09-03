@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -90,6 +90,24 @@ test("LocalFsBlobStore.putIfAbsent satisfies the create-only contract", async (t
   t.onTestFinished(() => rm(rootDir, { recursive: true, force: true }));
 
   await exercisePutIfAbsentContract(new LocalFsBlobStore({ rootDir }), "fs");
+});
+
+test("LocalFsBlobStore.exists() surfaces a non-ENOENT stat failure instead of collapsing it into false", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "media-blobstore-exists-error-"));
+  t.onTestFinished(() => rm(rootDir, { recursive: true, force: true }));
+
+  // Make the "ws" path segment a plain FILE, not a directory, so stat() on any storage key
+  // beneath it fails with ENOTDIR — a real, deterministic filesystem error distinct from "the
+  // object is missing" (ENOENT), without depending on OS permission enforcement (unreliable when
+  // tests run as root).
+  await writeFile(join(rootDir, "ws"), "not a directory");
+
+  const store = new LocalFsBlobStore({ rootDir });
+  await assert.rejects(() => store.exists({ storageKey: "ws/ws-1/blobs/ab/abcd1234" }), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.equal((err as NodeJS.ErrnoException).code, "ENOTDIR");
+    return true;
+  });
 });
 
 test("computeBlobStorageKey shards by the first two hex chars of the hash", () => {

@@ -71,12 +71,22 @@ export class LocalFsBlobStore implements BlobStorePort {
     return readFile(this.resolvePath(input.storageKey));
   }
 
+  /**
+   * `ENOENT` (the path genuinely does not exist) resolves to `false`. Any other `stat()` failure
+   * (`EACCES` permission denied, `ENOTDIR`, `EIO`, ...) is rethrown raw — same "catch the one
+   * known code, rethrow everything else" shape {@link putIfAbsent}'s `EEXIST` handling above
+   * already uses — instead of collapsing into `false`: a caller branching on `exists()` must not
+   * mistake "this stat failed" for "the object was deleted".
+   */
   async exists(input: { storageKey: string }): Promise<boolean> {
     try {
       await stat(this.resolvePath(input.storageKey));
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return false;
+      }
+      throw err;
     }
   }
 
