@@ -115,15 +115,21 @@ export interface TreeValidationLimits {
  * Validates a candidate item tree and returns a defensively-cloned copy.
  *
  * Checks (total/bounded validation + target integrity):
+ * - `items` (and every `children` array) is actually an array, and every node
+ *   in it is a non-null object — untrusted JSON bodies can carry `null`
+ *   entries or a non-array `items`/`children`, which must reject as a
+ *   `MenuValidationError`, not throw an uncaught `TypeError`;
  * - every node has a non-empty `id`, unique across the whole tree (id
  *   stability is a caller responsibility — see `updateMenuTree` doc for the
  *   simplification this build accepts);
  * - nesting depth stays within `maxDepth`;
  * - total item count stays within `maxItemCount`;
- * - every target's `kind` is one of the four v1 kinds — reserved kinds
- *   (`dynamicQuery`, `content`) are rejected with a clear "not yet" error
- *   rather than silently accepted;
- * - `url` targets reject a scheme denylist (`javascript:`, `data:`, `vbscript:`).
+ * - every node has a `target` object (a missing/`null` `target` rejects
+ *   rather than crashing) whose `kind` is one of the four v1 kinds — reserved
+ *   kinds (`dynamicQuery`, `content`) are rejected with a clear "not yet"
+ *   error rather than silently accepted;
+ * - `url` targets require a non-empty string `href` and reject a scheme
+ *   denylist (`javascript:`, `data:`, `vbscript:`).
  *
  * @complexity O(n) over total node count for one full walk; no per-node
  * backtracking. Space is O(n) for the cloned tree plus O(n) for the id set.
@@ -139,6 +145,9 @@ export function validateAndCloneTree(
   let count = 0;
 
   function walk(nodes: readonly NavItemNode[], depth: number): NavItemNode[] {
+    if (!Array.isArray(nodes)) {
+      throw new MenuValidationError("menu items must be an array");
+    }
     if (depth > maxDepth) {
       throw new MenuValidationError(`menu tree exceeds max nesting depth of ${maxDepth}`);
     }
@@ -146,6 +155,9 @@ export function validateAndCloneTree(
       count += 1;
       if (count > maxItemCount) {
         throw new MenuValidationError(`menu tree exceeds max item count of ${maxItemCount}`);
+      }
+      if (!node || typeof node !== "object") {
+        throw new MenuValidationError("every menu item must be an object");
       }
       if (!node.id || !node.id.trim()) {
         throw new MenuValidationError("every menu item requires a non-empty id");
@@ -164,7 +176,16 @@ export function validateAndCloneTree(
   return walk(items, 1);
 }
 
+/**
+ * Guards every field this function reads off an untrusted `target` before reading it — a `target`
+ * arriving `null`/`undefined` (missing from the request body) or a `url` target missing `href`
+ * previously threw an uncaught `TypeError` here, which the host's route handler had no case for and
+ * surfaced as a 500 instead of the intended 400 `MenuValidationError` path.
+ */
 function validateTarget(target: NavTarget): void {
+  if (!target || typeof target !== "object") {
+    throw new MenuValidationError("every menu item requires a target");
+  }
   const kind = target.kind;
   if (RESERVED_TARGET_KINDS.has(kind)) {
     throw new MenuValidationError(
@@ -175,11 +196,13 @@ function validateTarget(target: NavTarget): void {
     throw new MenuValidationError(`unknown target kind '${kind}'`);
   }
   if (kind === "url") {
-    const href = (target as NavUrlTarget).href.trim().toLowerCase();
+    const rawHref = (target as NavUrlTarget).href;
+    if (typeof rawHref !== "string" || !rawHref.trim()) {
+      throw new MenuValidationError("url target requires a non-empty href");
+    }
+    const href = rawHref.trim().toLowerCase();
     if (URL_SCHEME_DENYLIST.some((scheme) => href.startsWith(scheme))) {
-      throw new MenuValidationError(
-        `url target uses a disallowed scheme: '${(target as NavUrlTarget).href}'`
-      );
+      throw new MenuValidationError(`url target uses a disallowed scheme: '${rawHref}'`);
     }
   }
 }

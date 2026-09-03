@@ -293,6 +293,136 @@ test("updateMenuTree rejects a javascript: url target", async () => {
   );
 });
 
+test("updateMenuTree rejects a menu item with a missing target as 400 validation, not an uncaught crash", async () => {
+  const repo = new InMemoryMenuRepo();
+  const clock = fakeClock();
+  const idGen = fakeIdGen();
+  const { outbox } = fakeOutbox();
+
+  const { menu } = await createMenu({
+    deps: { repo, clock, idGen, outbox },
+    input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+  });
+
+  await assert.rejects(
+    () =>
+      updateMenuTree({
+        deps: { repo, clock, idGen, outbox },
+        input: {
+          workspaceId: "ws-1",
+          id: menu.id,
+          expectedVersion: menu.version,
+          items: [
+            // Untrusted request body shape: `target` absent entirely (not merely
+            // an unrecognized kind). Previously threw `TypeError: Cannot read
+            // properties of undefined (reading 'kind')` — an uncaught crash the
+            // host's route handler had no case for, surfacing as a 500.
+            { id: "item-1", label: "Home" } as unknown as NavItemNode,
+          ],
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
+      assert.equal((error as Error).message, "every menu item requires a target");
+      return true;
+    }
+  );
+});
+
+test("updateMenuTree rejects a menu item with a null target as 400 validation, not an uncaught crash", async () => {
+  const repo = new InMemoryMenuRepo();
+  const clock = fakeClock();
+  const idGen = fakeIdGen();
+  const { outbox } = fakeOutbox();
+
+  const { menu } = await createMenu({
+    deps: { repo, clock, idGen, outbox },
+    input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+  });
+
+  await assert.rejects(
+    () =>
+      updateMenuTree({
+        deps: { repo, clock, idGen, outbox },
+        input: {
+          workspaceId: "ws-1",
+          id: menu.id,
+          expectedVersion: menu.version,
+          items: [item({ id: "item-1", target: null as unknown as NavItemNode["target"] })],
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
+      assert.equal((error as Error).message, "every menu item requires a target");
+      return true;
+    }
+  );
+});
+
+test("updateMenuTree rejects a url target with a missing href as 400 validation, not an uncaught crash", async () => {
+  const repo = new InMemoryMenuRepo();
+  const clock = fakeClock();
+  const idGen = fakeIdGen();
+  const { outbox } = fakeOutbox();
+
+  const { menu } = await createMenu({
+    deps: { repo, clock, idGen, outbox },
+    input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+  });
+
+  await assert.rejects(
+    () =>
+      updateMenuTree({
+        deps: { repo, clock, idGen, outbox },
+        input: {
+          workspaceId: "ws-1",
+          id: menu.id,
+          expectedVersion: menu.version,
+          items: [
+            // `href` is the second field this sink reads unguarded — previously
+            // threw `TypeError: Cannot read properties of undefined (reading 'trim')`.
+            item({ id: "item-1", target: { kind: "url" } as unknown as NavItemNode["target"] }),
+          ],
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
+      assert.equal((error as Error).message, "url target requires a non-empty href");
+      return true;
+    }
+  );
+});
+
+test("updateMenuTree rejects a null entry inside the item tree as 400 validation, not an uncaught crash", async () => {
+  const repo = new InMemoryMenuRepo();
+  const clock = fakeClock();
+  const idGen = fakeIdGen();
+  const { outbox } = fakeOutbox();
+
+  const { menu } = await createMenu({
+    deps: { repo, clock, idGen, outbox },
+    input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+  });
+
+  await assert.rejects(
+    () =>
+      updateMenuTree({
+        deps: { repo, clock, idGen, outbox },
+        input: {
+          workspaceId: "ws-1",
+          id: menu.id,
+          expectedVersion: menu.version,
+          items: [null as unknown as NavItemNode],
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
+      assert.equal((error as Error).message, "every menu item must be an object");
+      return true;
+    }
+  );
+});
+
 // ---------------------------------------------------------------------------
 // assignLocation
 // ---------------------------------------------------------------------------
