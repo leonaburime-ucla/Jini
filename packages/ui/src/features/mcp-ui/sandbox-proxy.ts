@@ -165,3 +165,86 @@ export const SANDBOX_PROXY_HTML = `<!doctype html>
 </script>
 </body>
 </html>`;
+
+/**
+ * Same script as {@link SANDBOX_PROXY_HTML}, with one load-bearing difference: `hostOrigin` is the
+ * caller-supplied `hostOrigin` argument, baked in as a literal, instead of read from
+ * `window.location.origin`. Paired with {@link buildSandboxProxyDataUrl}, this is what actually
+ * closes the "admin-origin authority" gap this module's own doc flags above — not by dropping
+ * `allow-same-origin` (verified against the installed `@mcp-ui/client@7.1.1` bundle: `AppFrame`
+ * hardcodes `sandbox="allow-scripts allow-same-origin allow-forms"` on the iframe it creates, with no
+ * prop to override it — neither this package nor a host application can refuse that flag), but by
+ * changing what "same-origin" MEANS: a `data:` URL gets a fresh, unique, OPAQUE origin under the URL
+ * Standard's own origin algorithm, a rule that holds regardless of the iframe's `sandbox` attribute
+ * (verified live against a real Chromium build, 2026-09-03: an iframe with the exact hardcoded flags
+ * above, navigated to a `data:` URL, still reports `window.location.origin === "null"` inside). Once
+ * the proxy's own document has no real origin to share with its embedder, the guest HTML this script
+ * `document.write`s into it can never reach the embedder's cookies, storage, or same-origin fetches —
+ * there is no real origin left for "same-origin" to mean.
+ *
+ * That is also why this can no longer read `window.location.origin` for the ready/resource-ready
+ * handshake's own origin check: inside an opaque-origin document that call always returns the literal
+ * string `"null"`, which would never equal the embedder's real origin and would permanently break the
+ * handshake. `hostOrigin` has to come from somewhere else — the embedder's OWN trusted value, baked in
+ * at construction time. It must never be read back from this document's own URL (query string,
+ * fragment, or otherwise): whoever can choose this document's `src` can choose that value too, which
+ * would defeat the check exactly as this module's existing doc warns for the cross-origin-hosting
+ * case.
+ *
+ * @param hostOrigin - The embedder's own real origin, computed by the embedder itself (e.g. its own
+ *   `window.location.origin`) — never a value parsed out of this proxy document's own URL.
+ */
+export function buildIsolatedSandboxProxyHtml(hostOrigin: string): string {
+  const hostOriginLiteral = JSON.stringify(hostOrigin);
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MCP-UI sandbox proxy</title>
+<style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; }</style>
+</head>
+<body>
+<script>
+(function () {
+  "use strict";
+  var host = window.parent;
+  var hostOrigin = ${hostOriginLiteral};
+  if (host === window) return;
+
+  function isFromHost(event) {
+    return event.source === host && event.origin === hostOrigin;
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!isFromHost(event)) return;
+    var data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.method !== "ui/notifications/sandbox-resource-ready") return;
+    var html = data.params && data.params.html;
+    if (typeof html !== "string") return;
+    document.open();
+    document.write(html);
+    document.close();
+  });
+
+  host.postMessage({ method: "ui/notifications/sandbox-proxy-ready", params: {} }, hostOrigin);
+}());
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Wraps {@link buildIsolatedSandboxProxyHtml} as a `data:` URL — the form a host passes directly as
+ * `sandbox={{ url }}` to `@mcp-ui/client`'s `AppRenderer`/`AppFrame` (this package's
+ * `McpUiHost`/`useMcpUiHost` included) in place of a same-origin HTTP route. No server route, second
+ * host, or CORS/postMessage-origin change is needed to get the isolation official MCP-UI guidance
+ * recommends — see {@link buildIsolatedSandboxProxyHtml}'s own doc for why a `data:` URL earns that
+ * isolation on its own.
+ *
+ * @param hostOrigin - Forwarded verbatim to {@link buildIsolatedSandboxProxyHtml} — see that
+ *   function's own doc for the contract.
+ */
+export function buildSandboxProxyDataUrl(hostOrigin: string): string {
+  return `data:text/html;charset=utf-8,${encodeURIComponent(buildIsolatedSandboxProxyHtml(hostOrigin))}`;
+}
