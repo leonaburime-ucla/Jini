@@ -270,105 +270,119 @@ export function ByokProviderForm({
         </>
       ) : null}
 
-      {showsBaseUrlField(preset) ? (
+      {/* Base URL and Max tokens share a row (owner ruling, 2026-09-02) — neither needs the card's
+          full width, and stacking them wasted a whole line on a number input. A WRAPPING flex row,
+          not a two-column grid: the card is rendered at very different widths (a settings modal, a
+          full admin page, a phone), and at a narrow one this has to become Base URL with Max tokens
+          BELOW it rather than two squeezed columns. Source order is therefore the stacking order.
+          With `showsBaseUrlField` false the row holds one child, which then fills it. */}
+      <div className="jini-byok-field-row">
+        {showsBaseUrlField(preset) ? (
+          <label className="jini-field">
+            <span className="jini-field-label">
+              {t('Base URL')}
+              <span className="jini-field-required" aria-hidden="true">
+                *
+              </span>
+            </span>
+            <input
+              className={'jini-input' + (baseUrlInvalid || missing.has('baseUrl') ? ' is-missing' : '')}
+              type="url"
+              inputMode="url"
+              spellCheck={false}
+              value={config.baseUrl}
+              onChange={(event) => patch({ baseUrl: event.target.value })}
+            />
+            <span className={'jini-field-hint' + (baseUrlInvalid ? ' is-error' : '')}>
+              {baseUrlInvalid
+                ? t('Enter an absolute http(s) URL.')
+                : t('Default endpoint. Usually no need to change this.')}
+            </span>
+          </label>
+        ) : null}
+
+        <label className="jini-field">
+          <span className="jini-field-label">{t('Max tokens (optional)')}</span>
+          <input
+            className="jini-input"
+            type="number"
+            min={1}
+            step={1}
+            value={config.maxTokens ?? ''}
+            onChange={(event) => patch({ maxTokens: parseMaxTokens(event.target.value) })}
+          />
+          <span className="jini-field-hint">
+            {t('Cap on the response length. Leave blank to use the model default.')}
+          </span>
+        </label>
+      </div>
+
+      {/* "Test connection" sits BESIDE the Model control (owner ruling, 2026-09-02), not on a row of
+          its own underneath it. It probes the endpoint the Model field belongs to, and a row's
+          distance made it read as unrelated to any particular field.
+
+          A SIBLING of the label, never a child: a `<button>` inside a `<label>` makes every click on
+          the button also focus and activate the labelled control — here, opening the model picker —
+          and nesting interactive controls in a label is an accessibility defect regardless. Same rule
+          `apiKeyFooter` documents.
+
+          Wrapping, and `align-items: flex-end`, so the button sits on the input's own line at a
+          comfortable width and drops below the field at a narrow one. Both status lines
+          (discovery error, connection result) are deliberately OUTSIDE this row: inside it they would
+          either sit beside the button or, as label children, push it out of line the moment either
+          appeared. */}
+      <div className="jini-byok-model-row">
         <label className="jini-field">
           <span className="jini-field-label">
-            {t('Base URL')}
+            {t('Model')}
             <span className="jini-field-required" aria-hidden="true">
               *
             </span>
           </span>
-          <input
-            className={'jini-input' + (baseUrlInvalid || missing.has('baseUrl') ? ' is-missing' : '')}
-            type="url"
-            inputMode="url"
-            spellCheck={false}
-            value={config.baseUrl}
-            onChange={(event) => patch({ baseUrl: event.target.value })}
-          />
-          <span className={'jini-field-hint' + (baseUrlInvalid ? ' is-error' : '')}>
-            {baseUrlInvalid
-              ? t('Enter an absolute http(s) URL.')
-              : t('Default endpoint. Usually no need to change this.')}
-          </span>
+          {showModelPicker ? (
+            <SearchableModelSelect
+              className={'jini-input' + (missing.has('model') ? ' is-missing' : '')}
+              ariaLabel={t('Model')}
+              searchPlaceholder={t('Search models')}
+              testId="jini-byok-model-select"
+              searchInputTestId="jini-byok-model-search"
+              value={customModelActive ? CUSTOM_MODEL_SENTINEL : config.model}
+              models={liveModels.map((model) => ({ id: model, label: model }))}
+              additionalOptions={[{ value: CUSTOM_MODEL_SENTINEL, label: t('Custom…') }]}
+              onChange={(next) => {
+                if (next === CUSTOM_MODEL_SENTINEL) {
+                  // Open the free-text box WITHOUT clearing `config.model`. Blanking it here would
+                  // discard a working model the moment someone opened the picker to look at it.
+                  setExplicitCustomModel(true);
+                  return;
+                }
+                setExplicitCustomModel(false);
+                patch({ model: next });
+              }}
+            />
+          ) : null}
+          {/* Rendered when there is no live list at all (unchanged behaviour, `<datalist>` and all),
+              and ALSO alongside the picker while custom mode is active — the second case is what
+              keeps an unlisted model id typeable instead of unreachable. */}
+          {!showModelPicker || customModelActive ? (
+            <input
+              className={'jini-input' + (missing.has('model') ? ' is-missing' : '')}
+              list={!showModelPicker && suggestions.length > 0 ? modelListId : undefined}
+              spellCheck={false}
+              value={config.model}
+              onChange={(event) => patch({ model: event.target.value })}
+            />
+          ) : null}
+          {!showModelPicker && suggestions.length > 0 ? (
+            <datalist id={modelListId}>
+              {suggestions.map((model) => (
+                <option key={model} value={model} />
+              ))}
+            </datalist>
+          ) : null}
         </label>
-      ) : null}
 
-      <label className="jini-field">
-        <span className="jini-field-label">{t('Max tokens (optional)')}</span>
-        <input
-          className="jini-input"
-          type="number"
-          min={1}
-          step={1}
-          value={config.maxTokens ?? ''}
-          onChange={(event) => patch({ maxTokens: parseMaxTokens(event.target.value) })}
-        />
-        <span className="jini-field-hint">
-          {t('Cap on the response length. Leave blank to use the model default.')}
-        </span>
-      </label>
-
-      <label className="jini-field">
-        <span className="jini-field-label">
-          {t('Model')}
-          <span className="jini-field-required" aria-hidden="true">
-            *
-          </span>
-        </span>
-        {showModelPicker ? (
-          <SearchableModelSelect
-            className={'jini-input' + (missing.has('model') ? ' is-missing' : '')}
-            ariaLabel={t('Model')}
-            searchPlaceholder={t('Search models')}
-            testId="jini-byok-model-select"
-            searchInputTestId="jini-byok-model-search"
-            value={customModelActive ? CUSTOM_MODEL_SENTINEL : config.model}
-            models={liveModels.map((model) => ({ id: model, label: model }))}
-            additionalOptions={[{ value: CUSTOM_MODEL_SENTINEL, label: t('Custom…') }]}
-            onChange={(next) => {
-              if (next === CUSTOM_MODEL_SENTINEL) {
-                // Open the free-text box WITHOUT clearing `config.model`. Blanking it here would
-                // discard a working model the moment someone opened the picker to look at it.
-                setExplicitCustomModel(true);
-                return;
-              }
-              setExplicitCustomModel(false);
-              patch({ model: next });
-            }}
-          />
-        ) : null}
-        {/* Rendered when there is no live list at all (unchanged behaviour, `<datalist>` and all),
-            and ALSO alongside the picker while custom mode is active — the second case is what
-            keeps an unlisted model id typeable instead of unreachable. */}
-        {!showModelPicker || customModelActive ? (
-          <input
-            className={'jini-input' + (missing.has('model') ? ' is-missing' : '')}
-            list={!showModelPicker && suggestions.length > 0 ? modelListId : undefined}
-            spellCheck={false}
-            value={config.model}
-            onChange={(event) => patch({ model: event.target.value })}
-          />
-        ) : null}
-        {!showModelPicker && suggestions.length > 0 ? (
-          <datalist id={modelListId}>
-            {suggestions.map((model) => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
-        ) : null}
-        {modelDiscovery.status === 'error' ? (
-          // Non-blocking (the field above stays editable, with the preset's static
-          // suggestions) but never silent — a discovery failure is an operator-actionable
-          // fact (bad key, wrong base URL, unreachable endpoint), not "no models exist".
-          <span className="jini-field-hint is-error" role="status">
-            {t('Could not load live models: {message}', { message: modelDiscovery.message })}
-          </span>
-        ) : null}
-      </label>
-
-      {canTestConnection ? (
-        <div className="jini-byok-test-row">
+        {canTestConnection ? (
           <button
             type="button"
             className="jini-btn jini-byok-test-btn"
@@ -377,16 +391,35 @@ export function ByokProviderForm({
           >
             {connectionTest.status === 'testing' ? t('Testing…') : t('Test connection')}
           </button>
-          {connectionTest.status === 'ok' || connectionTest.status === 'error' ? (
-            <span
-              className={`jini-byok-test-status is-${connectionTest.status}`}
-              role={connectionTest.status === 'error' ? 'alert' : 'status'}
-            >
-              {connectionTest.status === 'ok'
-                ? (connectionTest.message ?? t('Connection succeeded'))
-                : connectionTest.message}
-            </span>
-          ) : null}
+        ) : null}
+      </div>
+
+      {modelDiscovery.status === 'error' ? (
+        // Non-blocking (the field above stays editable, with the preset's static
+        // suggestions) but never silent — a discovery failure is an operator-actionable
+        // fact (bad key, wrong base URL, unreachable endpoint), not "no models exist".
+        //
+        // Moved out of the Model `<label>` when the probe button moved up beside it: as a label
+        // child it grew the field and pushed the bottom-aligned button off the input's line every
+        // time discovery failed. Same element, same `.jini-field-hint.is-error[role="status"]`
+        // identity host suites locate it by — only its parent changed.
+        <span className="jini-field-hint is-error" role="status">
+          {t('Could not load live models: {message}', { message: modelDiscovery.message })}
+        </span>
+      ) : null}
+
+      {/* The probe's RESULT keeps its own full-width line. Beside the button it would have made the
+          Model row's width depend on the length of a provider's error message. */}
+      {canTestConnection && (connectionTest.status === 'ok' || connectionTest.status === 'error') ? (
+        <div className="jini-byok-test-row">
+          <span
+            className={`jini-byok-test-status is-${connectionTest.status}`}
+            role={connectionTest.status === 'error' ? 'alert' : 'status'}
+          >
+            {connectionTest.status === 'ok'
+              ? (connectionTest.message ?? t('Connection succeeded'))
+              : connectionTest.message}
+          </span>
         </div>
       ) : null}
 

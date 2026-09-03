@@ -383,6 +383,52 @@ a.jini-button {
   color: var(--jini-text-strong);
 }
 
+/* Base URL + Max tokens on one line (owner ruling, 2026-09-02). A WRAPPING flex row rather than a
+   two-column grid, and the responsiveness is entirely in these two declarations: `flex: 1 1 210px`
+   is what makes each field claim half a wide card and the whole of a narrow one, and `flex-wrap`
+   is what lets the second drop below the first instead of both being squeezed. Container-driven,
+   with no media query — this card renders inside a settings modal, a full-width admin page, and a
+   phone, and a viewport breakpoint would be answering the wrong question in the first two.
+
+   `align-items: start` so a field with a two-line hint (an invalid base URL) does not stretch its
+   neighbour's input to match. */
+.jini-byok-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 14px;
+}
+
+.jini-byok-field-row > .jini-field {
+  flex: 1 1 210px;
+  min-width: 0;
+}
+
+/* The Model control with "Test connection" beside it, same wrapping rule as the field row above so
+   the button drops below the field on a narrow card.
+
+   `align-items: flex-end` is what puts the button on the input's own line rather than level with the
+   field's "Model" caption: the label is a flex column of [caption, control], so its bottom edge IS
+   the control's bottom edge. That holds only because both status lines live outside this row — a
+   hint inside the label would extend it downward and take the button with it. */
+.jini-byok-model-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.jini-byok-model-row > .jini-field {
+  flex: 1 1 210px;
+  min-width: 0;
+}
+
+.jini-byok-model-row > .jini-byok-test-btn {
+  flex: 0 0 auto;
+}
+
+/* Now the probe's RESULT line only — the button itself moved up into `.jini-byok-model-row`. Kept as
+   a row rather than a bare span so a future second status can sit beside this one. */
 .jini-byok-test-row {
   display: flex;
   align-items: center;
