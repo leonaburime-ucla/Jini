@@ -170,6 +170,10 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
   const [activeUploadCount, setActiveUploadCount] = useState(0);
   const [attachmentError, setAttachmentError] = useState<Error | null>(null);
   const [queuedPrompt, setQueuedPrompt] = useState<string | null>(null);
+  // The conversation `queuedPrompt` was queued against. Compared with `options.conversationId` at
+  // flush time so a prompt queued behind a streaming run in one conversation can never be posted
+  // into a different one the caller switched to before that run finished.
+  const queuedConversationIdRef = useRef<string | null | undefined>(undefined);
   const mountedRef = useRef(true);
   const attachmentGenerationRef = useRef(0);
   const attachmentBatchIdRef = useRef(createAttachmentBatchId());
@@ -331,23 +335,26 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
     // Queue instead of no-op'ing. `setDraft('')` and NOT `composer.reset()`: reset also discards
     // staged attachments, which this turn still needs when it finally goes out.
     if (isChatPaneQueueableBlocker(sendBlocker)) {
+      queuedConversationIdRef.current = options.conversationId;
       setQueuedPrompt(prompt);
       composer.setDraft('');
       return;
     }
     if (!canSend) return;
     await sendPrompt(prompt);
-  }, [canSend, composer, sendBlocker, sendPrompt]);
+  }, [canSend, composer, options.conversationId, sendBlocker, sendPrompt]);
 
   const interruptSend = useCallback(() => {
     const prompt = composerPrompt(composer);
     if (!prompt) return;
+    queuedConversationIdRef.current = options.conversationId;
     setQueuedPrompt(prompt);
     composer.setDraft('');
     conversation.cancel();
-  }, [composer, conversation]);
+  }, [composer, conversation, options.conversationId]);
 
   const cancelQueued = useCallback(() => {
+    queuedConversationIdRef.current = undefined;
     setQueuedPrompt(null);
   }, []);
 
@@ -356,9 +363,17 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
   // queue slot BEFORE awaiting keeps a re-render from double-sending the same prompt.
   useEffect(() => {
     if (queuedPrompt === null || sendBlocker !== null) return;
+    if (queuedConversationIdRef.current !== options.conversationId) {
+      // The conversation changed while this prompt waited behind a streaming run — sending it now
+      // would post it into a conversation the user never saw it queued against. Drop it instead
+      // (same as `cancelQueued`) rather than misrouting it.
+      queuedConversationIdRef.current = undefined;
+      setQueuedPrompt(null);
+      return;
+    }
     setQueuedPrompt(null);
     void sendPrompt(queuedPrompt);
-  }, [queuedPrompt, sendBlocker, sendPrompt]);
+  }, [options.conversationId, queuedPrompt, sendBlocker, sendPrompt]);
 
   const reset = useCallback(() => {
     attachmentGenerationRef.current += 1;
@@ -370,6 +385,11 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
     conversation.setMessages(options.initialMessages ?? []);
     composer.reset();
     setAttachmentError(null);
+    // Without this, a prompt queued behind a streaming run survives `reset()` and — once
+    // `conversation.cancel()` above clears the streaming blocker — the flush effect fires it into
+    // the just-reset conversation instead of discarding it like the rest of this turn's state.
+    queuedConversationIdRef.current = undefined;
+    setQueuedPrompt(null);
   }, [composer, conversation, options.initialMessages]);
 
   return {

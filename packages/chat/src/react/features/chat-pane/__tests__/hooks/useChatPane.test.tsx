@@ -420,6 +420,80 @@ describe('useChatPane', () => {
     expect(transport.calls).toHaveLength(1);
   });
 
+  it('drops a queued prompt on reset instead of flushing it into the freshly reset conversation', async () => {
+    // Reproduces the owner-reported bug: `reset()` never cleared `queuedPrompt`, so a prompt
+    // queued behind a streaming run survived the reset. `conversation.cancel()` (inside `reset`)
+    // clears the 'streaming' blocker synchronously, so the flush effect fired right after,
+    // silently sending the stale queued turn into the just-reset conversation.
+    const transport = createFakeChatTransport();
+    const { result } = renderHook(() => useChatPane({
+      transport,
+      agents,
+      selection: { agentId: 'codex' },
+      initialDraft: 'first turn',
+    }));
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+    act(() => result.current.composer.setDraft('second turn'));
+    await act(() => result.current.send());
+    expect(result.current.queuedPrompt).toBe('second turn');
+
+    act(() => result.current.reset());
+
+    expect(result.current.queuedPrompt).toBeNull();
+    expect(result.current.conversation.messages).toEqual([]);
+    // Give any (buggy) flush effect a full macrotask to fire — `startRun` and its state updates
+    // settle asynchronously, so asserting immediately after `reset()` would pass even on the
+    // unfixed code for the wrong reason (the send hadn't landed in `transport.calls` yet).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(result.current.conversation.isStreaming).toBe(false));
+    expect(transport.calls).toHaveLength(1);
+  });
+
+  it('drops a queued prompt instead of misrouting it into a conversation switched to mid-flight', async () => {
+    // Reproduces the owner-reported bug: `queuedPrompt` was not scoped to the conversation it was
+    // queued against. A turn queued behind a streaming run in conversation A stayed queued (the
+    // underlying run instance keeps streaming regardless of the `conversationId` prop), then flushed
+    // into conversation B — the conversation the caller had since switched to — once that run ended.
+    const transport = createFakeChatTransport();
+    const { result, rerender } = renderHook(
+      (props: { conversationId: string }) => useChatPane({
+        transport,
+        agents,
+        selection: { agentId: 'codex' },
+        initialDraft: 'first turn',
+        ...props,
+      }),
+      { initialProps: { conversationId: 'conv-a' } },
+    );
+
+    await act(() => result.current.send());
+    await waitFor(() => expect(transport.calls).toHaveLength(1));
+    expect(transport.calls[0]?.input.conversationId).toBe('conv-a');
+    expect(result.current.conversation.isStreaming).toBe(true);
+
+    act(() => result.current.composer.setDraft('second turn'));
+    await act(() => result.current.send());
+    expect(result.current.queuedPrompt).toBe('second turn');
+
+    // Switch conversations WHILE the first run is still streaming — a same-instance ChatPane
+    // moving between conversations without unmounting, e.g. a sidebar switch.
+    rerender({ conversationId: 'conv-b' });
+    expect(result.current.conversation.conversationId).toBe('conv-b');
+    // The underlying run instance is unaffected by the conversationId prop, so it is still the
+    // same in-flight run from conversation A.
+    expect(result.current.conversation.isStreaming).toBe(true);
+
+    await act(async () => {
+      transport.finish();
+    });
+    await waitFor(() => expect(result.current.conversation.isStreaming).toBe(false));
+
+    expect(result.current.queuedPrompt).toBeNull();
+    expect(transport.calls).toHaveLength(1);
+  });
+
   it('ignores a stale upload failure raised after a reset already started a fresh batch', async () => {
     const pending: Array<{
       resolve: (attachments: Array<{ path: string; name: string; kind: 'file' }>) => void;
