@@ -293,4 +293,39 @@ describe('codexAgentDef.buildArgs', () => {
     setPlatform('darwin');
     expect(() => codexAgentDef.buildArgs('hi', [])).not.toThrow();
   });
+
+  it('adds -i <path> for each attachment path on a fresh turn (not silently dropped)', () => {
+    setPlatform('darwin');
+    const args = codexAgentDef.buildArgs('hi', ['/img/one.png', '/notes/two.md'], [], {}, { cwd: '/proj' });
+    const attachFlags = args.reduce<string[]>((acc, v, i) => (v === '-i' ? [...acc, args[i + 1]!] : acc), []);
+    expect(attachFlags).toEqual(['/img/one.png', '/notes/two.md']);
+  });
+
+  it('adds -i <path> on a resume turn too, unlike -C/--add-dir which are create-only', () => {
+    setPlatform('darwin');
+    const args = codexAgentDef.buildArgs('hi', ['/img/one.png'], [], {}, { resumeSessionId: 'thread-1' });
+    expect(args).toContain('-i');
+    expect(args[args.indexOf('-i') + 1]).toBe('/img/one.png');
+    // The resume thread id positional must still come after every flag, attachments included.
+    expect(args[args.length - 1]).toBe('thread-1');
+  });
+
+  it('filters out non-string/empty attachment path entries', () => {
+    setPlatform('darwin');
+    const args = codexAgentDef.buildArgs('hi', ['', 123 as unknown as string, '/img/ok.png']);
+    const attachFlags = args.reduce<string[]>((acc, v, i) => (v === '-i' ? [...acc, args[i + 1]!] : acc), []);
+    expect(attachFlags).toEqual(['/img/ok.png']);
+  });
+
+  it('adds no -i flag when imagePaths is empty or nullish', () => {
+    setPlatform('darwin');
+    expect(codexAgentDef.buildArgs('hi', [])).not.toContain('-i');
+    expect(codexAgentDef.buildArgs('hi', null as unknown as string[])).not.toContain('-i');
+  });
+});
+
+describe('codexAgentDef.imageDelivery', () => {
+  it('declares "native" so attachments are never silently dropped (regression: was undefined)', () => {
+    expect(codexAgentDef.imageDelivery).toBe('native');
+  });
 });

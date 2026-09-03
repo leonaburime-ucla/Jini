@@ -108,7 +108,7 @@ export const codexAgentDef = {
     // stdin delivery.
     buildArgs: (
       _prompt,
-      _imagePaths,
+      imagePaths,
       extraAllowedDirs = [],
       options = {},
       runtimeContext = {},
@@ -190,6 +190,22 @@ export const codexAgentDef = {
         // is exposed as `model_reasoning_effort`.
         args.push('-c', `model_reasoning_effort="${effort}"`);
       }
+      // Own dedicated `-i/--image <FILE>` argv flag — confirmed against a
+      // real installed Codex CLI (0.151.0) on BOTH `codex exec --help` and
+      // `codex exec resume --help`, so unlike `-C`/`--add-dir` above this is
+      // not create-only and needs no `resumeSessionId` guard. Pushed for
+      // every claimed attachment path the caller hands in here, not only
+      // ones actually of kind "image": the caller
+      // (`agent-daemon-server.ts#resolveAttachmentRunFields`, Tovu) already
+      // stopped filtering by kind for the same reason `qoderAgentDef`'s
+      // `--attachment` above does not filter either — a same-shaped
+      // repeated-flag mechanism, see `imageDelivery`'s doc below.
+      const attachments = (imagePaths || []).filter(
+        (p) => typeof p === 'string' && p.length > 0,
+      );
+      for (const p of attachments) {
+        args.push('-i', p);
+      }
       // The resume thread id is the positional SESSION_ID argument of
       // `codex exec resume`; it must come after the flags. The prompt is
       // delivered via stdin (promptViaStdin), so the thread id is the final
@@ -209,6 +225,14 @@ export const codexAgentDef = {
     capturesSessionIdFromStream: true,
     streamFormat: 'json-event-stream',
     eventParser: 'codex',
+    // Own dedicated `-i/--image <FILE>` argv flag, built above — a real
+    // native CLI mechanism, not a workaround. See
+    // `types.ts#RuntimeAgentDef.imageDelivery`'s doc. Before this, no
+    // `imageDelivery` was declared at all, which per that field's own
+    // `undefined` doc means "images are silently dropped exactly as they
+    // were previously" — confirmed live: `buildArgs` never read the paths,
+    // and no other def-specific mechanism named them to the model either.
+    imageDelivery: 'native',
     // `'codex-toml'`: Codex CLI's native MCP config is a `[mcp_servers.<name>]` TOML table under
     // `CODEX_HOME` (`~/.codex/config.toml` by default) — TOML, not the JSON any of the other four
     // wired strategies produce, and `codex mcp add`/`-c mcp_servers.<name>...=` both write to (or
