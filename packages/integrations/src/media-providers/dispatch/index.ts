@@ -84,6 +84,8 @@ export type {
   StartOperationOutcome,
   StartOperationParams,
 } from './operation-runtime.js';
+export { createSqliteAsyncOperationStore } from './sqlite-async-operation-store.js';
+export type { SqliteAsyncOperationStore } from './sqlite-async-operation-store.js';
 export { createImageRouterVideoPollingAdapter } from './providers/imagerouter-video-async.js';
 export type { ImageRouterVideoConfig, ImageRouterVideoMeta } from './providers/imagerouter-video-async.js';
 export type { HexEnvelopeAudioMeta, HexEnvelopeAudioParserOptions, RawBytesParserOptions } from './response-parsers.js';

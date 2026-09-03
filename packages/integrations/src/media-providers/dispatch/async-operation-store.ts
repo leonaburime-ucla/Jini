@@ -40,7 +40,13 @@ export type AsyncOperationStatus = 'submitted' | 'polling' | 'succeeded' | 'fail
  */
 export const ASYNC_OPERATION_SCHEMA_VERSION = 1;
 
-const TERMINAL_STATUSES: ReadonlySet<AsyncOperationStatus> = new Set(['succeeded', 'failed', 'unknown']);
+/**
+ * Exported (unlike the in-memory-only helpers below it) so a durable adapter — see
+ * `sqlite-async-operation-store.ts` — enforces the identical terminal-status and transition rules
+ * without hand-copying this table: a second copy is exactly the kind of hand-maintained mirror
+ * that drifts silently the next time this one changes.
+ */
+export const TERMINAL_STATUSES: ReadonlySet<AsyncOperationStatus> = new Set(['succeeded', 'failed', 'unknown']);
 
 const ALLOWED_TRANSITIONS: Readonly<Record<AsyncOperationStatus, ReadonlySet<AsyncOperationStatus>>> = {
   submitted: new Set(['submitted', 'polling', 'succeeded', 'failed', 'unknown']),
@@ -290,7 +296,8 @@ function cloneRecord(row: AsyncOperationRecord): AsyncOperationRecord {
   };
 }
 
-function assertTransition(from: AsyncOperationStatus, to: AsyncOperationStatus): void {
+/** Exported for the same reason as `TERMINAL_STATUSES` — see its doc. */
+export function assertTransition(from: AsyncOperationStatus, to: AsyncOperationStatus): void {
   if (!ALLOWED_TRANSITIONS[from]) {
     throw new RangeError(`Invalid async operation status: "${from}"`);
   }
