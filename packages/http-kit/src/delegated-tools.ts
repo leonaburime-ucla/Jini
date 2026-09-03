@@ -28,7 +28,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import { createApiError } from '@jini-ai/protocol';
-import { isReadOnlyTool, type Principal, type ToolRegistry } from '@jini-ai/core';
+import { isReadOnlyTool, type Principal, type RunRef, type SurfaceEmitter, type ToolRegistry } from '@jini-ai/core';
 import { createDelegatedToolBridge, type RunLifecycle, type ToolExecutionResult, type ToolExecutor } from '@jini-ai/daemon';
 import { defineJsonRoute, mountJsonRoute, type AdapterContext } from './adapter.js';
 import { validationError } from './request.js';
@@ -187,6 +187,62 @@ export function refuseNonReadOnlyDispatch(options: {
   const descriptor = options.registry.list().find((candidate) => candidate.id === options.toolId);
   if (isReadOnlyTool(descriptor)) return null;
   return readOnlyRefusalMessage(options.toolId);
+}
+
+export interface ReadOnlyToolConstraintDeps {
+  /** The same registry `inner` was built over — descriptors only; this gate never reaches a handler. */
+  readonly registry: Pick<ToolRegistry, 'list'> | undefined;
+}
+
+/**
+ * Wraps `inner` so a read-only-constrained principal (one {@link constrainPrincipalToReadOnlyTools}
+ * attenuated) cannot dispatch a tool that isn't registered read-only — whichever layer chose the
+ * id. This is what turns the attenuation into an actual gate rather than a field nobody reads:
+ * {@link refuseNonReadOnlyDispatch} is the decision, this is its enforcement point.
+ *
+ * **Compose this as close to the bare `ToolExecutor` as your own stack allows** — directly around
+ * `@jini-ai/daemon`'s `createToolExecutor` output, beneath any decorator of your own that might
+ * dispatch a tool id the caller never named (a retry, a recovery loop that calls a different tool
+ * as a remedy, ...). Every such decorator's own `inner.execute` call still has to come through here
+ * to reach a handler, which is what makes this a gate on the CLASS of defect (an unnamed nested
+ * dispatch) rather than on one instance of it — see `read-only-tool-constraint.ts` in Tovu's own
+ * `apps/website`, the consumer this was ported from, for the composition this mirrors.
+ *
+ * `delegatedToolExecuteRoute`'s own `handle` additionally composes this around whatever
+ * `ToolExecutor` a host supplies, whenever a call attenuates its principal. That outer composition
+ * only re-covers the SAME outer `toolId` {@link checkReadOnlyConstraint} already checked — it
+ * cannot see a nested dispatch a host's own inner decorator issues, because that decorator holds a
+ * reference to whatever `ToolExecutor` IT was built with, not to this route's wrapped one. Closing
+ * the nested case for a given host's stack requires that host to compose this decorator itself,
+ * innermost, in its own `ToolExecutor` construction — this export exists so it can, without having
+ * to rediscover or reimplement the mechanism.
+ *
+ * @returns A drop-in `ToolExecutor`; `resumeConfirmation`/`cancel`/`getAuditRecord` delegate
+ *   straight through.
+ * @complexity One extra property read per unconstrained call; one registry scan per constrained one.
+ */
+export function withReadOnlyToolConstraint(inner: ToolExecutor, deps: ReadOnlyToolConstraintDeps): ToolExecutor {
+  return {
+    execute: async (
+      principal: Principal,
+      run: RunRef,
+      toolId: string,
+      input: unknown,
+      signal?: AbortSignal,
+      emitSurface?: SurfaceEmitter,
+    ): Promise<ToolExecutionResult> => {
+      const refusal = refuseNonReadOnlyDispatch({ principal, toolId, registry: deps.registry });
+      // Refused BEFORE `inner` — no handler runs, nothing durable happens. `denied` rather than a
+      // throw: this is an authorization outcome `ToolExecutionResult` already models, so every
+      // caller handles it without a special case. `executionId` is minted here since there is no
+      // kernel execution to borrow one from.
+      if (refusal !== null) return { executionId: randomUUID(), status: 'denied', error: refusal };
+      return inner.execute(principal, run, toolId, input, signal, emitSurface);
+    },
+    resumeConfirmation: (executionId, decision) => inner.resumeConfirmation(executionId, decision),
+    cancel: (executionId) => inner.cancel(executionId),
+    getAuditRecord: (executionId) => inner.getAuditRecord(executionId),
+  };
 }
 
 /**
@@ -355,7 +411,18 @@ export const delegatedToolExecuteRoute = defineJsonRoute<
       principal = constrainPrincipalToReadOnlyTools(principal);
     }
 
-    const bridge = createDelegatedToolBridge({ lifecycle: deps.lifecycle, toolExecutor: deps.toolExecutor });
+    // Composes the SAME enforcement decorator this package exports for a host's own use, here,
+    // around whatever `ToolExecutor` the host supplied — a second, independent check of the OUTER
+    // `toolId` `checkReadOnlyConstraint` already ran (never a WEAKER outcome than that check, only
+    // ever redundant with it; see `withReadOnlyToolConstraint`'s own doc for why this alone cannot
+    // close a nested dispatch a host's own inner decorator issues). Skipped entirely for an
+    // unconstrained call so the pre-existing gateway's executor reference is untouched.
+    const toolExecutor =
+      input.requireReadOnly === true
+        ? withReadOnlyToolConstraint(deps.toolExecutor, { registry: deps.toolRegistry })
+        : deps.toolExecutor;
+
+    const bridge = createDelegatedToolBridge({ lifecycle: deps.lifecycle, toolExecutor });
     try {
       // `signal` carries the caller's HTTP connection dropping — see `mountJsonRoute`
       // (`adapter.ts`). The bridge already combines it with the run's own cancellation

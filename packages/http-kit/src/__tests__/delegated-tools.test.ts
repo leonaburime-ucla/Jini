@@ -10,8 +10,8 @@ import {
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
   delegatedToolExecuteRoute,
-  refuseNonReadOnlyDispatch,
   registerDelegatedToolRoutes,
+  withReadOnlyToolConstraint,
   type DelegatedToolsHttpDeps,
 } from '../delegated-tools.js';
 
@@ -645,10 +645,16 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
    * passes back through this route's own check. `withNestedRemedyDispatch` below mimics exactly
    * such a composition (Tovu's `withToolFailureRecovery` is the real-world instance this is
    * modeled on): a completed call whose output names a `remedyToolId` triggers one more dispatch,
-   * through `inner`, of that id — gated by {@link refuseNonReadOnlyDispatch}, the shared decision
-   * a well-behaved nested-dispatch decorator is expected to consult.
+   * through `inner`, of that id.
+   *
+   * Deliberately DUMB — it never calls `refuseNonReadOnlyDispatch` itself. The two tests below ask
+   * two different questions using the exact same decorator: does `delegatedToolExecuteRoute`'s own
+   * outer wrap alone stop this (first test — it must not, structurally: that wrap only ever sees the
+   * OUTER `toolId`), and does composing the SHIPPED `withReadOnlyToolConstraint` innermost, the way
+   * a real consumer is documented to, stop it (second test — it must, and for a reason this test
+   * doesn't itself enforce).
    */
-  function withNestedRemedyDispatch(inner: ToolExecutor, registry: Pick<ToolRegistry, 'list'>, ran: string[]): ToolExecutor {
+  function withNestedRemedyDispatch(inner: ToolExecutor, ran: string[]): ToolExecutor {
     return {
       ...inner,
       execute: async (principal, run, toolId, input, signal, emitSurface) => {
@@ -660,20 +666,15 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
             : undefined;
         if (remedyToolId === undefined) return result;
 
-        const refusal = refuseNonReadOnlyDispatch({ principal, toolId: remedyToolId, registry });
-        if (refusal !== null) {
-          ran.push(`refused:${remedyToolId}`);
-          return { ...result, error: refusal };
-        }
+        // Blindly re-dispatches through the SAME `inner` this decorator was built with — no
+        // self-check. Whether this actually reaches a handler depends entirely on what `inner` is.
         await inner.execute(principal, run, remedyToolId, input, signal, emitSurface);
         return result;
       },
     };
   }
 
-  it('a read-only-gated call must not reach a write tool one hop in through a nested dispatch — the real composition: bridge -> a consumer-composed ToolExecutor -> a nested inner.execute using the same principal', async () => {
-    const ran: string[] = [];
-    const registry = createToolRegistry();
+  function registerVerifyAndRemedyWrite(registry: ToolRegistry, ran: string[]): void {
     registry.register({
       descriptor: { id: 'verify', readOnly: true },
       policy: { authorize: () => 'allow' },
@@ -690,14 +691,47 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
         return 'wrote something durable';
       },
     });
-    const toolExecutor = withNestedRemedyDispatch(createToolExecutor({ registry }), registry, ran);
+  }
+
+  it('the outer wrap `handle` composes around a host-supplied ToolExecutor is NOT enough on its own: a host that has not composed withReadOnlyToolConstraint into its own stack still leaks the nested dispatch', async () => {
+    const ran: string[] = [];
+    const registry = createToolRegistry();
+    registerVerifyAndRemedyWrite(registry, ran);
+    // The host's own composition carries NO read-only gate anywhere in it — exactly what every
+    // pre-existing consumer of this package has today, since `withReadOnlyToolConstraint` did not
+    // exist before this change.
+    const toolExecutor = withNestedRemedyDispatch(createToolExecutor({ registry }), ran);
     const deps = makeDeps({ toolExecutor, toolRegistry: registry });
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
 
     await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'verify', requireReadOnly: true }, deps);
 
-    expect(ran).toContain('verify ran');
-    expect(ran).not.toContain('remedy-write ran');
-    expect(ran).toContain('refused:remedy-write');
+    // `handle`'s own outer wrap only ever re-checks the OUTER toolId ('verify', already read-only),
+    // so it cannot see this nested dispatch — the write handler still runs. This is a known,
+    // documented limit (see `withReadOnlyToolConstraint`'s doc), not a regression to fix here: a
+    // host MUST compose the decorator itself, innermost, to close this for its own stack — proven
+    // by the next test.
+    expect(ran).toEqual(['verify ran', 'remedy-write ran']);
+  });
+
+  it('a read-only-gated call cannot reach a write tool one hop in through a nested dispatch, when a consumer composes the SHIPPED withReadOnlyToolConstraint innermost around its own ToolExecutor — the real composition, with no bespoke enforcement in the test decorator itself', async () => {
+    const ran: string[] = [];
+    const registry = createToolRegistry();
+    registerVerifyAndRemedyWrite(registry, ran);
+
+    // The composition a real consumer is expected to build, mirroring Tovu's own
+    // `withToolFailureRecovery(withReadOnlyToolConstraint(createToolExecutor(...)))`:
+    // `withReadOnlyToolConstraint` innermost, directly around the bare executor, with the
+    // consumer's own nested-dispatch decorator on top. `withNestedRemedyDispatch` here does NOT
+    // check `refuseNonReadOnlyDispatch` itself (see its own doc above) — whatever refuses the
+    // nested dispatch below is the shipped decorator sitting beneath it, nothing this test wrote.
+    const gatedExecutor = withReadOnlyToolConstraint(createToolExecutor({ registry }), { registry });
+    const toolExecutor = withNestedRemedyDispatch(gatedExecutor, ran);
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+
+    await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'verify', requireReadOnly: true }, deps);
+
+    expect(ran).toEqual(['verify ran']);
   });
 });
