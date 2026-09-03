@@ -122,4 +122,19 @@ describe('ByokProviderForm field rows', () => {
     expect(ruleBody('.jini-byok-field-row > .jini-field')).toMatch(/flex: 1 1 \d+px/);
     expect(ruleBody('.jini-byok-model-row > .jini-field')).toMatch(/flex: 1 1 \d+px/);
   });
+
+  it('raises the field-row basis enough that Max tokens wraps below Base URL before the row gets cramped (owner-reported)', () => {
+    // 210px let the two fields stay side by side well before either had room to be useful: the
+    // longest realistic default Base URL preset ('https://generativelanguage.googleapis.com',
+    // constants.ts) is 41 characters, which at `.jini-input`'s 13px font (~6.76px/glyph for this
+    // font) plus its 20px horizontal padding and 2px border needs ~300px to show without visually
+    // truncating — so each field's basis has to clear that before the row is allowed to keep both
+    // fields on one line.
+    const basisMatch = ruleBody('.jini-byok-field-row > .jini-field').match(/flex: 1 1 (\d+)px/);
+    expect(basisMatch, '.jini-byok-field-row > .jini-field should declare flex: 1 1 <basis>px').not.toBeNull();
+    expect(Number(basisMatch![1])).toBeGreaterThanOrEqual(300);
+    // The Model row shares the same 210px rule today but is out of scope for this fix — only Base
+    // URL / Max tokens were reported as too cramped.
+    expect(ruleBody('.jini-byok-model-row > .jini-field')).toContain('flex: 1 1 210px');
+  });
 });

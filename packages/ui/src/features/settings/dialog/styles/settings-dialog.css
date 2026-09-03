@@ -400,7 +400,14 @@ a.jini-button {
 }
 
 .jini-byok-field-row > .jini-field {
-  flex: 1 1 210px;
+  /* 210px let the row keep Base URL and Max tokens side by side well before either had real room
+     (owner-reported, 2026-09-02). The longest realistic default Base URL preset
+     ('https://generativelanguage.googleapis.com', `constants.ts`) is 41 characters, which at
+     `.jini-input`'s 13px font needs roughly 300px (glyphs + the input's 20px horizontal padding
+     and 1px border each side) before it displays without visually truncating — so the row now
+     requires that much per field before it stays on one line; below it, Max tokens drops below
+     Base URL instead of squeezing both into a sliver. */
+  flex: 1 1 320px;
   min-width: 0;
 }
 
