@@ -41,7 +41,7 @@ import {
   type ToolRegistration,
 } from "../core/tools/registration-kit.js";
 import { mediaAgentToolCatalog } from "./agent-tools.js";
-import { listMedia, MediaValidationError, trashMedia, updateMediaMetadata, uploadMedia } from "./media-service.js";
+import { listMedia, MediaValidationError, rollbackUploadedMedia, trashMedia, updateMediaMetadata, uploadMedia } from "./media-service.js";
 import type { AssetBlobRepoPort, AssetRenditionRepoPort, BlobStorePort, MediaRepoPort } from "./ports.js";
 import type { MediaRecord } from "./types.js";
 
@@ -93,8 +93,12 @@ export interface MediaToolDeps {
    * Any rejection from this hook propagates out of the `media_upload_asset` handler uncaught — a
    * failure to record the type is a real failure, not swallowed to report a false success (mirrors
    * `resolveCredentialForProvider`'s "never silently fall through" discipline elsewhere in this
-   * package's siblings). Omitted entirely: never called, matching this field's own pre-fix absence
-   * for every host that has not opted in yet — the exact `resolvePublicUrls`-precedent contract.
+   * package's siblings). Before rethrowing, the handler calls `rollbackUploadedMedia`
+   * (`media-service.ts`) to remove the rendition + media rows `uploadMedia()` just wrote (and
+   * tombstone the blob if unreferenced) — the fix for the sibling defect where those rows survived
+   * as orphans even though the caller saw the upload as failed. Omitted entirely: never called,
+   * matching this field's own pre-fix absence for every host that has not opted in yet — the exact
+   * `resolvePublicUrls`-precedent contract.
    */
   recordUploadContentType?: (params: { media: MediaRecord; bytes: Uint8Array }) => Promise<void>;
 }
@@ -214,7 +218,23 @@ export function buildMediaRegistrations(routeDeps: MediaToolDeps): ToolRegistrat
           },
         });
         if (routeDeps.recordUploadContentType) {
-          await routeDeps.recordUploadContentType({ media, bytes });
+          try {
+            await routeDeps.recordUploadContentType({ media, bytes });
+          } catch (err) {
+            // The blob/media/rendition rows uploadMedia() just wrote must not survive as orphans
+            // when the caller is about to see this whole upload as failed (the fix for that gap —
+            // see rollbackUploadedMedia's own doc). The original hook error is rethrown unchanged.
+            await rollbackUploadedMedia({
+              deps: {
+                mediaRepo: routeDeps.mediaRepo,
+                blobRepo: routeDeps.assetBlobRepo,
+                renditionRepo: routeDeps.assetRenditionRepo,
+                clock: routeDeps.clock,
+              },
+              input: { workspaceId: routeDeps.workspaceId, media },
+            });
+            throw err;
+          }
         }
         const [view] = await toMediaToolViewsWithPublicUrls(routeDeps, [media]);
         return { media: view };

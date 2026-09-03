@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "vitest";
 
 import type { ToolExecutionContext } from "@jini-ai/core";
@@ -28,8 +29,12 @@ function executionContext(input: Record<string, unknown>): ToolExecutionContext 
   return { executionId: "exec-1", principal: { id: PRINCIPAL_ID }, run: { id: "run-1" }, input, signal: new AbortController().signal };
 }
 
-function fakeDeps(overrides: Partial<MediaToolDeps> = {}): { deps: MediaToolDeps; mediaRepo: InMemoryMediaRepo } {
+function fakeDeps(
+  overrides: Partial<MediaToolDeps> = {}
+): { deps: MediaToolDeps; mediaRepo: InMemoryMediaRepo; assetBlobRepo: InMemoryAssetBlobRepo; assetRenditionRepo: InMemoryAssetRenditionRepo } {
   const mediaRepo = new InMemoryMediaRepo();
+  const assetBlobRepo = new InMemoryAssetBlobRepo();
+  const assetRenditionRepo = new InMemoryAssetRenditionRepo();
   let counter = 0;
   const deps: MediaToolDeps = {
     authorize: async () => ({ allowed: true, reason: "matched" }),
@@ -37,12 +42,12 @@ function fakeDeps(overrides: Partial<MediaToolDeps> = {}): { deps: MediaToolDeps
     clock: { nowIso: () => NOW },
     idGen: { newId: () => `id-${++counter}` },
     mediaRepo,
-    assetBlobRepo: new InMemoryAssetBlobRepo(),
-    assetRenditionRepo: new InMemoryAssetRenditionRepo(),
+    assetBlobRepo,
+    assetRenditionRepo,
     blobStore: new InMemoryBlobStore(),
     ...overrides,
   };
-  return { deps, mediaRepo };
+  return { deps, mediaRepo, assetBlobRepo, assetRenditionRepo };
 }
 
 // A real PNG signature so a future sniff-based assertion has genuine magic bytes to check, not an
@@ -97,5 +102,44 @@ test("a hook that throws propagates — an upload must not be silently reported 
   await assert.rejects(
     () => upload.handler(executionContext({ dataBase64: PNG_BYTES.toString("base64"), filename: "logo.png", contentType: "image/png" })),
     /content-type store unavailable/
+  );
+});
+
+test("a hook that throws AFTER uploadMedia() commits does not leave the media/rendition/blob rows orphaned", async () => {
+  let uploadedMediaId: string | undefined;
+  const { deps, mediaRepo, assetBlobRepo, assetRenditionRepo } = fakeDeps({
+    recordUploadContentType: async (params) => {
+      uploadedMediaId = params.media.id;
+      throw new Error("content-type store unavailable");
+    },
+  });
+  const registrations = buildMediaRegistrations(deps);
+  const upload = registrations.find((r) => r.descriptor.id === "media_upload_asset");
+  assert.ok(upload);
+
+  await assert.rejects(
+    () => upload.handler(executionContext({ dataBase64: PNG_BYTES.toString("base64"), filename: "logo.png", contentType: "image/png" })),
+    /content-type store unavailable/
+  );
+  assert.ok(uploadedMediaId, "the hook must have run (and therefore uploadMedia() must have committed) before the throw");
+
+  const sha256 = createHash("sha256").update(PNG_BYTES).digest("hex");
+
+  assert.deepEqual(
+    await mediaRepo.list({ workspaceId: WORKSPACE_ID }),
+    [],
+    "the media row uploadMedia() wrote must be rolled back when the post-upload hook fails"
+  );
+
+  assert.deepEqual(
+    await assetRenditionRepo.listByAsset({ workspaceId: WORKSPACE_ID, assetId: uploadedMediaId! }),
+    [],
+    "the rendition row uploadMedia() wrote must be rolled back too"
+  );
+
+  const blob = await assetBlobRepo.findByHash({ workspaceId: WORKSPACE_ID, sha256 });
+  assert.ok(
+    blob === null || blob.status === "tombstoned",
+    "the orphaned blob must be removed or tombstoned, never left 'active' with nothing pointing at it"
   );
 });

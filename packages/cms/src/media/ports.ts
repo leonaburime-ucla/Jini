@@ -31,7 +31,8 @@ export interface MediaRepoPort {
   findById(required: { workspaceId: UUID; id: UUID }): Promise<MediaRecord | null>;
   list(required: { workspaceId: UUID }): Promise<MediaRecord[]>;
   save(record: MediaRecord): Promise<void>;
-  /** Hard delete — only ever called by `purgeMedia` after the trash guard passes. */
+  /** Hard delete — called by `purgeMedia` after the trash guard passes, and by
+   *  `rollbackUploadedMedia` as an unconditional compensating rollback for a failed upload. */
   remove(required: { workspaceId: UUID; id: UUID }): Promise<void>;
 }
 

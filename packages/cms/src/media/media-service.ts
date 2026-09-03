@@ -518,14 +518,78 @@ export async function purgeMedia(
     );
   }
 
+  await removeMediaRowsAndTombstoneBlob(deps, {
+    workspaceId: input.workspaceId,
+    id: input.id,
+    sha256: existing.source.sha256,
+  });
+
+  return { purged: true };
+}
+
+/** Deps shared by both callers of {@link removeMediaRowsAndTombstoneBlob} — the subset of
+ *  `PurgeMediaDeps` that cleanup actually needs (no `blobStore`: neither caller deletes bytes
+ *  directly, only tombstones the row via `tombstoneBlobIfUnreferenced`). */
+export interface MediaRowCleanupDeps {
+  mediaRepo: MediaRepoPort;
+  blobRepo: AssetBlobRepoPort;
+  renditionRepo: AssetRenditionRepoPort;
+  /** Optional — see `PurgeMediaDeps.clock`'s identical doc. */
+  clock?: ClockPort | undefined;
+}
+
+/**
+ * Shared row/blob cleanup: removes an asset's renditions and media row, then tombstones its blob
+ * if-and-only-if no other active media row in the workspace still references the same sha256 (the
+ * same predicate {@link tombstoneBlobIfUnreferenced} always applies). Used by both `purgeMedia`
+ * (after its trash guard passes) and {@link rollbackUploadedMedia} (an unconditional internal
+ * compensating rollback) — the same three-step deletion, triggered from two different callers.
+ *
+ * @complexity O(n) in the workspace's media row count, inherited from the tombstone-pass's
+ * `isBlobUnreferenced` scan.
+ */
+async function removeMediaRowsAndTombstoneBlob(
+  deps: MediaRowCleanupDeps,
+  input: { workspaceId: UUID; id: UUID; sha256: string }
+): Promise<void> {
   await deps.renditionRepo.removeByAsset({ workspaceId: input.workspaceId, assetId: input.id });
   await deps.mediaRepo.remove({ workspaceId: input.workspaceId, id: input.id });
 
   const clock = deps.clock ?? { nowIso: () => new Date().toISOString() };
   await tombstoneBlobIfUnreferenced({
     deps: { mediaRepo: deps.mediaRepo, blobRepo: deps.blobRepo, clock },
-    input: { workspaceId: input.workspaceId, sha256: existing.source.sha256 },
+    input: { workspaceId: input.workspaceId, sha256: input.sha256 },
   });
+}
 
-  return { purged: true };
+export interface RollbackUploadedMediaRequired {
+  deps: MediaRowCleanupDeps;
+  input: { workspaceId: UUID; media: MediaRecord };
+}
+
+/**
+ * Compensating rollback for {@link uploadMedia}: removes the rendition + media rows it just wrote
+ * and tombstones the blob if no other active media row in the workspace still references its
+ * sha256 (delegates to {@link removeMediaRowsAndTombstoneBlob}, `purgeMedia`'s own cleanup step).
+ *
+ * For a caller-side step that runs AFTER `uploadMedia()` has already committed and then fails
+ * (e.g. `tool-registrations.ts`'s optional `recordUploadContentType` hook) — without this, the
+ * rows `uploadMedia()` wrote survive as orphans (bytes and/or rows nothing points at) even though
+ * the caller sees the whole upload as failed. Unlike `purgeMedia`, this performs no trashed-status
+ * guard: it is an internal compensating action for a partially-failed operation, not a user-facing
+ * delete.
+ *
+ * @complexity O(n) in the workspace's media row count, inherited from
+ * {@link removeMediaRowsAndTombstoneBlob}.
+ */
+export async function rollbackUploadedMedia(
+  required: RollbackUploadedMediaRequired,
+  _optional: Record<string, never> = {}
+): Promise<void> {
+  const { deps, input } = required;
+  await removeMediaRowsAndTombstoneBlob(deps, {
+    workspaceId: input.workspaceId,
+    id: input.media.id,
+    sha256: input.media.source.sha256,
+  });
 }
