@@ -61,6 +61,22 @@ export interface ByokProviderFormProps {
    */
   apiKeyFooter?: ReactNode;
   /**
+   * Host-supplied content rendered at the FOOT of the card, below every field and below the
+   * "Test connection" row.
+   *
+   * The sibling of {@link apiKeyFooter}, and separate from it for the same "put the control beside
+   * what it acts on" reason. A host whose credential store is write-only has two distinct saves to
+   * offer — one that writes the KEY and one that writes base URL / max tokens / model — and a single
+   * control doing both cannot honestly report which of the two it just did. Splitting them needs two
+   * places to put them: under the key field, and under the settings fields.
+   *
+   * Without this slot such a host had to hang the second control outside the card, where it reads as
+   * belonging to the page rather than to the fields it writes, or fork the component.
+   *
+   * Omitted by every existing caller, so the rendered output is byte-identical without it.
+   */
+  formFooter?: ReactNode;
+  /**
    * `true` when a key is already held somewhere the browser cannot read — so the API-key input is
    * legitimately empty and must NOT be treated as a missing required field.
    *
@@ -109,6 +125,7 @@ export function ByokProviderForm({
   onTestConnection,
   canTestConnection = true,
   apiKeyFooter,
+  formFooter,
   apiKeyStoredExternally = false,
   apiKeyPlaceholder,
 }: ByokProviderFormProps) {
@@ -372,6 +389,10 @@ export function ByokProviderForm({
           ) : null}
         </div>
       ) : null}
+
+      {/* Same bare-sibling treatment as `apiKeyFooter` above — `.jini-byok-card` is a flex column
+          with a 14px gap, so this inherits the card's own rhythm rather than defining its own. */}
+      {formFooter ? <div className="jini-byok-form-footer">{formFooter}</div> : null}
     </div>
   );
 }

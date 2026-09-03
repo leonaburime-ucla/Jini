@@ -66,6 +66,7 @@ export interface ExecutionTabProps {
    * without them.
    */
   apiKeyFooter?: ReactNode;
+  formFooter?: ReactNode;
   apiKeyStoredExternally?: boolean;
   apiKeyPlaceholder?: string;
 }
@@ -94,6 +95,7 @@ export function ExecutionTab({
   autoDetect = true,
   ariaLabel,
   apiKeyFooter,
+  formFooter,
   apiKeyStoredExternally,
   apiKeyPlaceholder,
 }: ExecutionTabProps) {
@@ -263,6 +265,7 @@ export function ExecutionTab({
               if (typeof port.listModels === 'function') loadModels(config.byok);
             }}
             {...(apiKeyFooter !== undefined ? { apiKeyFooter } : {})}
+            {...(formFooter !== undefined ? { formFooter } : {})}
             {...(apiKeyStoredExternally !== undefined ? { apiKeyStoredExternally } : {})}
             {...(apiKeyPlaceholder !== undefined ? { apiKeyPlaceholder } : {})}
           />
