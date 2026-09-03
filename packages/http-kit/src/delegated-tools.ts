@@ -119,6 +119,77 @@ export const READ_ONLY_UNVERIFIABLE_MESSAGE =
   'this host cannot verify read-only tools — POST /api/delegated-tool-calls was mounted without DelegatedToolsHttpDeps.toolRegistry, so a requireReadOnly call cannot be checked and is refused';
 
 /**
+ * A `Principal` narrowed to tools that only read.
+ *
+ * `checkReadOnlyConstraint` above only ever validates the OUTER `toolId` — the one the caller
+ * named in this request. It cannot see what a consumer's own `ToolExecutor` composition does
+ * once `bridge.execute()` hands control to `deps.toolExecutor`: a decorator that composition
+ * stacks on top of the bare executor (a recovery loop that retries through a different tool id
+ * after a failure, for instance) can dispatch a tool the caller never named, using the exact same
+ * `principal` the outer call carried — one hop past the only check this route ever ran. Adding a
+ * second request-shaped flag would not close that gap either: it would have to be threaded, by
+ * hand, through every decorator between here and the handler, and a decorator that forgot would
+ * fail open silently. `principal` is the one value every layer already passes unchanged, so the
+ * constraint travels as an ATTENUATED IDENTITY instead — a principal permitted to invoke only
+ * read-only tools, checkable by {@link refuseNonReadOnlyDispatch} at any depth a consumer's own
+ * composition cares to ask.
+ *
+ * A distinct field rather than a `Principal.roles` entry: `roles` is what a `ToolPolicy` branches
+ * on, and a synthetic role would silently join that decision for every registration in the
+ * process. This field is inert to everything except {@link refuseNonReadOnlyDispatch}.
+ */
+export interface ReadOnlyConstrainedPrincipal extends Principal {
+  readonly toolAccess: 'read-only';
+}
+
+/** Attenuates `principal` for one execution: it may now invoke only tools registered read-only. */
+export function constrainPrincipalToReadOnlyTools(principal: Principal): ReadOnlyConstrainedPrincipal {
+  return { ...principal, toolAccess: 'read-only' };
+}
+
+/**
+ * Whether `principal` is carrying the read-only attenuation.
+ *
+ * Reads the field structurally, so a principal that travelled through layers typed as the plain
+ * `Principal` (every decorator between here and wherever a dispatch is about to happen) still
+ * answers truthfully.
+ *
+ * @complexity O(1).
+ */
+export function principalIsReadOnlyConstrained(principal: Principal): boolean {
+  return (principal as Partial<ReadOnlyConstrainedPrincipal>).toolAccess === 'read-only';
+}
+
+/**
+ * THE read-only dispatch decision for any tool id a consumer's own `ToolExecutor` composition is
+ * about to invoke — the outer call this route already checked, or a nested one a decorator issues
+ * one or more hops in. Every consumer's own composition should ask this before dispatching on
+ * behalf of a principal it did not itself resolve; none should re-implement the check, so changing
+ * what the constraint means stays one edit.
+ *
+ * @param options.principal - The principal the dispatch would run under. Unconstrained ⇒ always
+ *   `null` — this is a no-op for every pre-existing caller that never attenuates a principal.
+ * @param options.toolId - The id actually about to be dispatched, which is not necessarily the id
+ *   named in the original request — that difference is the whole reason this function exists.
+ * @param options.registry - Descriptors to resolve `toolId` against; `undefined` ⇒ refuse (an
+ *   unverifiable constrained dispatch is refused, never waived, matching `checkReadOnlyConstraint`).
+ * @returns `null` when the dispatch may proceed, otherwise the refusal text to report.
+ * @complexity O(1) for an unconstrained principal; O(n) in registered tool count for a constrained
+ *   one, since `ToolRegistry` exposes enumeration rather than lookup by id.
+ */
+export function refuseNonReadOnlyDispatch(options: {
+  readonly principal: Principal;
+  readonly toolId: string;
+  readonly registry: Pick<ToolRegistry, 'list'> | undefined;
+}): string | null {
+  if (!principalIsReadOnlyConstrained(options.principal)) return null;
+  if (options.registry === undefined) return READ_ONLY_UNVERIFIABLE_MESSAGE;
+  const descriptor = options.registry.list().find((candidate) => candidate.id === options.toolId);
+  if (isReadOnlyTool(descriptor)) return null;
+  return readOnlyRefusalMessage(options.toolId);
+}
+
+/**
  * Evaluates a request's read-only constraint against the live registry.
  *
  * @param deps - Supplies the optional `toolRegistry` the check reads.
@@ -272,6 +343,16 @@ export const delegatedToolExecuteRoute = defineJsonRoute<
       principal = await deps.resolvePrincipal(input);
     } catch (error) {
       return err(reportInternalError(deps, 'resolve-principal', error, input.runId, input.toolId));
+    }
+
+    // Attenuates the resolved principal itself for a `requireReadOnly` call, so the constraint
+    // survives past this route: a consumer's own `ToolExecutor` composition may dispatch a tool id
+    // one or more hops past the one checked above (a nested/recovery dispatch using this same
+    // principal), and only the principal — not this request's `requireReadOnly` flag, which dies
+    // at this function's return — reaches that far. See `constrainPrincipalToReadOnlyTools`'s own
+    // doc. A no-op for every existing unconstrained caller.
+    if (input.requireReadOnly === true) {
+      principal = constrainPrincipalToReadOnlyTools(principal);
     }
 
     const bridge = createDelegatedToolBridge({ lifecycle: deps.lifecycle, toolExecutor: deps.toolExecutor });

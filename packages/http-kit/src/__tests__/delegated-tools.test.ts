@@ -10,6 +10,7 @@ import {
 import { isLocalSameOrigin } from '../origin-validation.js';
 import {
   delegatedToolExecuteRoute,
+  refuseNonReadOnlyDispatch,
   registerDelegatedToolRoutes,
   type DelegatedToolsHttpDeps,
 } from '../delegated-tools.js';
@@ -635,5 +636,68 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
     const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
     await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'writer', requireReadOnly: true }, deps);
     expect(resolvePrincipal).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `checkReadOnlyConstraint` only ever validates the OUTER `toolId` — the id the caller named.
+   * A consumer's own `ToolExecutor` composition can dispatch a DIFFERENT tool id one or more hops
+   * in, using the exact same `principal` the outer call carried, and that nested dispatch never
+   * passes back through this route's own check. `withNestedRemedyDispatch` below mimics exactly
+   * such a composition (Tovu's `withToolFailureRecovery` is the real-world instance this is
+   * modeled on): a completed call whose output names a `remedyToolId` triggers one more dispatch,
+   * through `inner`, of that id — gated by {@link refuseNonReadOnlyDispatch}, the shared decision
+   * a well-behaved nested-dispatch decorator is expected to consult.
+   */
+  function withNestedRemedyDispatch(inner: ToolExecutor, registry: Pick<ToolRegistry, 'list'>, ran: string[]): ToolExecutor {
+    return {
+      ...inner,
+      execute: async (principal, run, toolId, input, signal, emitSurface) => {
+        const result = await inner.execute(principal, run, toolId, input, signal, emitSurface);
+        const output = result.output;
+        const remedyToolId =
+          result.status === 'completed' && typeof output === 'object' && output !== null && typeof (output as Record<string, unknown>)['remedyToolId'] === 'string'
+            ? ((output as Record<string, unknown>)['remedyToolId'] as string)
+            : undefined;
+        if (remedyToolId === undefined) return result;
+
+        const refusal = refuseNonReadOnlyDispatch({ principal, toolId: remedyToolId, registry });
+        if (refusal !== null) {
+          ran.push(`refused:${remedyToolId}`);
+          return { ...result, error: refusal };
+        }
+        await inner.execute(principal, run, remedyToolId, input, signal, emitSurface);
+        return result;
+      },
+    };
+  }
+
+  it('a read-only-gated call must not reach a write tool one hop in through a nested dispatch — the real composition: bridge -> a consumer-composed ToolExecutor -> a nested inner.execute using the same principal', async () => {
+    const ran: string[] = [];
+    const registry = createToolRegistry();
+    registry.register({
+      descriptor: { id: 'verify', readOnly: true },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        ran.push('verify ran');
+        return { hint: 'try the remedy', remedyToolId: 'remedy-write' };
+      },
+    });
+    registry.register({
+      descriptor: { id: 'remedy-write' },
+      policy: { authorize: () => 'allow' },
+      handler: async () => {
+        ran.push('remedy-write ran');
+        return 'wrote something durable';
+      },
+    });
+    const toolExecutor = withNestedRemedyDispatch(createToolExecutor({ registry }), registry, ran);
+    const deps = makeDeps({ toolExecutor, toolRegistry: registry });
+    const { run } = await deps.lifecycle.start({ contextRef: 'ctx-1' });
+
+    await delegatedToolExecuteRoute.handle({ runId: run.id, toolUseId: 'tu-1', toolId: 'verify', requireReadOnly: true }, deps);
+
+    expect(ran).toContain('verify ran');
+    expect(ran).not.toContain('remedy-write ran');
+    expect(ran).toContain('refused:remedy-write');
   });
 });
