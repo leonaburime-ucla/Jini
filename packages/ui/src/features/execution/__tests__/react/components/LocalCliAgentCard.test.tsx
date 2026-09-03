@@ -479,6 +479,17 @@ describe('LocalCliAgentCard — effort encoded in the model id', () => {
     expect(screen.queryByTestId('jini-agent-reasoning-antigravity')).not.toBeInTheDocument();
   });
 
+  // The state the card opens in before any per-agent model has been saved: `selectedAgentModel`
+  // falls back to `models[0].id`, which for antigravity IS the "Default (CLI config)" sentinel
+  // (`DEFAULT_MODEL_OPTION`, first entry in both `fallbackModels` and a live `agy models` list).
+  // That sentinel groups like any other base with zero suffixed variants (nothing named
+  // `default-high`/`default-medium`/`default-low` exists), so it is hidden by the SAME rule that
+  // hides `claude-sonnet-4-6` above — not a separate gap in the null-check on `activeGroup`.
+  it('renders no effort control in the model-unsaved state the card opens in, same as any other zero-variant base', () => {
+    renderAgy({ agentId: 'antigravity' });
+    expect(screen.queryByTestId('jini-agent-reasoning-antigravity')).not.toBeInTheDocument();
+  });
+
   it('renders the single level a one-variant base has, disabled, rather than inventing siblings', () => {
     renderAgy({ agentId: 'antigravity', modelByAgentId: { antigravity: 'gpt-oss-120b-medium' } });
     expect(effortOptionValues()).toEqual(['medium']);
