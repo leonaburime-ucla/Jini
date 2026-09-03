@@ -5,6 +5,7 @@ import { test } from "vitest";
 const SEED_OWNER_PASSWORD = "seed-owner-pw";
 
 import { Argon2PasswordHasher } from "../hasher.js";
+import { login } from "../auth-service.js";
 import type { AuthServiceDeps } from "../auth-service.js";
 import {
   attachPolicy,
@@ -38,6 +39,7 @@ import {
 } from "../repo.memory.js";
 import { seedIdentity } from "../seed.js";
 import {
+  AuthInvalidCredentialsError,
   GrantExceedsIssuerError,
   IdentityConflictError,
   IdentityForbiddenError,
@@ -434,6 +436,39 @@ test("RESET_USER_PASSWORD: rejects a blank password", async () => {
         input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "" },
       }),
     IdentityValidationError
+  );
+});
+
+/**
+ * 2026-09-03 production incident: the admin UI's own reset-password flow reported success, and
+ * afterward NEITHER the old nor the new password could log in. Every existing RESET_USER_PASSWORD
+ * test above only asserts `user.passwordHash` CHANGED (`assert.notEqual(user.passwordHash,
+ * before?.passwordHash)`) — none of them ever drove the new password back through the real login()
+ * path, which is exactly the gap that let a hash-that-doesn't-verify bug ship undetected. This is
+ * the test that should have existed before that incident.
+ */
+test("RESET_USER_PASSWORD: the new password authenticates end-to-end through login() afterward, and the old one no longer does", async () => {
+  const { deps, ownerPrincipalId } = await buildSeededDeps();
+  const { principal: target } = await createUser({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, username: "target10", password: "old-pw-123456" },
+  });
+
+  await resetUserPassword({
+    deps,
+    input: { workspaceId: WORKSPACE, callerPrincipalId: ownerPrincipalId, principalId: target.id, password: "brand-new-pw-998877" },
+  });
+
+  const { principal } = await login({
+    deps,
+    input: { workspaceId: WORKSPACE, username: "target10", password: "brand-new-pw-998877" },
+  });
+  assert.equal(principal.id, target.id, "the new password must log in as the SAME principal that was reset");
+
+  await assert.rejects(
+    () => login({ deps, input: { workspaceId: WORKSPACE, username: "target10", password: "old-pw-123456" } }),
+    AuthInvalidCredentialsError,
+    "the pre-reset password must no longer authenticate"
   );
 });
 
