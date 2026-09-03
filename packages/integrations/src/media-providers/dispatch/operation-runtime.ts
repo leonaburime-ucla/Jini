@@ -39,6 +39,9 @@ export const DEFAULT_MAX_ATTEMPTS = 60;
 export const DEFAULT_DEADLINE_MS = 15 * 60_000;
 export const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
+/** The lease identity used by boot recovery's claim-then-release read, distinct from any real worker. */
+const RECOVERY_LEASE_OWNER = '__recovery__';
+
 export interface OperationRuntimeDeps {
   readonly store: AsyncOperationStore;
   readonly signer: RequestSigner;
@@ -275,7 +278,7 @@ export async function pollDueOperations(deps: OperationRuntimeDeps, params: Poll
       });
       pending += 1;
     } finally {
-      await deps.store.releaseLease(row.id);
+      await deps.store.releaseLease(row.id, params.leaseOwner);
     }
   }
 
@@ -339,9 +342,9 @@ export async function recoverAfterRestart(deps: OperationRuntimeDeps, params: Re
  */
 async function collectSubmitted(store: AsyncOperationStore): Promise<AsyncOperationRecord[]> {
   const seen = new Map<string, AsyncOperationRecord>();
-  for (const row of await store.claimDue({ now: Number.MAX_SAFE_INTEGER, leaseOwner: '__recovery__', leaseMs: 0, limit: Number.MAX_SAFE_INTEGER })) {
+  for (const row of await store.claimDue({ now: Number.MAX_SAFE_INTEGER, leaseOwner: RECOVERY_LEASE_OWNER, leaseMs: 0, limit: Number.MAX_SAFE_INTEGER })) {
     if (row.status === 'submitted') seen.set(row.id, row);
-    await store.releaseLease(row.id);
+    await store.releaseLease(row.id, RECOVERY_LEASE_OWNER);
   }
   return [...seen.values()];
 }

@@ -101,6 +101,42 @@ describe('createInMemoryAsyncOperationStore', () => {
     expect(reclaimed[0]!.leaseOwner).toBe('w2');
   });
 
+  it('fences lease release on ownership — a late release from the previous owner must not clear a lease another worker has since reclaimed', async () => {
+    // Regression for the unfenced release: worker A takes a short lease and keeps working past
+    // it; worker B legitimately reclaims the expired lease; A finishes late and releases using
+    // its OWN identity. The release must be a no-op because A no longer owns the row.
+    const store = createInMemoryAsyncOperationStore();
+    await store.create({ ...BASE, id: 'due', nextPollAt: 0 });
+
+    await store.claimDue({ now: 0, leaseOwner: 'worker-A', leaseMs: 10 });
+    const reclaimed = await store.claimDue({ now: 11, leaseOwner: 'worker-B', leaseMs: 1000 });
+    expect(reclaimed.map((r) => r.id)).toEqual(['due']);
+
+    // A's late, stale release — using the leaseOwner it actually held, not B's.
+    await store.releaseLease('due', 'worker-A');
+
+    const row = await store.get('due');
+    expect(row?.leaseOwner).toBe('worker-B');
+    expect(row?.leaseExpiresAt).not.toBeNull();
+
+    // The single-worker guarantee: a third worker must not be able to claim the row while B's
+    // lease, which A's stale release did not touch, is still live.
+    const stolen = await store.claimDue({ now: 12, leaseOwner: 'worker-C', leaseMs: 1000 });
+    expect(stolen).toEqual([]);
+  });
+
+  it('lets the current owner release its own lease normally', async () => {
+    const store = createInMemoryAsyncOperationStore();
+    await store.create({ ...BASE, id: 'due', nextPollAt: 0 });
+    await store.claimDue({ now: 0, leaseOwner: 'worker-A', leaseMs: 1000 });
+
+    await store.releaseLease('due', 'worker-A');
+
+    const row = await store.get('due');
+    expect(row?.leaseOwner).toBeNull();
+    expect(row?.leaseExpiresAt).toBeNull();
+  });
+
   it('never claims a terminal operation', async () => {
     const store = createInMemoryAsyncOperationStore();
     await store.create({ ...BASE, id: 'done', nextPollAt: 0 });

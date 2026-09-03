@@ -152,7 +152,17 @@ export interface AsyncOperationStore {
   listByOwner(ownerRef: string): Promise<AsyncOperationRecord[]>;
   /** Atomically leases every due, unleased, non-terminal operation and returns the leased rows. */
   claimDue(options: AsyncOperationClaimOptions): Promise<AsyncOperationRecord[]>;
-  releaseLease(id: string): Promise<void>;
+  /**
+   * Releases a lease this caller believes it holds. Fenced on `leaseOwner`: a release only takes
+   * effect while the row's current `leaseOwner` still equals the one passed here (the equivalent
+   * SQL is a conditional `UPDATE ... WHERE id = ? AND lease_owner = ?`). Without this fence, a
+   * worker that outlives its own lease (e.g. a slow poll past `leaseMs`) can clear whichever
+   * worker legitimately reclaimed the row after it expired, breaking the single-worker guarantee
+   * `claimDue` exists to provide. A release for a row the caller no longer owns — because it
+   * never claimed it, or another worker has since reclaimed it — is a no-op, not an error: the
+   * caller's intent ("I'm done, let someone else have it") is already satisfied either way.
+   */
+  releaseLease(id: string, leaseOwner: string): Promise<void>;
   /**
    * Boot-time recovery. Unlike `MediaTaskStore.reconcileOnBoot`, this does NOT terminate in-flight
    * work: a vendor-side job outlives our process, so the row stays pollable and only its dead
@@ -364,9 +374,12 @@ export function createInMemoryAsyncOperationStore(): AsyncOperationStore {
       return claimed;
     },
 
-    async releaseLease(id: string): Promise<void> {
+    async releaseLease(id: string, leaseOwner: string): Promise<void> {
       const row = requireRow(id);
       if (!row) return;
+      // Fenced: a stale owner's late release must not clear a lease another worker has since
+      // legitimately reclaimed. See the interface doc for why this is not merely defensive.
+      if (row.leaseOwner !== leaseOwner) return;
       rows.set(id, { ...row, leaseOwner: null, leaseExpiresAt: null, updatedAt: Date.now() });
     },
 
