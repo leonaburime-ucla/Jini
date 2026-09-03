@@ -2889,6 +2889,44 @@ export function buildAgentBuildArgsOptions(
 }
 
 /**
+ * {@link resolveSystemPromptOverlayDelivery}'s decision, threaded out of that one resolver to every
+ * channel that can actually carry the overlay to the CLI.
+ *
+ * **Why `promptPrefix` exists alongside `prompt`.** `prompt` is the composed prompt with the
+ * fallback prefix already applied, and is what `buildArgs`, the staged prompt file, and a
+ * `promptViaStdin` def's stdin all receive. But the two RPC transports (`runAcpDispatch`,
+ * `runPiRpcDispatch`) deliberately send `run()`'s *raw* `input.prompt`, not the image-delivery
+ * rewrite this resolver was handed — those defs deliver images through their own native protocol
+ * and must never also get `'prompt-path'`'s appended paths (see `resolveImageDeliveryAndArgvBudget`'s
+ * call site in `run()` for that hazard). Handing them `prompt` would silently couple them to the
+ * image rewrite; handing them `promptPrefix + input.prompt` applies exactly this resolver's overlay
+ * decision to exactly the prompt text they were already sending.
+ *
+ * **The no-double-delivery invariant.** `promptPrefix` is a non-empty string on exactly one path —
+ * the universal fallback, the only strategy that carries the overlay *in the prompt text*. Every
+ * declared strategy (`'append-flag'`, `'env-var'`, `'config-instructions-file'`) and every
+ * suppressed case (no overlay, continuing a session) returns `''`, so a def that receives the
+ * overlay through argv, an env var, or a staged config file never also receives it inline. A
+ * transport therefore does not need to know which strategy applies: applying `promptPrefix`
+ * unconditionally is correct precisely because the resolver already zeroed it where it must not
+ * apply.
+ */
+export interface SystemPromptOverlayDelivery {
+  /**
+   * The text to prepend to whatever prompt a transport is about to send — `''` for every def whose
+   * overlay rides another channel, so it is always safe to apply unconditionally. See this
+   * interface's own doc for why callers with their own prompt text use this rather than `prompt`.
+   */
+  readonly promptPrefix: string;
+  /** `promptPrefix` already applied to the prompt this resolver was handed. */
+  readonly prompt: string;
+  /** Extra argv to append to `buildArgs`' own result — non-empty only for `'append-flag'`. */
+  readonly extraArgs: readonly string[];
+  /** Env vars to merge into the spawn env — non-empty only for `'env-var'`. */
+  readonly envOverrides: Readonly<Record<string, string>>;
+}
+
+/**
  * **The single dispatch point from a computed system-prompt overlay to its delivery mechanism** —
  * see `RuntimeAgentDef.systemPromptDelivery`'s own doc for the declared shape. Pure and
  * synchronous, mirroring {@link buildMcpBridgeDelivery}'s "keyed off the declared strategy, never
@@ -2923,9 +2961,11 @@ export function buildAgentBuildArgsOptions(
  * @param input.prompt - The composed prompt `buildArgs` would otherwise receive verbatim.
  * @param input.resumeSessionId - This run's `RuntimeContext.resumeSessionId`; presence means an
  * existing session is being continued, not created.
- * @returns The (possibly prefixed) prompt to hand `buildArgs`, any extra argv to append to
- * whatever `buildArgs` itself returns, and any env var overrides to merge into the spawn env
- * (`{}` for every strategy but `'env-var'`).
+ * @returns A {@link SystemPromptOverlayDelivery}: the prefix this run's prompt text must carry
+ * (`''` unless the fallback applies), that prefix already applied to `input.prompt`, any extra argv
+ * to append to whatever `buildArgs` itself returns, and any env var overrides to merge into the
+ * spawn env (`{}` for every strategy but `'env-var'`). Every one of `run()`'s four prompt
+ * transports consumes this same result — see the interface's own no-double-delivery note.
  * @complexity O(n) in the overlay/prompt lengths — string concatenation only, no I/O.
  * @overallScore 100/100
  */
@@ -2937,14 +2977,10 @@ export function resolveSystemPromptOverlayDelivery(input: {
   readonly overlay: string | null | undefined;
   readonly prompt: string;
   readonly resumeSessionId: string | null | undefined;
-}): {
-  readonly prompt: string;
-  readonly extraArgs: readonly string[];
-  readonly envOverrides: Readonly<Record<string, string>>;
-} {
+}): SystemPromptOverlayDelivery {
   const { defId, systemPromptDelivery, resumesSessionViaCli, resumesSessionViaAcpLoad, overlay, prompt, resumeSessionId } = input;
   if (typeof overlay !== 'string' || overlay.length === 0) {
-    return { prompt, extraArgs: [], envOverrides: {} };
+    return { promptPrefix: '', prompt, extraArgs: [], envOverrides: {} };
   }
 
   if (systemPromptDelivery?.strategy === 'append-flag') {
@@ -2956,7 +2992,7 @@ export function resolveSystemPromptOverlayDelivery(input: {
     // (e.g. `pi`'s existing `--append-system-prompt`, trusted unconditionally) always passes, same
     // as an absent key.
     const capabilityOk = capabilityKey === undefined || agentCapabilities.get(defId)?.[capabilityKey] !== false;
-    return { prompt, extraArgs: capabilityOk ? [systemPromptDelivery.flag, overlay] : [], envOverrides: {} };
+    return { promptPrefix: '', prompt, extraArgs: capabilityOk ? [systemPromptDelivery.flag, overlay] : [], envOverrides: {} };
   }
 
   if (systemPromptDelivery?.strategy === 'env-var') {
@@ -2964,7 +3000,7 @@ export function resolveSystemPromptOverlayDelivery(input: {
     // simply never reads it), never a fatal "unknown option" exit — there is no equivalent hazard
     // to probe-gate against here. Set verbatim, not merged with any existing value — a dedicated
     // single-purpose var, not a shared config channel (see this field's own `types.ts` doc).
-    return { prompt, extraArgs: [], envOverrides: { [systemPromptDelivery.varName]: overlay } };
+    return { promptPrefix: '', prompt, extraArgs: [], envOverrides: { [systemPromptDelivery.varName]: overlay } };
   }
 
   if (systemPromptDelivery?.strategy === 'config-instructions-file') {
@@ -2977,7 +3013,7 @@ export function resolveSystemPromptOverlayDelivery(input: {
     // This branch's only job is to make sure the universal prefix fallback below does NOT ALSO run
     // for a def that already has this strategy declared — the same "no double delivery" concern
     // `imageDelivery`'s doc calls out for its own native-vs-fallback split.
-    return { prompt, extraArgs: [], envOverrides: {} };
+    return { promptPrefix: '', prompt, extraArgs: [], envOverrides: {} };
   }
 
   const isContinuingExistingSession =
@@ -2985,7 +3021,7 @@ export function resolveSystemPromptOverlayDelivery(input: {
     typeof resumeSessionId === 'string' &&
     resumeSessionId.length > 0;
   if (isContinuingExistingSession) {
-    return { prompt, extraArgs: [], envOverrides: {} };
+    return { promptPrefix: '', prompt, extraArgs: [], envOverrides: {} };
   }
 
   // KNOWN TRADE-OFF, deliberate: for a resume-capable def with no `'append-flag'`/`'env-var'`
@@ -3003,10 +3039,20 @@ export function resolveSystemPromptOverlayDelivery(input: {
   // is part of what a resumed session replays), which removes this limitation entirely for that
   // def. See `reasonix.ts`'s and `opencode.ts`'s module docs for the two already-identified,
   // not-yet-wired native mechanisms.
-  return { prompt: `${overlay}\n\n---\n\n${prompt}`, extraArgs: [], envOverrides: {} };
+  const promptPrefix = `${overlay}\n\n---\n\n`;
+  return { promptPrefix, prompt: `${promptPrefix}${prompt}`, extraArgs: [], envOverrides: {} };
 }
 
-/** Phase 9b: calls the def's `buildArgs`, releasing staged resources and failing the run on a throw. */
+/**
+ * Phase 9b: calls the def's `buildArgs`, releasing staged resources and failing the run on a throw.
+ *
+ * @param input.overlayDelivery - This run's already-resolved overlay decision, computed once in
+ * `run()` rather than here. It is resolved upstream because `buildArgs` is only ONE of the four
+ * channels that can carry the prompt: the staged prompt file is written *before* this function
+ * runs, and stdin/ACP/pi-rpc send theirs *after* spawn. A decision made inside this function could
+ * therefore only ever reach the 7 defs whose `buildArgs` reads its first argument at all — the
+ * other 17 declare it `_prompt` and discard it, which is exactly how the overlay used to go missing.
+ */
 export async function buildRunArgs(
   input: {
     readonly runId: string;
@@ -3015,22 +3061,13 @@ export async function buildRunArgs(
     readonly imagePaths: readonly string[] | undefined;
     readonly runInput: Pick<AgentExecutorRunInput, 'model' | 'reasoning' | 'permissionMode'>;
     readonly systemPromptOverlay: string | null | undefined;
+    readonly overlayDelivery: SystemPromptOverlayDelivery;
     readonly runtimeContext: RuntimeContext | undefined;
   },
   deps: { readonly releaseStagedResources: () => Promise<void>; readonly failBeforeSpawn: FailBeforeSpawn },
 ): Promise<{ readonly args: string[]; readonly envOverrides: Readonly<Record<string, string>> }> {
   try {
-    // Resolved before `buildArgs` runs so a def with no declared `systemPromptDelivery` sees the
-    // overlay already prefixed into `prompt` — see `resolveSystemPromptOverlayDelivery`'s own doc.
-    const delivery = resolveSystemPromptOverlayDelivery({
-      defId: input.def.id,
-      systemPromptDelivery: input.def.systemPromptDelivery,
-      resumesSessionViaCli: input.def.resumesSessionViaCli,
-      resumesSessionViaAcpLoad: input.def.resumesSessionViaAcpLoad,
-      overlay: input.systemPromptOverlay,
-      prompt: input.imageDelivery.prompt,
-      resumeSessionId: input.runtimeContext?.resumeSessionId,
-    });
+    const delivery = input.overlayDelivery;
     const args = input.def.buildArgs(
       delivery.prompt,
       [...(input.imagePaths ?? [])],
@@ -3478,6 +3515,36 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       { failBeforeSpawn },
     );
 
+    // Phase 8, hoisted deliberately above EVERY step that writes or sends the prompt. Four
+    // different channels carry a prompt in this driver, and they do not all run at the same point:
+    // the `promptViaFile` staging below writes its file BEFORE `buildArgs`, `buildArgs` itself runs
+    // mid-`run()`, and stdin/ACP/pi-rpc all send theirs AFTER spawn. Resolving the overlay once,
+    // here, is what lets all four consume the same decision; resolving it later (as this used to,
+    // inside `buildRunArgs`) could only ever reach `buildArgs`, so the 17 defs that discard that
+    // argument, plus grok-build's staged file, silently received no overlay at all.
+    //
+    // `computeSystemPromptOverlay`'s third argument is the pre-staging `RuntimeContext`: it reads
+    // only `hasPriorAssistantTurn`, which `computeRuntimeContext` never populates from any of the
+    // staged-file/MCP inputs added to the fuller context built further down, so nothing between
+    // here and there can change the overlay this returns. Passing the narrower context makes that
+    // independence explicit rather than relying on the ordering staying lucky.
+    //
+    // `turnIndex` is a coarse 0/1 proxy (no exact turn counter exists on this driver) — sufficient
+    // because every `PromptAugmenter.systemOverlay()` implementation this seam has today wants the
+    // same overlay on every turn, not a first-turn-only one; a caller that needs finer-grained turn
+    // numbering can track it itself and ignore this arg.
+    const preStagingRuntimeContext = computeRuntimeContext(null, null, null, input.resumeSessionId, input.newSessionId);
+    const systemPromptOverlay = computeSystemPromptOverlay(promptAugmenter, def.id, preStagingRuntimeContext);
+    const overlayDelivery = resolveSystemPromptOverlayDelivery({
+      defId: def.id,
+      systemPromptDelivery: def.systemPromptDelivery,
+      resumesSessionViaCli: def.resumesSessionViaCli,
+      resumesSessionViaAcpLoad: def.resumesSessionViaAcpLoad,
+      overlay: systemPromptOverlay,
+      prompt: imageDelivery.prompt,
+      resumeSessionId: preStagingRuntimeContext?.resumeSessionId,
+    });
+
     const resolvedEnv = resolveRunEnv(input, process.env);
     const launch = await resolveLaunch(
       { runId: input.runId, def, resolvedEnv },
@@ -3489,8 +3556,12 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     // Stage a promptViaFile def's (grok-build) prompt to a temp file before buildArgs runs — its
     // buildArgs throws without runtimeContext.promptFilePath. A no-op (returns null) for every
     // def without promptViaFile: true (preparePromptFileForAgent's own guard).
+    //
+    // `overlayDelivery.prompt`, not `imageDelivery.prompt`: for a `promptViaFile` def this file IS
+    // the prompt transport — its `buildArgs` declares `_prompt` and passes only the path — so the
+    // overlay has to be in the bytes written here or the CLI never sees it at all.
     const preparedPromptFile = await stagePromptFile(
-      { runId: input.runId, def, prompt: imageDelivery.prompt },
+      { runId: input.runId, def, prompt: overlayDelivery.prompt },
       { preparePromptFileForAgent: preparePromptFileForAgentFn, failBeforeSpawn },
     );
     // Stage a needsAgentLogFile def's (antigravity) diagnostic-log path, on the same terms and at
@@ -3593,13 +3664,6 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       await cleanupStagedFiles();
     };
 
-    // Computed once per `run()`, not per-token/per-event: a system-prompt overlay is a spawn-time
-    // CLI arg, not something that varies mid-run. `turnIndex` is a coarse 0/1 proxy (no exact turn
-    // counter exists on this driver) — sufficient because every `PromptAugmenter.systemOverlay()`
-    // implementation this seam has today wants the same overlay on every turn, not a first-turn-only
-    // one; a caller that needs finer-grained turn numbering can track it itself and ignore this arg.
-    const systemPromptOverlay = computeSystemPromptOverlay(promptAugmenter, def.id, runtimeContext);
-
     // Guarded, like every other step between staging and spawn: a `runtimeLock` def's `buildArgs` is
     // guarded precisely *because* it performs real filesystem writes (antigravity writes its model
     // choice into a shared settings file), so EACCES on a read-only home, ENOSPC, or a malformed
@@ -3608,7 +3672,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     // — and left the run `'running'` forever while still holding the process-global mutex and both
     // staged files, so no later run of that def could ever acquire the lock either.
     const { args, envOverrides: systemPromptEnvOverrides } = await buildRunArgs(
-      { runId: input.runId, def, imageDelivery, imagePaths: input.imagePaths, runInput: input, systemPromptOverlay, runtimeContext },
+      { runId: input.runId, def, imageDelivery, imagePaths: input.imagePaths, runInput: input, systemPromptOverlay, overlayDelivery, runtimeContext },
       { releaseStagedResources, failBeforeSpawn },
     );
 
@@ -3727,7 +3791,14 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           runId: input.runId,
           agentId: def.id,
           child,
-          prompt: input.prompt,
+      // `overlayDelivery.promptPrefix` applied to `input.prompt`, NOT `overlayDelivery.prompt`:
+      // this call site deliberately sends the raw input prompt rather than the image-delivery
+      // rewrite (see `resolveImageDeliveryAndArgvBudget`'s call site above — an ACP def delivers
+      // images natively and must never also get `'prompt-path'`'s appended paths), and the prefix
+      // is the part of the overlay decision that applies to whatever prompt text a transport was
+      // already sending. `''` for `reasonix` (env-var) and any resumed ACP session, so those keep
+      // sending byte-identical text and never receive the overlay twice.
+          prompt: `${overlayDelivery.promptPrefix}${input.prompt}`,
           cwd: input.cwd,
           model: input.model,
           imagePaths: input.imagePaths ?? [],
@@ -3758,7 +3829,10 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
           runId: input.runId,
           agentId: def.id,
           child,
-          prompt: input.prompt,
+          // Same reasoning as the ACP call site above. `pi` declares an `'append-flag'` strategy,
+          // so its prefix is `''` and this stays byte-identical to the raw prompt — the overlay
+          // rides `--append-system-prompt` instead, exactly once.
+          prompt: `${overlayDelivery.promptPrefix}${input.prompt}`,
           cwd: input.cwd,
           model: input.model,
           imagePaths: input.imagePaths ?? [],
@@ -3781,7 +3855,17 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       return;
     }
 
-    writePromptToStdin(def, child, imageDelivery.prompt, stdinHandle!);
+    // The overlay reaches stdin only for a def that declares stdin as its prompt transport. The
+    // four `plain`-format defs that do not (`aider`/`antigravity`/`deepseek` put the prompt in
+    // argv, `grok-build` in a staged file) are still written to and closed here exactly as before,
+    // because this driver always spawns with `stdio: ['pipe','pipe','pipe']` and their CLIs need
+    // the EOF — but their prompt already carried the overlay through argv or the staged file, so
+    // sending the overlaid text here too would deliver it twice. This is the one place the
+    // resolver's own `''`-prefix rule is not sufficient on its own: those four defs are on the
+    // fallback strategy, so their prefix is genuinely non-empty; what makes stdin the wrong
+    // channel for them is the def's declared transport, not the strategy.
+    const stdinPrompt = def.promptViaStdin === true ? overlayDelivery.prompt : imageDelivery.prompt;
+    writePromptToStdin(def, child, stdinPrompt, stdinHandle!);
   }
 
   return { run };

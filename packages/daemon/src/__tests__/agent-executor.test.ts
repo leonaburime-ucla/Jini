@@ -16,6 +16,7 @@ import {
   type AcpSessionController,
   type AgentLaunchResolution,
   type PiRpcSession,
+  type PromptAugmenter,
   type RuntimeAgentDef,
   type RuntimeLock,
   type RuntimeLockAcquireContext,
@@ -5074,16 +5075,19 @@ describe('resolveSystemPromptOverlayDelivery', () => {
 
   it('passes the prompt through unchanged and appends nothing when there is no overlay', () => {
     expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: undefined })).toEqual({
+      promptPrefix: '',
       prompt: base.prompt,
       extraArgs: [],
       envOverrides: {},
     });
     expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: null })).toEqual({
+      promptPrefix: '',
       prompt: base.prompt,
       extraArgs: [],
       envOverrides: {},
     });
     expect(resolveSystemPromptOverlayDelivery({ ...base, overlay: '' })).toEqual({
+      promptPrefix: '',
       prompt: base.prompt,
       extraArgs: [],
       envOverrides: {},
@@ -5092,6 +5096,10 @@ describe('resolveSystemPromptOverlayDelivery', () => {
 
   it("fallback (no declared strategy): prefixes the overlay onto the prompt, clearly delimited", () => {
     expect(resolveSystemPromptOverlayDelivery(base)).toEqual({
+      // The one strategy that carries the overlay in the prompt text, so the one non-empty
+      // `promptPrefix`. Every transport in `run()` applies this prefix verbatim; asserting `''`
+      // on each of the other cases below is what pins the no-double-delivery invariant.
+      promptPrefix: 'Follow the house rules.\n\n---\n\n',
       prompt: 'Follow the house rules.\n\n---\n\nWhat is the weather doing today?',
       extraArgs: [],
       envOverrides: {},
@@ -5110,12 +5118,12 @@ describe('resolveSystemPromptOverlayDelivery', () => {
 
   it('fallback: a resumesSessionViaCli def does NOT get the prefix once a resumeSessionId is present — avoids compounding it into the CLI-owned session history', () => {
     const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaCli: true, resumeSessionId: 'sess-1' });
-    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+    expect(delivery).toEqual({ promptPrefix: '', prompt: base.prompt, extraArgs: [], envOverrides: {} });
   });
 
   it('fallback: same resume-in-progress skip applies to resumesSessionViaAcpLoad defs (amr)', () => {
     const delivery = resolveSystemPromptOverlayDelivery({ ...base, resumesSessionViaAcpLoad: true, resumeSessionId: 'acp-sess-1' });
-    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+    expect(delivery).toEqual({ promptPrefix: '', prompt: base.prompt, extraArgs: [], envOverrides: {} });
   });
 
   it("fallback: an empty-string resumeSessionId does not count as 'continuing a session'", () => {
@@ -5129,6 +5137,7 @@ describe('resolveSystemPromptOverlayDelivery', () => {
       systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt' },
     });
     expect(delivery).toEqual({
+      promptPrefix: '',
       prompt: base.prompt,
       extraArgs: ['--append-system-prompt', 'Follow the house rules.'],
       envOverrides: {},
@@ -5161,7 +5170,7 @@ describe('resolveSystemPromptOverlayDelivery', () => {
       ...base,
       systemPromptDelivery: { strategy: 'append-flag', flag: '--append-system-prompt', capabilityKey: 'appendSystemPrompt' },
     });
-    expect(gated).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+    expect(gated).toEqual({ promptPrefix: '', prompt: base.prompt, extraArgs: [], envOverrides: {} });
     agentCapabilities.delete('fake-agent');
   });
 
@@ -5179,6 +5188,7 @@ describe('resolveSystemPromptOverlayDelivery', () => {
       systemPromptDelivery: { strategy: 'env-var', varName: 'REASONIX_ACP_SYSTEM_APPEND' },
     });
     expect(delivery).toEqual({
+      promptPrefix: '',
       prompt: base.prompt,
       extraArgs: [],
       envOverrides: { REASONIX_ACP_SYSTEM_APPEND: 'Follow the house rules.' },
@@ -5234,7 +5244,7 @@ describe('resolveSystemPromptOverlayDelivery', () => {
       ...base,
       systemPromptDelivery: { strategy: 'config-instructions-file', varName: 'OPENCODE_CONFIG_CONTENT' },
     });
-    expect(delivery).toEqual({ prompt: base.prompt, extraArgs: [], envOverrides: {} });
+    expect(delivery).toEqual({ promptPrefix: '', prompt: base.prompt, extraArgs: [], envOverrides: {} });
   });
 });
 
@@ -6081,3 +6091,366 @@ describe('isAgentExecutorSupported / assessAgentExecutorCompatibility', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// System-prompt overlay — ACTUAL DELIVERY through every prompt transport.
+//
+// WHAT THE `resolveSystemPromptOverlayDelivery` BLOCK ABOVE COVERS, AND WHY IT
+// IS NOT ENOUGH. That block tests the pure resolver in isolation: given a def's
+// declared strategy, what does the function RETURN. Its registry-wide
+// "no def is silently dropped" case is a necessary invariant but a VACUOUS
+// proof of delivery — a def with no declared strategy always falls through to
+// the universal prompt prefix, so `delivery.prompt !== prompt` is
+// unconditionally true for it, and that assertion would keep passing with
+// `writePromptToStdin` deleted outright. It measures what the resolver
+// returns, never what the child process receives.
+//
+// WHAT THIS BLOCK COVERS. The other half: whether the overlay reaches the bytes
+// the child actually gets, on each of the four channels `run()` can use to
+// carry a prompt —
+//   1. stdin                (`writePromptToStdin`)   e.g. qwen, codex
+//   2. the ACP session      (`runAcpDispatch`)       e.g. kimi, kiro
+//   3. the pi-rpc session   (`runPiRpcDispatch`)     pi
+//   4. a staged prompt file (`stagePromptFile`)      grok-build
+// — and, just as importantly, that it reaches EXACTLY ONE of them per def, so a
+// def already served by `--append-system-prompt`, an env var, or a config file
+// never also gets it inline. Every case drives a REAL registry def through the
+// real `run()`; only the process, the transports, and the staging are faked.
+// ---------------------------------------------------------------------------
+
+const OVERLAY_TEXT = 'HOUSE-RULES-OVERLAY: always call the credential tool before curl.';
+const OVERLAY_USER_PROMPT = 'summarize the repo';
+
+/** A `PromptAugmenter` whose only job is to return `OVERLAY_TEXT` from `systemOverlay()`. */
+function createOverlayAugmenter(overlay: string | null = OVERLAY_TEXT): PromptAugmenter {
+  return {
+    contextKinds: () => [],
+    augmentUserRequest: ({ basePrompt }) => basePrompt,
+    systemOverlay: () => overlay,
+  };
+}
+
+/** Every channel a prompt (and therefore an overlay) can actually reach the child on, captured from one real `run()`. */
+interface OverlayDeliveryProbe {
+  /** argv as handed to `spawn` — carries `--append-system-prompt` / `--message` / `-p` style delivery. */
+  readonly argv: readonly string[];
+  /** The spawn env — carries `'env-var'` delivery (reasonix) and `'config-instructions-file'` content (opencode). */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Everything written to the child's stdin, concatenated. */
+  readonly stdin: string;
+  /** The prompt string handed to `attachAcpSession`, or `undefined` for a non-ACP def. */
+  readonly acpPrompt: string | undefined;
+  /** The prompt string handed to `attachPiRpcSession`, or `undefined` for a non-pi-rpc def. */
+  readonly piRpcPrompt: string | undefined;
+  /** The bytes `stagePromptFile` wrote, or `undefined` for a def without `promptViaFile`. */
+  readonly promptFile: string | undefined;
+  /**
+   * The bytes `prepareSystemPromptOverlayFileIfNeeded` staged for a `'config-instructions-file'`
+   * def (opencode), read back through the very path its env var advertises — the fifth and last
+   * channel an overlay can reach a CLI on. Read via the env var rather than by intercepting the
+   * stager so the assertion covers the whole chain (stage the file, merge its path into the config
+   * document, hand that document to the child), not just the write.
+   */
+  readonly configInstructionsFile: string | undefined;
+}
+
+/**
+ * Drives one REAL registry def through the real `run()` with a `promptAugmenter` configured, and
+ * returns every channel the prompt could have travelled on. No real subprocess, no real ACP/pi-rpc
+ * handshake, and no real disk: the prompt-file and log-file stagers are faked so a `promptViaFile`
+ * def's staged bytes can be read back without touching `os.tmpdir()`.
+ *
+ * @param def - A def from the live registry, passed verbatim. Deliberately not a `createFakeDef`
+ * replica: the whole class of bug this block guards against is a real def's `buildArgs` discarding
+ * its prompt argument, which a fake with a hand-written `buildArgs` cannot reproduce.
+ * @complexity O(1) per call — one fake spawn, no I/O.
+ */
+async function probeOverlayDelivery(
+  def: RuntimeAgentDef,
+  options: { readonly overlay?: string | null; readonly resumeSessionId?: string } = {},
+): Promise<OverlayDeliveryProbe> {
+  const eventLog = createInMemoryEventLog();
+  const lifecycle = createRunLifecycle({ eventLog });
+  const child = createFakeChild(7100);
+  const spawnCalls: SpawnCall[] = [];
+  let acpPrompt: string | undefined;
+  let piRpcPrompt: string | undefined;
+  let promptFile: string | undefined;
+
+  const fakeSpawn = ((command: string, args: readonly string[], spawnOptions: unknown) => {
+    spawnCalls.push({ command, args: [...args], options: spawnOptions as SpawnCall['options'] });
+    queueMicrotask(() => child.emit('spawn'));
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof nodeSpawn;
+
+  const executor = createAgentExecutor({
+    lifecycle,
+    getAgentDef: (id: string) => (def.id === id ? def : null),
+    resolveAgentLaunch: () =>
+      ({
+        selectedPath: '/fake/bin',
+        pathResolvedPath: '/fake/bin',
+        configuredOverridePath: null,
+        launchPath: '/fake/bin',
+        launchKind: 'selected',
+        childPathPrepend: [],
+        diagnostic: null,
+      }) as AgentLaunchResolution,
+    applyAgentLaunchEnv: (env) => env,
+    spawn: fakeSpawn,
+    promptAugmenter: createOverlayAugmenter(options.overlay === undefined ? OVERLAY_TEXT : options.overlay),
+    preparePromptFileForAgent: (async (promptFileDef: RuntimeAgentDef | null | undefined, prompt: string) => {
+      if (!promptFileDef?.promptViaFile) return null;
+      promptFile = prompt;
+      return { path: '/fake/staged/prompt.md', cleanup: async () => {} };
+    }) as unknown as typeof preparePromptFileForAgent,
+    prepareAgentLogFile: (async (logFileDef: RuntimeAgentDef | null | undefined) =>
+      logFileDef?.needsAgentLogFile
+        ? { path: '/fake/staged/agent.log', cleanup: async () => {} }
+        : null) as unknown as typeof prepareAgentLogFile,
+    attachAcpSession: ((attachOptions: { prompt: string }) => {
+      acpPrompt = attachOptions.prompt;
+      return {
+        hasFatalError: () => false,
+        getDurableSessionId: () => null,
+        completedSuccessfully: () => true,
+        abort: vi.fn(),
+      } as AcpSessionController;
+    }) as unknown as typeof attachAcpSession,
+    attachPiRpcSession: ((attachOptions: { prompt: string }) => {
+      piRpcPrompt = attachOptions.prompt;
+      return { hasFatalError: () => false, getLastSessionPath: () => null, abort: vi.fn() } as PiRpcSession;
+    }) as unknown as typeof attachPiRpcSession,
+    listProcessSnapshots: async () => [{ pid: child.pid ?? 0, ppid: 1, command: 'fake-bin' }],
+    stopProcesses: async () => ({ alreadyStopped: true, forcedPids: [], matchedPids: [], remainingPids: [], stoppedPids: [] }),
+    onCleanupFailure: vi.fn(),
+  });
+
+  const { run } = await lifecycle.start({ contextRef: `ctx-overlay-${def.id}` });
+  const runPromise = executor.run({
+    runId: run.id,
+    agentId: def.id,
+    prompt: OVERLAY_USER_PROMPT,
+    cwd: '/work',
+    ...(options.resumeSessionId !== undefined ? { resumeSessionId: options.resumeSessionId } : {}),
+  });
+  await flushAsync();
+  await runPromise;
+
+  const env = (spawnCalls[0]?.options.env ?? {}) as Record<string, string | undefined>;
+
+  return {
+    argv: spawnCalls[0]?.args ?? [],
+    env,
+    stdin: (child.stdin?.writes ?? []).join(''),
+    acpPrompt,
+    piRpcPrompt,
+    promptFile,
+    configInstructionsFile: await readConfigInstructionsFile(def, env),
+  };
+}
+
+/**
+ * Reads back the overlay file a `'config-instructions-file'` def's spawn env points at, then removes
+ * it. The real stager is not injectable, so this is genuine disk I/O; the run's own cleanup only
+ * fires when the child closes, which this probe deliberately never does, so the file is still there
+ * and would otherwise leak a temp directory per probed def.
+ *
+ * @returns The staged overlay text, or `undefined` for any def not using that strategy.
+ */
+async function readConfigInstructionsFile(
+  def: RuntimeAgentDef,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<string | undefined> {
+  const delivery = def.systemPromptDelivery;
+  if (delivery?.strategy !== 'config-instructions-file') return undefined;
+  const raw = env[delivery.varName];
+  if (raw === undefined) return undefined;
+  const parsed: unknown = JSON.parse(raw);
+  const instructions = isStringArray((parsed as { instructions?: unknown }).instructions)
+    ? (parsed as { instructions: string[] }).instructions
+    : [];
+  const filePath = instructions.at(-1);
+  if (filePath === undefined) return undefined;
+  const content = await fs.readFile(filePath, 'utf8');
+  await fs.rm(path.dirname(filePath), { recursive: true, force: true });
+  return content;
+}
+
+/** Narrow an unknown JSON field to `string[]`. */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/** How many times `OVERLAY_TEXT` appears in `haystack`; `indexOf`-based, so an overlapping match is impossible. */
+function countOverlayOccurrences(haystack: string | undefined): number {
+  if (haystack === undefined) return 0;
+  let count = 0;
+  let from = 0;
+  for (let at = haystack.indexOf(OVERLAY_TEXT, from); at !== -1; at = haystack.indexOf(OVERLAY_TEXT, from)) {
+    count += 1;
+    from = at + OVERLAY_TEXT.length;
+  }
+  return count;
+}
+
+/**
+ * Total overlay copies across EVERY channel of one probe — the single number the no-double-delivery
+ * invariant is stated in. argv is joined with a space so an overlay split across two adjacent argv
+ * tokens can never be miscounted as one delivery.
+ */
+function totalOverlayDeliveries(probe: OverlayDeliveryProbe): number {
+  const envValues = Object.values(probe.env).filter((value): value is string => typeof value === 'string');
+  return (
+    countOverlayOccurrences(probe.argv.join(' ')) +
+    countOverlayOccurrences(envValues.join(' ')) +
+    countOverlayOccurrences(probe.stdin) +
+    countOverlayOccurrences(probe.acpPrompt) +
+    countOverlayOccurrences(probe.piRpcPrompt) +
+    countOverlayOccurrences(probe.promptFile) +
+    countOverlayOccurrences(probe.configInstructionsFile)
+  );
+}
+
+/** Looks a def up in the live registry, failing loudly rather than silently testing a fake. */
+function registryDef(id: string): RuntimeAgentDef {
+  const def = getAgentDef(id);
+  if (!def) throw new Error(`test setup: no def registered for "${id}"`);
+  return def;
+}
+
+describe('AgentExecutor — system-prompt overlay reaches the bytes each transport actually sends', () => {
+  // Transport 1 of 4: stdin. Both defs' `buildArgs` declares `_prompt` and discards it, so argv can
+  // never carry the overlay for them; the stdin write is the only channel there is.
+  it.each(['qwen', 'codex'])(
+    'stdin transport (%s): the overlay is in the bytes written to the child stdin, ahead of the user prompt',
+    async (id) => {
+      const probe = await probeOverlayDelivery(registryDef(id));
+
+      expect(probe.stdin).toContain(OVERLAY_TEXT);
+      expect(probe.stdin).toContain(OVERLAY_USER_PROMPT);
+      expect(probe.stdin.indexOf(OVERLAY_TEXT)).toBeLessThan(probe.stdin.indexOf(OVERLAY_USER_PROMPT));
+      expect(totalOverlayDeliveries(probe)).toBe(1);
+    },
+  );
+
+  // Transport 2 of 4: the ACP JSON-RPC session. `runAcpDispatch` hands `attachAcpSession` its own
+  // prompt string; these defs' `buildArgs` returns a bare `['acp']` with no prompt argv at all.
+  it.each(['kimi', 'kiro'])('ACP transport (%s): the overlay is in the prompt handed to attachAcpSession', async (id) => {
+    const probe = await probeOverlayDelivery(registryDef(id));
+
+    expect(probe.acpPrompt).toContain(OVERLAY_TEXT);
+    expect(probe.acpPrompt).toContain(OVERLAY_USER_PROMPT);
+    expect(probe.acpPrompt!.indexOf(OVERLAY_TEXT)).toBeLessThan(probe.acpPrompt!.indexOf(OVERLAY_USER_PROMPT));
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  // Transport 3 of 4: a staged prompt file. grok-build's `buildArgs` passes only the PATH
+  // (`--prompt-file <path>`), so the overlay has to be in the staged bytes or it is nowhere.
+  it('prompt-file transport (grok-build): the overlay is in the staged file bytes, and only the path reaches argv', async () => {
+    const probe = await probeOverlayDelivery(registryDef('grok-build'));
+
+    expect(probe.promptFile).toContain(OVERLAY_TEXT);
+    expect(probe.promptFile).toContain(OVERLAY_USER_PROMPT);
+    expect(probe.argv).toContain('--prompt-file');
+    expect(probe.argv).toContain('/fake/staged/prompt.md');
+    // grok-build declares `promptViaStdin: false`. stdin is still written and closed (this driver
+    // always spawns with piped stdio and the CLI needs the EOF), but it must NOT carry a second
+    // copy of the overlay on top of the staged file's.
+    expect(probe.stdin).not.toContain(OVERLAY_TEXT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  // Transport 4 of 4: pi-rpc. pi declares `'append-flag'`, so this doubles as a control — the
+  // overlay must ride argv and the RPC prompt must stay clean.
+  it('pi-rpc transport (pi): declares append-flag, so the overlay rides argv and the RPC prompt stays clean', async () => {
+    const probe = await probeOverlayDelivery(registryDef('pi'));
+
+    expect(probe.argv).toContain('--append-system-prompt');
+    expect(probe.argv).toContain(OVERLAY_TEXT);
+    expect(probe.piRpcPrompt).toBe(OVERLAY_USER_PROMPT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  // ---- No-double-delivery controls: defs that ALREADY worked before this fix. Each has a real,
+  // non-prompt delivery channel; every assertion below exists to prove that threading the decision
+  // out to the prompt transports did not ALSO start prefixing their prompt text.
+
+  it('no double delivery (aider): the overlay rides the --message argv exactly once, and stdin does not repeat it', async () => {
+    const probe = await probeOverlayDelivery(registryDef('aider'));
+
+    const messageIndex = probe.argv.indexOf('--message');
+    expect(messageIndex).toBeGreaterThanOrEqual(0);
+    const messageValue = probe.argv[messageIndex + 1]!;
+    expect(messageValue).toContain(OVERLAY_TEXT);
+    expect(messageValue).toContain(OVERLAY_USER_PROMPT);
+    expect(countOverlayOccurrences(messageValue)).toBe(1);
+    // aider does not declare `promptViaStdin`: its prompt is argv-bound, so the stdin write this
+    // driver always performs must stay overlay-free.
+    expect(probe.stdin).not.toContain(OVERLAY_TEXT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  it('no double delivery (claude): the append-flag argv carries the overlay and the stdin prompt stays clean', async () => {
+    const probe = await probeOverlayDelivery(registryDef('claude'));
+
+    expect(probe.argv).toContain('--append-system-prompt');
+    expect(probe.argv).toContain(OVERLAY_TEXT);
+    expect(probe.stdin).not.toContain(OVERLAY_TEXT);
+    expect(probe.stdin).toContain(OVERLAY_USER_PROMPT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  it('no double delivery (reasonix): the env-var strategy carries the overlay and the ACP prompt stays clean', async () => {
+    const probe = await probeOverlayDelivery(registryDef('reasonix'));
+
+    expect(Object.values(probe.env)).toContain(OVERLAY_TEXT);
+    expect(probe.acpPrompt).toBe(OVERLAY_USER_PROMPT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  it('no double delivery (opencode): the staged config-instructions file carries the overlay and the stdin prompt stays clean', async () => {
+    const probe = await probeOverlayDelivery(registryDef('opencode'));
+
+    expect(probe.configInstructionsFile).toBe(OVERLAY_TEXT);
+    expect(probe.stdin).not.toContain(OVERLAY_TEXT);
+    expect(probe.stdin).toContain(OVERLAY_USER_PROMPT);
+    expect(totalOverlayDeliveries(probe)).toBe(1);
+  });
+
+  it('no overlay configured: nothing is prefixed anywhere, byte-identical to no promptAugmenter at all', async () => {
+    const probe = await probeOverlayDelivery(registryDef('qwen'), { overlay: null });
+
+    expect(probe.stdin).toBe(OVERLAY_USER_PROMPT);
+    expect(totalOverlayDeliveries(probe)).toBe(0);
+  });
+
+  // THE registry-wide delivery guard, and the one this task exists to establish. Unlike the pure
+  // resolver's own registry loop above, this drives every registered def through the real `run()`
+  // and looks at the channels a child process would actually read. `toBe(1)` — not
+  // `toBeGreaterThan(0)` — so one assertion catches both failure directions at once: a def that
+  // receives no overlay (the bug this fixes) and a def that receives two (the hazard that threading
+  // one decision through four transports introduces).
+  it('every registered def receives the overlay on exactly one real channel, never zero and never twice', async () => {
+    for (const def of AGENT_DEFS) {
+      const probe = await probeOverlayDelivery(def);
+      expect(totalOverlayDeliveries(probe), `def "${def.id}" (streamFormat ${def.streamFormat})`).toBe(1);
+    }
+  });
+
+  // The deliberate exception documented on `resolveSystemPromptOverlayDelivery`'s fallback branch:
+  // a resume-capable def continuing an EXISTING session must not be re-prefixed, or the overlay
+  // compounds in that CLI's own persisted history turn after turn. Asserted here through the real
+  // transport rather than the resolver, because the transport is where the compounding would
+  // actually happen.
+  it('a resume-capable fallback def continuing an existing session is not re-prefixed on any channel', async () => {
+    const codex = registryDef('codex');
+    expect(codex.resumesSessionViaCli === true || codex.resumesSessionViaAcpLoad === true).toBe(true);
+
+    const probe = await probeOverlayDelivery(codex, { resumeSessionId: 'sess-existing-1' });
+
+    expect(probe.stdin).not.toContain(OVERLAY_TEXT);
+    expect(totalOverlayDeliveries(probe)).toBe(0);
+  });
+});
+
