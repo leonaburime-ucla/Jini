@@ -1,6 +1,6 @@
 {
   "name": "@jini-ai/integrations",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "Third-party vendor integrations, each independently importable: Composio connector catalog/execution (./composio) and a multi-vendor image/video/audio generation gateway (./media-providers).",
   "license": "Apache-2.0",
   "repository": {
