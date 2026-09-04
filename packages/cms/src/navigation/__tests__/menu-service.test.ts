@@ -293,6 +293,127 @@ test("updateMenuTree rejects a javascript: url target", async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// url target href write-time allowlist — the write-time twin of Tovu's
+// render-time `safeHref` (`apps/website/.../http/site/render.ts` and its
+// `features/theme/static-render.ts` duplicate). Replaces a `startsWith`
+// scheme DENYLIST that failed open against control characters and
+// protocol-relative shapes a real WHATWG `URL` parser resolves off-origin.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every row here is a real bypass of the OLD `URL_SCHEME_DENYLIST` (a
+ * lowercase `.trim()` + `startsWith` check) that Node's actual `URL` parser
+ * still resolves to a dangerous scheme or an off-origin target — probed
+ * directly against Node's `URL` before this fix landed. The allowlist below
+ * must reject every one of them.
+ */
+const DISALLOWED_URL_TARGET_HREFS: readonly string[] = [
+  "javascript:alert(1)",
+  "java\tscript:alert(1)", // TAB — WHATWG `URL` strips it from anywhere in the input; `.trim()` does not
+  "java\nscript:alert(1)", // LF — same class
+  "java\rscript:alert(1)", // CR — same class
+  " javascript:alert(1)", // leading space, not caught by the old denylist's un-trimmed compare order
+  "file:///etc/passwd",
+  "blob:https://evil.example/x",
+  "about:blank",
+  "//evil.example", // protocol-relative — resolves off-origin against the current page's own scheme
+  "/\\evil.example", // a browser folds a leading backslash to '/', landing on the same off-origin shape
+  "/\t/evil.example", // TAB between the leading '/' and the rest reconstitutes '//evil.example'
+];
+
+for (const href of DISALLOWED_URL_TARGET_HREFS) {
+  test(`updateMenuTree rejects a url target href that bypassed the old denylist but fails the allowlist: ${JSON.stringify(href)}`, async () => {
+    const repo = new InMemoryMenuRepo();
+    const clock = fakeClock();
+    const idGen = fakeIdGen();
+    const { outbox } = fakeOutbox();
+
+    const { menu } = await createMenu({
+      deps: { repo, clock, idGen, outbox },
+      input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+    });
+
+    await assert.rejects(
+      () =>
+        updateMenuTree({
+          deps: { repo, clock, idGen, outbox },
+          input: {
+            workspaceId: "ws-1",
+            id: menu.id,
+            expectedVersion: menu.version,
+            items: [item({ id: "item-1", target: { kind: "url", href } })],
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
+        assert.equal((error as Error).message, `url target uses a disallowed href: '${href}'`);
+        return true;
+      }
+    );
+  });
+}
+
+/** Legitimate shapes the allowlist must keep accepting — matches Tovu's render-time `safeHref` table. */
+const ALLOWED_URL_TARGET_HREFS: readonly string[] = [
+  "/quickstart",
+  "#posts",
+  "https://ok.example/x",
+  "mailto:a@b.example",
+];
+
+for (const href of ALLOWED_URL_TARGET_HREFS) {
+  test(`updateMenuTree accepts a legitimate url target href: ${href}`, async () => {
+    const repo = new InMemoryMenuRepo();
+    const clock = fakeClock();
+    const idGen = fakeIdGen();
+    const { outbox } = fakeOutbox();
+
+    const { menu } = await createMenu({
+      deps: { repo, clock, idGen, outbox },
+      input: { workspaceId: "ws-1", title: "Primary Nav", slug: "primary-nav" },
+    });
+
+    const { menu: updated } = await updateMenuTree({
+      deps: { repo, clock, idGen, outbox },
+      input: {
+        workspaceId: "ws-1",
+        id: menu.id,
+        expectedVersion: menu.version,
+        items: [item({ id: "item-1", target: { kind: "url", href } })],
+      },
+    });
+
+    assert.equal((updated.doc.items[0]?.target as { href?: string }).href, href);
+  });
+}
+
+test("createMenu accepts the three non-url target kinds (entryRef, termRef, route) with no href field, unaffected by the url allowlist", async () => {
+  const repo = new InMemoryMenuRepo();
+  const clock = fakeClock();
+  const idGen = fakeIdGen("menu");
+  const { outbox } = fakeOutbox();
+
+  const { menu } = await createMenu({
+    deps: { repo, clock, idGen, outbox },
+    input: {
+      workspaceId: "ws-1",
+      title: "Primary Nav",
+      slug: "primary-nav",
+      items: [
+        item({ id: "item-1", target: { kind: "entryRef", entryId: "entry-1" } }),
+        item({ id: "item-2", target: { kind: "termRef", termId: "term-1", taxonomy: "category" } }),
+        item({ id: "item-3", target: { kind: "route", route: "home" } }),
+      ],
+    },
+  });
+
+  assert.equal(menu.doc.items.length, 3);
+  assert.equal(menu.doc.items[0]?.target.kind, "entryRef");
+  assert.equal(menu.doc.items[1]?.target.kind, "termRef");
+  assert.equal(menu.doc.items[2]?.target.kind, "route");
+});
+
 test("updateMenuTree rejects a menu item with a missing target as 400 validation, not an uncaught crash", async () => {
   const repo = new InMemoryMenuRepo();
   const clock = fakeClock();

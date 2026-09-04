@@ -104,7 +104,57 @@ export const DEFAULT_MAX_ITEM_COUNT = 500;
 const VALID_TARGET_KINDS = new Set<string>(["entryRef", "termRef", "url", "route"]);
 /** Named deferred seams — recognized, rejected until their resolver ships. */
 const RESERVED_TARGET_KINDS = new Set<string>(["dynamicQuery", "content"]);
-const URL_SCHEME_DENYLIST = ["javascript:", "data:", "vbscript:"];
+
+/**
+ * Fixed placeholder origin {@link isAllowedMenuHref} resolves a claimed same-origin-relative href
+ * against, to compare the RESOLVED origin rather than the raw string shape. Mirrors
+ * `apps/website/src/server/inbound/public-http/http/site/render.ts`'s identically-named constant
+ * byte-for-byte — see that file's own header for why a fixed placeholder origin is sufficient (only
+ * the relationship between the resolved URL's origin and this one is ever inspected, never the
+ * placeholder value itself).
+ */
+const SAFE_HREF_RESOLUTION_BASE = "http://tovu-safehref.invalid/";
+const SAFE_HREF_RESOLUTION_ORIGIN = new URL(SAFE_HREF_RESOLUTION_BASE).origin;
+
+/**
+ * Write-time twin of Tovu's render-time `safeHref` allowlist (`render.ts` and its
+ * `features/theme/static-render.ts` duplicate) — same accepted shapes (`#…`, same-origin `/…`,
+ * `http(s)://`, `mailto:`), expressed here rather than imported because Jini cannot import across the
+ * repo boundary into a Tovu-owned module. **If this function's logic changes, both Tovu copies must
+ * change too, and vice versa** — none of the three cross-reference the others at the type level.
+ *
+ * Replaces a `URL_SCHEME_DENYLIST` (`startsWith` on a lowercased, `.trim()`ed string) that failed
+ * open: the WHATWG `URL` parser strips TAB/LF/CR from ANYWHERE in the input and folds a leading
+ * backslash to `/` for `http(s)`, so `"java\tscript:alert(1)"`, `" javascript:alert(1)"`,
+ * `"file:///etc/passwd"`, `"blob:…"`, `"about:blank"`, `"//evil.example"` (protocol-relative), and
+ * `"/\evil.example"` all resolved to a dangerous or off-origin target while never matching any
+ * `startsWith` prefix in the old list. An allowlist closes the whole bypass class at once rather than
+ * needing a new prefix bolted on per newly-discovered shape.
+ *
+ * Unlike `safeHref`, this does not degrade a bad value to `"#"` — a write-time validator REJECTS
+ * (`MenuValidationError`, surfaced as HTTP 400) rather than silently coercing the author's input, so
+ * the caller (admin editor or an agent tool) gets a clear signal instead of a link that silently
+ * stopped working. Verified against the workspace's stored menu data (`content.db`,
+ * `content.seed.db`) before this change: every existing `url`-kind href already starts with `#` or
+ * `/`, so this tightening rejects nothing that exists today.
+ *
+ * @param rawHref - The `url` target's `href`, already confirmed non-empty by the caller.
+ * @returns `true` when `rawHref` passes the allowlist, `false` otherwise.
+ * @complexity O(1) — a handful of string checks plus one `URL` construction on the `/…` branch.
+ */
+function isAllowedMenuHref(rawHref: string): boolean {
+  const href = rawHref.trim();
+  if (href.startsWith("#")) return true;
+  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) return true;
+  if (href.startsWith("/")) {
+    try {
+      return new URL(href, SAFE_HREF_RESOLUTION_BASE).origin === SAFE_HREF_RESOLUTION_ORIGIN;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 export interface TreeValidationLimits {
   maxDepth?: number | undefined;
@@ -128,8 +178,9 @@ export interface TreeValidationLimits {
  *   rather than crashing) whose `kind` is one of the four v1 kinds — reserved
  *   kinds (`dynamicQuery`, `content`) are rejected with a clear "not yet"
  *   error rather than silently accepted;
- * - `url` targets require a non-empty string `href` and reject a scheme
- *   denylist (`javascript:`, `data:`, `vbscript:`).
+ * - `url` targets require a non-empty string `href` and pass an origin/scheme
+ *   ALLOWLIST (`#…`, same-origin `/…`, `http(s)://`, `mailto:` — see
+ *   {@link isAllowedMenuHref}), not a scheme denylist.
  *
  * @complexity O(n) over total node count for one full walk; no per-node
  * backtracking. Space is O(n) for the cloned tree plus O(n) for the id set.
@@ -200,9 +251,8 @@ function validateTarget(target: NavTarget): void {
     if (typeof rawHref !== "string" || !rawHref.trim()) {
       throw new MenuValidationError("url target requires a non-empty href");
     }
-    const href = rawHref.trim().toLowerCase();
-    if (URL_SCHEME_DENYLIST.some((scheme) => href.startsWith(scheme))) {
-      throw new MenuValidationError(`url target uses a disallowed scheme: '${rawHref}'`);
+    if (!isAllowedMenuHref(rawHref)) {
+      throw new MenuValidationError(`url target uses a disallowed href: '${rawHref}'`);
     }
   }
 }

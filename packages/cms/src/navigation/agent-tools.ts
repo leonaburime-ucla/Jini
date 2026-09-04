@@ -116,7 +116,11 @@ const NAV_TARGET_SCHEMA = {
       required: ["kind", "href"],
       properties: {
         kind: { const: "url" },
-        href: { type: "string", description: "An absolute or site-relative URL. 'javascript:', 'data:', and 'vbscript:' schemes are rejected." },
+        href: {
+          type: "string",
+          description:
+            "An in-page anchor ('#...'), a same-origin relative path ('/...'), an 'http://'/'https://' URL, or a 'mailto:' address. Anything else — including 'javascript:', 'data:', 'vbscript:', 'file:', 'blob:', 'about:', a protocol-relative '//...' URL, or a bare relative path with no leading '/' — is rejected.",
+        },
       },
     },
     {
