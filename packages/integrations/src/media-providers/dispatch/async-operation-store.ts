@@ -57,6 +57,17 @@ const ALLOWED_TRANSITIONS: Readonly<Record<AsyncOperationStatus, ReadonlySet<Asy
 };
 
 /**
+ * Every `AsyncOperationStatus` value, derived from `ALLOWED_TRANSITIONS`'s own key set (which
+ * `Record<AsyncOperationStatus, ...>` forces to stay exhaustive) rather than retyped — the same
+ * "cannot drift" guarantee `TERMINAL_STATUSES` above already documents. `sqlite-async-operation-store.ts`
+ * subtracts `TERMINAL_STATUSES` from this to build the positive, sargable `status IN (...)`
+ * predicate its claim/reconcile queries need in place of `status NOT IN (...)`.
+ */
+export const ASYNC_OPERATION_STATUSES: readonly AsyncOperationStatus[] = Object.keys(
+  ALLOWED_TRANSITIONS,
+) as AsyncOperationStatus[];
+
+/**
  * The complete set of key names an operation `state` object may carry, at any depth — this
  * package's own `PollingVendorAdapter`s' resumption handles (currently only `jobId`; see
  * `providers/imagerouter-video-async.ts`), never anything a `RequestSigner` needs.

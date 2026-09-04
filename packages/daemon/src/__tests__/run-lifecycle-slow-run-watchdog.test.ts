@@ -138,6 +138,71 @@ describe('RunLifecycle — slow-run notice', () => {
     expect(agentEvents).toHaveLength(0);
   });
 
+  it('does not fire while suspended, even well past the threshold — but still fires if silence continues after resuming (regression: emit() was the only reset signal, so a driver-known in-flight operation with no output looked identical to a genuine stall)', async () => {
+    const { lifecycle } = makeLifecycle({ slowRunThresholdMs: 1_000 });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const delivered: RunProtocolEvent[] = [];
+    await lifecycle.stream(run.id, (event) => delivered.push(event));
+    const slowRunNotices = () =>
+      delivered.filter((event) => event.kind === 'agent' && (event.payload as { type?: string }).type === 'slow_running');
+
+    // Simulates a daemon-awaited tool call (an install, a build, a repo-wide scan) that streams
+    // nothing for far longer than the threshold. Pre-fix, this is indistinguishable from the
+    // CPU-starved-and-silent condition the watchdog exists to catch — this is the exact RED this
+    // test proves: without `suspendSlowRunNotice`, the assertion below fails because a notice fires
+    // partway through this advance.
+    lifecycle.suspendSlowRunNotice(run.id);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(slowRunNotices()).toHaveLength(0);
+
+    // The known operation concludes. A fresh window starts here — if the run then goes genuinely
+    // silent again, the notice must still fire. A fix that leaves the watchdog permanently
+    // suspended (silencing the false positive by never firing at all) would fail this half.
+    lifecycle.resumeSlowRunNotice(run.id);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(slowRunNotices()).toHaveLength(1);
+    expect((await lifecycle.get(run.id))?.state).toBe('running');
+  });
+
+  it('suspendSlowRunNotice/resumeSlowRunNotice are no-ops for an unknown or already-terminal run', async () => {
+    const { lifecycle } = makeLifecycle({ slowRunThresholdMs: 1_000 });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    // Unknown run: must not throw (called defensively from a driver that may race run cleanup).
+    expect(() => lifecycle.suspendSlowRunNotice('no-such-run')).not.toThrow();
+    expect(() => lifecycle.resumeSlowRunNotice('no-such-run')).not.toThrow();
+
+    await lifecycle.finish({ runId: run.id, status: 'succeeded', code: 0, signal: null, resumable: false });
+    const delivered: RunProtocolEvent[] = [];
+    await lifecycle.stream(run.id, (event) => delivered.push(event));
+
+    lifecycle.suspendSlowRunNotice(run.id);
+    lifecycle.resumeSlowRunNotice(run.id);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(delivered.filter((event) => event.kind === 'agent')).toHaveLength(0);
+  });
+
+  it('re-arms the slow-run watchdog on resume(), so a resumed run that goes silent again is still caught (regression: finish() cancels the one-shot timer and nothing had re-armed it)', async () => {
+    const { lifecycle } = makeLifecycle({ slowRunThresholdMs: 1_000 });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const delivered: RunProtocolEvent[] = [];
+    await lifecycle.stream(run.id, (event) => delivered.push(event));
+
+    await lifecycle.finish({ runId: run.id, status: 'failed', code: null, signal: null, resumable: true });
+    const { resumed } = await lifecycle.resume(run.id);
+    expect(resumed).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const agentEvents = delivered.filter((event) => event.kind === 'agent');
+    expect(agentEvents).toHaveLength(1);
+    expect(agentEvents[0]?.payload).toMatchObject({ type: 'slow_running' });
+    expect((await lifecycle.get(run.id))?.state).toBe('running');
+  });
+
   it('contains and reports a failure from the notice\'s own emit() rather than letting it escape as an unhandled rejection', async () => {
     const inner = createInMemoryEventLog();
     const appendError = new Error('event database is closed');

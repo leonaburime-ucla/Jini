@@ -25,7 +25,7 @@ import {
 import type { Principal, RunRef } from '@jini-ai/core';
 import type { JournalEntry } from '@jini-ai/protocol';
 import { createInMemoryEventLog } from '../event-log.js';
-import { createRunLifecycle, type RunLifecycle } from '../run-lifecycle.js';
+import { createRunLifecycle, DEFAULT_SLOW_RUN_THRESHOLD_MS, type RunLifecycle } from '../run-lifecycle.js';
 import { createRunByteJournal, type RunByteJournal } from '../continuation/journal.js';
 import type { ToolExecutionResult, ToolExecutor } from '../tool-executor.js';
 import {
@@ -3853,6 +3853,46 @@ describe('AgentExecutor — gap 3 capability-routed continuation (stdin-tool-res
     await lifecycle.waitForTerminal(run.id);
   });
 
+  it('does not fire a premature slow-run notice while an auto-resolved tool call is still genuinely executing, past the default threshold (regression: the daemon had no way to tell the watchdog "this silence is expected")', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveExecute!: (result: ToolExecutionResult) => void;
+      const pendingExecute = new Promise<ToolExecutionResult>((resolve) => {
+        resolveExecute = resolve;
+      });
+      const { toolExecutor } = createFakeToolExecutor(() => pendingExecute);
+      const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
+      const { lifecycle, executor, child } = createHarness({ def: streamJsonDef(), continuation });
+      const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+      // `flushAsync()` (a real `setTimeout(fn, 0)`) never settles once fake timers are engaged —
+      // `vi.advanceTimersByTimeAsync(0)` is this test's fake-timer-safe equivalent: it flushes
+      // microtasks the same way while still driving the fake clock the watchdog reads.
+      const runPromise = executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+      await vi.advanceTimersByTimeAsync(0);
+      child.stdout.emit('data', toolUseTurnEnd('tu-1', 'Bash', { command: 'npm install' }, 'tool_use'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The tool call is now in flight — `execute()` has not resolved and nothing has streamed
+      // since. Advance well past the default 45s slow-run threshold: a healthy, still-running tool
+      // call must not be reported as "still working... taking longer than usual."
+      await vi.advanceTimersByTimeAsync(DEFAULT_SLOW_RUN_THRESHOLD_MS + 5_000);
+      const midFlightEvents = await collectEvents(lifecycle, run.id);
+      expect(midFlightEvents.some((event) => event.kind === 'agent' && (event.payload as RunAgentPayload).type === 'slow_running')).toBe(
+        false,
+      );
+
+      resolveExecute({ executionId: 'exec-1', status: 'completed', output: 'done' });
+      await vi.advanceTimersByTimeAsync(0);
+
+      child.emit('close', 0, null);
+      await runPromise;
+      await lifecycle.waitForTerminal(run.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('injects an isError tool_result JSONL line when the injected tool execution is denied by policy', async () => {
     const { toolExecutor } = createFakeToolExecutor(() => ({ executionId: 'exec-1', status: 'denied' }));
     const continuation: ContinuationOptions = { toolExecutor, principal: TEST_PRINCIPAL, autonomousToolNames: new Set(['Bash']) };
@@ -6320,9 +6360,9 @@ function registryDef(id: string): RuntimeAgentDef {
 }
 
 describe('AgentExecutor — system-prompt overlay reaches the bytes each transport actually sends', () => {
-  // Transport 1 of 4: stdin. Both defs' `buildArgs` declares `_prompt` and discards it, so argv can
+  // Transport 1 of 4: stdin. These 8 defs' `buildArgs` declares `_prompt` and discards it, so argv can
   // never carry the overlay for them; the stdin write is the only channel there is.
-  it.each(['qwen', 'codex'])(
+  it.each(['amp', 'codebuddy', 'codex', 'copilot', 'cursor-agent', 'mimo', 'qoder', 'qwen'])(
     'stdin transport (%s): the overlay is in the bytes written to the child stdin, ahead of the user prompt',
     async (id) => {
       const probe = await probeOverlayDelivery(registryDef(id));
@@ -6335,15 +6375,18 @@ describe('AgentExecutor — system-prompt overlay reaches the bytes each transpo
   );
 
   // Transport 2 of 4: the ACP JSON-RPC session. `runAcpDispatch` hands `attachAcpSession` its own
-  // prompt string; these defs' `buildArgs` returns a bare `['acp']` with no prompt argv at all.
-  it.each(['kimi', 'kiro'])('ACP transport (%s): the overlay is in the prompt handed to attachAcpSession', async (id) => {
-    const probe = await probeOverlayDelivery(registryDef(id));
+  // prompt string; these 8 defs' `buildArgs` returns a bare `['acp']` with no prompt argv at all.
+  it.each(['amr', 'devin', 'hermes', 'kilo', 'kimi', 'kiro', 'trae-cli', 'vibe'])(
+    'ACP transport (%s): the overlay is in the prompt handed to attachAcpSession',
+    async (id) => {
+      const probe = await probeOverlayDelivery(registryDef(id));
 
-    expect(probe.acpPrompt).toContain(OVERLAY_TEXT);
-    expect(probe.acpPrompt).toContain(OVERLAY_USER_PROMPT);
-    expect(probe.acpPrompt!.indexOf(OVERLAY_TEXT)).toBeLessThan(probe.acpPrompt!.indexOf(OVERLAY_USER_PROMPT));
-    expect(totalOverlayDeliveries(probe)).toBe(1);
-  });
+      expect(probe.acpPrompt).toContain(OVERLAY_TEXT);
+      expect(probe.acpPrompt).toContain(OVERLAY_USER_PROMPT);
+      expect(probe.acpPrompt!.indexOf(OVERLAY_TEXT)).toBeLessThan(probe.acpPrompt!.indexOf(OVERLAY_USER_PROMPT));
+      expect(totalOverlayDeliveries(probe)).toBe(1);
+    },
+  );
 
   // Transport 3 of 4: a staged prompt file. grok-build's `buildArgs` passes only the PATH
   // (`--prompt-file <path>`), so the overlay has to be in the staged bytes or it is nowhere.

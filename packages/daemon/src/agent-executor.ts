@@ -1948,6 +1948,13 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       // `content` below already carries the whole raw output, a pre-existing, unrelated gap), so
       // there is no `remainder` to thread back in — only the extracted blocks are used here.
       let media: readonly ToolResultMediaBlock[] = [];
+      // Suspend the slow-run watchdog for the duration of this daemon-awaited execution: the daemon
+      // knows exactly why the run is quiet here (it dispatched the tool itself and is waiting on it),
+      // so a legitimately long tool (an install, a build, a repo-wide scan) must not be mistaken for
+      // the CPU-starved-and-silent condition the watchdog exists to catch. Resumed in `finally` so a
+      // genuinely stalled stretch *after* this tool settles is still caught — see
+      // `RunLifecycle.suspendSlowRunNotice`'s own doc.
+      lifecycle.suspendSlowRunNotice(runId);
       try {
         const result = await continuation.toolExecutor.execute(continuation.principal, run, toolUse.name, toolUse.input);
         content = resultContent(result);
@@ -1956,6 +1963,8 @@ function wireChildLifecycle(ctx: WireChildLifecycleContext): StdinCloseHandle {
       } catch (error) {
         content = errorMessage(error);
         isError = true;
+      } finally {
+        lifecycle.resumeSlowRunNotice(runId);
       }
       await lifecycle.emit(runId, {
         event: 'agent',

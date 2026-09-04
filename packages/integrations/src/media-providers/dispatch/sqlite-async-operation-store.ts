@@ -32,6 +32,7 @@ import type Database from 'better-sqlite3';
 
 import {
   ASYNC_OPERATION_SCHEMA_VERSION,
+  ASYNC_OPERATION_STATUSES,
   assertNoCredentialMaterial,
   assertTransition,
   hydrateAsyncOperationRecord,
@@ -50,9 +51,23 @@ import type {
   AsyncOperationUpdateOptions,
 } from './async-operation-store.js';
 
-const TERMINAL_LIST = [...TERMINAL_STATUSES] as const;
-/** `status NOT IN (?, ?, ?)` placeholders, built once from `TERMINAL_STATUSES` rather than hardcoded, so this file cannot itself drift from that set. */
-const TERMINAL_PLACEHOLDERS = TERMINAL_LIST.map(() => '?').join(', ');
+/**
+ * The non-terminal ("live") status values — `ASYNC_OPERATION_STATUSES` minus `TERMINAL_STATUSES`,
+ * built once so this file cannot itself drift from either source set. Used as a positive
+ * `status IN (?, ?)` predicate in place of `status NOT IN (?, ?, ?)` in the claim and reconcile
+ * queries below: `NOT IN` on `idx_jini_async_operations_claim`'s leading column is not sargable —
+ * confirmed via `EXPLAIN QUERY PLAN` against this repo's pinned `better-sqlite3`, `NOT IN` produces
+ * `SCAN jini_async_operations` while `IN` produces `SEARCH ... USING INDEX
+ * idx_jini_async_operations_claim (status=? AND next_poll_at<?)` — because a b-tree index can be
+ * walked to find rows a positive predicate matches, but not to skip rows a negated one excludes.
+ * Without this, the index created for exactly this query is dead weight and every poll cycle scans
+ * the whole table.
+ */
+const LIVE_STATUSES: ReadonlySet<AsyncOperationStatus> = new Set(
+  ASYNC_OPERATION_STATUSES.filter((status) => !TERMINAL_STATUSES.has(status)),
+);
+const LIVE_LIST = [...LIVE_STATUSES] as const;
+const LIVE_PLACEHOLDERS = LIVE_LIST.map(() => '?').join(', ');
 
 interface OperationRow {
   id: string;
@@ -161,14 +176,14 @@ export async function createSqliteAsyncOperationStore(dbPath: string): Promise<S
   const releaseLeaseStmt = db.prepare<[number, string, string]>(
     'UPDATE jini_async_operations SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND lease_owner = ?',
   );
-  // Variadic bind params (a `now`/`limit` mix plus a spread of `TERMINAL_LIST`) don't fit a fixed
+  // Variadic bind params (a `now`/`limit` mix plus a spread of `LIVE_LIST`) don't fit a fixed
   // tuple type — `better-sqlite3`'s `Statement` defaults to `unknown[]` when left unspecified.
   const claimDueStmt = db.prepare<unknown[], OperationRow>(`
     UPDATE jini_async_operations
     SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
     WHERE id IN (
       SELECT id FROM jini_async_operations
-      WHERE status NOT IN (${TERMINAL_PLACEHOLDERS})
+      WHERE status IN (${LIVE_PLACEHOLDERS})
         AND next_poll_at <= ?
         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
       ORDER BY next_poll_at ASC
@@ -179,13 +194,13 @@ export async function createSqliteAsyncOperationStore(dbPath: string): Promise<S
   const deadlineExpireStmt = db.prepare<unknown[], OperationRow>(`
     UPDATE jini_async_operations
     SET status = 'unknown', lease_owner = NULL, lease_expires_at = NULL, error = ?, updated_at = ?
-    WHERE status NOT IN (${TERMINAL_PLACEHOLDERS}) AND deadline_at <= ?
+    WHERE status IN (${LIVE_PLACEHOLDERS}) AND deadline_at <= ?
     RETURNING *
   `);
   const releaseDeadLeasesStmt = db.prepare<unknown[], OperationRow>(`
     UPDATE jini_async_operations
     SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-    WHERE status NOT IN (${TERMINAL_PLACEHOLDERS}) AND lease_owner IS NOT NULL AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+    WHERE status IN (${LIVE_PLACEHOLDERS}) AND lease_owner IS NOT NULL AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
     RETURNING *
   `);
 
@@ -273,7 +288,7 @@ export async function createSqliteAsyncOperationStore(dbPath: string): Promise<S
   const claimDueTxn = db.transaction((options: AsyncOperationClaimOptions): AsyncOperationRecord[] => {
     const { now, leaseOwner, leaseMs } = options;
     const limit = options.limit ?? 10;
-    const rows = claimDueStmt.all(leaseOwner, now + leaseMs, now, ...TERMINAL_LIST, now, now, limit);
+    const rows = claimDueStmt.all(leaseOwner, now + leaseMs, now, ...LIVE_LIST, now, now, limit);
     return rows.map(rowToOperation);
   });
 
@@ -283,8 +298,8 @@ export async function createSqliteAsyncOperationStore(dbPath: string): Promise<S
       message: 'async operation passed its absolute deadline while unattended — vendor-side effect is undetermined',
       code: 'DEADLINE_EXPIRED',
     });
-    const deadlineExpired = deadlineExpireStmt.all(deadlineExpiredError, now, ...TERMINAL_LIST, now).length;
-    const leasesReleased = releaseDeadLeasesStmt.all(now, ...TERMINAL_LIST, now).length;
+    const deadlineExpired = deadlineExpireStmt.all(deadlineExpiredError, now, ...LIVE_LIST, now).length;
+    const leasesReleased = releaseDeadLeasesStmt.all(now, ...LIVE_LIST, now).length;
     return { leasesReleased, deadlineExpired };
   });
 

@@ -108,6 +108,26 @@ export interface RunLifecycle {
   /** Idempotent terminal transition; a second call while already terminal is a no-op that returns the existing status unchanged. */
   finish(input: FinishRunInput): Promise<RunStatus>;
   resume(runId: string): Promise<ResumeRunResult>;
+  /**
+   * Suspends the slow-run watchdog for `runId` while a daemon-managed operation of legitimately
+   * unbounded duration is in flight (e.g. an auto-resolved tool call the daemon itself awaits) — pair
+   * with {@link RunLifecycle.resumeSlowRunNotice} once that operation concludes. `emit()` is the
+   * *only* other reset signal the watchdog has, and it fires nothing while such an operation is
+   * running (there is no output to stream), so without this call a tool that legitimately runs past
+   * the threshold (an install, a build, a repo-wide scan) is indistinguishable from the exact
+   * CPU-starved-and-silent condition the watchdog exists to catch, and fires a "still working" notice
+   * on a run that never actually stalled. A driver that knows exactly why a run is quiet must say so
+   * rather than leaving the watchdog to guess from silence alone. No-op if `runId` is unknown,
+   * already terminal, or the slow-run notice is disabled kernel-wide (`slowRunThresholdMs: null`).
+   */
+  suspendSlowRunNotice(runId: string): void;
+  /**
+   * Re-arms the slow-run watchdog for `runId` with a fresh timeout window, undoing
+   * {@link RunLifecycle.suspendSlowRunNotice} once the known operation concludes — so a genuinely
+   * stalled stretch starting *after* that point is still caught. No-op under the same conditions as
+   * `suspendSlowRunNotice`.
+   */
+  resumeSlowRunNotice(runId: string): void;
   /** Resolves once `runId` reaches a terminal state; resolves immediately if it already has. */
   waitForTerminal(runId: string): Promise<RunStatus>;
   /**
@@ -991,11 +1011,31 @@ export function createRunLifecycle(input: CreateRunLifecycleInput): RunLifecycle
       record.cancelRequested = false;
       record.lastCancelRequest = undefined;
       record.terminalEndEntry = undefined;
+      // Mirrors `start()`'s own arm call: a resumed run gets exactly the same fresh slow-run window a
+      // freshly-started one does. Without this, `finish()`'s `record.slowRunWatchdog?.cancel()` (which
+      // never fires again on its own — the underlying timer is one-shot) left the notice permanently
+      // dark for the rest of a resumed run's life, silently disabling a feature the run is otherwise
+      // still eligible for.
+      armSlowRunWatchdogIfConfigured(record, slowRunThresholdMs, () => {
+        void handleSlowRunNotice(runId);
+      });
       // No protocol event is emitted here: none of RunProtocolEvent's six
       // kinds represents "resumed" (extraction-plan scope decision — see
       // source-map.md). The event log's cursor sequence continues
       // unbroken; only RunStatus.state changes.
       return { run: toPublicStatus(record), resumed: true };
+    },
+
+    suspendSlowRunNotice(runId: string): void {
+      const record = runs.get(runId);
+      if (!record || isTerminalRunState(record.status.state)) return;
+      record.slowRunWatchdog?.cancel();
+    },
+
+    resumeSlowRunNotice(runId: string): void {
+      const record = runs.get(runId);
+      if (!record || isTerminalRunState(record.status.state)) return;
+      record.slowRunWatchdog?.noteActivity();
     },
 
     async waitForTerminal(runId: string): Promise<RunStatus> {

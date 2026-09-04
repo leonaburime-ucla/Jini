@@ -226,3 +226,64 @@ describe('createSqliteAsyncOperationStore — durability across a real restart',
     store = await createSqliteAsyncOperationStore(dbPath);
   });
 });
+
+describe("createSqliteAsyncOperationStore — claimDue's real query is sargable (uses its index, not a full scan)", () => {
+  /**
+   * Regression coverage for the `status NOT IN (...)` full-table-scan bug in `claimDueStmt`:
+   * `NOT IN` on the leading column of `idx_jini_async_operations_claim` cannot be satisfied by a
+   * b-tree walk of that index — a b-tree can be walked to find rows a *positive* predicate
+   * matches, not to skip rows a *negated* one excludes — so every poll cycle scanned the whole
+   * table regardless of the index built for exactly this query. The fix rewrites the predicate as
+   * a positive `status IN (<live statuses>)`.
+   *
+   * Deliberately captures the module's own real `claimDueStmt` SQL text via a
+   * `Database.prototype.prepare` spy rather than reconstructing the query by hand: a hand-built
+   * copy would pass or fail on its own merits and prove nothing about whether the actual
+   * production statement changed. `better-sqlite3` refuses `EXPLAIN QUERY PLAN` on a statement
+   * with unbound parameters (confirmed directly — "Too few parameter values were provided"), so
+   * every `?` in the captured text is bound with a dummy value; `EXPLAIN QUERY PLAN` only needs
+   * placeholder positions, never real values, to produce a plan.
+   */
+  it("claimDue's real prepared statement is satisfied by the claim index, not a full scan", async () => {
+    const { default: Database } = await import('better-sqlite3');
+    const originalPrepare = Database.prototype.prepare;
+    const captured: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- spying across an arbitrary overload set
+    (Database.prototype as any).prepare = function (this: unknown, sql: string, ...rest: unknown[]) {
+      captured.push(sql);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (originalPrepare as any).call(this, sql, ...rest);
+    };
+
+    const dir2 = mkdtempSync(join(tmpdir(), 'jini-async-operation-store-planquery-'));
+    const dbPath2 = join(dir2, 'async-operations.db');
+    try {
+      const captureStore = await createSqliteAsyncOperationStore(dbPath2);
+      await captureStore.close();
+    } finally {
+      Database.prototype.prepare = originalPrepare;
+      rmSync(dir2, { recursive: true, force: true });
+    }
+
+    // `claimDueStmt` is the only captured statement shaped as an `UPDATE ... RETURNING *` that
+    // also orders by `next_poll_at` — distinguishes it from `deadlineExpireStmt`/
+    // `releaseDeadLeasesStmt`, which share the `RETURNING *` shape but not the ordering.
+    const claimSql = captured.find(
+      (sql) => sql.includes('RETURNING *') && sql.includes('ORDER BY next_poll_at ASC') && sql.includes('UPDATE'),
+    );
+    expect(claimSql, `expected to capture claimDueStmt's SQL among: ${JSON.stringify(captured)}`).toBeDefined();
+
+    const db = new Database(dbPath);
+    try {
+      const placeholderCount = (claimSql!.match(/\?/g) ?? []).length;
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${claimSql}`).all(...new Array(placeholderCount).fill(0)) as Array<{
+        detail: string;
+      }>;
+      const details = plan.map((row) => row.detail).join(' | ');
+      expect(details).toContain('USING INDEX idx_jini_async_operations_claim');
+      expect(details).not.toContain('SCAN jini_async_operations');
+    } finally {
+      db.close();
+    }
+  });
+});
