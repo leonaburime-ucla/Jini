@@ -3,9 +3,11 @@ import { test } from "vitest";
 
 import type { DomainEvent, OutboxPort } from "../../core/ports.js";
 import {
+  ALLOWED_HREF_SHAPES_DESCRIPTION,
   assignLocation,
   createMenu,
   deleteMenu,
+  isAllowedHref,
   MenuConflictError,
   MenuLocationBoundError,
   MenuNotFoundError,
@@ -306,7 +308,13 @@ test("updateMenuTree rejects a javascript: url target", async () => {
  * lowercase `.trim()` + `startsWith` check) that Node's actual `URL` parser
  * still resolves to a dangerous scheme or an off-origin target — probed
  * directly against Node's `URL` before this fix landed. The allowlist below
- * must reject every one of them.
+ * must reject every one of them. This is also the adversarial table the
+ * cross-repo behavioral-equivalence gate
+ * (`apps/website/development/scripts/check-menu-href-allowlist-sync.ts`) feeds
+ * through this function's `@jini-ai/cms/navigation` export and both of
+ * Tovu's `safeHref` copies — kept independently maintained here (Jini
+ * cannot import Tovu's dev-scripts, and vice versa) rather than a single
+ * shared file, so verify the two lists match when editing either.
  */
 const DISALLOWED_URL_TARGET_HREFS: readonly string[] = [
   "javascript:alert(1)",
@@ -314,13 +322,28 @@ const DISALLOWED_URL_TARGET_HREFS: readonly string[] = [
   "java\nscript:alert(1)", // LF — same class
   "java\rscript:alert(1)", // CR — same class
   " javascript:alert(1)", // leading space, not caught by the old denylist's un-trimmed compare order
+  "JaVaScRiPt:alert(1)", // mixed case — irrelevant to an ALLOWLIST, but the old denylist lowercased first
+  "\u0001javascript:alert(1)", // leading C0 control (not just whitespace) ahead of the scheme
+  "\u0000javascript:alert(1)", // leading NUL byte, same class
   "file:///etc/passwd",
   "blob:https://evil.example/x",
   "about:blank",
+  "data:text/html,<script>alert(1)</script>",
   "//evil.example", // protocol-relative — resolves off-origin against the current page's own scheme
   "/\\evil.example", // a browser folds a leading backslash to '/', landing on the same off-origin shape
   "/\t/evil.example", // TAB between the leading '/' and the rest reconstitutes '//evil.example'
 ];
+
+/** Direct, isolated unit coverage of the exported predicate itself (not just through the
+ *  `updateMenuTree` integration path above) — this is the function the cross-repo sync gate imports. */
+test("isAllowedHref: rejects every denylist-bypass shape, accepts every legitimate shape", () => {
+  for (const href of DISALLOWED_URL_TARGET_HREFS) {
+    assert.equal(isAllowedHref(href), false, `expected isAllowedHref(${JSON.stringify(href)}) to be false`);
+  }
+  for (const href of ["/quickstart", "#posts", "https://ok.example/x", "mailto:a@b.example"]) {
+    assert.equal(isAllowedHref(href), true, `expected isAllowedHref(${JSON.stringify(href)}) to be true`);
+  }
+});
 
 for (const href of DISALLOWED_URL_TARGET_HREFS) {
   test(`updateMenuTree rejects a url target href that bypassed the old denylist but fails the allowlist: ${JSON.stringify(href)}`, async () => {
@@ -347,7 +370,10 @@ for (const href of DISALLOWED_URL_TARGET_HREFS) {
         }),
       (error: unknown) => {
         assert.ok(error instanceof MenuValidationError, `expected MenuValidationError, got ${String(error)}`);
-        assert.equal((error as Error).message, `url target uses a disallowed href: '${href}'`);
+        assert.equal(
+          (error as Error).message,
+          `url target href is not allowed: '${href}'. Accepted shapes: ${ALLOWED_HREF_SHAPES_DESCRIPTION}.`
+        );
         return true;
       }
     );
