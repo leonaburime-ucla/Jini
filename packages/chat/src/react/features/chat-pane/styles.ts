@@ -12,6 +12,9 @@ export const CHAT_PANE_STYLES = `
   --jini-chat-subtle: #f4f5f7;
   --jini-chat-accent: #c96442;
   --jini-chat-accent-soft: #fbeee5;
+  --jini-chat-danger: #e5484d;
+  --jini-chat-radius: 8px;
+  --jini-chat-radius-lg: 12px;
   --bg-panel: var(--jini-chat-panel);
   --bg-subtle: var(--jini-chat-subtle);
   --border: var(--jini-chat-border);
@@ -19,9 +22,9 @@ export const CHAT_PANE_STYLES = `
   --text: var(--jini-chat-text);
   --text-strong: var(--jini-chat-text-strong);
   --text-muted: var(--jini-chat-muted);
-  --danger: #e5484d;
-  --radius: 8px;
-  --radius-lg: 12px;
+  --danger: var(--jini-chat-danger);
+  --radius: var(--jini-chat-radius);
+  --radius-lg: var(--jini-chat-radius-lg);
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
