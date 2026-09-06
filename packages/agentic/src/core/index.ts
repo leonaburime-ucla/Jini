@@ -134,7 +134,7 @@ export {
  * `@jini-ai/http-kit` used to mount this encoder behind a route still named `/api/runs/:runId/
  * agui-stream` — left un-renamed at the time on the assumption it was a wire contract an
  * already-deployed client might be calling. A 2026-08-18 audit found zero callers of that route
- * anywhere (no client in this repo or `Tovu` ever requested it, and `@jini-ai/http-kit` has never
+ * anywhere (no client in this repo or any consuming product ever requested it, and `@jini-ai/http-kit` has never
  * actually been published to npm, so no external integrator could depend on it either); the route,
  * its registrar, and its tests were removed outright rather than renamed. This `gen-ui/` module
  * itself was untouched — it is `@jini-ai/agentic`'s own public export and its removal is a separate
