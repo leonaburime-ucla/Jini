@@ -205,8 +205,8 @@ export interface ReadOnlyToolConstraintDeps {
  * dispatch a tool id the caller never named (a retry, a recovery loop that calls a different tool
  * as a remedy, ...). Every such decorator's own `inner.execute` call still has to come through here
  * to reach a handler, which is what makes this a gate on the CLASS of defect (an unnamed nested
- * dispatch) rather than on one instance of it — see `read-only-tool-constraint.ts` in Tovu's own
- * `apps/website`, the consumer this was ported from, for the composition this mirrors.
+ * dispatch) rather than on one instance of it — see `read-only-tool-constraint.ts` in the consuming
+ * product's own `apps/website`, the consumer this was ported from, for the composition this mirrors.
  *
  * `delegatedToolExecuteRoute`'s own `handle` additionally composes this around whatever
  * `ToolExecutor` a host supplies, whenever a call attenuates its principal. That outer composition

@@ -457,8 +457,8 @@ describe('POST /api/proxy/anthropic/stream', () => {
   // structurally stops a future same-origin or parse change from throwing, and when it does, that
   // throw becomes an unhandled promise rejection with no process-level guard anywhere in
   // `http-kit`'s path (unlike `desktop-host`, which does register one). Node's documented default
-  // for an unhandled rejection is to terminate the process, exactly like the Tovu decrypt-handler
-  // bug this sweep was dispatched to check for.
+  // for an unhandled rejection is to terminate the process, exactly like the downstream product's
+  // decrypt-handler bug this sweep was dispatched to check for.
   it('does not leak an unhandled rejection when the pre-stream origin check throws, and keeps serving requests after', async () => {
     const rejections: unknown[] = [];
     const onUnhandledRejection = (reason: unknown): void => {

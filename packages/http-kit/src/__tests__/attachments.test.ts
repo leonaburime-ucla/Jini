@@ -1390,8 +1390,8 @@ describe('attachment routes — origin guard throwing before either handler star
   // scheme) — a genuine misconfiguration, not a hypothetical. Neither `app.post` nor `app.delete`
   // callback here has a try/catch of its own, and this route is mounted directly on `express()` (no
   // process-level guard exists anywhere in this package's path either), so before this fix that
-  // throw became an unhandled rejection with nothing to catch it — the same crash class the Tovu
-  // decrypt-handler bug that prompted this sweep hit.
+  // throw became an unhandled rejection with nothing to catch it — the same crash class the
+  // downstream product's decrypt-handler bug that prompted this sweep hit.
   it('does not leak an unhandled rejection when JINI_ALLOWED_ORIGINS is malformed, and keeps serving requests after', async () => {
     const rejections: unknown[] = [];
     const onUnhandledRejection = (reason: unknown): void => {

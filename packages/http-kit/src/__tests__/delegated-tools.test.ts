@@ -643,8 +643,8 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
    * A consumer's own `ToolExecutor` composition can dispatch a DIFFERENT tool id one or more hops
    * in, using the exact same `principal` the outer call carried, and that nested dispatch never
    * passes back through this route's own check. `withNestedRemedyDispatch` below mimics exactly
-   * such a composition (Tovu's `withToolFailureRecovery` is the real-world instance this is
-   * modeled on): a completed call whose output names a `remedyToolId` triggers one more dispatch,
+   * such a composition (a downstream consumer's `withToolFailureRecovery` is the real-world instance
+   * this is modeled on): a completed call whose output names a `remedyToolId` triggers one more dispatch,
    * through `inner`, of that id.
    *
    * Deliberately DUMB — it never calls `refuseNonReadOnlyDispatch` itself. The two tests below ask
@@ -719,7 +719,7 @@ describe('delegatedToolExecuteRoute read-only constraint (requireReadOnly)', () 
     const registry = createToolRegistry();
     registerVerifyAndRemedyWrite(registry, ran);
 
-    // The composition a real consumer is expected to build, mirroring Tovu's own
+    // The composition a real consumer is expected to build, mirroring a downstream consumer's own
     // `withToolFailureRecovery(withReadOnlyToolConstraint(createToolExecutor(...)))`:
     // `withReadOnlyToolConstraint` innermost, directly around the bare executor, with the
     // consumer's own nested-dispatch decorator on top. `withNestedRemedyDispatch` here does NOT
