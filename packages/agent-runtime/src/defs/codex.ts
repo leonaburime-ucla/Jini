@@ -354,7 +354,7 @@ export const codexAgentDef = {
       // not create-only and needs no `resumeSessionId` guard. Pushed for
       // every claimed attachment path the caller hands in here, not only
       // ones actually of kind "image": the caller
-      // (`agent-daemon-server.ts#resolveAttachmentRunFields`, Tovu) already
+      // (`agent-daemon-server.ts#resolveAttachmentRunFields`, in the consuming product) already
       // stopped filtering by kind for the same reason `qoderAgentDef`'s
       // `--attachment` above does not filter either — a same-shaped
       // repeated-flag mechanism, see `imageDelivery`'s doc below.

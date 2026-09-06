@@ -87,7 +87,8 @@ export function getAgentDef(id: string): RuntimeAgentDef | null {
 }
 
 /**
- * Whether a caller can inject external MCP servers (Tovu/Jini tools) into a session run by this
+ * Whether a caller can inject external MCP servers (the host application's or this engine's own
+ * tools) into a session run by this
  * def, per its own `externalMcpInjection` declaration (`types.ts`'s own doc names the six wired
  * strategies and the defs that leave the field `undefined` because the CLI has no mechanism to
  * receive one — `aider`, `amp`, `copilot`, `cursor-agent`, `deepseek`, `grok-build`, `pi`,
