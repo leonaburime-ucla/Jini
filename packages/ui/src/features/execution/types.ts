@@ -147,6 +147,20 @@ export interface ExecutionConfig {
 export interface AgentModelOption {
   id: string;
   label: string;
+  /**
+   * The reasoning-effort levels THIS model supports, when the runtime's own catalog reports them
+   * per model rather than uniformly across the agent. Mirrors `@jini-ai/agent-runtime`'s
+   * `RuntimeModelOption.reasoning` field-for-field, for the same reason every other field on this
+   * interface does (see this file's header doc) — Codex's `debug models` catalog reports it, and the
+   * levels genuinely differ between models on the same CLI.
+   *
+   * `undefined` means "nothing model-specific to say" and is read as agent-wide by
+   * `useReasoningControl`'s narrowing rule — it falls back to `DetectedAgent.reasoningOptions`'s
+   * union, the same list every model showed before this field existed. It is NOT a synonym for "zero
+   * levels". An explicit `[]` means the catalog said so outright, and is honored as-is even though it
+   * hides the effort control for that model.
+   */
+  reasoning?: readonly AgentModelOption[] | undefined;
 }
 
 /** Where an agent's model list came from. `'live'` was pulled from the CLI

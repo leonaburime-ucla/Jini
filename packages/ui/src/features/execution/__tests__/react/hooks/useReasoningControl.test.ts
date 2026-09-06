@@ -1,5 +1,5 @@
 import { renderHook } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CUSTOM_MODEL_SENTINEL } from '../../../constants.js';
 import type { DetectedAgent, LocalCliConfig } from '../../../types.js';
 import { useReasoningControl } from '../../../react/hooks/useReasoningControl.js';
@@ -32,6 +32,51 @@ function agyAgent(overrides: Partial<DetectedAgent> = {}): DetectedAgent {
     models: AGY_MODELS,
     modelsSource: 'live',
     reasoningInModelId: REASONING_IN_MODEL_ID,
+    ...overrides,
+  };
+}
+
+// Mirrors codex-cli 0.153.4's live shape (see `RuntimeModelOption.reasoning`'s doc in
+// `@jini-ai/agent-runtime`): `gpt-6-astra` offers a full ladder, `gpt-5.5` stops at `high`,
+// `gpt-legacy` explicitly reports none, and `gpt-unlisted` says nothing model-specific at all.
+const CODEX_MODELS = [
+  {
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    reasoning: [
+      { id: 'low', label: 'Low' },
+      { id: 'medium', label: 'Medium' },
+      { id: 'high', label: 'High' },
+      { id: 'xhigh', label: 'Extra High' },
+    ],
+  },
+  {
+    id: 'gpt-5.5',
+    label: 'GPT-5.5',
+    reasoning: [
+      { id: 'low', label: 'Low' },
+      { id: 'medium', label: 'Medium' },
+      { id: 'high', label: 'High' },
+    ],
+  },
+  { id: 'gpt-legacy', label: 'GPT Legacy', reasoning: [] },
+  { id: 'gpt-unlisted', label: 'GPT Unlisted' },
+];
+
+function codexAgent(overrides: Partial<DetectedAgent> = {}): DetectedAgent {
+  return {
+    id: 'codex',
+    label: 'Codex',
+    installed: true,
+    models: CODEX_MODELS,
+    // Agent-wide union across every model this def has ever seen — today's pre-narrowing behavior,
+    // now the fallback for a model with nothing model-specific to say (`gpt-unlisted`).
+    reasoningOptions: [
+      { id: 'low', label: 'Low' },
+      { id: 'medium', label: 'Medium' },
+      { id: 'high', label: 'High' },
+      { id: 'xhigh', label: 'Extra High' },
+    ],
     ...overrides,
   };
 }
@@ -163,5 +208,135 @@ describe('useReasoningControl — suffix-in-model-id reasoning', () => {
     const { result } = renderHook(() => useReasoningControl({ agent, config }));
 
     expect(result.current.resolveReasoningModelId('low')).toBe('gemini-3.1-pro-low');
+  });
+});
+
+describe('useReasoningControl — per-model reasoning narrowing (flat reasoning options)', () => {
+  it('falls back to the agent-wide union when the selected model reports no per-model data (undefined)', () => {
+    const agent = codexAgent();
+    const config: LocalCliConfig = { agentId: 'codex', modelByAgentId: { codex: 'gpt-unlisted' } };
+    const { result } = renderHook(() => useReasoningControl({ agent, config }));
+
+    // A model whose catalog row carries no `reasoning` field at all is NOT the same as one that
+    // reports zero levels — this is the one case that must still show every level the agent-level
+    // union declares, or every pre-existing Claude/Codex-fallback agent would regress to nothing.
+    expect(result.current.reasoningOptions).toEqual(agent.reasoningOptions);
+    expect(result.current.reasoningOptions.map((option) => option.id)).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(result.current.hasReasoning).toBe(true);
+  });
+
+  it('hides the control when the selected model explicitly reports zero reasoning levels', () => {
+    const agent = codexAgent();
+    const config: LocalCliConfig = { agentId: 'codex', modelByAgentId: { codex: 'gpt-legacy' } };
+    const { result } = renderHook(() => useReasoningControl({ agent, config }));
+
+    // If an explicit `[]` fell back to the union like `undefined` does, this model would still show
+    // every level the agent has ever offered — the exact bug this narrowing exists to fix, one layer
+    // down. `toEqual([])` (not just falsy/empty-ish) proves the model's own list, not some default,
+    // won.
+    expect(result.current.reasoningOptions).toEqual([]);
+    expect(result.current.hasReasoning).toBe(false);
+  });
+
+  it("narrows to the selected model's own, smaller reasoning list", () => {
+    const agent = codexAgent();
+    const config: LocalCliConfig = { agentId: 'codex', modelByAgentId: { codex: 'gpt-5.5' } };
+    const { result } = renderHook(() => useReasoningControl({ agent, config }));
+
+    // A test that only checked "some options render" would pass even if the union leaked through —
+    // asserting the exact narrowed set, and that the agent-wide-only `xhigh` is absent, is what
+    // actually proves narrowing happened rather than a coincidental non-empty list.
+    expect(result.current.reasoningOptions.map((option) => option.id)).toEqual(['low', 'medium', 'high']);
+    expect(result.current.reasoningOptions.map((option) => option.id)).not.toContain('xhigh');
+    expect(result.current.hasReasoning).toBe(true);
+  });
+
+  it('falls back to the agent-wide union (not a hidden control) when the agent has no model list at all', () => {
+    // `agent.reasoningOptions` alone (no `models`) is an existing, still-supported shape — an agent
+    // with a reasoning axis but nothing to narrow by. Per-model narrowing must not regress it: with no
+    // model to look up, `selectedModelReasoning` is `undefined`, which reads as "unknown" and falls
+    // back to the union, exactly like it did before this field existed.
+    const agent = codexAgent({ models: [] });
+    const config: LocalCliConfig = { agentId: 'codex' };
+    const { result } = renderHook(() => useReasoningControl({ agent, config }));
+
+    expect(result.current.hasModels).toBe(false);
+    expect(result.current.reasoningOptions).toEqual(agent.reasoningOptions);
+    expect(result.current.hasReasoning).toBe(true);
+  });
+
+  it('re-derives reasoning options when the selected model changes', () => {
+    const agent = codexAgent();
+    const initialConfig: LocalCliConfig = { agentId: 'codex', modelByAgentId: { codex: 'gpt-6-astra' } };
+    const { result, rerender } = renderHook(
+      ({ config }: { config: LocalCliConfig }) => useReasoningControl({ agent, config }),
+      { initialProps: { config: initialConfig } },
+    );
+
+    expect(result.current.reasoningOptions.map((option) => option.id)).toEqual(['low', 'medium', 'high', 'xhigh']);
+
+    rerender({ config: { agentId: 'codex', modelByAgentId: { codex: 'gpt-legacy' } } });
+
+    expect(result.current.reasoningOptions).toEqual([]);
+    expect(result.current.hasReasoning).toBe(false);
+  });
+
+  it('clears an unsupported persisted effort when switching to a model that does not support it', () => {
+    const agent = codexAgent();
+    const onReasoningChange = vi.fn();
+    const initialConfig: LocalCliConfig = {
+      agentId: 'codex',
+      modelByAgentId: { codex: 'gpt-6-astra' },
+      reasoningByAgentId: { codex: 'xhigh' },
+    };
+    const { result, rerender } = renderHook(
+      ({ config }: { config: LocalCliConfig }) => useReasoningControl({ agent, config, onReasoningChange }),
+      { initialProps: { config: initialConfig } },
+    );
+
+    expect(result.current.reasoningValue).toBe('xhigh');
+    expect(onReasoningChange).not.toHaveBeenCalled();
+
+    rerender({
+      config: {
+        agentId: 'codex',
+        modelByAgentId: { codex: 'gpt-5.5' },
+        // The persisted pick is left as-is on the config passed in — proving the CLEAR is something
+        // this hook actively requests via `onReasoningChange`, not something that happens by itself.
+        reasoningByAgentId: { codex: 'xhigh' },
+      },
+    });
+
+    expect(onReasoningChange).toHaveBeenCalledTimes(1);
+    expect(onReasoningChange).toHaveBeenCalledWith('');
+    // Even before a host applies that clear and re-renders with it, the stale id must never be what
+    // actually renders as selected — a test that stopped at "onReasoningChange was called" would
+    // still pass if the `<select>` kept showing the unsupported value in the meantime.
+    expect(result.current.reasoningValue).not.toBe('xhigh');
+    expect(result.current.reasoningOptions.map((option) => option.id)).toEqual(['low', 'medium', 'high']);
+  });
+
+  it('does not clear anything when the persisted effort is still supported after the model change', () => {
+    const agent = codexAgent();
+    const onReasoningChange = vi.fn();
+    const initialConfig: LocalCliConfig = {
+      agentId: 'codex',
+      modelByAgentId: { codex: 'gpt-6-astra' },
+      reasoningByAgentId: { codex: 'medium' },
+    };
+    const { rerender } = renderHook(
+      ({ config }: { config: LocalCliConfig }) => useReasoningControl({ agent, config, onReasoningChange }),
+      { initialProps: { config: initialConfig } },
+    );
+
+    rerender({
+      config: {
+        agentId: 'codex',
+        modelByAgentId: { codex: 'gpt-5.5' },
+        reasoningByAgentId: { codex: 'medium' },
+      },
+    });
+
+    expect(onReasoningChange).not.toHaveBeenCalled();
   });
 });

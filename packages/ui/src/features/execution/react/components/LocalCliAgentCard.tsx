@@ -103,7 +103,12 @@ export function LocalCliAgentCard({
     customModelInputValue,
     resolveNextModelId,
     resolveReasoningModelId,
-  } = useReasoningControl({ agent, config, explicitCustomMode });
+  } = useReasoningControl({
+    agent,
+    config,
+    explicitCustomMode,
+    onReasoningChange: (next) => onReasoningChange(agent.id, next),
+  });
 
   // `modelsSource` is optional in the contract, so an absent value means the
   // host did not say where the list came from — NOT that it came from a
