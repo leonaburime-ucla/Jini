@@ -586,6 +586,10 @@ export const CHAT_PANE_STYLES = `
   border-top: 1px solid var(--jini-chat-border-soft);
 }
 .jini-chat-pane .jini-composer-attachment-picker { display: inline-flex; }
+/* Host controls slotted at the start of the footer row, right after the attach/discovery "+"
+   trigger above -- see ComposerSlots.footerLeadingAccessory's own doc (slots.ts) for why this
+   exists as a third footer slot alongside footerAccessories/plusMenuItems. */
+.jini-chat-pane .jini-composer-footer-leading { display: inline-flex; align-items: center; }
 /* NOT 'position: relative' — the discovery popover (below) anchors off '.jini-composer' itself
    (the nearest positioned ancestor once this wrapper opts out), not off this small trigger-button
    wrapper. Anchoring to the wrapper put the popover's bottom edge at the wrapper's own top edge —

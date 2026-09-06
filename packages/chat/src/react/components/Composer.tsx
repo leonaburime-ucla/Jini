@@ -508,6 +508,9 @@ export function Composer({
             t={t}
           />
         ) : null}
+        {slots?.footerLeadingAccessory ? (
+          <div className="jini-composer-footer-leading">{slots.footerLeadingAccessory}</div>
+        ) : null}
         {onChangeWorkingDirectory || onPickWorkingDirectory ? (
           <div className="jini-composer-workdir" data-testid="composer-workdir">
             <button

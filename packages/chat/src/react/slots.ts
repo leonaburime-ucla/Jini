@@ -185,6 +185,14 @@ export interface ComposerSlots {
   leadingAccessories?: ReactNode;
   /** Host controls rendered before the send action, such as an agent/model picker. */
   footerAccessories?: ReactNode;
+  /**
+   * Host controls rendered at the START of the footer row, immediately after the attach/discovery
+   * "+" trigger — for a control that belongs with the composer's other action-row buttons (e.g. a
+   * push-to-talk mic button) rather than in {@link leadingAccessories}'s pinned-context zone above
+   * the input, or in {@link footerAccessories}'s trailing slot (reserved for an agent/model picker
+   * and pushed to the row's far end via `margin-left: auto`).
+   */
+  footerLeadingAccessory?: ReactNode;
   onAttach?: (a: ChatAttachment) => void;
   annotationAdapter?: AnnotationAdapter;
 }
