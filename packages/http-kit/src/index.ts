@@ -441,6 +441,7 @@ export type {
   AttachmentUploadResponse,
   CreateDiskAttachmentStoreOptions,
   ObservedAttachmentIdentity,
+  PendingAttachmentSummary,
   RecordedAttachmentIdentity,
   StoredAttachment,
 } from './attachments.js';

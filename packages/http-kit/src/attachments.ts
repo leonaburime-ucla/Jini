@@ -30,6 +30,14 @@
  * claimed attachment must belong to one batch, so the single `batchDirectory` a host grants the
  * agent read access to cannot be widened by mixing batches.
  *
+ * **Ownership is opt-in and host-attached, not self-asserted.** `register()`'s optional `ownerId`
+ * (and `listPendingForOwner`, the discovery method it enables) is never read from anything a
+ * renderer sends — a host wires `AttachmentsHttpDeps.resolveOwnerId` to pull it from a channel IT
+ * already trusts (its own session-verified principal header, say), never from `req` unauthenticated.
+ * A store with no `resolveOwnerId` wired registers every attachment ownerless, and
+ * `listPendingForOwner` never returns an ownerless record for any caller — see that method's own doc
+ * for why an absent `ownerId` must never become a wildcard match.
+ *
  * **Storage lifetime is daemon-lifetime, not persistent.** `createDiskAttachmentStore` empties its
  * upload directory on construction: files left behind by an interrupted previous process cannot be
  * authenticated against an in-memory registry that no longer exists, so they are removed rather
@@ -224,6 +232,8 @@ export interface AttachmentStore {
     name: string;
     kind: StoredAttachment['kind'];
     size: number;
+    /** See `AttachmentRecord.ownerId`'s own doc. Omitted by a host with no owner concept. */
+    ownerId?: string;
   }) => Promise<StoredAttachment>;
   /** Exchanges capability ids for real paths, exactly once, binding them to `runId`. */
   claim: (
@@ -260,6 +270,43 @@ export interface AttachmentStore {
    * record was already deleted by `cleanupRun`/`pruneExpired`/`dispose`).
    */
   resolveForRun: (ref: string, runId: string) => Promise<StoredAttachment | undefined>;
+  /**
+   * Lists every still-unclaimed attachment registered with `ownerId` — the discovery counterpart to
+   * `resolveForRun`'s single-lookup: a caller that does not yet hold a specific ref at all (an
+   * attachment uploaded in an earlier turn, never named in this run's prompt) has no id to look up
+   * with `resolveForRun` in the first place. This is what makes that attachment findable.
+   *
+   * **This is the one method in this port that widens the trust model documented at the top of this
+   * file.** `register()`/`claim()`/`resolveForRun` all work from a caller-supplied opaque id or path
+   * — the "you must already hold the unguessable capability" property that makes an unauthenticated
+   * `claim()` first-reservation safe. A listing necessarily hands back ids the caller never held, so
+   * it can only be safe if it is scoped to something the caller is actually entitled to — here, the
+   * same principal id a host recorded via `register()`'s `ownerId` for the ORIGINAL upload request.
+   *
+   * Two things make that scoping real rather than decorative:
+   * - an attachment registered with NO `ownerId` (a host that never wired `resolveOwnerId`, or any
+   *   attachment from before this method existed) is excluded from every caller's results, never
+   *   just "unscoped" — this method is not callable with `ownerId: undefined`, so there is no input
+   *   that could accidentally match an ownerless record;
+   * - a claimed attachment is excluded outright, whether or not this caller's own `runId` claimed
+   *   it, so this method can never be used to re-discover something already handed to a run — the
+   *   same "runs, not listings, are the reach here" boundary `resolveForRun` draws for a single ref.
+   *
+   * What this does NOT scope by: batch, conversation, or run — none of those are recorded on an
+   * `AttachmentRecord` today. Two different conversations run by the SAME `ownerId` will each see
+   * the other's pending attachments through this method. A host for whom that is too wide needs a
+   * finer-grained id than `ownerId` to pass into `register()` — this method does not itself assume
+   * `ownerId` means "one admin account" rather than "one conversation, one composer, one browser
+   * tab"; it only assumes the host's `ownerId` is something the CALLER of this method is authorized
+   * to see everything under.
+   *
+   * Sorted oldest-first (`createdAt` ascending) — arrival order, matching how a person would expect
+   * to review what is waiting.
+   *
+   * @complexity O(n) in the number of tracked records (bounded by `maxStoredAttachments`), matching
+   * every other method on this port.
+   */
+  listPendingForOwner: (ownerId: string) => Promise<PendingAttachmentSummary[]>;
   /** Deletes the named still-unclaimed uploads, then the batch directory if it is now empty. */
   deleteUnclaimed: (batchId: string, paths: readonly string[]) => Promise<void>;
   /** Deletes everything `runId` claimed. Safe to call for a run that claimed nothing. */
@@ -307,6 +354,27 @@ export interface AttachmentRecord {
   ino: number;
   createdAt: number;
   claimedRunId?: string;
+  /**
+   * The principal a host's `AttachmentsHttpDeps.resolveOwnerId` reported for the request that
+   * registered this attachment. Absent when the host supplies no `resolveOwnerId` (this pack's
+   * behavior before ownership existed), which is why `listPendingForOwner` treats an absent
+   * `ownerId` as "cannot be scoped" rather than as a wildcard match — see that method's own doc.
+   */
+  ownerId?: string;
+}
+
+/**
+ * What `listPendingForOwner` hands back for one still-unclaimed attachment: enough for a caller to
+ * show a person what is waiting, and to name it again (`ref`) to `claim()`/`resolveForRun`.
+ */
+export interface PendingAttachmentSummary {
+  /** The same opaque `attachment:<uuid>` id `register()` returned over the wire. */
+  ref: string;
+  name: string;
+  kind: StoredAttachment['kind'];
+  size: number;
+  /** `Date.now()` at registration — when the file arrived, not when it was looked up. */
+  createdAt: number;
 }
 
 /** What registration recorded about a file, as `isUnchangedAttachment` needs it. */
@@ -706,6 +774,7 @@ export async function createDiskAttachmentStore({
           dev: info.dev,
           ino: info.ino,
           createdAt: Date.now(),
+          ...(input.ownerId === undefined ? {} : { ownerId: input.ownerId }),
         };
         records.set(id, record);
         return { path: id, name: record.name, kind: record.kind, size: record.size };
@@ -765,6 +834,16 @@ export async function createDiskAttachmentStore({
         throw error;
       }
       return { path: record.filePath, name: record.name, kind: record.kind, size: record.size };
+    },
+
+    async listPendingForOwner(ownerId) {
+      return [...records.values()]
+        // `record.ownerId !== undefined` first, short-circuiting before the comparison: this is
+        // what makes an ownerless record excluded rather than accidentally matched by a falsy-ish
+        // `ownerId` argument — see this method's own doc on why that must never be a wildcard.
+        .filter((record) => record.claimedRunId === undefined && record.ownerId !== undefined && record.ownerId === ownerId)
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((record) => ({ ref: record.id, name: record.name, kind: record.kind, size: record.size, createdAt: record.createdAt }));
     },
 
     async deleteUnclaimed(batchId, paths) {
@@ -834,6 +913,19 @@ export interface AttachmentsHttpDeps {
   readonly requireSameOrigin?: boolean;
   /** Host-owned sink for the real exception behind a generic `INTERNAL_ERROR` (SEC-005). Defaults to `console.error`. */
   readonly onInternalError?: (context: AttachmentsInternalErrorContext) => void;
+  /**
+   * Resolves the principal id that owns this upload, if any, passed through to `store.register()`'s
+   * `ownerId` (see that field's own doc, and `AttachmentStore.listPendingForOwner`). Optional: a
+   * host with no owner concept omits it and every attachment registers ownerless, matching this
+   * pack's behavior before ownership existed — `listPendingForOwner` simply never returns those.
+   *
+   * A host is expected to read this from a header/context IT ALREADY TRUSTS (e.g. a reverse proxy's
+   * own session-verified principal header, asserted only downstream of that proxy's auth gate) —
+   * this pack has no session concept of its own and never authenticates `req` itself. Returning a
+   * caller-controlled value here (an inbound header nothing has verified) would let any uploader
+   * assert an arbitrary `ownerId` and make its files discoverable by whoever that id names.
+   */
+  readonly resolveOwnerId?: (req: Request) => string | undefined;
 }
 
 export const ATTACHMENTS_ROUTE_PATH = '/api/attachments';
@@ -937,12 +1029,14 @@ export async function handleAttachmentUpload(
       sendApiError(res, 400, createApiError('BAD_REQUEST', 'Attachment is empty'));
       return;
     }
+    const ownerId = deps.resolveOwnerId?.(req);
     const attachment = await deps.store.register({
       batchId,
       path,
       name,
       kind: detectAttachmentKind(upload.signature),
       size: upload.size,
+      ...(ownerId === undefined ? {} : { ownerId }),
     });
     sendJson(res, 201, { attachment } satisfies AttachmentUploadResponse);
   } catch (error) {

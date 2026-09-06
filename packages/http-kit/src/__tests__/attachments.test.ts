@@ -103,12 +103,15 @@ async function diskStore(
   return { root, store };
 }
 
-/** Writes a file into a batch directory and registers it, the way the upload route does. */
+/** Writes a file into a batch directory and registers it, the way the upload route does.
+ *  `ownerId` mirrors `AttachmentsHttpDeps.resolveOwnerId`'s output for that request — omitted
+ *  registers the attachment ownerless, matching every pre-existing call site in this file. */
 async function stage(
   store: AttachmentStore,
   batchId: string,
   fileName: string,
   contents: string | Buffer,
+  ownerId?: string,
 ): Promise<{ attachment: StoredAttachment; filePath: string; batchDirectory: string }> {
   const batchDirectory = await store.createBatchDirectory(batchId);
   const filePath = resolve(batchDirectory, fileName);
@@ -119,6 +122,7 @@ async function stage(
     name: fileName,
     kind: 'file',
     size: Buffer.byteLength(contents as string),
+    ...(ownerId === undefined ? {} : { ownerId }),
   });
   return { attachment, filePath, batchDirectory };
 }
@@ -1001,6 +1005,75 @@ describe('createDiskAttachmentStore', () => {
     });
   });
 
+  // `listPendingForOwner` — the discovery counterpart `resolveForRun` cannot cover: a caller with NO
+  // ref at all (an attachment from an earlier turn, never named in this run's prompt). This is the
+  // one method on the port that widens the capability-bearer trust model (see this file's own doc),
+  // so its tests are about the scoping being real, not merely present.
+  describe('listPendingForOwner', () => {
+    it('returns an unclaimed attachment registered with the matching ownerId', async () => {
+      const { store } = await diskStore();
+      await stage(store, 'batch-lpo-01', 'a.txt', 'hello', 'owner-A');
+
+      const pending = await store.listPendingForOwner('owner-A');
+
+      expect(pending).toEqual([
+        expect.objectContaining({ name: 'a.txt', kind: 'file', size: 5 }),
+      ]);
+      expect(pending[0]?.ref).toMatch(/^attachment:/);
+    });
+
+    it('never returns another owner\'s attachment', async () => {
+      const { store } = await diskStore();
+      await stage(store, 'batch-lpo-02', 'mine.txt', 'x', 'owner-A');
+      await stage(store, 'batch-lpo-03', 'theirs.txt', 'x', 'owner-B');
+
+      const pending = await store.listPendingForOwner('owner-A');
+
+      expect(pending.map((a) => a.name)).toEqual(['mine.txt']);
+    });
+
+    it('never returns an ownerless attachment, for ANY ownerId — an absent ownerId is not a wildcard', async () => {
+      const { store } = await diskStore();
+      await stage(store, 'batch-lpo-04', 'no-owner.txt', 'x'); // no ownerId argument at all
+
+      const pending = await store.listPendingForOwner('owner-A');
+
+      expect(pending).toEqual([]);
+    });
+
+    it('excludes an attachment once it is claimed, even by the same owner', async () => {
+      const { store } = await diskStore();
+      const { attachment } = await stage(store, 'batch-lpo-05', 'claimed.txt', 'x', 'owner-A');
+      await store.claim([attachment], 'run-1');
+
+      const pending = await store.listPendingForOwner('owner-A');
+
+      expect(pending).toEqual([]);
+    });
+
+    it('orders results oldest-first by createdAt, not merely by insertion order', async () => {
+      const { store } = await diskStore();
+      const now = vi.spyOn(Date, 'now');
+      // Registered FIRST but stamped with the LATER time — if the result still puts it after
+      // `older.txt`, that proves the sort reads `createdAt`, not just `Map` insertion order.
+      now.mockReturnValueOnce(2_000);
+      await stage(store, 'batch-lpo-06', 'newer.txt', 'x', 'owner-A');
+      now.mockReturnValueOnce(1_000);
+      await stage(store, 'batch-lpo-07', 'older.txt', 'x', 'owner-A');
+      now.mockRestore();
+
+      const pending = await store.listPendingForOwner('owner-A');
+
+      expect(pending.map((a) => a.name)).toEqual(['older.txt', 'newer.txt']);
+    });
+
+    it('returns an empty list for an owner with no pending attachments at all', async () => {
+      const { store } = await diskStore();
+
+      await expect(store.listPendingForOwner('nobody')).resolves.toEqual([]);
+    });
+  });
+
   it('prunes expired unclaimed uploads and leaves claimed ones alone', async () => {
     const { store } = await diskStore({ retentionMs: 0 });
     const unclaimed = await stage(store, 'batch-0006', 'old.txt', 'old');
@@ -1226,6 +1299,27 @@ describe('POST /api/attachments', () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({ error: { message: 'an internal error occurred' } });
     expect(onInternalError).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes resolveOwnerId\'s result through to store.register(), so the attachment becomes findable by that owner', async () => {
+    const { store, url } = await harness({ resolveOwnerId: () => 'owner-http-01' });
+
+    const response = await upload(url, { batch: 'batch-upload-owner-1', name: 'mine.txt' });
+
+    expect(response.status).toBe(201);
+    const pending = await store.listPendingForOwner('owner-http-01');
+    expect(pending.map((a) => a.name)).toEqual(['mine.txt']);
+  });
+
+  it('registers ownerless (findable by nobody) when resolveOwnerId is not wired at all', async () => {
+    const { store, url } = await harness();
+
+    const response = await upload(url, { batch: 'batch-upload-owner-2', name: 'orphan.txt' });
+
+    expect(response.status).toBe(201);
+    // No ownerId was ever supplied, so no owner — including one that happens to ask for the empty
+    // string — can find it through the discovery method.
+    expect(await store.listPendingForOwner('')).toEqual([]);
   });
 
   it('reports a body already drained by an upstream parser instead of calling it empty', async () => {
