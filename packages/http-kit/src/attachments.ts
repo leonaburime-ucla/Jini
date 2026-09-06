@@ -230,6 +230,36 @@ export interface AttachmentStore {
     attachments: readonly StoredAttachment[],
     runId: string,
   ) => Promise<AttachmentClaim>;
+  /**
+   * Resolves ONE still-known attachment to its real path for `runId`, without the "exactly once
+   * across the whole batch" shape `claim()` has — the read-side counterpart for a caller that wants
+   * to look up a single attachment it may or may not already own, rather than atomically reserving a
+   * batch at run start.
+   *
+   * `ref` accepts either identifier a caller may actually be holding: the opaque `attachment:<uuid>`
+   * capability id `register()` returned, or the real absolute path this run was already told about.
+   * Both resolve to the same record. This dual form exists because `@jini-ai/daemon`'s
+   * `image-prompt-delivery.ts` narrates the resolved PATH into the run's prompt text for an
+   * already-claimed attachment — never the id — so a caller built from that prompt has the path, not
+   * the id; a caller with the id (from the original upload response) can still use it directly.
+   *
+   * Ownership is enforced here, which is new: an attachment nobody has claimed yet is claimed for
+   * `runId` on this call (identical effect to `claim()`, same integrity re-check); an attachment
+   * already claimed BY `runId` is simply re-verified and returned again (idempotent — a run may look
+   * this up more than once); an attachment claimed by any OTHER run throws the same
+   * `'attachment-unknown-or-claimed'` rejection `claim()` uses for a genuinely unknown id, so a
+   * caller cannot distinguish "no such attachment" from "a different run owns this" — the same
+   * non-disclosure `claim()` already practices for its own rejections. This is the run-ownership
+   * check `claim()`'s own FIRST reservation does not have (see this module's trust-model doc on the
+   * deliberate capability-bearer model for a brand-new claim); `resolveForRun` adds it for every
+   * lookup made through this method, so a second run/session on this same daemon can never read an
+   * attachment already bound to someone else's run by calling this method with a guessed or
+   * overheard `ref`.
+   *
+   * Returns `undefined` only for a `ref` this store has never heard of (never uploaded, or its
+   * record was already deleted by `cleanupRun`/`pruneExpired`/`dispose`).
+   */
+  resolveForRun: (ref: string, runId: string) => Promise<StoredAttachment | undefined>;
   /** Deletes the named still-unclaimed uploads, then the batch directory if it is now empty. */
   deleteUnclaimed: (batchId: string, paths: readonly string[]) => Promise<void>;
   /** Deletes everything `runId` claimed. Safe to call for a run that claimed nothing. */
@@ -713,6 +743,28 @@ export async function createDiskAttachmentStore({
         for (const record of claimed) delete record.claimedRunId;
         throw error;
       }
+    },
+
+    async resolveForRun(ref, runId) {
+      // Synchronous check-then-reserve, same reasoning as `reserveAttachmentRecords`: nothing may
+      // `await` between reading `claimedRunId` and writing it, or a concurrent call could observe
+      // the same unclaimed record and both believe they reserved it.
+      const record = records.get(ref) ?? [...records.values()].find((candidate) => candidate.filePath === ref);
+      if (!record) return undefined;
+      if (record.claimedRunId !== undefined && record.claimedRunId !== runId) {
+        throw new AttachmentRejectedError('attachment-unknown-or-claimed', 'Attachment is unknown or already claimed');
+      }
+      const reservedNow = record.claimedRunId === undefined;
+      if (reservedNow) record.claimedRunId = runId;
+      try {
+        await verifyClaimedAttachments([record]);
+      } catch (error) {
+        // Mirrors `claim()`'s own rollback: a lookup that fails integrity must not leave a phantom
+        // reservation behind for a record that turned out to be unsafe to hand back.
+        if (reservedNow) delete record.claimedRunId;
+        throw error;
+      }
+      return { path: record.filePath, name: record.name, kind: record.kind, size: record.size };
     },
 
     async deleteUnclaimed(batchId, paths) {

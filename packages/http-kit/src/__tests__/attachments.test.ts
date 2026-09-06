@@ -936,6 +936,71 @@ describe('createDiskAttachmentStore', () => {
     })).rejects.toThrow('storage is full');
   });
 
+  // `resolveForRun` — the read-side lookup a chat-attachment-promotion tool needs: unlike `claim()`,
+  // it must work for an attachment that is already claimed by the SAME run (so a same-turn
+  // attach-then-promote works), by the real path a run was already told (so a caller that only has
+  // that, per `image-prompt-delivery.ts`'s path-only prompt narration, can still use it), and it must
+  // refuse a different run's claim rather than silently handing back someone else's file.
+  describe('resolveForRun', () => {
+    it('claims an unclaimed attachment for the given run, by its opaque id', async () => {
+      const { store } = await diskStore();
+      const { attachment, filePath } = await stage(store, 'batch-rfr-01', 'a.txt', 'contents');
+
+      const resolved = await store.resolveForRun(attachment.path, 'run-A');
+
+      expect(resolved).toEqual({ path: filePath, name: 'a.txt', kind: 'file', size: 8 });
+    });
+
+    it('also resolves by the real absolute path, not only the opaque id', async () => {
+      const { store } = await diskStore();
+      const { attachment, filePath } = await stage(store, 'batch-rfr-02', 'b.txt', 'more contents');
+
+      const resolved = await store.resolveForRun(filePath, 'run-A');
+
+      expect(resolved).toEqual({ path: filePath, name: 'b.txt', kind: 'file', size: 13 });
+    });
+
+    it('is idempotent for the SAME run: a second lookup after the first still succeeds', async () => {
+      const { store } = await diskStore();
+      const { attachment } = await stage(store, 'batch-rfr-03', 'c.txt', 'x');
+
+      const first = await store.resolveForRun(attachment.path, 'run-A');
+      const second = await store.resolveForRun(attachment.path, 'run-A');
+
+      expect(first).toEqual(second);
+    });
+
+    it('refuses a lookup from a DIFFERENT run once the attachment is claimed', async () => {
+      const { store } = await diskStore();
+      const { attachment } = await stage(store, 'batch-rfr-04', 'd.txt', 'x');
+      await store.resolveForRun(attachment.path, 'run-A');
+
+      await expect(store.resolveForRun(attachment.path, 'run-B')).rejects.toThrow(/unknown or already claimed/);
+    });
+
+    it('refuses a lookup from a different run even when a normal claim() made the reservation', async () => {
+      const { store } = await diskStore();
+      const { attachment } = await stage(store, 'batch-rfr-05', 'e.txt', 'x');
+      await store.claim([attachment], 'run-A');
+
+      await expect(store.resolveForRun(attachment.path, 'run-B')).rejects.toThrow(/unknown or already claimed/);
+    });
+
+    it('returns undefined for a ref this store has never heard of', async () => {
+      const { store } = await diskStore();
+
+      await expect(store.resolveForRun('attachment:does-not-exist', 'run-A')).resolves.toBeUndefined();
+    });
+
+    it('rejects a file changed after registration, the same integrity check claim() applies', async () => {
+      const { store } = await diskStore();
+      const { attachment, filePath } = await stage(store, 'batch-rfr-06', 'grow.txt', 'short');
+      await appendFile(filePath, ' and more');
+
+      await expect(store.resolveForRun(attachment.path, 'run-A')).rejects.toThrow('changed after upload');
+    });
+  });
+
   it('prunes expired unclaimed uploads and leaves claimed ones alone', async () => {
     const { store } = await diskStore({ retentionMs: 0 });
     const unclaimed = await stage(store, 'batch-0006', 'old.txt', 'old');
