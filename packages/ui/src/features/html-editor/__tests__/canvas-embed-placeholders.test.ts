@@ -24,7 +24,7 @@ function bodyWith(html: string): HTMLBodyElement {
 }
 
 /** A `describe` that only recognizes elements carrying `data-marker`, mirroring how a real host
- *  recognizes `data-embed-config` — kept deliberately simpler than the real Tovu convention since this
+ *  recognizes `data-embed-config` — kept deliberately simpler than the real host product's convention since this
  *  suite is about the DOM mechanics, not marker-config parsing (that belongs to
  *  `InteractiveHtmlEditor.test.tsx` in `@jini-ai/admin`). */
 function describeMarked(el: Element): CanvasEmbedPlaceholderDescriptor | undefined {

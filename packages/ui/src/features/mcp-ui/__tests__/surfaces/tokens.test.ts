@@ -39,8 +39,8 @@ describe('renderTokenBlock', () => {
   });
 
   it('pins the light palette and drops the dark media query while FORCE_LIGHT_SURFACE_THEME is set', () => {
-    // Tovu has no real app-level theme yet, so `prefers-color-scheme` would otherwise track the
-    // operator's OS rather than any real Tovu setting — see FORCE_LIGHT_SURFACE_THEME's own doc.
+    // The host product has no real app-level theme yet, so `prefers-color-scheme` would otherwise track the
+    // operator's OS rather than any real host setting — see FORCE_LIGHT_SURFACE_THEME's own doc.
     expect(FORCE_LIGHT_SURFACE_THEME).toBe(true);
     expect(block).not.toContain('@media (prefers-color-scheme: dark)');
     for (const [name, value] of Object.entries(SURFACE_TOKENS)) {

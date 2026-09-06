@@ -16,7 +16,7 @@
  *
  * This module exports the proxy's source as a **string constant** rather than a static file this
  * package's own build copies into `dist/`, for the same reason `surfaces/document.ts` builds HTML as
- * template strings: the natural way for a HOST APPLICATION (Tovu's admin server, `examples/reference-web`'s
+ * template strings: the natural way for a HOST APPLICATION (a downstream product's admin server, `examples/reference-web`'s
  * dev server, any future consumer) to serve this is to mount ONE route that responds with this exact
  * body — `res.type('html').send(SANDBOX_PROXY_HTML)` — not to vendor a copy of a file from this
  * package's `dist/` into their own static-asset pipeline. A string a host can `fetch`/import needs no
@@ -198,7 +198,7 @@ export function buildIsolatedSandboxProxyHtml(hostOrigin: string): string {
   const hostOriginLiteral = JSON.stringify(hostOrigin);
   // A `data:` document has no HTTP response of its own to carry a CSP header, so per CSP3's
   // "local scheme" inheritance rule this inline <script> runs under whatever CSP the embedder's
-  // OWN document currently has (none, for Tovu's admin app today — verified 2026-09-03: no
+  // OWN document currently has (none, for the host product's admin app today — verified 2026-09-03: no
   // helmet/blanket CSP is applied to admin HTML responses). If a future hardening pass adds a
   // strict `script-src` CSP to the embedder, this inline script will need `'unsafe-inline'` (or a
   // nonce this template does not currently support) to keep running — check that before assuming

@@ -35,7 +35,7 @@ describe('SANDBOX_PROXY_HTML', () => {
  * `@mcp-ui/client@7.1.1`'s `AppFrame` hardcodes `sandbox="allow-scripts allow-same-origin
  * allow-forms"` on the proxy iframe (verified against the installed dist, not assumed) — neither this
  * package nor a host application can refuse that flag. Combined with `SANDBOX_PROXY_HTML` served from
- * the same origin as an admin app (Tovu's own wiring, `mcp-ui-sandbox-proxy-route.ts`), the guest HTML
+ * the same origin as an admin app (a host product's own wiring, `mcp-ui-sandbox-proxy-route.ts`), the guest HTML
  * this script `document.write`s in gets the admin origin's full authority: its cookies, its storage,
  * its same-origin fetches. `buildIsolatedSandboxProxyHtml`/`buildSandboxProxyDataUrl` are the fix —
  * see their own doc for the mechanism (a `data:` URL's origin is opaque regardless of

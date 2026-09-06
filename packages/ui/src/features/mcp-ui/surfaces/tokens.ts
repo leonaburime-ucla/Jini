@@ -133,11 +133,12 @@ const DARK_SURFACE_SHADOW = '0 1px 2px rgba(0, 0, 0, 0.32)';
  * Whether every generated surface is pinned to the light palette regardless of the embedding
  * browser/OS's `prefers-color-scheme`.
  *
- * True today because Tovu — currently this package's only consumer — has no real light/dark toggle
- * yet (`apps/admin`'s Appearance section is a disabled "SOON" placeholder), so a surface that honors
- * the OS preference doesn't track any actual app theme — it tracks whatever the operator's OS
- * happens to be set to, which produces a dark card floating in an always-light admin UI. Flip this
- * to `false` once Tovu has a real app-level theme signal to forward in; nothing else about
+ * True today because the host product — currently this package's only consumer — has no real
+ * light/dark toggle yet (`apps/admin`'s Appearance section is a disabled "SOON" placeholder), so a
+ * surface that honors the OS preference doesn't track any actual app theme — it tracks whatever the
+ * operator's OS happens to be set to, which produces a dark card floating in an always-light admin
+ * UI. Flip this to `false` once the host product has a real app-level theme signal to forward in;
+ * nothing else about
  * {@link renderTokenBlock} needs to change.
  */
 export const FORCE_LIGHT_SURFACE_THEME = true;

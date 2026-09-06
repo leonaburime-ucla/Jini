@@ -36,7 +36,7 @@ import { useInteractiveHtmlEditor } from '../hooks/useInteractiveHtmlEditor.js';
  * `describeEmbedPlaceholder` is the same idea for a second, independent concern: recognizing an
  * unresolved embed marker and labeling it for `../../canvas-embed-placeholders.ts`'s explicit
  * placeholder card. See `@jini-ai/admin/react`'s `InteractiveHtmlEditor` for a worked example of both:
- * it composes this primitive with a predicate recognizing Tovu's legacy `data-embed-type` convention
+ * it composes this primitive with a predicate recognizing the host product's legacy `data-embed-type` convention
  * for the first, and a describer recognizing the current `data-embed-config` convention for the
  * second.
  *

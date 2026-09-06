@@ -91,7 +91,7 @@ describe('useDismissablePanel', () => {
     // pure function of previous state. Two concrete symptoms of that impurity:
     //
     // 1. When a host's onOpen synchronously calls its own setState (e.g.
-    //    Tovu's `pane.openWorkingDirectoryPicker` calling
+    //    a downstream consumer's `pane.openWorkingDirectoryPicker` calling
     //    `setWorkingDirectoryPending(true)`), React's normal event-handler
     //    fast path computes the updater eagerly and no warning appears — but
     //    under StrictMode's deliberate double-invocation of updaters (which

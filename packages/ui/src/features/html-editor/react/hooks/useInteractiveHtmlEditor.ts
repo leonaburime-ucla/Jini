@@ -20,7 +20,7 @@ import { prettifyCss } from '../../css.js';
  * cursor or require diffing GrapesJS's tree against a string to detect "did this change come from us",
  * which is real complexity this component's text-editing-only scope does not need. A host that needs a
  * fresh document only mounts this component while it's active and remounts with fresh `html` — see
- * `@jini-ai/admin/react`'s `InteractiveHtmlEditor` adapter and its caller in Tovu's `PageEditor.tsx`.
+ * `@jini-ai/admin/react`'s `InteractiveHtmlEditor` adapter and its caller in the host product's `PageEditor.tsx`.
  *
  * **This module has zero knowledge of what "protected" means.** It only knows how to register a
  * locked GrapesJS component type for whatever `isProtectedElement` predicate its caller supplies —
