@@ -403,3 +403,58 @@ test("purgeMedia throws MediaNotFoundError for a missing id", async () => {
     MediaNotFoundError
   );
 });
+
+/**
+ * Regression (2026-09-06): `image/avif` was absent from `DEFAULT_ALLOWED_MIME_TYPES`, so a
+ * genuine `.avif` picked in the admin file input — or handed to the `media_upload_asset` agent
+ * tool from the assistant chat, whose published schema enum is derived from this same Set —
+ * was rejected outright. Paired with the `content-type-sniffer.ts` brand fix: accepting the type
+ * without that fix would have been worse than the rejection, since the bytes would then have
+ * been stored and served as `video/mp4`.
+ */
+test("uploadMedia accepts image/avif", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadMedia({
+    deps,
+    input: {
+      workspaceId: WORKSPACE_ID,
+      bytes: bytesFrom("avif-bytes"),
+      filename: "ai-caps.avif",
+      contentType: "image/avif",
+      createdByPrincipal: "user-1",
+    },
+  });
+
+  assert.equal(media.title, "ai-caps");
+  assert.equal(media.status, "active");
+});
+
+/**
+ * The allowlist stays an allowlist: widening it for AVIF must not turn it into "any image/*".
+ * `image/svg+xml` is the durable negative case (it needs an ingest sanitizer this build does not
+ * have), and `image/heic` is the second — the installed libvips cannot decode HEIC, so accepting
+ * it would store bytes no transform could ever render.
+ */
+test("uploadMedia still rejects types outside the allowlist, with the exact operator-facing message", async () => {
+  const { deps } = makeDeps();
+  for (const contentType of ["image/svg+xml", "image/heic", "application/pdf"]) {
+    await assert.rejects(
+      () =>
+        uploadMedia({
+          deps,
+          input: {
+            workspaceId: WORKSPACE_ID,
+            bytes: bytesFrom("payload"),
+            filename: "f.bin",
+            contentType,
+            createdByPrincipal: "user-1",
+          },
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof MediaValidationError);
+        assert.equal(err.message, `content type '${contentType}' is not allowed for upload`);
+        return true;
+      }
+    );
+  }
+});

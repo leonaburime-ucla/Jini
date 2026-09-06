@@ -84,6 +84,14 @@ export const DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MiB
  * that sanitizer is not built in this pass, so SVG upload is rejected rather
  * than accepted unsanitized.
  *
+ * `image/avif` (owner-directed, 2026-09-06): a fifth still-image type, on the
+ * same footing as the four above — `content-type-sniffer.ts` identifies it by
+ * ISO-BMFF brand and the installed `sharp`/libvips build decodes it, so it
+ * flows through the ordinary transform/rendition pipeline and is re-encoded
+ * like any other image. Adding it required a matching sniffer fix, not just
+ * this line: AVIF shares MP4's `ftyp` container tag, so before that fix an
+ * AVIF was sniffed as `video/mp4` and served as an unplayable video.
+ *
  * `video/mp4`/`video/webm` (owner-directed, 2026-08-24): the two formats
  * `content-type-sniffer.ts` already recognizes by magic bytes. Unlike the four
  * image types above, an accepted video is never re-encoded — there is no
@@ -99,6 +107,7 @@ export const DEFAULT_ALLOWED_MIME_TYPES: ReadonlySet<string> = new Set([
   "image/png",
   "image/webp",
   "image/gif",
+  "image/avif",
   "video/mp4",
   "video/webm",
 ]);
