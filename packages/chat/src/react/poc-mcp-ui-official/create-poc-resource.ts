@@ -10,7 +10,7 @@
  * of the MCP-UI resource shape) can build a `UIResource` end to end, per the owner's decision to
  * evaluate replacing the hand-rolled client with the upstream package. See
  * `poc-mcp-ui-official/__tests__/poc-mcp-ui-official.test.tsx` for the assertions this module
- * exists to feed, and `ADS-memory/` (Tovu side) / this session's final report for the CJS/ESM
+ * exists to feed, and `ADS-memory/` (the consuming product's own copy) / this session's final report for the CJS/ESM
  * interop finding that shaped how this is imported (ESM only — `@mcp-ui/client`'s CJS build is
  * broken in 7.1.1; `require('@mcp-ui/client')` throws / returns an empty object depending on Node
  * version. `@mcp-ui/server`'s CJS build works fine in this same version, but this module still

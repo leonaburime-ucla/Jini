@@ -179,7 +179,7 @@ export interface ComposerMenuAnchorRect {
  * Both popovers were previously plain `position: absolute` descendants of `.jini-composer`, which
  * is itself nested inside `.jini-chat-pane__body` — an ancestor that sets `overflow: hidden`
  * unconditionally (`styles.ts`), plus whatever clipping box a host's own dock chrome adds on top
- * (Tovu admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile "peek" sheet caps the
+ * (a host admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile "peek" sheet caps the
  * whole dock at `58vh`). CSS alone cannot know how much room that leaves above the composer on a
  * given host; when the popover's natural content is taller than the available space, the
  * ancestor's hard clip boundary slices through whichever row sits at the clip line instead of the

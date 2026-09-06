@@ -277,7 +277,7 @@ describe('Composer', () => {
     // instead of cleanly scrolled. Root cause was both popovers being plain `position: absolute`
     // descendants of `.jini-composer`, itself inside `.jini-chat-pane__body` — which sets
     // `overflow: hidden` unconditionally — plus whatever clipping box a host's own dock chrome
-    // adds (Tovu admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile "peek" sheet
+    // adds (a host admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile "peek" sheet
     // caps the whole dock at 58vh). The exact arithmetic (viewport-clamped `maxHeight`/`bottom`) is
     // covered directly in `composer-discovery.test.ts`; this asserts the wiring — that `Composer`
     // actually applies the computed `position: fixed` style to each popover's DOM node, the same

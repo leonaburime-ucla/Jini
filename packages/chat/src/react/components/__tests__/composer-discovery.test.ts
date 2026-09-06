@@ -174,7 +174,7 @@ describe('resolveComposerSlashInvocation', () => {
  * Regression coverage for an owner-reported bug: the "+" discovery menu and the slash palette are
  * `position: absolute` descendants of `.jini-composer`, which sits inside `.jini-chat-pane__body`
  * — an ancestor that sets `overflow: hidden` unconditionally, plus whatever clipping box a host's
- * own dock chrome adds (Tovu admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile
+ * own dock chrome adds (a host admin's `.admin-chat-dock` is `overflow: hidden` too, and its mobile
  * "peek" sheet caps the whole dock at 58vh). CSS alone cannot know how much room that leaves above
  * the composer on a given host — when a popover's natural content is taller than the available
  * space, the ancestor's hard clip boundary sliced through whichever row sat at the clip line
@@ -225,7 +225,7 @@ describe('composerDiscoveryMenuPosition / composerSlashMenuPosition', () => {
   });
 
   it('discovery menu: clamps maxHeight to the space actually available above the composer instead of clipping into the ancestor', () => {
-    // Reproduces Tovu admin's mobile "peek" sheet: a short dock where the composer sits close to
+    // Reproduces a host admin's mobile "peek" sheet: a short dock where the composer sits close to
     // the sheet's own top edge. Available space above it is far under the CSS's flat 280px cap.
     stubViewport(400, 700);
     const composerRect = { top: 120, left: 8, width: 384 };
