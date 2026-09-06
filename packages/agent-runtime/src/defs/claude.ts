@@ -126,6 +126,10 @@ export const claudeAgentDef = {
     // Returning `null` from any step is "nothing to add", and `detection.ts#fetchModels` renders
     // `fallbackModels` for it — so a live-discovery failure can never empty or shrink the picker.
     fallbackModels: CLAUDE_FALLBACK_MODELS,
+    // Asserted against the installed Claude Code 2.1.261 binary's embedded model table and
+    // `~/.claude.json`'s server-fetched `additionalModelOptionsCache`. See
+    // `RuntimeAgentDef.fallbackModelsAssertedAt` and `scripts/check-model-fallback-freshness.ts`.
+    fallbackModelsAssertedAt: '2026-09-05',
     fetchModels: async (_resolvedBin, env) =>
       (await loadMmdRouteModels(env, CLAUDE_FALLBACK_MODELS))
       ?? (await loadAnthropicLiveModels(env, CLAUDE_FALLBACK_MODELS)),

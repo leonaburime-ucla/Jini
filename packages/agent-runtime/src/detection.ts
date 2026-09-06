@@ -274,6 +274,7 @@ function stripFns(def: RuntimeAgentDef): Omit<DetectedAgent, 'models' | 'modelsS
     fetchModels: _fetchModels,
     deriveReasoningOptions: _deriveReasoningOptions,
     fallbackModels: _fallbackModels,
+    fallbackModelsAssertedAt: _fallbackModelsAssertedAt,
     helpArgs: _helpArgs,
     capabilityFlags: _capabilityFlags,
     fallbackBins: _fallbackBins,

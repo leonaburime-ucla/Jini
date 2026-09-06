@@ -210,12 +210,24 @@ export const codexAgentDef = {
       args: ['login', 'status'],
       timeoutMs: 5000,
     },
+    // The OLD-CLI path: a Codex build new enough to answer `debug models` never renders this list.
+    // Kept current anyway — a stale fallback is invisible until the day the catalog probe fails, and
+    // that is the worst moment to discover it. Current entries first, superseded ones kept below
+    // rather than dropped.
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
+      { id: 'gpt-6-astra', label: 'gpt-6-astra' },
+      { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
+      { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
+      { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
       { id: 'gpt-5.5', label: 'gpt-5.5' },
       { id: 'gpt-5.4', label: 'gpt-5.4' },
       { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
       { id: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+      // Found by the freshness guard (R13/MF3) against an older Codex install's BUNDLED catalog:
+      // codex-cli 0.140.0 lists gpt-5.2 as visible when it cannot reach the backend, which is
+      // exactly the population this fallback list serves.
+      { id: 'gpt-5.2', label: 'gpt-5.2' },
       { id: 'gpt-5.1', label: 'gpt-5.1' },
       { id: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
       { id: 'gpt-5-codex', label: 'gpt-5-codex' },
@@ -223,6 +235,9 @@ export const codexAgentDef = {
       { id: 'o3', label: 'o3' },
       { id: 'o4-mini', label: 'o4-mini' },
     ],
+    // Asserted against a live `codex debug models` run (codex-cli 0.153.4). See
+    // `RuntimeAgentDef.fallbackModelsAssertedAt` and `scripts/check-model-fallback-freshness.ts`.
+    fallbackModelsAssertedAt: '2026-09-05',
     // The OLD-CLI path only. A Codex build new enough to answer `debug models` gets its effort list
     // derived from that catalog instead (see `deriveReasoningOptions` below), which is what makes
     // `max` and `ultra` reachable. This list is deliberately NOT widened to match: it is what a build

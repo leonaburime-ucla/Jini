@@ -302,6 +302,19 @@ export type RuntimeAgentDef = {
   bin: string;
   versionArgs: string[];
   fallbackModels: RuntimeModelOption[];
+  /**
+   * `YYYY-MM-DD` — when this def's hardcoded `fallbackModels` list was last checked against the
+   * vendor's own current list.
+   *
+   * Required (by `scripts/check-model-fallback-freshness.ts`, not by this type) of any def whose
+   * fallback array is what a picker RENDERS when no live source answers. It exists because a
+   * hand-written list of vendor model ids has no other way to fail: it drifts from reality the day
+   * a model ships, and before this marker nothing anywhere went red when it did.
+   *
+   * Bump it only after actually comparing the list against a live source — the guard's MF3 rule
+   * does that comparison for you whenever the relevant CLI is installed.
+   */
+  fallbackModelsAssertedAt?: string;
   buildArgs: (
     prompt: string,
     imagePaths: string[],
@@ -633,6 +646,10 @@ export type DetectedAgent = Omit<
   // the `reasoningOptions` field this same type already carries.
   | 'deriveReasoningOptions'
   | 'fallbackModels'
+  // Build-time provenance about the fallback list, for the freshness guard. The fallback list
+  // itself is stripped one line above, so a registry consumer has nothing to interpret it
+  // against.
+  | 'fallbackModelsAssertedAt'
   | 'helpArgs'
   | 'capabilityFlags'
   | 'fallbackBins'
