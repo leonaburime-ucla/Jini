@@ -187,7 +187,7 @@ export type RunAgentPayload =
    * Its own `type` rather than reuse of the pre-existing `'status'` variant above, deliberately: no
    * host in this codebase renders `'status'` events today (verified by reading every consumer of
    * `@jini-ai/chat`'s reducer output — `MessageRow.tsx`/`message-blocks.ts` have no branch for it,
-   * and Tovu's own admin — `assistant-transport.ts`'s `terminalReasonNotice` — builds a `'status'`
+   * and a downstream product's own admin — `assistant-transport.ts`'s `terminalReasonNotice` — builds a `'status'`
    * event the exact same way and it is equally unrendered there). A chat host's generic `ext`
    * escape hatch (`kind: 'ext'`, the fallback every unrecognized `type` already receives from a
    * transport's translation switch) is a rendering path already proven live by this codebase's
