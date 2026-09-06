@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { describeEmbedPlaceholder } from '../../components/InteractiveHtmlEditor/InteractiveHtmlEditor.js';
 
 /**
- * @file `describeEmbedPlaceholder` is the Tovu-specific half of the Interactive tab's "explicit
- * placeholder card" feature (owner ask, 2026-08-24): it recognizes Tovu's `data-embed-config` embed
- * marker convention (`Tovu/src/core/embeds/marker.ts`) on a live canvas element and turns it into the
+ * @file `describeEmbedPlaceholder` is the consuming product's half of the Interactive tab's "explicit
+ * placeholder card" feature (owner ask, 2026-08-24): it recognizes that product's `data-embed-config`
+ * embed marker convention (its own `src/core/embeds/marker.ts`) on a live canvas element and turns it into the
  * label `@jini-ai/ui/html-editor`'s generic `applyCanvasEmbedPlaceholders` renders — that generic
  * primitive has zero knowledge of what an embed marker is, by design (see its own file header), so
  * this function is where the actual convention (attribute name, JSON shape, per-type friendly names)
@@ -61,7 +61,7 @@ describe('describeEmbedPlaceholder', () => {
     expect(describeEmbedPlaceholder(el)).toEqual({ kindLabel: 'Post', identityLabel: 'id p1' });
   });
 
-  // The complete set `isPageEmbedType` (`Tovu/src/server/http/site/render.ts:1238`'s
+  // The complete set `isPageEmbedType` (the consuming product's `src/server/http/site/render.ts:1238`'s
   // `renderHtmlPageBody`) accepts — the only four types a Page's `body_html` can actually contain, so
   // the only four an operator can realistically hit in this editor. Owner-confirmed authoritative,
   // 2026-08-25.

@@ -6,14 +6,15 @@ import {
 } from '@jini-ai/ui/html-editor';
 
 /**
- * @file Tovu-specific composition of `@jini-ai/ui/html-editor`'s generic `InteractiveHtmlEditor`: a
- * Page's `body_html` (the first caller — see `Tovu/apps/admin/src/features/pages/PageEditor.tsx`)
+ * @file Consuming-product-specific composition of `@jini-ai/ui/html-editor`'s generic
+ * `InteractiveHtmlEditor`: a Page's `body_html` (the first caller — see the consuming product's own
+ * `apps/admin/src/features/pages/PageEditor.tsx`)
  * can carry `<div data-embed-type="…" data-embed-id="…"></div>` placeholders (and the legacy
  * `data-widget-embed`/`data-form-embed` attributes on migration-era rows) that a separate scanner
- * (`Tovu/src/widgets/html-embeds.ts`) resolves at render time — that scanner requires the div to
+ * (that product's own `src/widgets/html-embeds.ts`) resolves at render time — that scanner requires the div to
  * stay exactly empty and self-closing, and degrades silently, with no error, the moment anything is
  * written inside one. The CURRENT convention has since moved to a single `data-embed-config`
- * attribute carrying a JSON payload (`Tovu/src/core/embeds/marker.ts`); `isProtectedEmbedElement`
+ * attribute carrying a JSON payload (that product's own `src/core/embeds/marker.ts`); `isProtectedEmbedElement`
  * below has not been updated to recognize it (tracked separately — see that function's own doc), but
  * `describeEmbedPlaceholder` below IS built against the current convention, since it only needs to
  * read the marker, not police edits to it.
@@ -25,11 +26,11 @@ import {
  */
 
 /** The attribute either the current (`data-embed-type`) or legacy (`data-widget-embed`,
- *  `data-form-embed`) convention uses to mark a Page HTML embed placeholder div — see
- *  `Tovu/src/widgets/html-embeds.ts`'s file header for the convention this protects.
+ *  `data-form-embed`) convention uses to mark a Page HTML embed placeholder div — see the
+ *  consuming product's own `src/widgets/html-embeds.ts`'s file header for the convention this protects.
  *
- *  **Does NOT include `data-embed-config`, the CURRENT marker attribute** (`Tovu/src/core/embeds/
- *  marker.ts`) — a known, separately-tracked gap: an embed marker written the current way is still
+ *  **Does NOT include `data-embed-config`, the CURRENT marker attribute** (the consuming product's own
+ *  `src/core/embeds/marker.ts`) — a known, separately-tracked gap: an embed marker written the current way is still
  *  editable/draggable/removable in this editor today. Left alone here deliberately (out of scope for
  *  the placeholder-card feature this file's `describeEmbedPlaceholder` was added for); widening this
  *  list to close that gap is a one-line fix (`'data-embed-config'` added below) but changes real
@@ -47,14 +48,14 @@ export function isProtectedEmbedElement(el: Element): boolean {
 
 /**
  * Friendly card headings for every embed `type` value this codebase names anywhere, split into two
- * groups (traced against `Tovu/src/server/http/site/render.ts`'s `renderHtmlPageBody`/`isPageEmbedType`
+ * groups (traced against the consuming product's own `src/server/http/site/render.ts`'s `renderHtmlPageBody`/`isPageEmbedType`
  * at the owner's own request, 2026-08-25 — authoritative, not re-derived):
  *
  * - **`media`, `widget`, `post`, `content`** — the ONLY four types `isPageEmbedType` (gating
  *   `renderHtmlPageBody`, `render.ts:1238`) accepts, i.e. the complete set a Page's `body_html` — what
  *   this editor edits — can ever actually contain. These are the types an operator can realistically
  *   hit in the Interactive tab.
- * - **`partial`, `menu`** — `Tovu/src/widgets/resolver-service.ts`'s `THEME_OWNED_MARKER_TYPES`. NOT
+ * - **`partial`, `menu`** — the consuming product's own `src/widgets/resolver-service.ts`'s `THEME_OWNED_MARKER_TYPES`. NOT
  *   reachable inside a Page body — they live in THEME TEMPLATES (site header/nav/footer), authored
  *   outside this editor entirely, so this component should not grow UI affordances assuming one can
  *   appear here. Labeled anyway (rather than left to the generic fallback below) purely so the ONE
@@ -72,7 +73,7 @@ export function isProtectedEmbedElement(el: Element): boolean {
  * Matched lower-cased — see `identityLabel`'s doc and `core/embeds/marker.ts`'s own `toEmbedRef` for
  * why the server-side scanner lower-cases `type` the same way. An unregistered type is not an error
  * here (unlike a rejected/unparseable marker) — `type` is deliberately a free string end-to-end (see
- * `Tovu/src/widgets/html-embeds.ts`'s file header) precisely so a new one (a marketplace theme
+ * the consuming product's own `src/widgets/html-embeds.ts`'s file header) precisely so a new one (a marketplace theme
  * introducing its own, say) never requires a matching change on this list AND never renders nothing —
  * `titleCase` below covers it with a still-legible generic card instead of a blank/thrown result.
  */
@@ -119,7 +120,7 @@ function identityLabel(config: Readonly<Record<string, unknown>>): string {
 }
 
 /**
- * Recognizes a `data-embed-config` marker (`Tovu/src/core/embeds/marker.ts`'s single scanner
+ * Recognizes a `data-embed-config` marker (the consuming product's own `src/core/embeds/marker.ts`'s single scanner
  * convention) on a live canvas element and describes it for `@jini-ai/ui/html-editor`'s
  * `applyCanvasEmbedPlaceholders` — see that function's own file header for what it does with the
  * result. Exported for direct unit-testability without mounting the editor, same convention

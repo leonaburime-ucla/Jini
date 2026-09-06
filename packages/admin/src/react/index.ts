@@ -17,7 +17,7 @@
  * appear only where a value must be measured at runtime — portal coordinates in `Sidebar`'s rail
  * tooltip and `RowMenu`'s popup. `InteractiveHtmlEditor` is the exception: it (transitively, via
  * `@jini-ai/ui/html-editor`, which this file's own `InteractiveHtmlEditor` composes with a
- * Tovu-specific embed-protection predicate) imports GrapesJS's own vendor stylesheet, because it
+ * consuming-product-specific embed-protection predicate) imports GrapesJS's own vendor stylesheet, because it
  * wraps a third-party editor whose chrome does not render without it — see that primitive's file
  * header for why this isn't authored styling the exception undoes.
  *
