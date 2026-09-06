@@ -45,11 +45,33 @@ export class InvalidFieldNameGrammarError extends Error {
   }
 }
 
-/** CIC U-001-B1 / U-002-B1 guard 4 — a field `kind` is not one of the closed 5-entry enum. */
+/** CIC U-001-B1 / U-002-B1 guard 4 — a field `kind` is not one of the closed field-kind enum. */
 export class InvalidFieldKindError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InvalidFieldKindError";
+  }
+}
+
+/**
+ * CIC U-002-B1 guard 4b — a field declares a STORAGE-ONLY `kind` (`json`) together with
+ * `queryable: true`. The kind itself is legal and the field may be declared and written; what is
+ * rejected is the pairing, because a storage-only kind has no `CAST` target and therefore no index
+ * to provision.
+ *
+ * DELIBERATELY A SUBCLASS of {@link InvalidFieldKindError}, not a sibling. The fronting HTTP
+ * boundaries map rejections with a fixed `instanceof` list and fall through to
+ * `500 INTERNAL_ERROR`; they live in consuming applications, outside this package, and cannot be
+ * updated in lockstep with it. A sibling class would therefore turn a validation rejection into a
+ * 500 at every existing boundary the day this shipped. Subclassing keeps every such boundary at
+ * `400 VALIDATION_ERROR` with no coordinated change, and the relationship is honest — this IS a
+ * rejection of the field's kind, in the context the kind was used. `.name` still distinguishes it
+ * for any caller that wants the finer signal.
+ */
+export class StorageOnlyFieldNotQueryableError extends InvalidFieldKindError {
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageOnlyFieldNotQueryableError";
   }
 }
 

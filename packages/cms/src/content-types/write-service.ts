@@ -7,6 +7,7 @@ import {
   InvalidKeyGrammarError,
   QueryableFieldCapExceededError,
   ReservedContentTypeKeyError,
+  StorageOnlyFieldNotQueryableError,
   ValidationError,
   VersionConflictError,
 } from "./errors.js";
@@ -18,6 +19,7 @@ import {
   type ContentTypeRecord,
   type Result,
   isContentTypeFieldKind,
+  isIndexableFieldKind,
 } from "./types.js";
 
 /**
@@ -30,8 +32,12 @@ import {
  * same-transaction row + revision write (+ watermark stamp when supplied) -> index provisioning.
  *
  * `registerContentType`'s CIC U-002-B1 guard order is binding, not incidental: key grammar ->
- * reserved-key -> field-name grammar -> field-kind -> queryable-cap, evaluation stops at the
- * first failure. `updateContentTypeFields`'s CIC U-004-B1 additionally requires `expectedVersion`
+ * reserved-key -> field-name grammar -> field-kind -> storage-only-not-queryable -> queryable-cap,
+ * evaluation stops at the first failure. The storage-only check is numbered 4b rather than
+ * renumbering 5, because the fixed order is pinned by name in the certified suite and the existing
+ * five guards keep both their relative order and their identity: 4b sits strictly between the
+ * field-kind check and the queryable-cap check, and can only fire on a field whose kind already
+ * passed guard 4. `updateContentTypeFields`'s CIC U-004-B1 additionally requires `expectedVersion`
  * to be checked BEFORE the `fields_empty` floor and before any per-field guard, so a stale
  * `expectedVersion` combined with `fields: []` reports `VERSION_CONFLICT`, never
  * `VALIDATION_ERROR(fields_empty)`.
@@ -184,6 +190,20 @@ export async function registerContentType(
       return { ok: false, error: new InvalidFieldKindError(`field '${field.name}' has kind '${field.kind}', not one of the closed field-kind enum`) };
     }
   }
+  // Guard 4b: a storage-only kind cannot be queryable. Placed strictly between guard 4 and guard 5
+  // so a bad kind still reports as a kind error, and a legal-but-unindexable kind is rejected
+  // BEFORE the cap count and long before `resolveFieldIndexTransition` could hand it to the index
+  // provisioner. This is the check that keeps a kind with no CAST target off the DDL path.
+  for (const field of input.fields) {
+    if (field.queryable && !isIndexableFieldKind(field.kind)) {
+      return {
+        ok: false,
+        error: new StorageOnlyFieldNotQueryableError(
+          `field '${field.name}' has storage-only kind '${field.kind}' and cannot be queryable`
+        ),
+      };
+    }
+  }
   // Guard 5: queryable-field cap, submitted array alone.
   if (countQueryableFields(input.fields) > QUERYABLE_FIELD_CAP) {
     return { ok: false, error: new QueryableFieldCapExceededError(`content type '${input.key}' submits more than ${QUERYABLE_FIELD_CAP} queryable fields`) };
@@ -280,6 +300,20 @@ export async function updateContentTypeFields(
   for (const field of input.fields) {
     if (!isContentTypeFieldKind(field.kind)) {
       return { ok: false, error: new InvalidFieldKindError(`field '${field.name}' has kind '${field.kind}', not one of the closed field-kind enum`) };
+    }
+  }
+  // Guard 4b: a storage-only kind cannot be queryable. Placed strictly between guard 4 and guard 5
+  // so a bad kind still reports as a kind error, and a legal-but-unindexable kind is rejected
+  // BEFORE the cap count and long before `resolveFieldIndexTransition` could hand it to the index
+  // provisioner. This is the check that keeps a kind with no CAST target off the DDL path.
+  for (const field of input.fields) {
+    if (field.queryable && !isIndexableFieldKind(field.kind)) {
+      return {
+        ok: false,
+        error: new StorageOnlyFieldNotQueryableError(
+          `field '${field.name}' has storage-only kind '${field.kind}' and cannot be queryable`
+        ),
+      };
     }
   }
   if (countQueryableFields(input.fields) > QUERYABLE_FIELD_CAP) {
