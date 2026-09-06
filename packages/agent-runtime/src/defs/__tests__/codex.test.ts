@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { codexAgentDef, codexNeedsDangerFullAccessSandbox, parseCodexDebugModels } from '../codex.js';
+import {
+  codexAgentDef,
+  codexNeedsDangerFullAccessSandbox,
+  parseCodexDebugModels,
+  unionModelReasoningOptions,
+} from '../codex.js';
 
 describe('codexAgentDef shape', () => {
   it('declares the expected identity and transport fields', () => {
@@ -359,5 +364,98 @@ describe('codexAgentDef.buildArgs', () => {
 describe('codexAgentDef.imageDelivery', () => {
   it('declares "native" so attachments are never silently dropped (regression: was undefined)', () => {
     expect(codexAgentDef.imageDelivery).toBe('native');
+  });
+});
+
+
+/**
+ * The real catalog shape, trimmed to the fields these tests read. Copied from a live
+ * `codex debug models` run (codex-cli 0.153.4) — the effort sets below are NOT invented: Astra and
+ * the Sol/Terra models really do offer `ultra`, Luna stops at `max`, and 5.5 / 5.4-mini stop at
+ * `xhigh`. That per-model divergence is the whole reason a single global effort list is wrong.
+ */
+const LIVE_CATALOG_SHAPE = JSON.stringify({
+  models: [
+    {
+      slug: 'gpt-6-astra',
+      display_name: 'GPT-6 Astra',
+      visibility: 'list',
+      supported_reasoning_levels: [
+        { effort: 'low' }, { effort: 'medium' }, { effort: 'high' },
+        { effort: 'xhigh' }, { effort: 'max' }, { effort: 'ultra' },
+      ],
+    },
+    {
+      slug: 'gpt-reserve',
+      visibility: 'hide',
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'nonsense-internal-level' }],
+    },
+    {
+      slug: 'gpt-5.5',
+      visibility: 'list',
+      supported_reasoning_levels: [
+        { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' },
+      ],
+    },
+  ],
+});
+
+describe('parseCodexDebugModels — per-model reasoning levels', () => {
+  it("carries each model's own supported_reasoning_levels on its option row", () => {
+    const models = parseCodexDebugModels(LIVE_CATALOG_SHAPE);
+    const astra = models?.find((m) => m.id === 'gpt-6-astra');
+    expect(astra?.reasoning?.map((r) => r.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    // Not the same set — a global list cannot be right for both.
+    const gpt55 = models?.find((m) => m.id === 'gpt-5.5');
+    expect(gpt55?.reasoning?.map((r) => r.id)).toEqual(['low', 'medium', 'high', 'xhigh']);
+  });
+
+  it('labels the levels the way the picker already spells them', () => {
+    const models = parseCodexDebugModels(LIVE_CATALOG_SHAPE);
+    const astra = models?.find((m) => m.id === 'gpt-6-astra');
+    expect(astra?.reasoning?.map((r) => r.label)).toEqual(['Low', 'Medium', 'High', 'XHigh', 'Max', 'Ultra']);
+  });
+
+  it('accepts a bare-string level as well as the {effort} object form', () => {
+    const models = parseCodexDebugModels(
+      JSON.stringify({ models: [{ slug: 'm', supported_reasoning_levels: ['low', { effort: 'high' }] }] }),
+    );
+    expect(models?.find((m) => m.id === 'm')?.reasoning?.map((r) => r.id)).toEqual(['low', 'high']);
+  });
+
+  it('omits `reasoning` entirely for a model that declares no levels', () => {
+    const models = parseCodexDebugModels(JSON.stringify({ models: [{ slug: 'm' }] }));
+    expect(models?.find((m) => m.id === 'm')).toEqual({ id: 'm', label: 'm' });
+  });
+});
+
+describe('unionModelReasoningOptions', () => {
+  it('unions every listed model\'s levels, so `max` and `ultra` become reachable', () => {
+    const models = parseCodexDebugModels(LIVE_CATALOG_SHAPE)!;
+    expect(unionModelReasoningOptions(models)?.map((r) => r.id)).toEqual([
+      'default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+    ]);
+  });
+
+  it('never surfaces a hidden model\'s private levels', () => {
+    // `gpt-reserve` is `visibility: "hide"` and carries a bogus level; it is filtered out by
+    // `parseCodexDebugModels` before the union ever sees it. Asserted here, not just implied by the
+    // test above, because the union is the thing that renders.
+    const models = parseCodexDebugModels(LIVE_CATALOG_SHAPE)!;
+    expect(unionModelReasoningOptions(models)?.map((r) => r.id)).not.toContain('nonsense-internal-level');
+  });
+
+  it('returns null when no model carries levels, so the caller keeps its static list', () => {
+    expect(unionModelReasoningOptions([{ id: 'default', label: 'Default' }, { id: 'm', label: 'm' }])).toBeNull();
+    expect(unionModelReasoningOptions([])).toBeNull();
+  });
+});
+
+describe('codexAgentDef.deriveReasoningOptions', () => {
+  it('is declared, and turns the live catalog into the effort list the picker renders', () => {
+    const models = parseCodexDebugModels(LIVE_CATALOG_SHAPE)!;
+    expect(codexAgentDef.deriveReasoningOptions?.(models)?.map((r) => r.id)).toEqual([
+      'default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+    ]);
   });
 });

@@ -28,6 +28,7 @@ import type {
   RuntimeCapabilityMap,
   RuntimeModelSource,
   RuntimeModelOption,
+  RuntimeReasoningOption,
 } from './types.js';
 
 type FetchedRuntimeModels = {
@@ -174,6 +175,26 @@ async function probeCapabilities(def: RuntimeAgentDef, launchPath: string, env: 
   }
 }
 
+/**
+ * The effort-level override a live model catalog earns, if any.
+ *
+ * `stripFns` already carries the def's static `reasoningOptions` through, so this returns a spread
+ * fragment that REPLACES it only when the def declares `deriveReasoningOptions` AND that hook found
+ * real per-model levels in the fetched list. Every other case — no hook, an older CLI whose catalog
+ * carries no levels, a fallback list — returns `{}` and leaves the static declaration untouched, so
+ * this can only add accuracy and never empties a picker's effort choices.
+ *
+ * @param models - The models `fetchModels` actually surfaced (live or fallback).
+ * @complexity O(1) here; the hook's own cost is documented on `deriveReasoningOptions`.
+ */
+function derivedReasoningOverride(
+  def: RuntimeAgentDef,
+  models: RuntimeModelOption[],
+): { reasoningOptions?: RuntimeReasoningOption[] } {
+  const derived = def.deriveReasoningOptions?.(models);
+  return derived && derived.length > 0 ? { reasoningOptions: derived } : {};
+}
+
 async function probe(
   def: RuntimeAgentDef,
   configuredEnv: Record<string, string> = {},
@@ -216,6 +237,7 @@ async function probe(
   const authDiagnostic = auth ? buildAuthDiagnostic(def, auth) : null;
   return {
     ...stripFns(def),
+    ...derivedReasoningOverride(def, surfacedModelResult.models),
     models: surfacedModelResult.models,
     modelsSource: surfacedModelResult.source,
     available: true,
@@ -228,6 +250,10 @@ async function probe(
 }
 
 function stripFns(def: RuntimeAgentDef): Omit<DetectedAgent, 'models' | 'modelsSource' | 'available' | 'path' | 'version'> {
+  // `deriveReasoningOptions` is dropped with the other closures, and for the same reason
+  // `buildArgs` is: a registry consumer has no model list to feed it and `JSON.stringify`
+  // would publish nothing where the function was. Its RESULT already shipped — `probe`
+  // applies it to `reasoningOptions` before this projection runs.
   // Drop the buildArgs / listModels closures but keep declarative metadata
   // (reasoningOptions, streamFormat, name, bin, etc.). `models` is
   // populated separately by `fetchModels`, so we strip the static
@@ -246,6 +272,7 @@ function stripFns(def: RuntimeAgentDef): Omit<DetectedAgent, 'models' | 'modelsS
     buildArgs: _buildArgs,
     listModels: _listModels,
     fetchModels: _fetchModels,
+    deriveReasoningOptions: _deriveReasoningOptions,
     fallbackModels: _fallbackModels,
     helpArgs: _helpArgs,
     capabilityFlags: _capabilityFlags,

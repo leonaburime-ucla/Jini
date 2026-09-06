@@ -19,6 +19,23 @@ export type RuntimeEnv = NodeJS.ProcessEnv | Record<string, string>;
 export type RuntimeModelOption = {
   id: string;
   label: string;
+  /**
+   * The reasoning-effort levels THIS model supports, when the runtime's own catalog reports them
+   * per model rather than per agent.
+   *
+   * Present only where a live source actually carries the data — Codex's `debug models` catalog
+   * does (`supported_reasoning_levels`), and the levels genuinely differ between models on the same
+   * CLI: verified live against codex-cli 0.153.4, where `gpt-6-astra` offers
+   * low/medium/high/xhigh/max/ultra while `gpt-5.5` stops at `xhigh`. A single agent-level
+   * `RuntimeAgentDef.reasoningOptions` list cannot be correct for both, which is why this is a
+   * property of the model row rather than of the def.
+   *
+   * Consumed by `RuntimeAgentDef.deriveReasoningOptions` to compute the agent-level list a picker
+   * renders. Left `undefined` by every runtime whose effort vocabulary really is uniform, and by
+   * every static fallback list — an absent value means "nothing catalog-specific to say", never
+   * "this model supports no effort levels".
+   */
+  reasoning?: readonly RuntimeReasoningOption[];
 };
 
 export type RuntimeModelSource = 'live' | 'fallback';
@@ -319,6 +336,23 @@ export type RuntimeAgentDef = {
   ) => Promise<RuntimeModelOption[] | null>;
   reasoningOptions?: RuntimeReasoningOption[];
   /**
+   * Narrows `reasoningOptions` to what the runtime's LIVE model list actually supports.
+   *
+   * Pure, and deliberately a function of the fetched models rather than a second network/CLI probe:
+   * the data it reads (`RuntimeModelOption.reasoning`) was already parsed out of the same catalog
+   * response `listModels`/`fetchModels` produced, so there is no extra I/O and no second source that
+   * could disagree with the first.
+   *
+   * `detection.ts` calls it once per probe and, when it returns a non-empty list, that list replaces
+   * the def's static `reasoningOptions` on the resulting `DetectedAgent`. Returning `null` (no live
+   * model carried levels — an older CLI, a fallback list, an offline probe) leaves the static list
+   * exactly as declared, so this can only ever ADD accuracy, never take the picker's effort choices
+   * away.
+   *
+   * Stripped from `DetectedAgent` alongside the other closures — see `detection.ts#stripFns`.
+   */
+  deriveReasoningOptions?: (models: readonly RuntimeModelOption[]) => RuntimeReasoningOption[] | null;
+  /**
    * See {@link RuntimeReasoningInModelId}. Mutually exclusive with
    * `reasoningOptions` in practice: a def declaring both would tell a picker
    * that the same choice lives in two different places at once.
@@ -594,6 +628,10 @@ export type DetectedAgent = Omit<
   | 'buildArgs'
   | 'listModels'
   | 'fetchModels'
+  // A closure like `buildArgs`: `JSON.stringify` would drop the function and leave nothing behind,
+  // and a registry consumer has no models list of its own to feed it. Its RESULT is what ships, in
+  // the `reasoningOptions` field this same type already carries.
+  | 'deriveReasoningOptions'
   | 'fallbackModels'
   | 'helpArgs'
   | 'capabilityFlags'

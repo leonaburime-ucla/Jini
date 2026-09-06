@@ -410,3 +410,83 @@ describe('detectAgents / detectAgentsStream — full probe pipeline (via the rea
   });
 
 });
+
+
+/**
+ * The end-to-end assertion for the Local-CLI picker's effort list: what `detectAgents()` publishes
+ * is what the "Execution mode" tab renders, verbatim. Codex's static `reasoningOptions` stops at
+ * `xhigh`, so before this wiring `max` and `ultra` were unreachable from the picker even for a model
+ * whose own catalog entry declares them.
+ */
+describe('detectAgents — codex effort options come from the live catalog', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'agent-runtime-codex-effort-test-'));
+    mockState.responses.clear();
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  // Trimmed from a live `codex debug models` run (codex-cli 0.153.4).
+  const LIVE_CATALOG = JSON.stringify({
+    models: [
+      {
+        slug: 'gpt-6-astra',
+        display_name: 'GPT-6 Astra',
+        visibility: 'list',
+        supported_reasoning_levels: [
+          { effort: 'low' }, { effort: 'medium' }, { effort: 'high' },
+          { effort: 'xhigh' }, { effort: 'max' }, { effort: 'ultra' },
+        ],
+      },
+      { slug: 'codex-auto-review', visibility: 'hide', supported_reasoning_levels: [{ effort: 'max' }] },
+    ],
+  });
+
+  function codexEnv(bin: string): Record<string, Record<string, string>> {
+    return { codex: { CODEX_BIN: bin } };
+  }
+
+  async function detectCodex(catalogStdout: string) {
+    const bin = path.join(dir, 'codex');
+    makeExecutable(bin);
+    mockState.responses.set(JSON.stringify(['--version']), { stdout: 'codex-cli 0.153.4\n' });
+    mockState.responses.set(JSON.stringify(['debug', 'models']), { stdout: catalogStdout });
+    mockState.responses.set(JSON.stringify(['login', 'status']), { stdout: 'Logged in' });
+    const results = await detectAgents(codexEnv(bin));
+    return results.find((a) => a.id === 'codex')!;
+  }
+
+  it('publishes `max` and `ultra`, and drops the levels no catalog model supports', async () => {
+    const codex = await detectCodex(LIVE_CATALOG);
+
+    expect(codex.available).toBe(true);
+    expect(codex.modelsSource).toBe('live');
+    // The exact rendered list, not "contains max": asserting containment alone would also pass on a
+    // list that still carried `none`/`minimal`, which no model in the catalog accepts.
+    expect(codex.reasoningOptions?.map((r) => r.id)).toEqual([
+      'default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+    ]);
+    // And the hidden entry contributed neither a model nor a level.
+    expect(codex.models.map((m) => m.id)).toEqual(['default', 'gpt-6-astra']);
+  });
+
+  it('keeps the static effort list when the catalog is unusable, rather than emptying the picker', async () => {
+    const codex = await detectCodex('not json at all');
+
+    expect(codex.modelsSource).toBe('fallback');
+    expect(codex.reasoningOptions?.map((r) => r.id)).toEqual([
+      'default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh',
+    ]);
+  });
+
+  it('strips the derive closure from the published shape', async () => {
+    const codex = await detectCodex(LIVE_CATALOG);
+    expect((codex as unknown as { deriveReasoningOptions?: unknown }).deriveReasoningOptions).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(codex))).not.toHaveProperty('deriveReasoningOptions');
+  });
+});

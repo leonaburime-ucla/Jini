@@ -7,7 +7,7 @@
  * `source-map.md` for the exact original names.
  */
 import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
-import type { RuntimeModelOption } from '../types.js';
+import type { RuntimeModelOption, RuntimeReasoningOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
 /**
@@ -27,7 +27,80 @@ function isHiddenVisibility(visibility: unknown): boolean {
   return typeof visibility === 'string' && HIDDEN_MODEL_VISIBILITIES.has(visibility.trim().toLowerCase());
 }
 
-export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | null {
+type CodexCatalogEntry = {
+  slug?: unknown;
+  id?: unknown;
+  display_name?: unknown;
+  name?: unknown;
+  visibility?: unknown;
+  supported_reasoning_levels?: unknown;
+};
+
+/**
+ * Display labels for the effort levels, keyed by the catalog's own `effort` token.
+ *
+ * Spelled out rather than derived by capitalizing, because `xhigh` renders as `XHigh` — the exact
+ * casing the static `reasoningOptions` list below already used, so a live-derived list and a
+ * fallback list read identically in the picker. Unknown tokens (a level the vendor adds tomorrow)
+ * fall through to a capitalize, which is right often enough and is never worse than dropping the
+ * level entirely.
+ */
+const CODEX_EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium',
+  high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra',
+};
+
+function codexEffortLabel(effort: string): string {
+  return CODEX_EFFORT_LABELS[effort] ?? `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
+}
+
+/** Accepts both catalog spellings of a level: the `{ effort, description }` object the live 0.153.x
+ *  catalog emits, and a bare string (the shape an older/simpler catalog could use). */
+function codexEffortToken(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+  if (raw && typeof raw === 'object') {
+    const effort = (raw as { effort?: unknown }).effort;
+    if (typeof effort === 'string') return effort.trim();
+  }
+  return '';
+}
+
+/**
+ * Reads one catalog entry's `supported_reasoning_levels` into picker options.
+ *
+ * @returns The levels in catalog order, de-duplicated; `undefined` when the entry declares none, so
+ * the model row simply omits the field rather than claiming "supports no effort levels".
+ * @complexity O(n) in the entry's declared level count.
+ */
+function parseCodexEntryReasoning(raw: unknown): RuntimeReasoningOption[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  const out: RuntimeReasoningOption[] = [];
+  for (const level of raw) {
+    const effort = codexEffortToken(level);
+    if (!effort || seen.has(effort)) continue;
+    seen.add(effort);
+    out.push({ id: effort, label: codexEffortLabel(effort) });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function codexEntryId(entry: CodexCatalogEntry): string {
+  if (typeof entry.slug === 'string') return entry.slug.trim();
+  if (typeof entry.id === 'string') return entry.id.trim();
+  return '';
+}
+
+function codexEntryLabel(entry: CodexCatalogEntry, id: string): string {
+  if (typeof entry.display_name === 'string' && entry.display_name.trim()) return entry.display_name.trim();
+  if (typeof entry.name === 'string' && entry.name.trim()) return entry.name.trim();
+  return id;
+}
+
+/** JSON-decodes `codex debug models` stdout down to its `models` array, or `null` for any shape
+ *  that isn't one. Split out of `parseCodexDebugModels` so that function stays a single readable
+ *  loop over already-validated input. */
+function readCodexCatalogEntries(stdout: string): unknown[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(String(stdout || ''));
@@ -36,32 +109,75 @@ export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | nu
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const models = (parsed as { models?: unknown }).models;
-  if (!Array.isArray(models)) return null;
+  return Array.isArray(models) ? models : null;
+}
+
+/**
+ * Parses `codex debug models` stdout into the Local-CLI picker's model rows.
+ *
+ * Each row carries the model's OWN supported effort levels when the catalog reports them — see
+ * `RuntimeModelOption.reasoning`. Hidden entries are dropped (see `isHiddenVisibility`).
+ *
+ * @returns The rows, `default` sentinel first; `null` when the output is unparseable or yielded no
+ * model at all, which is `detection.ts#fetchModels`'s signal to keep the static fallback list.
+ * @complexity O(n·m) — one pass over n catalog entries, each with m declared effort levels.
+ */
+/** One catalog entry as a picker row, or `null` when it is malformed, hidden, id-less, or a repeat
+ *  of an id already taken. Split from the loop below purely to keep both units small. */
+function codexCatalogRow(raw: unknown, takenIds: ReadonlySet<string>): RuntimeModelOption | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const entry = raw as CodexCatalogEntry;
+  if (isHiddenVisibility(entry.visibility)) return null;
+  const id = codexEntryId(entry);
+  if (!id || takenIds.has(id)) return null;
+  const reasoning = parseCodexEntryReasoning(entry.supported_reasoning_levels);
+  return { id, label: codexEntryLabel(entry, id), ...(reasoning ? { reasoning } : {}) };
+}
+
+export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | null {
+  const models = readCodexCatalogEntries(stdout);
+  if (!models) return null;
 
   const out = [DEFAULT_MODEL_OPTION];
   const seen = new Set<string>([DEFAULT_MODEL_OPTION.id]);
   for (const raw of models) {
-    if (!raw || typeof raw !== 'object') continue;
-    const entry = raw as {
-      slug?: unknown;
-      id?: unknown;
-      display_name?: unknown;
-      name?: unknown;
-      visibility?: unknown;
-    };
-    if (isHiddenVisibility(entry.visibility)) continue;
-    const id = typeof entry.slug === 'string' ? entry.slug.trim() : typeof entry.id === 'string' ? entry.id.trim() : '';
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const label =
-      typeof entry.display_name === 'string' && entry.display_name.trim()
-        ? entry.display_name.trim()
-        : typeof entry.name === 'string' && entry.name.trim()
-          ? entry.name.trim()
-          : id;
-    out.push({ id, label });
+    const row = codexCatalogRow(raw, seen);
+    if (!row) continue;
+    seen.add(row.id);
+    out.push(row);
   }
   return out.length > 1 ? out : null;
+}
+
+/**
+ * Collapses the per-model effort levels on a fetched model list into the single agent-level list a
+ * picker renders, in first-seen catalog order, behind the `default` sentinel.
+ *
+ * A UNION rather than an intersection: the alternative would offer only the levels EVERY model
+ * supports, which on the live 0.153.4 catalog is `low..xhigh` — precisely the truncated list this
+ * exists to replace, since `gpt-5.5` would veto `max`/`ultra` for `gpt-6-astra`. Over-offering is
+ * the same failure mode the previous hardcoded list already had (it listed `none`/`minimal`, which
+ * no catalog model supports), so this is strictly better; narrowing the offer per SELECTED model is
+ * a picker-side concern, and the data for it rides along on each row's `reasoning` field.
+ *
+ * @param models - A fetched model list; rows without `reasoning` contribute nothing.
+ * @returns The union, or `null` when no row carried levels — the caller's signal to keep its own
+ * static list rather than replace it with an empty one.
+ * @complexity O(n·m) over n models and their m levels.
+ */
+export function unionModelReasoningOptions(
+  models: readonly RuntimeModelOption[],
+): RuntimeReasoningOption[] | null {
+  const seen = new Set<string>();
+  const out: RuntimeReasoningOption[] = [];
+  for (const model of models) {
+    for (const level of model.reasoning ?? []) {
+      if (seen.has(level.id)) continue;
+      seen.add(level.id);
+      out.push(level);
+    }
+  }
+  return out.length > 0 ? [{ id: 'default', label: 'Default' }, ...out] : null;
 }
 
 export function codexNeedsDangerFullAccessSandbox(
@@ -107,6 +223,12 @@ export const codexAgentDef = {
       { id: 'o3', label: 'o3' },
       { id: 'o4-mini', label: 'o4-mini' },
     ],
+    // The OLD-CLI path only. A Codex build new enough to answer `debug models` gets its effort list
+    // derived from that catalog instead (see `deriveReasoningOptions` below), which is what makes
+    // `max` and `ultra` reachable. This list is deliberately NOT widened to match: it is what a build
+    // too old to have a catalog gets, and `none`/`minimal` — which no model in the current catalog
+    // supports — are exactly the levels such a build did accept. `clampCodexReasoning` still maps
+    // `minimal` to `low` for the late GPT-5 families.
     reasoningOptions: [
       { id: 'default', label: 'Default' },
       { id: 'none', label: 'None' },
@@ -116,6 +238,10 @@ export const codexAgentDef = {
       { id: 'high', label: 'High' },
       { id: 'xhigh', label: 'XHigh' },
     ],
+    // Replaces the list above whenever the live catalog actually reported per-model levels. See
+    // `RuntimeAgentDef.deriveReasoningOptions` for the contract and `unionModelReasoningOptions` for
+    // why a union and not an intersection.
+    deriveReasoningOptions: unionModelReasoningOptions,
     // Prompt is delivered via stdin pipe (gated by `promptViaStdin: true`
     // below) to avoid Windows `spawn ENAMETOOLONG` while keeping Codex on
     // its structured JSON stream. Recent Codex CLI versions reject a bare
