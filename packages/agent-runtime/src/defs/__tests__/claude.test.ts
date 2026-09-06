@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentCapabilities } from '../../capabilities.js';
 import { claudeAgentDef } from '../claude.js';
+import { sanitizeCustomModel } from '../../models.js';
 
 afterEach(() => {
   agentCapabilities.delete('claude');
@@ -22,12 +23,19 @@ describe('claudeAgentDef shape', () => {
     expect(claudeAgentDef.authProbe).toEqual({ args: ['auth', 'status'], timeoutMs: 5000 });
     expect(claudeAgentDef.fallbackModels.map((m) => m.id)).toEqual([
       'default',
+      'fable',
       'sonnet',
       'opus',
       'haiku',
+      'claude-fable-5-1',
+      'claude-fable-5',
       'claude-opus-5',
       'claude-sonnet-5',
       'claude-haiku-4-5',
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+      'claude-sonnet-4-6',
       'claude-opus-4-5',
       'claude-sonnet-4-5',
     ]);
@@ -261,5 +269,33 @@ describe('claudeAgentDef.fetchModels', () => {
       MMD_MODEL_ROUTES_FILE: path.join(dir, 'does-not-exist.json'),
     });
     expect(result).toBeNull();
+  });
+});
+
+
+/**
+ * The reported symptom, pinned. The Local-CLI picker renders `fallbackModels` verbatim whenever no
+ * live source answers, which is the ordinary case for a subscription-authenticated `claude` with no
+ * mmd routes file and no API key — so an id absent from this list is an id the operator cannot pick.
+ */
+describe('claudeAgentDef.fallbackModels — the list the picker actually renders', () => {
+  it('offers the current Fable models and the `fable` CLI alias', () => {
+    const ids = claudeAgentDef.fallbackModels.map((m) => m.id);
+    expect(ids).toContain('claude-fable-5-1');
+    expect(ids).toContain('claude-fable-5');
+    expect(ids).toContain('fable');
+  });
+
+  it('never drops the CLI aliases or the default sentinel while gaining new ids', () => {
+    const ids = claudeAgentDef.fallbackModels.map((m) => m.id);
+    expect(ids.slice(0, 5)).toEqual(['default', 'fable', 'sonnet', 'opus', 'haiku']);
+  });
+
+  it('carries no bracketed long-context suffix, which `sanitizeCustomModel` would reject', () => {
+    // `~/.claude.json`'s server-fetched cache spells Fable `claude-fable-5-1[1m]`. Copying that
+    // verbatim would put an id in the picker that the chat path then refuses.
+    for (const model of claudeAgentDef.fallbackModels) {
+      expect(sanitizeCustomModel(model.id)).toBe(model.id);
+    }
   });
 });

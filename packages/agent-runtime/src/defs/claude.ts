@@ -30,6 +30,7 @@
 import { agentCapabilities } from '../capabilities.js';
 import { buildClaudeMcpConfigArgs, DEFAULT_MODEL_OPTION } from './shared.js';
 import { loadMmdRouteModels } from '../mmd-routes.js';
+import { loadAnthropicLiveModels } from '../anthropic-live-models.js';
 import type { RuntimeAgentDef } from '../types.js';
 
 /**
@@ -43,18 +44,43 @@ const CLAUDE_EFFORT_LEVELS: ReadonlySet<string> = new Set([
   'low', 'medium', 'high', 'xhigh', 'max',
 ]);
 
-// Current models first, then the still-active-but-superseded 4.5 opus/sonnet generation kept as
-// older options rather than dropped — an installed CLI may still be pinned to one via its own
-// config, and removing a working selection out from under a user is worse than listing it last.
-// `claude-haiku-4-5` is unchanged: Haiku 4.5 is still the current Haiku model, nothing superseded it.
+/**
+ * The list a picker renders when nothing live is available — no `~/.config/mms/model-routes.json`,
+ * no `ANTHROPIC_API_KEY` in the agent's environment, or a failed live call. Not the primary source:
+ * see `fetchModels` below.
+ *
+ * Ordered current-first, then the still-active-but-superseded generations, which are KEPT rather
+ * than dropped — an installed CLI may be pinned to one via its own config, and removing a working
+ * selection out from under a user is worse than listing it last.
+ *
+ * Every id below is verified present in the installed Claude Code binary's own embedded model
+ * table (2.1.261), and `claude-fable-5-1` is additionally the value in `~/.claude.json`'s
+ * server-fetched `additionalModelOptionsCache`. `claude-fable-5-mythos-5` appears in the binary but
+ * NOT in that server-fetched picker list, so it is deliberately omitted: an id in the binary is not
+ * evidence it is a selectable model.
+ *
+ * The `[1m]` long-context suffix the server-fetched cache carries on `claude-fable-5-1` is dropped
+ * here on purpose — `models.ts#sanitizeCustomModel` rejects brackets, and `claude --help` documents
+ * the bare full name as the accepted `--model` form.
+ *
+ * **This list WILL go stale, and that is now a detectable event rather than a silent one** — see
+ * `fallbackModelsAssertedAt` on the def below and `scripts/check-model-fallback-freshness.ts`.
+ */
 const CLAUDE_FALLBACK_MODELS = [
   DEFAULT_MODEL_OPTION,
+  { id: 'fable', label: 'Fable (alias)' },
   { id: 'sonnet', label: 'Sonnet (alias)' },
   { id: 'opus', label: 'Opus (alias)' },
   { id: 'haiku', label: 'Haiku (alias)' },
+  { id: 'claude-fable-5-1', label: 'claude-fable-5-1' },
+  { id: 'claude-fable-5', label: 'claude-fable-5' },
   { id: 'claude-opus-5', label: 'claude-opus-5' },
   { id: 'claude-sonnet-5', label: 'claude-sonnet-5' },
   { id: 'claude-haiku-4-5', label: 'claude-haiku-4-5' },
+  { id: 'claude-opus-4-8', label: 'claude-opus-4-8' },
+  { id: 'claude-opus-4-7', label: 'claude-opus-4-7' },
+  { id: 'claude-opus-4-6', label: 'claude-opus-4-6' },
+  { id: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
   { id: 'claude-opus-4-5', label: 'claude-opus-4-5' },
   { id: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' },
 ];
@@ -85,11 +111,24 @@ export const claudeAgentDef = {
       '--effort': 'effort',
       '--append-system-prompt': 'appendSystemPrompt',
     },
-    // `claude` has no list-models subcommand. Prefer local mmd/MMS routes
-    // when present so proxy-backed Claude-compatible models appear in the
-    // picker, then keep the built-in aliases as fallback hints.
+    // `claude` has no list-models subcommand, so the model list is answered from the best source
+    // available, in this order:
+    //
+    //   1. Local mmd/MMS routes, when `~/.config/mms/model-routes.json` exists — an explicit local
+    //      routing config is the operator's own authoritative statement of what this CLI can reach,
+    //      including proxy-backed Claude-compatible models the vendor API knows nothing about.
+    //   2. The account's live Anthropic catalog, when `ANTHROPIC_API_KEY` is in this agent's
+    //      environment. Merged ON TOP of the static list, never in place of it.
+    //   3. The static list, for the ordinary Local-CLI case: subscription-authenticated `claude`,
+    //      no API key anywhere. This is the common path and it must stay zero-latency, which is why
+    //      step 2 makes no network call at all when no key is resolvable.
+    //
+    // Returning `null` from any step is "nothing to add", and `detection.ts#fetchModels` renders
+    // `fallbackModels` for it — so a live-discovery failure can never empty or shrink the picker.
     fallbackModels: CLAUDE_FALLBACK_MODELS,
-    fetchModels: async (_resolvedBin, env) => loadMmdRouteModels(env, CLAUDE_FALLBACK_MODELS),
+    fetchModels: async (_resolvedBin, env) =>
+      (await loadMmdRouteModels(env, CLAUDE_FALLBACK_MODELS))
+      ?? (await loadAnthropicLiveModels(env, CLAUDE_FALLBACK_MODELS)),
     // `claude --effort <level>`. The set differs from codex's on both ends — it
     // has `max` and has no `none`/`minimal` — so it is spelled out rather than
     // shared, and `CLAUDE_EFFORT_LEVELS` below is what `buildArgs` validates
