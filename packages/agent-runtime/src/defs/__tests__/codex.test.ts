@@ -61,6 +61,38 @@ describe('parseCodexDebugModels', () => {
     expect(result?.map((m) => m.id)).toEqual(['default', 'gpt-5.1']);
   });
 
+  // Regression: OpenAI's real Codex catalog spells the hidden state `hide`, not `hidden` — verified
+  // live against `codex debug models` (0.153.4), where `gpt-reserve` and `codex-auto-review` both
+  // carry `visibility: "hide"`, and corroborated by openai/codex PR #42874, which describes flipping
+  // Astra from `hide` to `list`. Testing only `=== 'hidden'` let both internal entries render in the
+  // picker. Asserting the WHOLE list, not just "gpt-reserve is absent": a filter that dropped every
+  // entry would also satisfy the narrower assertion.
+  it("skips entries with the catalog's real hidden literal `hide`, keeping the listed ones", () => {
+    const result = parseCodexDebugModels(
+      JSON.stringify({
+        models: [
+          { slug: 'gpt-6-astra', visibility: 'list' },
+          { slug: 'gpt-reserve', visibility: 'hide' },
+          { slug: 'gpt-5.6-sol', visibility: 'list' },
+          { slug: 'codex-auto-review', visibility: 'hide' },
+        ],
+      }),
+    );
+    expect(result?.map((m) => m.id)).toEqual(['default', 'gpt-6-astra', 'gpt-5.6-sol']);
+  });
+
+  // Permissive on input by design: a vendor that already shipped two spellings of the same state can
+  // ship a third, and the cost of over-normalizing is zero (no real catalog value is a cased or
+  // padded variant of a DIFFERENT state).
+  it('treats cased and padded hidden literals as hidden too', () => {
+    const result = parseCodexDebugModels(
+      JSON.stringify({
+        models: [{ slug: 'a', visibility: 'HIDE' }, { slug: 'b', visibility: '  hidden ' }, { slug: 'c' }],
+      }),
+    );
+    expect(result?.map((m) => m.id)).toEqual(['default', 'c']);
+  });
+
   it('uses .id when .slug is absent, and skips an entry with neither', () => {
     const result = parseCodexDebugModels(JSON.stringify({ models: [{ id: 'o3' }, { display_name: 'no id here' }] }));
     expect(result?.map((m) => m.id)).toEqual(['default', 'o3']);

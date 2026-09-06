@@ -10,6 +10,23 @@ import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
+/**
+ * The `visibility` values that mean "reachable by id, but do not render in a picker".
+ *
+ * A SET rather than one literal, because the vendor has demonstrably used more than one spelling of
+ * this single state: the shipped Codex catalog says `hide` (verified live against
+ * `codex debug models` 0.153.4 — `gpt-reserve` and `codex-auto-review` both carry it), while this
+ * adapter was originally written against `hidden`. Matching only one of them let every `hide` entry
+ * render in the Local-CLI model picker. Being permissive on input costs nothing here — no real
+ * catalog value is a cased or padded variant of a DIFFERENT visibility state — and it means a third
+ * spelling does not silently reopen the same hole.
+ */
+const HIDDEN_MODEL_VISIBILITIES: ReadonlySet<string> = new Set(['hide', 'hidden']);
+
+function isHiddenVisibility(visibility: unknown): boolean {
+  return typeof visibility === 'string' && HIDDEN_MODEL_VISIBILITIES.has(visibility.trim().toLowerCase());
+}
+
 export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | null {
   let parsed: unknown;
   try {
@@ -32,7 +49,7 @@ export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | nu
       name?: unknown;
       visibility?: unknown;
     };
-    if (entry.visibility === 'hidden') continue;
+    if (isHiddenVisibility(entry.visibility)) continue;
     const id = typeof entry.slug === 'string' ? entry.slug.trim() : typeof entry.id === 'string' ? entry.id.trim() : '';
     if (!id || seen.has(id)) continue;
     seen.add(id);
