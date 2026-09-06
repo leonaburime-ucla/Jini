@@ -48,7 +48,7 @@
  * not appear until the whole message is done, not merely until its current
  * chunk stopped arriving.
  */
-import React, { type ReactNode } from 'react';
+import React, { useState, type ReactNode } from 'react';
 import type { AgentEvent, ChatAttachment, ChatMessage, ChatRunStatus } from '../../core/index.js';
 import { isTerminalRunStatus, splitOnQuestionForms, stripArtifact } from '../../core/index.js';
 import { useToolTimeline, type ToolTimelineRow } from '../hooks/useToolTimeline.js';
@@ -58,6 +58,7 @@ import { interleaveMessageBlocks } from '../message-blocks.js';
 import { useT } from '../hooks/context.js';
 import { getExtEventRenderer } from '../ext-event-renderer-registry.js';
 import { ExtEventErrorBoundary } from './ExtEventErrorBoundary.js';
+import { AttachmentPreviewModal } from './AttachmentPreviewModal.js';
 import { Icon } from './Icon.js';
 import { Markdown } from './Markdown.js';
 import { ToolCard } from './ToolCard.js';
@@ -195,6 +196,10 @@ export function MessageRow({
   const t = useT();
   const timeline = useToolTimeline(message.events, { runStreaming, runSucceeded });
   const extGroups = useExtEventGroups(message.events);
+  // Which attachment chip (if any) this row's preview modal is open for. Row-local, not
+  // module-level: two attachments in the same message can never be "open" at once, but two
+  // different messages opening their own attachments independently is fine and expected.
+  const [openAttachment, setOpenAttachment] = useState<ChatAttachment | null>(null);
 
   if (message.role === 'user') {
     return (
@@ -208,9 +213,16 @@ export function MessageRow({
         {message.attachments && message.attachments.length > 0 ? (
           <div className="jini-message-attachments">
             {message.attachments.map((a) => (
-              <span key={a.path} className="jini-message-attachment-chip">
+              <button
+                key={a.path}
+                type="button"
+                className="jini-message-attachment-chip"
+                onClick={() => setOpenAttachment(a)}
+                title={t('Open {name}', { name: a.name })}
+                aria-label={t('Open {name}', { name: a.name })}
+              >
                 {renderAttachment ? renderAttachment(a) : a.name}
-              </span>
+              </button>
             ))}
           </div>
         ) : null}
@@ -218,6 +230,9 @@ export function MessageRow({
         <div className="jini-message-actions jini-message-actions--user">
           <CopyMessageButton text={message.content} label={t('Copy message')} />
         </div>
+        {openAttachment ? (
+          <AttachmentPreviewModal attachment={openAttachment} onClose={() => setOpenAttachment(null)} />
+        ) : null}
       </div>
     );
   }

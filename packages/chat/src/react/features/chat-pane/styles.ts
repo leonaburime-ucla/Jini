@@ -135,12 +135,19 @@ export const CHAT_PANE_STYLES = `
   margin-bottom: 4px;
 }
 .jini-chat-pane .jini-message-user .jini-message-attachment-chip {
+  font: inherit;
   font-size: 11px;
+  line-height: 1.4;
   color: var(--jini-chat-muted);
   background: var(--jini-chat-subtle);
   border: 1px solid var(--jini-chat-border);
   border-radius: 999px;
   padding: 3px 10px;
+  cursor: pointer;
+}
+.jini-chat-pane .jini-message-user .jini-message-attachment-chip:hover {
+  color: var(--jini-chat-text);
+  border-color: var(--jini-chat-border-strong);
 }
 .jini-chat-pane .jini-message-agent {
   font-size: 11px;
@@ -1473,5 +1480,127 @@ export const CHAT_PANE_STYLES = `
   .jini-chat-pane__header { padding-inline: 16px; }
   .jini-chat-pane .jini-message-list { padding-inline: 16px; }
   .jini-chat-pane__controls { padding-inline: 10px; }
+}
+/*
+ * Attachment preview modal (MessageRow.tsx's chip -> AttachmentPreviewModal.tsx). Same
+ * native-<dialog> shape as .jini-md-table-modal above (own box sized to content, not viewport;
+ * ::backdrop dims the page), kept as its own class rather than reusing that one because the two
+ * differ in intent: a table pop-out is a fixed-chrome expansion of content already on screen, this
+ * is a general image/text/metadata viewer with its own header and a dedicated close control.
+ */
+.jini-attachment-preview-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 720px);
+  max-height: 80vh;
+  padding: 0;
+  color: var(--jini-chat-text);
+  background: var(--jini-chat-panel);
+  border: 1px solid var(--jini-chat-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 46px rgba(13, 12, 10, .15), 0 2px 8px rgba(13, 12, 10, .06);
+}
+.jini-attachment-preview-dialog::backdrop {
+  background: rgba(0, 0, 0, .4);
+}
+.jini-attachment-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--jini-chat-border-soft);
+}
+.jini-attachment-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--jini-chat-text-strong);
+}
+.jini-attachment-preview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--jini-chat-muted);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.jini-attachment-preview-close:hover {
+  color: var(--jini-chat-text-strong);
+  background: var(--jini-chat-subtle);
+}
+.jini-attachment-preview-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+.jini-attachment-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(80vh - 90px);
+  object-fit: contain;
+  margin: auto;
+}
+.jini-attachment-preview-text {
+  width: 100%;
+  max-height: calc(80vh - 90px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--jini-chat-text);
+  background: var(--jini-chat-subtle);
+  border: 1px solid var(--jini-chat-border-soft);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jini-attachment-preview-truncated {
+  width: 100%;
+  margin-top: 8px;
+  color: var(--jini-chat-muted);
+  font-size: 11px;
+  text-align: center;
+}
+.jini-attachment-preview-loading {
+  color: var(--jini-chat-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+.jini-attachment-preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 360px;
+  color: var(--jini-chat-text);
+  font-size: 13px;
+}
+.jini-attachment-preview-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.jini-attachment-preview-meta-label {
+  color: var(--jini-chat-faint);
+}
+.jini-attachment-preview-meta-note {
+  margin-top: 6px;
+  color: var(--jini-chat-muted);
+  font-size: 12px;
 }
 `;

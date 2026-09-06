@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatAttachment } from '../../core/index.js';
 import { readCachedDraft, writeCachedDraft } from './composer-draft-cache.js';
+import { cacheAttachmentPreviewSource } from './attachment-preview-cache.js';
 import type { AgentSelection, ComposerSlots, MentionResult, ProjectContextValue } from '../slots.js';
 
 export interface ComposerDraftPersistence {
@@ -126,6 +127,16 @@ export function useComposer(options: UseComposerOptions = {}): UseComposerResult
       }
       const uploaded = await project.uploadFiles(files);
       setAttachments((prev) => [...prev, ...uploaded]);
+      // `uploadFiles` resolves 1:1 with `files`, in order, on success (see
+      // `create-daemon-attachment-uploader.ts`'s "preserved order" doc) - any failure rejects the
+      // whole call instead of returning a short array, so this zip never pairs the wrong bytes with
+      // the wrong attachment. Caching the original `File` here, at the one moment this hook already
+      // holds it, is what lets `AttachmentPreviewModal` show it again later - see
+      // `attachment-preview-cache.ts`'s module doc for why the server cannot hand it back.
+      uploaded.forEach((a, i) => {
+        const file = files[i];
+        if (file) cacheAttachmentPreviewSource(a.path, file);
+      });
       for (const a of uploaded) composerSlots?.onAttach?.(a);
     },
     [composerSlots, project],

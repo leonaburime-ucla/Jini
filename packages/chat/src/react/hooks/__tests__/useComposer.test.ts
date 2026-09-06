@@ -1,7 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatAttachment } from '../../../core/index.js';
 import { __resetComposerDraftCacheForTests } from '../composer-draft-cache.js';
+import { __resetAttachmentPreviewCacheForTests, getAttachmentPreviewSource } from '../attachment-preview-cache.js';
 import { useComposer } from '../useComposer.js';
 import type { ProjectContextValue } from '../../slots.js';
 
@@ -35,6 +36,38 @@ describe('useComposer', () => {
     expect(uploadFiles).toHaveBeenCalledWith([file]);
     expect(result.current.attachments).toEqual([uploaded]);
     expect(result.current.canSubmit).toBe(true);
+  });
+
+  describe('caching the original File for later preview', () => {
+    afterEach(() => __resetAttachmentPreviewCacheForTests());
+
+    it('caches each uploaded file by its returned attachment path, in order', async () => {
+      const uploadedA: ChatAttachment = { path: 'attachment:a', name: 'a.png', kind: 'image' };
+      const uploadedB: ChatAttachment = { path: 'attachment:b', name: 'b.txt', kind: 'file' };
+      const uploadFiles = vi.fn().mockResolvedValue([uploadedA, uploadedB]);
+      const project: ProjectContextValue = { projectId: 'p1', files: [], resolveFileUrl: (p) => p, resolveRawUrl: (p) => p, uploadFiles };
+      const { result } = renderHook(() => useComposer({ project }));
+      const fileA = new File(['x'], 'a.png');
+      const fileB = new File(['y'], 'b.txt');
+      await act(async () => {
+        await result.current.addAttachments([fileA, fileB]);
+      });
+
+      expect(getAttachmentPreviewSource('attachment:a')).toBe(fileA);
+      expect(getAttachmentPreviewSource('attachment:b')).toBe(fileB);
+    });
+
+    it('does not cache anything when the upload rejects, so a failed batch leaves no stale entries', async () => {
+      const uploadFiles = vi.fn().mockRejectedValue(new Error('upload failed'));
+      const project: ProjectContextValue = { projectId: 'p1', files: [], resolveFileUrl: (p) => p, resolveRawUrl: (p) => p, uploadFiles };
+      const { result } = renderHook(() => useComposer({ project }));
+      const file = new File(['x'], 'a.png');
+      await act(async () => {
+        await expect(result.current.addAttachments([file])).rejects.toThrow('upload failed');
+      });
+
+      expect(getAttachmentPreviewSource('attachment:a')).toBeUndefined();
+    });
   });
 
   it('addAttachments rejects when no upload port is wired', async () => {
