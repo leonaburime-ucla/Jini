@@ -66,4 +66,11 @@ export const aiderAgentDef = {
     streamFormat: 'plain',
     installUrl: 'https://aider.chat/docs/install.html',
     docsUrl: 'https://aider.chat',
+    // No `externalMcpInjection`: Aider has no native MCP client. Its published
+    // config reference (aider.chat/docs) documents no MCP options as of mid-2026,
+    // and the upstream MCP-support pull requests were closed unmerged — there is
+    // no `--mcp-config`-equivalent surface to write into. It proxies to whatever
+    // LiteLLM-routed model the user configures for chat completions only; there
+    // is nowhere for a bridged tool call to land. Revisit if upstream ships a
+    // client.
 } satisfies RuntimeAgentDef;
