@@ -153,8 +153,29 @@ function deriveTitleFromFilename(filename: string): string {
  *  on; a media slug is only ever a lookup key, never a route itself, so that hazard doesn't apply). */
 const MEDIA_SLUG_FORMAT_PATTERN = /^[a-z0-9-]+$/;
 
+/** Shared slug max-length rule (2026-09-07) — same bound as `post.ts`'s `MAX_SLUG_LENGTH`, reused
+ *  rather than inventing a second number. `post.ts` only enforces this on its EXPLICIT/caller-
+ *  supplied slug path (`resolveExplicitSlug`, reject-with-error); its own title-derived path is
+ *  uncapped. Media applies the same bound to BOTH paths, but differently per path's nature: an
+ *  explicit edit ({@link resolveSlugForUpdate}) rejects with an error, exactly like `post.ts`,
+ *  because a human typed it and should see why it was refused; a derived slug
+ *  ({@link deriveUniqueMediaSlug}) truncates instead of rejecting, because nothing is prompting a
+ *  human for a shorter value — silently truncating an internally-derived value is the same
+ *  "coerce, don't fail" convention `deriveTitleFromFilename`/`slugifyMediaTitle` already use. */
+const MEDIA_MAX_SLUG_LENGTH = 120;
+
 function isValidMediaSlugFormat(slug: string): boolean {
   return MEDIA_SLUG_FORMAT_PATTERN.test(slug);
+}
+
+/** Truncates a slug candidate to `maxLength`, stripping a trailing dash the cut can introduce (so a
+ *  truncation never leaves a slug ending mid-word with a dangling "-"), falling back to `"untitled"`
+ *  if nothing legible survives (only reachable when `maxLength` itself is tiny, e.g. while reserving
+ *  room for a long numeric suffix — see {@link deriveUniqueMediaSlug}). A no-op when `candidate` is
+ *  already within bounds. */
+function capSlugCandidate(candidate: string, maxLength: number): string {
+  if (candidate.length <= maxLength) return candidate;
+  return candidate.slice(0, Math.max(maxLength, 0)).replace(/-+$/, "") || "untitled";
 }
 
 /** Turns free text into a slug candidate: lowercase, non-alphanumeric runs collapsed to one dash,
@@ -180,19 +201,33 @@ function slugifyMediaTitle(title: string): string {
  *
  * `base` falls back to `"untitled"` when `title` slugifies to the empty string (all-punctuation or
  * non-Latin titles that `slugifyMediaTitle` strips to nothing) — `uploadMedia`'s own title is never
- * empty (`deriveTitleFromFilename` guarantees a non-empty string), so this fallback is a defensive
- * floor for a future caller passing an unusual title directly, not a path this service can hit today.
+ * empty (`deriveTitleFromFilename` guarantees a non-empty string), but the backfill script
+ * (`development/scripts/backfill-media-slugs.ts`, Tovu) calls this against arbitrary pre-existing
+ * titles, so this fallback is load-bearing there, not just a defensive floor. Note this is the SAME
+ * fallback base every empty-slugifying title collapses onto, so two such titles in one workspace
+ * collide on `"untitled"` and are disambiguated by the ordinary suffix loop below exactly like any
+ * other collision — an empty derived slug is never inserted as a bare empty string (which a unique
+ * index would treat as one specific value, not "no value," and a SECOND empty string would then
+ * violate it outright rather than surfacing a friendly conflict).
+ *
+ * `base` (after the empty-string fallback) is also capped at {@link MEDIA_MAX_SLUG_LENGTH} via
+ * {@link capSlugCandidate} before any suffix is considered — a long machine-generated title must not
+ * produce an equally long slug. When a collision forces a suffix, the BASE (never the suffix itself)
+ * is re-truncated just enough to keep the whole `base-suffix` candidate within the cap, so every
+ * candidate this loop ever checks already obeys the length bound, not just the first one.
  *
  * @complexity O(n) repo round-trips in the worst case, where n is the number of prior collisions on
  * the same base slug — bounded in practice by how many same-titled uploads exist in one workspace.
  */
 async function deriveUniqueMediaSlug(mediaRepo: MediaRepoPort, workspaceId: UUID, title: string): Promise<string> {
-  const base = slugifyMediaTitle(title) || "untitled";
+  const base = capSlugCandidate(slugifyMediaTitle(title) || "untitled", MEDIA_MAX_SLUG_LENGTH);
   let slug = base;
   let suffix = 1;
   while (await mediaRepo.findBySlug({ workspaceId, slug })) {
     suffix += 1;
-    slug = `${base}-${suffix}`;
+    const suffixText = `-${suffix}`;
+    const truncatedBase = capSlugCandidate(base, MEDIA_MAX_SLUG_LENGTH - suffixText.length);
+    slug = `${truncatedBase}${suffixText}`;
   }
   return slug;
 }
@@ -515,6 +550,12 @@ async function resolveSlugForUpdate(mediaRepo: MediaRepoPort, workspaceId: UUID,
   const slug = rawSlug.trim().toLowerCase();
   if (!slug || !isValidMediaSlugFormat(slug)) {
     throw new MediaValidationError("slug must use lowercase letters, numbers, and dashes");
+  }
+  // Same bound and rejection style as `post.ts`'s `resolveExplicitSlug` — a human typed this value,
+  // so it is refused with a clear reason rather than silently truncated (unlike the derived-on-
+  // upload path, see `MEDIA_MAX_SLUG_LENGTH`'s doc).
+  if (slug.length > MEDIA_MAX_SLUG_LENGTH) {
+    throw new MediaValidationError(`slug must be ${MEDIA_MAX_SLUG_LENGTH} characters or fewer`);
   }
   const duplicate = await mediaRepo.findBySlug({ workspaceId, slug });
   if (duplicate && duplicate.id !== id) {

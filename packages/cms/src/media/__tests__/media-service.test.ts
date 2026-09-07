@@ -273,6 +273,73 @@ test("uploadMedia falls back to 'untitled' when a non-empty title slugifies to n
   assert.equal(media.slug, "untitled");
 });
 
+// ---------------------------------------------------------------------------
+// Slug max-length cap (2026-09-07) — a live-DB backfill on real machine-generated titles surfaced
+// derived slugs with no cap at all (two real rows inherited 60+ char slugs verbatim). These pin the
+// fix: both the derive-on-upload path (truncate) and the explicit-edit path (reject), each following
+// `post.ts`'s own MAX_SLUG_LENGTH=120 bound and per-path convention (see MEDIA_MAX_SLUG_LENGTH's doc).
+// ---------------------------------------------------------------------------
+
+test("uploadMedia truncates a title-derived slug to 120 characters, with no trailing dash left by the cut", async () => {
+  const { deps } = makeDeps();
+  // 119 "a"s + a space + 10 "b"s slugifies to 119 "a"s + "-" + 10 "b"s (130 chars); truncating that
+  // to exactly 120 chars lands precisely on the dash, so the trailing-dash strip is load-bearing —
+  // without it the slug would end "...aaa-", not a real word boundary.
+  const title = `${"a".repeat(119)} ${"b".repeat(10)}`;
+  const { media } = await uploadWithTitle(deps, `${title}.png`);
+  assert.equal(media.slug, "a".repeat(119));
+  assert.equal(media.slug.length, 119);
+  assert.ok(!media.slug.endsWith("-"), "truncation must never leave a trailing dash");
+});
+
+test("uploadMedia: a collision on a 120-char-capped slug re-truncates the BASE (not the suffix) to keep the whole candidate within the cap", async () => {
+  const { deps } = makeDeps();
+  const longTitle = "a".repeat(200); // slugifies to itself (no non-alnum chars), well over the cap
+  const first = await uploadWithTitle(deps, `${longTitle}.png`);
+  const second = await uploadWithTitle(deps, `${longTitle}.jpg`); // same derived title, real collision
+
+  assert.equal(first.media.slug, "a".repeat(120));
+  assert.equal(second.media.slug, `${"a".repeat(118)}-2`);
+  assert.equal(second.media.slug.length, 120);
+  assert.notEqual(first.media.slug, second.media.slug);
+});
+
+test("uploadMedia: two titles that BOTH slugify to nothing collide on the 'untitled' fallback and are disambiguated like any other collision (adversarial: empty-slug collision, not just a single empty-slug upload)", async () => {
+  const { deps } = makeDeps();
+  // An empty derived slug is never itself insertable twice (that would collide on the unique index
+  // as a raw "" value) — the "untitled" fallback base must go through the SAME suffix loop as any
+  // other base, which this proves against two DIFFERENT titles that both strip to nothing.
+  const first = await uploadWithTitle(deps, "???.png");
+  const second = await uploadWithTitle(deps, "!!!.png");
+  assert.equal(first.media.slug, "untitled");
+  assert.equal(second.media.slug, "untitled-2");
+});
+
+test("updateMediaMetadata rejects a caller-supplied slug longer than 120 characters, naming the bound (mirrors post.ts's resolveExplicitSlug)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  const overLongSlug = "a".repeat(121);
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, slug: overLongSlug } }),
+    (err: unknown) => {
+      assert.ok(err instanceof MediaValidationError);
+      assert.equal((err as Error).message, "slug must be 120 characters or fewer");
+      return true;
+    }
+  );
+});
+
+test("updateMediaMetadata accepts a caller-supplied slug exactly 120 characters long", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  const exactSlug = "a".repeat(120);
+  const { media: updated } = await updateMediaMetadata({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, id: media.id, slug: exactSlug },
+  });
+  assert.equal(updated.slug, exactSlug);
+});
+
 test("updateMediaMetadata: renaming the title does NOT change the slug (independent fields)", async () => {
   const { deps } = makeDeps();
   const { media } = await uploadWithTitle(deps, "original-name.png");
