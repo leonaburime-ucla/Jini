@@ -57,7 +57,14 @@ export {
   type AgentElementState,
 } from './element-handles.js';
 
-export { agentHandle, type AgentHandleOptions, type AgentHandleProps } from './handle.js';
+export {
+  agentHandle,
+  agentSubHandle,
+  agentHandleProps,
+  type AgentHandleOptions,
+  type AgentHandleProps,
+  type AgentHandlePropsOptions,
+} from './handle.js';
 
 export { buildAgentListHandles } from './list-handles.js';
 
