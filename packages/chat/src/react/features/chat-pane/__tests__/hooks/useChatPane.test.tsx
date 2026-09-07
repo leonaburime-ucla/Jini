@@ -2,6 +2,10 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetComposerDraftCacheForTests } from '../../../../hooks/composer-draft-cache.js';
+import {
+  __resetAttachmentPreviewCacheForTests,
+  getAttachmentPreviewSource,
+} from '../../../../hooks/attachment-preview-cache.js';
 import { createFakeChatTransport } from '../../../../hooks/testing/fake-transport.js';
 import type { ChatPaneAgent } from '../../types.js';
 import { useChatPane } from '../../hooks/useChatPane.hooks.js';
@@ -12,7 +16,10 @@ const agents: ChatPaneAgent[] = [
 ];
 
 describe('useChatPane', () => {
-  beforeEach(() => __resetComposerDraftCacheForTests());
+  beforeEach(() => {
+    __resetComposerDraftCacheForTests();
+    __resetAttachmentPreviewCacheForTests();
+  });
 
   it('threads conversationId into the composer so a draft round-trips a conversation switch', () => {
     // Reproduces the owner-reported bug: `useChatPane` used to call `useComposer` with only
@@ -126,6 +133,29 @@ describe('useChatPane', () => {
     ]));
     expect(result.current.attachmentError?.message).toBe('upload bridge failed');
     expect(result.current.workingDirectory).toBe('/work/controlled');
+  });
+
+  it('populates the attachment preview cache through the real attach path (drag-drop/file-picker), not just when the cache function is called directly', async () => {
+    // Reproduces the owner-reported bug: `AttachmentPreviewModal` always says "a preview is not
+    // available" because ChatPane's actual attach path (this hook's own `addAttachments`, which
+    // both drag-drop and the file picker call — see `ChatPane.tsx`'s `resolveDropTargetProps`/
+    // `resolveComposerAttachmentPicker`) never wrote to `attachment-preview-cache.ts`. Only
+    // `useComposer.ts`'s OWN `addAttachments` did that, and nothing in production calls it. A test
+    // that called `cacheAttachmentPreviewSource` directly would pass whether or not this hook wires
+    // it up at all, so this asserts through `pane.addAttachments` instead — the same function
+    // `ChatPane` hands to both real entry points.
+    const transport = createFakeChatTransport();
+    const uploadAttachments = vi.fn(async (files: File[]) => files.map((file, index) => ({
+      path: `attachment:${index}`,
+      name: file.name,
+      kind: 'file' as const,
+    })));
+    const { result } = renderHook(() => useChatPane({ transport, agents, uploadAttachments }));
+
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await act(() => result.current.addAttachments([file]));
+
+    expect(getAttachmentPreviewSource('attachment:0')).toBe(file);
   });
 
   it('blocks send while a directory is pending/invalid and supports attachment-only send', async () => {

@@ -18,6 +18,7 @@ import type {
 import type { ChatAttachment, ChatMessage } from '@jini-ai/chat/core';
 import type { ChatTransport } from '@jini-ai/chat/core';
 import { definedProps } from '../../../util/defined-props.js';
+import { cacheAttachmentPreviewSource } from '../../../hooks/attachment-preview-cache.js';
 import { useComposer, type UseComposerResult } from '../../../hooks/useComposer.js';
 import {
   useConversation,
@@ -144,6 +145,14 @@ function resolveChatPaneActivity(
  * {@link useLatestOperation}'s latest-wins model, several batches may be in flight at once
  * (`addAttachments`'s `activeUploadsRef` is a `Set`, not a single slot) — so this takes an explicit
  * `stillWanted()` check per attempt rather than a shared generation token.
+ *
+ * Zips each resolved `ChatAttachment` back to the `File` at its same index before calling
+ * `onAttachment`, same assumption `useComposer.ts`'s own `addAttachments` documents ("resolves 1:1
+ * with files, in order, on success") — `effects.upload`'s one shipped implementation
+ * (`create-daemon-attachment-uploader.ts`) either returns one attachment per input file or throws,
+ * so the arrays are always the same length on the success path this runs. `file` is passed through
+ * as possibly `undefined` rather than asserted, so a non-conforming custom `uploadAttachments` host
+ * prop degrades to "attachment staged, preview not cached" instead of throwing.
  */
 async function uploadAttachmentBatch(
   files: File[],
@@ -152,14 +161,14 @@ async function uploadAttachmentBatch(
     signal: AbortSignal;
     batchId: string;
     stillWanted: () => boolean;
-    onAttachment: (attachment: ChatAttachment) => void;
+    onAttachment: (attachment: ChatAttachment, file: File | undefined) => void;
     onError: (error: Error) => void;
   },
 ): Promise<void> {
   try {
     const uploaded = await effects.upload(files, { signal: effects.signal, batchId: effects.batchId });
     if (!effects.stillWanted()) return;
-    for (const attachment of uploaded) effects.onAttachment(attachment);
+    uploaded.forEach((attachment, index) => effects.onAttachment(attachment, files[index]));
   } catch (error) {
     if (!effects.stillWanted()) return;
     effects.onError(error instanceof Error ? error : new Error(String(error)));
@@ -284,7 +293,15 @@ export function useChatPane(options: UseChatPaneOptions): UseChatPaneResult {
         stillWanted: () => mountedRef.current
           && !controller.signal.aborted
           && generation === attachmentGenerationRef.current,
-        onAttachment: (attachment) => composer.addAttachment(attachment),
+        // Caches the original `File` right here, at the one point this closure has both it and the
+        // resulting `ChatAttachment` paired — mirrors `useComposer.ts`'s own `addAttachments`, which
+        // does the same pairing for its (separate, currently unused-in-production) upload path. See
+        // `attachment-preview-cache.ts`'s module doc for why this is the only place that copy can
+        // ever be captured.
+        onAttachment: (attachment, file) => {
+          composer.addAttachment(attachment);
+          if (file) cacheAttachmentPreviewSource(attachment.path, file);
+        },
         onError: setAttachmentError,
       });
     } finally {
