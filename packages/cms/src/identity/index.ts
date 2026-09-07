@@ -77,6 +77,9 @@ export {
   logout,
   validateSession,
   getEffectivePermissions,
+  /** The password-free session minter `login()` itself is now built on — see its own doc for who
+   *  else should call it directly. */
+  createSessionForPrincipal,
   SESSION_TTL_MS,
   type AuthServiceDeps,
 } from "./auth-service.js";
