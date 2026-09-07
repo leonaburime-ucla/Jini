@@ -36,6 +36,7 @@ import type { ChatAttachment } from '@jini-ai/chat';
 import {
   ATTACHMENTS_ROUTE_PATH,
   AttachmentRejectedError,
+  attachmentSidecarFileName,
   createDiskAttachmentStore,
   detectAttachmentKind,
   hasAvifSignature,
@@ -44,7 +45,11 @@ import {
   hasPngSignature,
   hasWebpSignature,
   isUnchangedAttachment,
+  loadPersistedAttachments,
+  parsePersistedAttachment,
+  prepareAttachmentStorage,
   registerAttachmentRoutes,
+  removeUnadoptedUploads,
   reserveAttachmentRecords,
   sanitizeAttachmentName,
   verifyClaimedAttachments,
@@ -1712,5 +1717,328 @@ describe('attachment routes — default internal-error sink', () => {
       expect.stringContaining('internal error (attachment-upload, correlationId='),
       expect.any(Error),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Restart survival (`retainAcrossRestarts`)
+// ---------------------------------------------------------------------------
+
+/** Pinned deliberately: this is an on-disk format, so a rename is a compatibility event and must
+ *  fail a test rather than silently orphan every sidecar a previous version wrote. */
+const SIDECAR_DIRECTORY = '.records';
+
+/** Stands a retaining store up over an existing root — the second call is the "restart". Never
+ *  registers a `dispose()` cleanup, because disposing is what these tests must NOT do; the temp
+ *  root's own `rm -rf` is what cleans up. */
+async function retainingStore(root: string): Promise<AttachmentStore> {
+  return createDiskAttachmentStore({ uploadDirectory: root, retainAcrossRestarts: true });
+}
+
+function sidecarPath(root: string, id: string): string {
+  return resolve(root, SIDECAR_DIRECTORY, attachmentSidecarFileName(id));
+}
+
+describe('createDiskAttachmentStore — retainAcrossRestarts', () => {
+  it('keeps an unclaimed upload AND its listing across a restart (the acceptance bar)', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'f721cf3a-batch-x', 'upload.bin', 'the only copy', 'admin-1');
+
+    // The daemon dies (a watcher restart, a crash — the store cannot tell) and comes back.
+    const second = await retainingStore(root);
+
+    await expect(readFile(staged.filePath, 'utf8')).resolves.toBe('the only copy');
+    expect(await second.listPendingForOwner('admin-1')).toEqual([
+      {
+        ref: staged.attachment.path,
+        name: 'upload.bin',
+        kind: 'file',
+        size: 'the only copy'.length,
+        createdAt: expect.any(Number),
+      },
+    ]);
+    // The whole point of listing it: the ref is still redeemable for the real path.
+    await expect(second.claim([staged.attachment], 'run-after-restart')).resolves.toEqual({
+      attachments: [{ path: staged.filePath, name: 'upload.bin', kind: 'file', size: 13 }],
+      batchDirectory: staged.batchDirectory,
+    });
+  });
+
+  it('persists an ownerless attachment too — the file survives, but listing still excludes it', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    // No ownerId: a host that never wired `resolveOwnerId`. `listPendingForOwner` must not become a
+    // wildcard just because the record now survives a restart.
+    const staged = await stage(first, 'batch-ownerless-1', 'upload.bin', 'bytes');
+
+    const second = await retainingStore(root);
+
+    await expect(readFile(staged.filePath, 'utf8')).resolves.toBe('bytes');
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+    // Still redeemable by whoever holds the capability id, which is the only reach it ever had.
+    await expect(second.claim([staged.attachment], 'run-ownerless')).resolves.toMatchObject({
+      attachments: [{ path: staged.filePath, name: 'upload.bin' }],
+    });
+  });
+
+  it('still empties the directory when the option is left off, exactly as before', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-default-1', 'upload.bin', 'gone', 'admin-1');
+
+    const second = await createDiskAttachmentStore({ uploadDirectory: root });
+
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+    // The sidecars go too — a default store leaves nothing behind for a later retaining one to find.
+    await expect(stat(resolve(root, SIDECAR_DIRECTORY))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses to adopt a file swapped between the two processes, and deletes it', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-swapped-1', 'upload.bin', 'original', 'admin-1');
+    // Same path, different bytes and a different size: exactly what `claim()`'s integrity gate
+    // exists to catch, applied at adoption so a restart is not a hole in it.
+    await writeFile(staged.filePath, 'tampered with', { mode: 0o600 });
+
+    const second = await retainingStore(root);
+
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(sidecarPath(root, staged.attachment.path))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('deletes an upload no sidecar describes, so never-wiping cannot grow the directory forever', async () => {
+    const root = await tempDirectory();
+    await retainingStore(root);
+    const orphanBatch = resolve(root, 'batch-orphaned-1');
+    await mkdir(orphanBatch, { recursive: true, mode: 0o700 });
+    const orphanFile = resolve(orphanBatch, 'orphan.bin');
+    await writeFile(orphanFile, 'left by a version that did not write sidecars');
+    // A plain file sitting at the upload root — not a batch directory at all.
+    const rootDebris = resolve(root, 'debris.bin');
+    await writeFile(rootDebris, 'debris');
+
+    await retainingStore(root);
+
+    await expect(stat(orphanFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(orphanBatch)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(rootDebris)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps a sibling upload in the same batch while deleting the unadopted one', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const kept = await stage(first, 'batch-mixed-11', 'kept.bin', 'kept', 'admin-1');
+    const strayInSameBatch = resolve(kept.batchDirectory, 'stray.bin');
+    await writeFile(strayInSameBatch, 'never registered');
+
+    const second = await retainingStore(root);
+
+    await expect(readFile(kept.filePath, 'utf8')).resolves.toBe('kept');
+    await expect(stat(strayInSameBatch)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await second.listPendingForOwner('admin-1')).map((a) => a.name)).toEqual(['kept.bin']);
+  });
+
+  it('drops a record whose sidecar is unreadable or is not JSON at all', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-corrupt-1', 'upload.bin', 'bytes', 'admin-1');
+    await writeFile(sidecarPath(root, staged.attachment.path), '{ truncated by a kill mid-w');
+
+    const second = await retainingStore(root);
+
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not adopt a record that has already outlived the retention window', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-expired-1', 'upload.bin', 'stale', 'admin-1');
+
+    const adopted = await loadPersistedAttachments({
+      canonicalUploadDirectory: await realpath(root),
+      retentionMs: 1_000,
+      now: Date.now() + 60 * 60 * 1_000,
+    });
+
+    expect([...adopted.values()]).toEqual([]);
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(sidecarPath(root, staged.attachment.path))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('removes the sidecar when the record is deleted, so nothing readopts it', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-deleted-1', 'upload.bin', 'bytes', 'admin-1');
+    await first.deleteUnclaimed('batch-deleted-1', [staged.attachment.path]);
+
+    await expect(stat(sidecarPath(root, staged.attachment.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    const second = await retainingStore(root);
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+  });
+
+  it('leaves nothing behind after dispose(), so a clean shutdown still means a clean start', async () => {
+    const root = await tempDirectory();
+    const first = await retainingStore(root);
+    const staged = await stage(first, 'batch-disposed-1', 'upload.bin', 'bytes', 'admin-1');
+    await first.dispose();
+
+    const second = await retainingStore(root);
+
+    expect(await second.listPendingForOwner('admin-1')).toEqual([]);
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('fails the registration rather than accepting an attachment it could not persist', async () => {
+    const root = await tempDirectory();
+    const store = await retainingStore(root);
+    // Replacing the sidecar directory with a regular file makes every sidecar write fail ENOTDIR —
+    // a real filesystem failure rather than a mocked one.
+    await rm(resolve(root, SIDECAR_DIRECTORY), { recursive: true, force: true });
+    await writeFile(resolve(root, SIDECAR_DIRECTORY), 'not a directory');
+
+    const batchDirectory = await store.createBatchDirectory('batch-nopersist-1');
+    const filePath = resolve(batchDirectory, 'upload.bin');
+    await writeFile(filePath, 'bytes', { mode: 0o600 });
+    await expect(store.register({
+      batchId: 'batch-nopersist-1', path: filePath, name: 'upload.bin', kind: 'file', size: 5, ownerId: 'admin-1',
+    })).rejects.toMatchObject({ code: 'ENOTDIR' });
+
+    // Rolled fully back: not listed, and the file the caller was told nothing about is gone.
+    expect(await store.listPendingForOwner('admin-1')).toEqual([]);
+    await expect(stat(filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('parsePersistedAttachment', () => {
+  const root = '/uploads';
+  const valid = {
+    id: 'attachment:abc',
+    filePath: '/uploads/batch-valid-1/file.bin',
+    name: 'file.bin',
+    kind: 'file',
+    size: 4,
+    batchId: 'batch-valid-1',
+    dev: 1,
+    ino: 2,
+    createdAt: 3,
+  };
+
+  it('rebuilds a record and derives its batch directory from the upload root', () => {
+    expect(parsePersistedAttachment({ ...valid, ownerId: 'admin-1' }, root)).toEqual({
+      ...valid,
+      batchDirectory: '/uploads/batch-valid-1',
+      ownerId: 'admin-1',
+    });
+  });
+
+  it('omits ownerId entirely when the sidecar carried none', () => {
+    const parsed = parsePersistedAttachment(valid, root);
+    expect(parsed).not.toHaveProperty('ownerId');
+    expect(parsed?.batchDirectory).toBe('/uploads/batch-valid-1');
+  });
+
+  it('ignores a batchDirectory the sidecar tries to name, so a forged one cannot escape the root', () => {
+    const forged = { ...valid, batchDirectory: '/etc' };
+    expect(parsePersistedAttachment(forged, root)?.batchDirectory).toBe('/uploads/batch-valid-1');
+  });
+
+  it('rejects a filePath outside the batch directory its own batchId names', () => {
+    expect(parsePersistedAttachment({ ...valid, filePath: '/etc/passwd' }, root)).toBeUndefined();
+    expect(parsePersistedAttachment({ ...valid, filePath: '/uploads/batch-valid-1/nested/f.bin' }, root))
+      .toBeUndefined();
+    expect(parsePersistedAttachment({ ...valid, filePath: '/uploads/batch-valid-1/../f.bin' }, root))
+      .toBeUndefined();
+  });
+
+  it('rejects a batchId that is not of the accepted shape', () => {
+    for (const batchId of ['', 'short', '../escape', 'has/slash', 'has.dot', 'x'.repeat(81)]) {
+      expect(parsePersistedAttachment({ ...valid, batchId }, root)).toBeUndefined();
+    }
+  });
+
+  it('rejects anything that is not a record-shaped object', () => {
+    for (const raw of [null, undefined, 'a string', 42, []]) {
+      expect(parsePersistedAttachment(raw, root)).toBeUndefined();
+    }
+  });
+
+  it('rejects a record with a missing or mistyped field', () => {
+    for (const field of Object.keys(valid)) {
+      expect(parsePersistedAttachment({ ...valid, [field]: null }, root)).toBeUndefined();
+    }
+    expect(parsePersistedAttachment({ ...valid, size: '4' }, root)).toBeUndefined();
+  });
+
+  it('rejects a kind that is neither image nor file, and a non-string ownerId', () => {
+    expect(parsePersistedAttachment({ ...valid, kind: 'video' }, root)).toBeUndefined();
+    expect(parsePersistedAttachment({ ...valid, ownerId: 7 }, root)).toBeUndefined();
+    expect(parsePersistedAttachment({ ...valid, kind: 'image' }, root)?.kind).toBe('image');
+  });
+});
+
+describe('attachmentSidecarFileName', () => {
+  it('reduces an id to the batch-id allowlist before appending the extension', () => {
+    expect(attachmentSidecarFileName('attachment:9f1e-2b')).toBe('attachment_9f1e-2b.json');
+    expect(attachmentSidecarFileName('../../etc/passwd')).toBe('______etc_passwd.json');
+  });
+});
+
+describe('prepareAttachmentStorage', () => {
+  it('honours an explicit now, so an adoption decision can be made against a chosen clock', async () => {
+    const root = await tempDirectory();
+    const store = await retainingStore(root);
+    const staged = await stage(store, 'batch-clock-1', 'upload.bin', 'bytes', 'admin-1');
+
+    const canonicalUploadDirectory = await realpath(root);
+    const kept = await prepareAttachmentStorage({
+      canonicalUploadDirectory, retainAcrossRestarts: true, retentionMs: 60_000, now: Date.now(),
+    });
+    expect([...kept.values()].map((r) => r.name)).toEqual(['upload.bin']);
+
+    const expired = await prepareAttachmentStorage({
+      canonicalUploadDirectory,
+      retainAcrossRestarts: true,
+      retentionMs: 60_000,
+      now: Date.now() + 120_000,
+    });
+    expect([...expired.values()]).toEqual([]);
+    await expect(stat(staged.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('removeUnadoptedUploads', () => {
+  it('keeps every adopted file and removes everything else under the upload root', async () => {
+    const root = await tempDirectory();
+    const store = await retainingStore(root);
+    const staged = await stage(store, 'batch-sweep-11', 'kept.bin', 'kept', 'admin-1');
+    const strayBatch = resolve(root, 'batch-sweep-22');
+    await mkdir(strayBatch, { recursive: true, mode: 0o700 });
+    await writeFile(resolve(strayBatch, 'stray.bin'), 'stray');
+
+    const adopted = new Map<string, AttachmentRecord>([
+      [staged.attachment.path, {
+        id: staged.attachment.path,
+        filePath: staged.filePath,
+        name: 'kept.bin',
+        kind: 'file',
+        size: 4,
+        batchId: 'batch-sweep-11',
+        batchDirectory: staged.batchDirectory,
+        dev: 0,
+        ino: 0,
+        createdAt: 0,
+      }],
+    ]);
+    await removeUnadoptedUploads(await realpath(root), adopted);
+
+    await expect(readFile(staged.filePath, 'utf8')).resolves.toBe('kept');
+    await expect(stat(strayBatch)).rejects.toMatchObject({ code: 'ENOENT' });
+    // The sidecar directory is never swept — it is not a batch.
+    await expect(stat(resolve(root, SIDECAR_DIRECTORY))).resolves.toBeDefined();
   });
 });
