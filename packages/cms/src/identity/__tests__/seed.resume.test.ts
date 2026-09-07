@@ -158,6 +158,33 @@ test("an interrupted first seed leaves a partial state the next boot can still f
   );
   const owner = await repos.users.findByUsername({ workspaceId: WORKSPACE, username: "admin" });
   assert.ok(owner, "the resumed boot must finish the job it is replaying: the owner user now exists");
+
+  // The owner's ENTIRE authority is the wildcard on its built-in policy, and the aborted run died
+  // before writing it. A resume that recreated the role but not this grant would leave a site whose
+  // owner can do nothing — quiet, and worse than the crash it replaced.
+  const ownerRole = await repos.roles.findByName({ workspaceId: WORKSPACE, name: "owner" });
+  const ownerLinks = await repos.rolePolicies.listByRoleId({ workspaceId: WORKSPACE, roleId: ownerRole!.id });
+  assert.equal(ownerLinks.length, 1, "the owner role must be bound to exactly one policy");
+  const ownerPerms = await repos.policyPermissions.listByPolicyId({
+    workspaceId: WORKSPACE,
+    policyId: ownerLinks[0]!.policyId,
+  });
+  assert.deepEqual(
+    ownerPerms.map((p) => p.permission),
+    ["*"],
+    "the owner policy must hold the wildcard, exactly once, after a resume"
+  );
+
+  // And the owner user must actually be bound to that role, not merely exist alongside it.
+  const ownerGrants = await repos.principalRoles.listByPrincipalId({
+    workspaceId: WORKSPACE,
+    principalId: owner!.principalId,
+  });
+  assert.deepEqual(
+    ownerGrants.map((g) => g.roleId),
+    [ownerRole!.id],
+    "the resumed owner user must hold the owner role exactly once"
+  );
 });
 
 test("resuming an interrupted seed does not duplicate rows the aborted run already wrote", async () => {
