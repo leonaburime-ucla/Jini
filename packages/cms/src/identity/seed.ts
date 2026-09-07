@@ -28,6 +28,17 @@ import { normalizeUsername } from "./username.js";
 /** REQ-09: the literal id the legacy Article VI actor stamp resolves to. */
 const LEGACY_USER_LOCAL_PRINCIPAL_ID = "user-local";
 
+/**
+ * The built-in role the seeded owner user holds, and its authority. Named constants because two
+ * call sites now depend on them agreeing exactly — the fresh seed below and `ensureOwnerRoleBinding`,
+ * which repairs an interrupted one. Drift between the two would be a silent authority bug.
+ *
+ * REQ-04/REQ-09: the owner policy holds the wildcard `*`, not an enumerated list, so it
+ * automatically covers permissions features register later.
+ */
+const OWNER_ROLE_NAME = "owner";
+const OWNER_ROLE_PERMISSIONS: readonly string[] = ["*"];
+
 const BUILTIN_ADMIN_PERMISSIONS: readonly string[] = [
   "content.read",
   "content.write",
@@ -302,13 +313,72 @@ async function seedBuiltinRoleWithPolicy(required: {
 }
 
 /**
+ * Repair the one completion step `seedIdentity`'s owner-user guard cannot see.
+ *
+ * The guard keys on the owner USER, and the owner's `principal_roles` link is written after it. A
+ * process that exits between those two adjacent writes leaves a workspace whose owner exists, can
+ * still log in, and holds no role — and `resolveEffectivePermissions` (`authorize.ts`) starts from
+ * `principal_roles` + `principal_policies`, so with neither present EVERY permission evaluates to
+ * `no_grant`. Without this step the guard early-returns on the user it finds forever and the site
+ * stays bricked for its owner, silently. Neither host-side reconciler closes it either: Tovu's
+ * `migrateDeprecatedPermissionGrants` and `applyBuiltinRoleGrants` are handed policy and role repos
+ * only, never `principalRoles`, so neither can write a principal->role link at all.
+ *
+ * Why the gate is "holds NO role" rather than "lacks the owner role". Those two conditions differ
+ * on exactly one workspace shape, and it matters: an operator who moves the seeded owner principal
+ * to a lesser role leaves it lacking the owner link on purpose. Repairing on that broader signal
+ * would re-escalate the principal to wildcard authority on the next restart — a privilege
+ * escalation shipped as a bug fix. A principal holding no role at all is never a deliberate state;
+ * it is only ever the interrupted seed, so that is what this repairs.
+ *
+ * Converges rather than assuming: it goes through `seedBuiltinRoleWithPolicy`, so a workspace whose
+ * owner ROLE or wildcard grant also never landed gains those here instead of being linked to a role
+ * that grants nothing. `principal_roles` carries no unique index, hence the read-before-write.
+ *
+ * @complexity O(1) — a handful of point reads on a healthy boot (one `listByPrincipalId`, which
+ * returns early), plus the fixed converge pass for the owner role only when the repair fires.
+ */
+async function ensureOwnerRoleBinding(required: {
+  deps: SeedIdentityDeps;
+  workspaceId: UUID;
+  ownerPrincipalId: UUID;
+  nowIso: string;
+}): Promise<void> {
+  const { deps, workspaceId, ownerPrincipalId, nowIso } = required;
+
+  const heldRoles = await deps.repos.principalRoles.listByPrincipalId({
+    workspaceId,
+    principalId: ownerPrincipalId,
+  });
+  if (heldRoles.length > 0) return;
+
+  const { roleId } = await seedBuiltinRoleWithPolicy({
+    deps,
+    workspaceId,
+    name: OWNER_ROLE_NAME,
+    permissions: OWNER_ROLE_PERMISSIONS,
+    nowIso,
+  });
+  await deps.repos.principalRoles.save({
+    id: deps.idGen.newId(),
+    workspaceId,
+    principalId: ownerPrincipalId,
+    roleId,
+  });
+}
+
+/**
  * Seed first-boot identity data.
  *
  * Idempotent in two distinct senses, and both are load-bearing:
- * - A seed that RAN TO COMPLETION is a no-op — the owner-username lookup below early-returns
- *   before any write. (This path does not reconcile a built-in policy whose permission list has
- *   since grown; that is the host's job — see Tovu's `applyBuiltinRoleGrants` /
- *   `migrateDeprecatedPermissionGrants`, chained onto `identityReady`.)
+ * - A seed that RAN TO COMPLETION is a no-op — the owner-username lookup below early-returns after
+ *   a single confirming read (`ensureOwnerRoleBinding`) and writes nothing. (This path does not
+ *   reconcile a built-in policy whose permission list has since grown; that is the host's job — see
+ *   Tovu's `applyBuiltinRoleGrants` / `migrateDeprecatedPermissionGrants`, chained onto
+ *   `identityReady`.)
+ * - "Ran to completion" is judged on the owner user AND its role link, not the user alone. The link
+ *   is the seed's last write, so the user is not on its own evidence the seed finished — see
+ *   `ensureOwnerRoleBinding` for what an interrupt between those two writes costs.
  * - A seed that was INTERRUPTED is resumed, not replayed: every step converges onto the rows a
  *   previous attempt already wrote and fills in only what is missing. See the block comment above
  *   `ensureBuiltinRole` for why this function must survive being killed halfway.
@@ -332,6 +402,14 @@ export async function seedIdentity(required: {
     username: ownerUsername,
   });
   if (existingOwnerUser) {
+    // The owner user alone is NOT proof the seed finished — its role link is written after it. See
+    // `ensureOwnerRoleBinding`: on a healthy workspace this is one read and no write.
+    await ensureOwnerRoleBinding({
+      deps,
+      workspaceId,
+      ownerPrincipalId: existingOwnerUser.principalId,
+      nowIso,
+    });
     const existingSystem = (await deps.repos.principals.list({ workspaceId })).find(
       (row) => row.kind === "system" && row.id !== LEGACY_USER_LOCAL_PRINCIPAL_ID
     );
@@ -371,13 +449,11 @@ export async function seedIdentity(required: {
     createdAt: nowIso,
   });
 
-  // REQ-04/REQ-09: the owner policy holds the wildcard `*`, not an enumerated
-  // list, so it automatically covers permissions features register later.
   const { roleId: ownerRoleId } = await seedBuiltinRoleWithPolicy({
     deps,
     workspaceId,
-    name: "owner",
-    permissions: ["*"],
+    name: OWNER_ROLE_NAME,
+    permissions: OWNER_ROLE_PERMISSIONS,
     nowIso,
   });
 

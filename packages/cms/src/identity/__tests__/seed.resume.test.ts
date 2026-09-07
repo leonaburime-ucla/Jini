@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 
+import { authorize } from "../authorize.js";
 import { Argon2PasswordHasher } from "../hasher.js";
 import {
   InMemoryPolicyPermissionRepo,
@@ -110,14 +111,16 @@ const seedInput = { workspaceId: WORKSPACE, ownerPassword: SEED_OWNER_PASSWORD }
  * Drive the REAL seed until it dies partway, exactly as an interrupted first boot does, rather
  * than hand-writing the partial rows.
  *
- * `at` picks WHICH write the abort lands on, because the two partial shapes that matter are
- * reached at different points: dying on a `policies.save` leaves a role with no policy, dying on a
- * `policyPermissions.save` leaves a policy with no permissions. `{ repo: "policies", after: 0 }`
- * reproduces the state observed live on Tovu — the 'owner' role row written, nothing after it.
+ * `at` picks WHICH write the abort lands on, because the partial shapes that matter are reached at
+ * different points: dying on a `policies.save` leaves a role with no policy, dying on a
+ * `policyPermissions.save` leaves a policy with no permissions, and dying on the single
+ * `principalRoles.save` leaves the owner USER written with no role link at all.
+ * `{ repo: "policies", after: 0 }` reproduces the state observed live on Tovu — the 'owner' role
+ * row written, nothing after it.
  */
 async function seedThenAbort(
   repos: IdentityRepos,
-  at: { repo: "policies" | "policyPermissions"; after: number }
+  at: { repo: "policies" | "policyPermissions" | "principalRoles"; after: number }
 ): Promise<void> {
   const target = repos[at.repo];
   const realSave = target.save.bind(target);
@@ -294,5 +297,142 @@ test("a resumed seed refuses to adopt a pre-existing NON-built-in policy of the 
     await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: "operator-made-policy" }),
     [],
     "and must not have been granted the built-in editor permission set"
+  );
+});
+
+/**
+ * The narrower `authorize()` dep bag, built over the same repos the seed wrote. Asserting through
+ * the REAL evaluator rather than counting `principal_roles` rows is deliberate: the symptom that
+ * matters is "the owner is denied everything", and a row-count assertion would go green against a
+ * fix that wrote a link the evaluator cannot reach.
+ */
+function authDepsOver(repos: IdentityRepos) {
+  return {
+    principals: repos.principals,
+    principalRoles: repos.principalRoles,
+    rolePolicies: repos.rolePolicies,
+    principalPolicies: repos.principalPolicies,
+    policyPermissions: repos.policyPermissions,
+  };
+}
+
+async function ownerDecision(repos: IdentityRepos, principalId: string) {
+  return authorize({
+    deps: authDepsOver(repos),
+    principalId,
+    // Any permission works — the owner's authority is the wildcard, so a specific string only makes
+    // the failure message concrete.
+    permission: "content.write",
+    context: { workspaceId: WORKSPACE },
+  });
+}
+
+/**
+ * J01. The interrupt window tonight's resumability fix did NOT close.
+ *
+ * `seedIdentity`'s early-return guard keys on the owner USER, but the owner's `principal_roles`
+ * link is written after it. A process that exits between those two adjacent writes leaves a
+ * workspace whose owner exists, can log in, and holds no role — and every later boot early-returns
+ * on the user it finds, so the seed never repairs it. `resolveEffectivePermissions` starts from
+ * `principal_roles` + `principal_policies`, finds neither, and every permission evaluates to
+ * `no_grant`. Neither of Tovu's boot-time reconcilers can fix it: `migrateDeprecatedPermissionGrants`
+ * and `applyBuiltinRoleGrants` are handed policy/role repos only, never `principalRoles`.
+ */
+test("a seed interrupted between the owner user and its role link repairs the binding on the next boot", async () => {
+  const repos = buildRepos({ enforceUniqueNames: true });
+  await seedThenAbort(repos, { repo: "principalRoles", after: 0 });
+
+  const owner = await repos.users.findByUsername({ workspaceId: WORKSPACE, username: "admin" });
+  assert.ok(owner, "fixture precondition: the aborted run got as far as writing the owner user");
+  assert.deepEqual(
+    await repos.principalRoles.listByPrincipalId({ workspaceId: WORKSPACE, principalId: owner.principalId }),
+    [],
+    "fixture precondition: it died before writing that user's role link"
+  );
+  assert.deepEqual(
+    await ownerDecision(repos, owner.principalId),
+    { allowed: false, reason: "no_grant" },
+    "fixture precondition: this partial state is a site whose owner is denied everything"
+  );
+
+  // The next boot. Today it early-returns on the owner user and changes nothing.
+  await seedIdentity({ deps: depsOver(repos, "resumed"), input: seedInput });
+
+  assert.deepEqual(
+    await ownerDecision(repos, owner.principalId),
+    { allowed: true, reason: "owner_wildcard" },
+    "the boot after the interruption must leave the owner with working authority"
+  );
+
+  const ownerRole = await repos.roles.findByName({ workspaceId: WORKSPACE, name: "owner" });
+  const links = await repos.principalRoles.listByPrincipalId({
+    workspaceId: WORKSPACE,
+    principalId: owner.principalId,
+  });
+  assert.deepEqual(
+    links.map((link) => link.roleId),
+    [ownerRole!.id],
+    "the repair must bind the owner to the built-in owner role exactly once"
+  );
+});
+
+/**
+ * The other half of the same rule, and the reason the repair is gated rather than unconditional:
+ * `principal_roles` carries no unique index, so a boot that re-links unconditionally stacks a
+ * duplicate row on every restart of a perfectly healthy site.
+ */
+test("re-seeding a completed workspace does not stack a second owner role link", async () => {
+  const repos = buildRepos({ enforceUniqueNames: true });
+  const first = await seedIdentity({ deps: depsOver(repos, "first"), input: seedInput });
+
+  await seedIdentity({ deps: depsOver(repos, "second"), input: seedInput });
+  await seedIdentity({ deps: depsOver(repos, "third"), input: seedInput });
+
+  const links = await repos.principalRoles.listByPrincipalId({
+    workspaceId: WORKSPACE,
+    principalId: first.ownerPrincipalId,
+  });
+  assert.equal(links.length, 1, `owner role link duplicated across boots: ${JSON.stringify(links)}`);
+});
+
+/**
+ * The adversarial case the repair must NOT swallow. "Owner has no owner-role link" is ambiguous on
+ * its face: it is the interrupted-seed shape, but it is also what an operator produces by moving
+ * the seeded owner principal to a lesser role. Repairing on "the owner link is missing" would
+ * silently re-escalate that principal to wildcard authority on the next restart — a privilege
+ * escalation delivered by a bug fix. The repair therefore keys on the strictly narrower and
+ * unambiguous signal: the principal holds NO role at all, which is only ever the broken state.
+ */
+test("a re-seed does not re-grant owner to a principal an operator moved to another role", async () => {
+  const repos = buildRepos({ enforceUniqueNames: true });
+  const first = await seedIdentity({ deps: depsOver(repos, "first"), input: seedInput });
+
+  // Stand in for a member-management demotion: the port has no delete, so swap the whole repo for
+  // one holding a single editor link — the same end state a real reassignment leaves behind.
+  const editorRole = await repos.roles.findByName({ workspaceId: WORKSPACE, name: "editor" });
+  repos.principalRoles = new InMemoryPrincipalRoleRepo([
+    {
+      id: "demotion-link",
+      workspaceId: WORKSPACE,
+      principalId: first.ownerPrincipalId,
+      roleId: editorRole!.id,
+    },
+  ]);
+
+  await seedIdentity({ deps: depsOver(repos, "after-demotion"), input: seedInput });
+
+  const links = await repos.principalRoles.listByPrincipalId({
+    workspaceId: WORKSPACE,
+    principalId: first.ownerPrincipalId,
+  });
+  assert.deepEqual(
+    links.map((link) => link.roleId),
+    [editorRole!.id],
+    "a deliberate demotion must survive the next boot — the seed must not re-grant owner"
+  );
+  assert.equal(
+    (await ownerDecision(repos, first.ownerPrincipalId)).reason,
+    "matched",
+    "the demoted principal must be evaluated on its editor grants, not restored to owner_wildcard"
   );
 });
