@@ -80,6 +80,18 @@ export interface MediaRecord {
   width: number | null;
   height: number | null;
   cssClass: string | null;
+  /**
+   * Owner-directed (2026-09-07) free-text HTML attributes threaded onto this asset's public
+   * `<img>`/`<video>` tag (stated uses: animations, custom WebMCP hooks) — raw, ALREADY-VALIDATED
+   * source text (e.g. `data-motion="fade-in" loading="lazy"`), the same "one string column, `null`
+   * means not set" shape {@link cssClass} already establishes; `null` by default. This is a stored-
+   * XSS boundary: `updateMediaMetadata` validates it against `html-attributes.ts`'s allowlist before
+   * ever writing it (`on*` handlers, `javascript:` values, and any name not on the allowlist are
+   * rejected outright, never sanitized), and a host's render path must re-validate before emitting
+   * it onto a real tag rather than trusting a stored value was never written by an older code path
+   * or a direct DB edit.
+   */
+  htmlAttributes: string | null;
 }
 
 /**

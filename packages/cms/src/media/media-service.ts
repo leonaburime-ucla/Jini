@@ -66,6 +66,7 @@ import {
 import type { AssetBlobRepoPort, AssetRenditionRepoPort, BlobStorePort, MediaRepoPort } from "./ports.js";
 import { withSha256Lock } from "./blob-gc-lock.js";
 import { tombstoneBlobIfUnreferenced } from "./blob-gc.js";
+import { describeMediaHtmlAttributeError, parseMediaHtmlAttributes } from "./html-attributes.js";
 
 export {
   MediaConflictError,
@@ -327,6 +328,7 @@ export async function uploadMedia(
     width: null,
     height: null,
     cssClass: null,
+    htmlAttributes: null,
   };
   await deps.mediaRepo.save(media);
 
@@ -457,6 +459,15 @@ export interface UpdateMediaMetadataInput {
    * cannot clear it back to absent, only replace it with a different valid slug.
    */
   slug?: string | undefined;
+  /**
+   * Same undefined/null/value contract as `cssClass` above (2026-09-07). A provided non-empty string
+   * is validated against `html-attributes.ts`'s allowlist BEFORE it is trimmed and stored — an `on*`
+   * handler, a `javascript:` value, or any disallowed name throws `MediaValidationError` naming the
+   * exact rejected attribute, and NOTHING is written (this field included) when that happens. A
+   * string that validates but trims to empty is stored as `null`, matching `cssClass`'s identical
+   * "empty means unset" convention.
+   */
+  htmlAttributes?: string | null | undefined;
 }
 
 export interface UpdateMediaMetadataDeps {
@@ -512,6 +523,26 @@ async function resolveSlugForUpdate(mediaRepo: MediaRepoPort, workspaceId: UUID,
   return slug;
 }
 
+/**
+ * Validates an explicit `htmlAttributes` edit against `html-attributes.ts`'s allowlist — a stored-
+ * XSS boundary, not a syntax convenience (see `MediaRecord.htmlAttributes`'s own doc). Throws
+ * `MediaValidationError` naming the exact rejected attribute the moment `parseMediaHtmlAttributes`
+ * reports one; the caller (`updateMediaMetadata`) must never reach its own `save()` call when this
+ * throws, so an invalid value is never partially or fully persisted. A value that validates but
+ * trims to empty stores as `null`, matching `cssClass`'s identical "empty means unset" convention.
+ *
+ * @complexity O(n) in the input string's length (one `parseMediaHtmlAttributes` pass).
+ */
+function resolveHtmlAttributesForUpdate(rawValue: string): string | null {
+  const trimmed = rawValue.trim();
+  if (trimmed === "") return null;
+  const parsed = parseMediaHtmlAttributes(trimmed);
+  if (parsed.error) {
+    throw new MediaValidationError(`media.htmlAttributes: ${describeMediaHtmlAttributeError(parsed.error)}`);
+  }
+  return trimmed;
+}
+
 export async function updateMediaMetadata(
   required: UpdateMediaMetadataRequired,
   _optional: Record<string, never> = {}
@@ -526,6 +557,14 @@ export async function updateMediaMetadata(
     input.slug !== undefined
       ? await resolveSlugForUpdate(deps.mediaRepo, input.workspaceId, input.id, input.slug)
       : existing.slug;
+  // Validated BEFORE the record is built (same "fail before any write" discipline `assertPositive
+  // IntegerOrThrow` above already follows) — an invalid value must never reach `save()`.
+  const htmlAttributes =
+    input.htmlAttributes !== undefined
+      ? input.htmlAttributes === null
+        ? null
+        : resolveHtmlAttributesForUpdate(input.htmlAttributes)
+      : existing.htmlAttributes;
 
   const media: MediaRecord = {
     ...existing,
@@ -539,6 +578,7 @@ export async function updateMediaMetadata(
     width: input.width !== undefined ? input.width : existing.width,
     height: input.height !== undefined ? input.height : existing.height,
     cssClass: input.cssClass !== undefined ? (input.cssClass === null ? null : input.cssClass.trim() || null) : existing.cssClass,
+    htmlAttributes,
     updatedAt: deps.clock.nowIso(),
     version: existing.version + 1,
   };

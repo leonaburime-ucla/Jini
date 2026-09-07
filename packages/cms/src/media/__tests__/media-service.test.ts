@@ -329,6 +329,97 @@ test("updateMediaMetadata rejects a malformed slug (uppercase/space/symbol) with
   );
 });
 
+// ---------------------------------------------------------------------------
+// htmlAttributes (2026-09-07) — write-path enforcement of the html-attributes.ts allowlist.
+// ---------------------------------------------------------------------------
+
+test("uploadMedia defaults htmlAttributes to null (no upload-time UI for it, matching cssClass)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  assert.equal(media.htmlAttributes, null);
+});
+
+test("updateMediaMetadata stores a valid htmlAttributes string verbatim (trimmed)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  const { media: updated } = await updateMediaMetadata({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: '  data-motion="fade-in" loading="lazy"  ' },
+  });
+  assert.equal(updated.htmlAttributes, 'data-motion="fade-in" loading="lazy"');
+});
+
+test("updateMediaMetadata: an htmlAttributes string that trims to empty is stored as null (cssClass's identical convention)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: "data-motion=\"fade\"" } });
+  const { media: cleared } = await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: "   " } });
+  assert.equal(cleared.htmlAttributes, null);
+});
+
+test("updateMediaMetadata: explicit null clears htmlAttributes back to not-set", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: "muted" } });
+  const { media: cleared } = await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: null } });
+  assert.equal(cleared.htmlAttributes, null);
+});
+
+test("updateMediaMetadata: omitting htmlAttributes leaves the stored value unchanged", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: "muted" } });
+  const { media: updated } = await updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, alt: "new alt" } });
+  assert.equal(updated.htmlAttributes, "muted");
+  assert.equal(updated.alt, "new alt");
+});
+
+test("updateMediaMetadata rejects an on* handler in htmlAttributes with MediaValidationError naming it, and writes NOTHING (not even the other fields in the same call)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await assert.rejects(
+    () =>
+      updateMediaMetadata({
+        deps,
+        input: { workspaceId: WORKSPACE_ID, id: media.id, alt: "should not be saved", htmlAttributes: 'onerror="alert(1)"' },
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof MediaValidationError);
+      assert.match((err as Error).message, /onerror/);
+      return true;
+    }
+  );
+  const { media: reread } = await getMediaById({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id } });
+  assert.equal(reread.alt, media.alt, "a rejected htmlAttributes value must not let ANY field in the same call persist");
+  assert.equal(reread.htmlAttributes, null);
+});
+
+test("updateMediaMetadata rejects a javascript: value in htmlAttributes even on an otherwise-allowed name", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: 'poster="javascript:alert(1)"' } }),
+    (err: unknown) => {
+      assert.ok(err instanceof MediaValidationError);
+      assert.match((err as Error).message, /javascript:/);
+      return true;
+    }
+  );
+});
+
+test("updateMediaMetadata rejects a disallowed attribute name in htmlAttributes, naming it", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, htmlAttributes: 'style="color:red"' } }),
+    (err: unknown) => {
+      assert.ok(err instanceof MediaValidationError);
+      assert.match((err as Error).message, /style/);
+      return true;
+    }
+  );
+});
+
 test("findMediaByIdOrSlug resolves by slug, falls back to id, and returns null on a genuine miss", async () => {
   const { deps } = makeDeps();
   const { media } = await uploadWithTitle(deps, "woodnest-cabin.png");

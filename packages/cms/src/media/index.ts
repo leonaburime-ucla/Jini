@@ -42,6 +42,16 @@ export type {
 export { computeBlobStorageKey } from "./blob-key.js";
 
 export {
+  MEDIA_HTML_ATTRIBUTE_ALLOWED_NAMES,
+  isAllowedMediaHtmlAttributeName,
+  parseMediaHtmlAttributes,
+  describeMediaHtmlAttributeError,
+  type MediaHtmlAttributeRejectionReason,
+  type MediaHtmlAttributeError,
+  type ParsedMediaHtmlAttributes,
+} from "./html-attributes.js";
+
+export {
   InMemoryMediaRepo,
   InMemoryAssetBlobRepo,
   InMemoryAssetRenditionRepo,
