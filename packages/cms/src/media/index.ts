@@ -72,12 +72,14 @@ export {
   uploadMedia,
   listMedia,
   getMediaById,
+  findMediaByIdOrSlug,
   updateMediaMetadata,
   trashMedia,
   purgeMedia,
   type UploadMediaInput,
   type UploadMediaDeps,
   type UpdateMediaMetadataInput,
+  type FindMediaByIdOrSlugRequired,
 } from "./media-service.js";
 
 // -----------------------------------------------------------------------------

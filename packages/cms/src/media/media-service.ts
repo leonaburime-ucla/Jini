@@ -146,6 +146,56 @@ function deriveTitleFromFilename(filename: string): string {
   return base.trim() || "Untitled";
 }
 
+/** Shared slug-format rule (2026-09-07) — same shape as `post`'s `SLUG_FORMAT_PATTERN`: lowercase
+ *  letters, digits, and dashes only. Media slugs have no reserved-word list (`post`'s `admin`/`api`
+ *  exclusions exist because a post slug can become a literal URL path segment a route dispatches
+ *  on; a media slug is only ever a lookup key, never a route itself, so that hazard doesn't apply). */
+const MEDIA_SLUG_FORMAT_PATTERN = /^[a-z0-9-]+$/;
+
+function isValidMediaSlugFormat(slug: string): boolean {
+  return MEDIA_SLUG_FORMAT_PATTERN.test(slug);
+}
+
+/** Turns free text into a slug candidate: lowercase, non-alphanumeric runs collapsed to one dash,
+ *  leading/trailing dashes trimmed. Same algorithm as `post.ts`'s private `slugify` (duplicated, not
+ *  imported — cross-repo: `post.ts` lives in Tovu, this file in `@jini-ai/cms`; this codebase's own
+ *  precedent for a small hand-copied helper mirrored across a repo boundary is `DEFAULT_ALLOWED_MIME_TYPES`
+ *  vs. Tovu's `FILE_HANDLER_ALLOWED_MIME_TYPES`/`IMPORTABLE_CONTENT_TYPES`). Never throws and never
+ *  returns `undefined` — an all-punctuation input collapses to `""`, which every caller here treats
+ *  as "derive nothing, fall back to a fixed default" rather than a malformed-input error. */
+function slugifyMediaTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Derives a unique-per-workspace slug from `title`, suffixing `-2`, `-3`, … on collision — the
+ * identical loop shape `post.ts`'s `createPost` uses for its own derived-slug path. Shared by
+ * {@link uploadMedia} (derive-on-create) and the backfill a host runs once for pre-existing rows
+ * with no slug yet (see Tovu's `development/scripts/backfill-media-slugs.ts`).
+ *
+ * `base` falls back to `"untitled"` when `title` slugifies to the empty string (all-punctuation or
+ * non-Latin titles that `slugifyMediaTitle` strips to nothing) — `uploadMedia`'s own title is never
+ * empty (`deriveTitleFromFilename` guarantees a non-empty string), so this fallback is a defensive
+ * floor for a future caller passing an unusual title directly, not a path this service can hit today.
+ *
+ * @complexity O(n) repo round-trips in the worst case, where n is the number of prior collisions on
+ * the same base slug — bounded in practice by how many same-titled uploads exist in one workspace.
+ */
+async function deriveUniqueMediaSlug(mediaRepo: MediaRepoPort, workspaceId: UUID, title: string): Promise<string> {
+  const base = slugifyMediaTitle(title) || "untitled";
+  let slug = base;
+  let suffix = 1;
+  while (await mediaRepo.findBySlug({ workspaceId, slug })) {
+    suffix += 1;
+    slug = `${base}-${suffix}`;
+  }
+  return slug;
+}
+
 // ---------------------------------------------------------------------------
 // uploadMedia
 // ---------------------------------------------------------------------------
@@ -199,7 +249,8 @@ export interface UploadMediaOptional {
  *
  * @complexity O(1) — one hash, one blob lookup, at most one blob write, one
  * media write, one rendition write (the lock itself adds O(1) scheduling
- * overhead, not a scan).
+ * overhead, not a scan) — plus {@link deriveUniqueMediaSlug}'s own O(n) in the number of prior
+ * same-base-slug collisions (see that function's doc).
  * @overallScore 100
  */
 export async function uploadMedia(
@@ -255,10 +306,14 @@ export async function uploadMedia(
     return written.storageKey;
   });
 
+  const title = deriveTitleFromFilename(input.filename);
+  const slug = await deriveUniqueMediaSlug(deps.mediaRepo, input.workspaceId, title);
+
   const media: MediaRecord = {
     id: deps.idGen.newId(),
     workspaceId: input.workspaceId,
-    title: deriveTitleFromFilename(input.filename),
+    title,
+    slug,
     alt: input.alt?.trim() ?? "",
     caption: input.caption?.trim() ?? "",
     credit: input.credit?.trim() ?? "",
@@ -336,6 +391,39 @@ export async function getMediaById(
   return { media };
 }
 
+export interface FindMediaByIdOrSlugRequired {
+  deps: { mediaRepo: MediaRepoPort };
+  input: { workspaceId: UUID; idOrSlug: string };
+}
+
+/**
+ * Resolves a media asset by either its slug or its id — slug first, id second, the identical
+ * ordering `post.ts`'s `getAdminPostByIdOrSlug` already establishes in this codebase for the same
+ * id-vs-slug duality (see that function's own doc for the full rationale: the slug is the handle a
+ * human typed into an embed marker or a hand-authored `<img>`/`<video>` tag, the id is the opaque
+ * UUID every existing reference already uses, and trying slug first is what lets a fresh human-typed
+ * reference resolve without weakening the existing id path — an id never collides with a slug in
+ * practice since slugs pass through {@link isValidMediaSlugFormat} and ids are `idGen.newId()`
+ * UUIDs, but slug-first costs nothing on the id path either since a real id will simply miss the
+ * slug lookup and fall through).
+ *
+ * Never throws (unlike {@link getMediaById}): every call site that needs this (an embed resolver, a
+ * public rendition route) already has its own REQ-27-style non-throwing-miss contract, so this
+ * returns `null` on failure and lets the caller apply its own not-found handling rather than forcing
+ * one shape on every caller.
+ *
+ * @complexity O(1) — at most two indexed repo lookups, short-circuited on the first hit.
+ */
+export async function findMediaByIdOrSlug(
+  required: FindMediaByIdOrSlugRequired,
+  _optional: Record<string, never> = {}
+): Promise<MediaRecord | null> {
+  const { deps, input } = required;
+  const bySlug = await deps.mediaRepo.findBySlug({ workspaceId: input.workspaceId, slug: input.idOrSlug });
+  if (bySlug) return bySlug;
+  return deps.mediaRepo.findById({ workspaceId: input.workspaceId, id: input.idOrSlug });
+}
+
 // ---------------------------------------------------------------------------
 // updateMediaMetadata
 // ---------------------------------------------------------------------------
@@ -361,6 +449,14 @@ export interface UpdateMediaMetadataInput {
    *  a string that trims to empty is stored as `null` (equivalent to clearing it), matching the
    *  "empty means unset" convention `title`/`alt`/etc. already follow via `.trim()`. */
   cssClass?: string | null | undefined;
+  /**
+   * Explicit slug edit (2026-09-07). `undefined` (key omitted) leaves the stored slug unchanged —
+   * in particular, changing `title` on the SAME call never touches `slug`; they are independent
+   * fields by design (see `MediaRecord.slug`'s doc). Unlike `title`/`cssClass`, `slug` has no
+   * "empty means unset" fallback: a media asset's slug is never null once assigned, so a caller
+   * cannot clear it back to absent, only replace it with a different valid slug.
+   */
+  slug?: string | undefined;
 }
 
 export interface UpdateMediaMetadataDeps {
@@ -374,12 +470,15 @@ export interface UpdateMediaMetadataRequired {
 }
 
 /**
- * Updates editorial-only fields (title/alt/caption/credit). `source.sha256` is
- * write-once — this function's input type has no `sha256` field,
+ * Updates editorial-only fields (title/alt/caption/credit/slug/width/height/cssClass).
+ * `source.sha256` is write-once — this function's input type has no `sha256` field,
  * so there is no code path here that can touch it (see `resolveWriteOnceSource`
  * doc for the directly-tested invariant this relies on).
  *
- * @complexity O(1).
+ * `slug` (2026-09-07) is validated and uniqueness-checked by {@link resolveSlugForUpdate} when
+ * provided; every other field keeps its pre-existing undefined-means-unchanged contract.
+ *
+ * @complexity O(1) plus {@link resolveSlugForUpdate}'s own O(1) when `input.slug` is provided.
  * @overallScore 100
  */
 /** Validates a `width`/`height` override: must be a positive integer. `null` (explicit clear) and
@@ -388,6 +487,29 @@ function assertPositiveIntegerOrThrow(value: number, field: "width" | "height"):
   if (!Number.isInteger(value) || value <= 0) {
     throw new MediaValidationError(`media.${field} must be a positive integer, got ${value}`);
   }
+}
+
+/**
+ * Validates and normalizes an explicit `slug` edit, then enforces per-workspace uniqueness against
+ * every OTHER row — an app-level courtesy check, not the enforcement itself (see `MediaRecord.slug`'s
+ * doc): the host's DB unique index is what actually prevents two rows from landing on the same slug
+ * under a concurrent write; this check only exists so a normal, non-racing caller sees a clear
+ * `MediaConflictError` naming the conflict instead of a raw constraint-violation message surfacing
+ * from whatever the host's repo adapter throws. Mirrors `post.ts`'s `assertSlugAvailableForUpdate`
+ * (same "claiming your own current slug is not a conflict" rule).
+ *
+ * @complexity O(1) — one format check, one uniqueness lookup.
+ */
+async function resolveSlugForUpdate(mediaRepo: MediaRepoPort, workspaceId: UUID, id: UUID, rawSlug: string): Promise<string> {
+  const slug = rawSlug.trim().toLowerCase();
+  if (!slug || !isValidMediaSlugFormat(slug)) {
+    throw new MediaValidationError("slug must use lowercase letters, numbers, and dashes");
+  }
+  const duplicate = await mediaRepo.findBySlug({ workspaceId, slug });
+  if (duplicate && duplicate.id !== id) {
+    throw new MediaConflictError(`slug '${slug}' is already used by media '${duplicate.id}'`);
+  }
+  return slug;
 }
 
 export async function updateMediaMetadata(
@@ -400,10 +522,17 @@ export async function updateMediaMetadata(
 
   if (input.width !== undefined && input.width !== null) assertPositiveIntegerOrThrow(input.width, "width");
   if (input.height !== undefined && input.height !== null) assertPositiveIntegerOrThrow(input.height, "height");
+  const slug =
+    input.slug !== undefined
+      ? await resolveSlugForUpdate(deps.mediaRepo, input.workspaceId, input.id, input.slug)
+      : existing.slug;
 
   const media: MediaRecord = {
     ...existing,
+    // `title` and `slug` are deliberately independent (see `MediaRecord.slug`'s doc): renaming the
+    // title never recomputes `slug`, and editing `slug` never touches `title`.
     title: input.title !== undefined ? input.title.trim() || existing.title : existing.title,
+    slug,
     alt: input.alt !== undefined ? input.alt.trim() : existing.alt,
     caption: input.caption !== undefined ? input.caption.trim() : existing.caption,
     credit: input.credit !== undefined ? input.credit.trim() : existing.credit,

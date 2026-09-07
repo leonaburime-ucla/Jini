@@ -45,6 +45,20 @@ export interface MediaRecord {
   id: UUID;
   workspaceId: UUID;
   title: string;
+  /**
+   * Human-memorable, unique-per-workspace lookup key (owner-directed, 2026-09-07) — an ADDITIONAL
+   * key alongside `id`, never a replacement: `id` stays the canonical primary key every existing
+   * embed/reference resolves by, and this column only gives a second, human-typeable way to reach
+   * the same row (`findMediaByIdOrSlug` in `media-service.ts` tries this first, `id` second).
+   *
+   * Derived from `title` at upload time (`deriveMediaSlug`), then independently editable afterward
+   * — renaming `title` does NOT recompute this field; it changes only on an explicit `slug` write.
+   * Unique per `(workspaceId, slug)`, enforced by the host's own DB index (see Tovu's
+   * `idx_media_workspace_slug`) — `updateMediaMetadata`'s own `findBySlug` check is a friendly-error
+   * courtesy on top of that, not the enforcement itself, the same split `posts_workspace_slug_unique`
+   * already establishes for `post`'s identical `slug` field.
+   */
+  slug: string;
   alt: string;
   caption: string;
   credit: string;

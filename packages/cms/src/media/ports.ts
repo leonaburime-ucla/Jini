@@ -29,6 +29,9 @@ import type { TransformDefinitionRecord } from "./transform-types.js";
 
 export interface MediaRepoPort {
   findById(required: { workspaceId: UUID; id: UUID }): Promise<MediaRecord | null>;
+  /** Second lookup key (2026-09-07) — `MediaRecord.slug`'s own doc has the full identity-model
+   *  rationale. Mirrors `AssetBlobRepoPort.findByHash`'s shape: one indexed field, one row or `null`. */
+  findBySlug(required: { workspaceId: UUID; slug: string }): Promise<MediaRecord | null>;
   list(required: { workspaceId: UUID }): Promise<MediaRecord[]>;
   save(record: MediaRecord): Promise<void>;
   /** Hard delete — called by `purgeMedia` after the trash guard passes, and by

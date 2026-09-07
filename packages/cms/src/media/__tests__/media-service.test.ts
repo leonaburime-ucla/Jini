@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 
 import {
+  MediaConflictError,
   MediaNotFoundError,
   MediaSourceImmutableError,
   MediaStillReferencedError,
   MediaValidationError,
+  findMediaByIdOrSlug,
   getMediaById,
   listMedia,
   purgeMedia,
@@ -228,6 +230,117 @@ test("updateMediaMetadata throws MediaNotFoundError for a missing id", async () 
       }),
     MediaNotFoundError
   );
+});
+
+// ---------------------------------------------------------------------------
+// slug (2026-09-07) — derivation, uniqueness, independence from title, and
+// the id-or-slug lookup helper.
+// ---------------------------------------------------------------------------
+
+async function uploadWithTitle(deps: ReturnType<typeof makeDeps>["deps"], filename: string) {
+  return uploadMedia({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, bytes: bytesFrom(filename), filename, contentType: "image/png", createdByPrincipal: "user-1" },
+  });
+}
+
+test("uploadMedia derives a slug from the title", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "Woodnest Cabin Booking.png");
+  assert.equal(media.title, "Woodnest Cabin Booking");
+  assert.equal(media.slug, "woodnest-cabin-booking");
+});
+
+test("uploadMedia disambiguates a colliding derived slug with a numeric suffix", async () => {
+  const { deps } = makeDeps();
+  const first = await uploadWithTitle(deps, "cat.png");
+  const second = await uploadWithTitle(deps, "cat.jpg");
+  const third = await uploadWithTitle(deps, "CAT.webp"); // same slug after lowercasing, third collision
+
+  assert.equal(first.media.slug, "cat");
+  assert.equal(second.media.slug, "cat-2");
+  assert.equal(third.media.slug, "cat-3");
+});
+
+test("uploadMedia falls back to 'untitled' when a non-empty title slugifies to nothing (adversarial: all-punctuation filename)", async () => {
+  const { deps } = makeDeps();
+  // `deriveTitleFromFilename` only strips the extension, so the title stays the non-empty "???" —
+  // it is `slugifyMediaTitle` that strips every character down to "", exercising
+  // `deriveUniqueMediaSlug`'s `|| "untitled"` fallback specifically, not `deriveTitleFromFilename`'s
+  // own (different) empty-base fallback.
+  const { media } = await uploadWithTitle(deps, "???.png");
+  assert.equal(media.title, "???");
+  assert.equal(media.slug, "untitled");
+});
+
+test("updateMediaMetadata: renaming the title does NOT change the slug (independent fields)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "original-name.png");
+  const { media: updated } = await updateMediaMetadata({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, id: media.id, title: "A Completely Different Title" },
+  });
+  assert.equal(updated.title, "A Completely Different Title");
+  assert.equal(updated.slug, media.slug, "slug must survive a title-only edit unchanged");
+});
+
+test("updateMediaMetadata accepts an explicit slug edit, normalized to lowercase", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  const { media: updated } = await updateMediaMetadata({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, id: media.id, slug: "Custom-Slug" },
+  });
+  assert.equal(updated.slug, "custom-slug");
+});
+
+test("updateMediaMetadata rejects a slug already claimed by a DIFFERENT row, naming the conflicting id (MediaConflictError)", async () => {
+  const { deps } = makeDeps();
+  const { media: first } = await uploadWithTitle(deps, "first.png");
+  const { media: second } = await uploadWithTitle(deps, "second.png");
+
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: second.id, slug: first.slug } }),
+    (err: unknown) => {
+      assert.ok(err instanceof MediaConflictError);
+      assert.match((err as Error).message, new RegExp(`'${first.slug}'.*${first.id}`));
+      return true;
+    }
+  );
+});
+
+test("updateMediaMetadata allows a row to keep claiming its OWN current slug (not a self-conflict)", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  const { media: updated } = await updateMediaMetadata({
+    deps,
+    input: { workspaceId: WORKSPACE_ID, id: media.id, slug: media.slug, alt: "still fine" },
+  });
+  assert.equal(updated.slug, media.slug);
+  assert.equal(updated.alt, "still fine");
+});
+
+test("updateMediaMetadata rejects a malformed slug (uppercase/space/symbol) with MediaValidationError", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "cat.png");
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, slug: "not a slug!" } }),
+    MediaValidationError
+  );
+});
+
+test("findMediaByIdOrSlug resolves by slug, falls back to id, and returns null on a genuine miss", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "woodnest-cabin.png");
+
+  const bySlug = await findMediaByIdOrSlug({ deps, input: { workspaceId: WORKSPACE_ID, idOrSlug: media.slug } });
+  assert.equal(bySlug?.id, media.id);
+
+  const byId = await findMediaByIdOrSlug({ deps, input: { workspaceId: WORKSPACE_ID, idOrSlug: media.id } });
+  assert.equal(byId?.id, media.id);
+
+  const miss = await findMediaByIdOrSlug({ deps, input: { workspaceId: WORKSPACE_ID, idOrSlug: "no-such-thing" } });
+  assert.equal(miss, null);
 });
 
 test("resolveWriteOnceSource allows absent -> set, and rejects set -> different value", () => {
