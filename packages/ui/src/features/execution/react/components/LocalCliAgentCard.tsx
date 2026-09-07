@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { agentHandleProps, agentSubHandle } from '@jini-ai/agentic';
 import { useT } from '../../../i18n/index.js';
 import { CUSTOM_MODEL_SENTINEL, DEFAULT_AGENT_DESCRIPTIONS } from '../../constants.js';
 import {
@@ -39,6 +40,9 @@ export interface LocalCliAgentCardProps {
    *  that specific fix button (a diagnostic with no OTHER fix action then
    *  renders with no buttons at all, same as the origin). */
   onRescan?: (() => void) | undefined;
+  /** This card's own agent handle — see `ExecutionTab`'s `agentHandle` doc; `LocalCliAgentList`
+   *  derives one distinct handle per agent and passes it here. */
+  agentHandle?: string;
 }
 
 /**
@@ -68,6 +72,7 @@ export function LocalCliAgentCard({
   onTest,
   agentTest,
   onRescan,
+  agentHandle,
 }: LocalCliAgentCardProps) {
   const t = useT();
 
@@ -179,6 +184,7 @@ export function LocalCliAgentCard({
           aria-pressed={selected}
           disabled={!agent.installed}
           onClick={() => onSelect(agent.id)}
+          {...agentHandleProps(agentHandle, { action: 'select', role: 'button', label: agent.label })}
         >
           <span className="jini-agent-card-icon" aria-hidden="true">
             {renderIcon ? renderIcon(agent) : agent.label.slice(0, 1).toUpperCase()}
@@ -232,6 +238,7 @@ export function LocalCliAgentCard({
             data-testid={`jini-agent-test-${agent.id}`}
             disabled={testing}
             onClick={() => onTest(agent)}
+            {...agentHandleProps(agentHandle, { action: 'test', role: 'button', label: t('Test') })}
           >
             {testing ? t('Testing…') : t('Test')}
           </button>
@@ -262,6 +269,7 @@ export function LocalCliAgentCard({
                   searchPlaceholder={t('Search models')}
                   testId={`jini-agent-model-${agent.id}`}
                   searchInputTestId={`jini-agent-model-search-${agent.id}`}
+                  {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'model') } : {})}
                   value={selectValue}
                   models={modelChoices}
                   additionalOptions={allowCustomModel ? [{ value: CUSTOM_MODEL_SENTINEL, label: t('Custom…') }] : undefined}
@@ -291,6 +299,7 @@ export function LocalCliAgentCard({
                 placeholder={t('e.g. my-fine-tuned-model')}
                 spellCheck={false}
                 onChange={(event) => onModelChange(agent.id, event.target.value.trim())}
+                {...agentHandleProps(agentHandle, { action: 'custom-model', role: 'field', label: t('Custom model id') })}
               />
             </label>
           ) : null}
@@ -313,6 +322,7 @@ export function LocalCliAgentCard({
                   }
                   onReasoningChange(agent.id, event.target.value);
                 }}
+                {...agentHandleProps(agentHandle, { action: 'reasoning', role: 'field', label: t('Reasoning effort') })}
               >
                 {reasoningOptions.map((option) => (
                   <option key={option.id} value={option.id}>

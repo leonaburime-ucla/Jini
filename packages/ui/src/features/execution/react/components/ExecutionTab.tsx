@@ -1,4 +1,5 @@
 import { useEffect, type CSSProperties, type ReactNode } from 'react';
+import { agentHandleProps, agentSubHandle } from '@jini-ai/agentic';
 import { useT } from '../../../i18n/index.js';
 import { DEFAULT_AGENT_CLI_ENV_FIELDS, DEFAULT_PROVIDER_PRESETS } from '../../constants.js';
 import type { ExecutionPort } from '../../ports.js';
@@ -69,6 +70,13 @@ export interface ExecutionTabProps {
   formFooter?: ReactNode;
   apiKeyStoredExternally?: boolean;
   apiKeyPlaceholder?: string;
+  /**
+   * This tab's own agent handle, published by the host. Every interactive control below — the mode
+   * switch, every provider chip, the whole BYOK card, and every detected-CLI card — derives its own
+   * `data-agent-*` handle from this ONE base via `agentHandleProps`/`agentSubHandle`. Omit and no
+   * `data-agent-*` markup is emitted anywhere in this tab — additive, never a behavior change.
+   */
+  agentHandle?: string;
 }
 
 /**
@@ -98,6 +106,7 @@ export function ExecutionTab({
   formFooter,
   apiKeyStoredExternally,
   apiKeyPlaceholder,
+  agentHandle,
 }: ExecutionTabProps) {
   const t = useT();
   const {
@@ -188,6 +197,7 @@ export function ExecutionTab({
               title={disabled ? localCliUnavailableReason : undefined}
               className={'jini-seg-btn' + (config.mode === mode.id ? ' active' : '')}
               onClick={() => setMode(mode.id)}
+              {...agentHandleProps(agentHandle, { action: `mode-${mode.id}`, role: 'button', label: mode.title })}
             >
               <span className="jini-seg-title">{mode.title}</span>
               <span className="jini-seg-meta">
@@ -223,6 +233,7 @@ export function ExecutionTab({
           }
           renderAgentIcon={renderAgentIcon}
           scopeLabel={localCliScopeLabel}
+          {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'local-cli') } : {})}
         />
       ) : (
         <section className="jini-settings-section jini-settings-byok">
@@ -234,6 +245,7 @@ export function ExecutionTab({
             onSelect={selectPreset}
             configuredLabel={t('Configured')}
             unsetLabel={t('Not configured')}
+            {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'protocol') } : {})}
           />
           <ProviderChipGroup
             label={t('Gateways')}
@@ -243,11 +255,13 @@ export function ExecutionTab({
             onSelect={selectPreset}
             configuredLabel={t('Configured')}
             unsetLabel={t('Not configured')}
+            {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'gateway') } : {})}
           />
           <ByokProviderForm
             config={config.byok}
             onConfigChange={(byok) => onConfigChange({ ...config, byok })}
             preset={selectedPreset}
+            {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'byok') } : {})}
             // The WHOLE catalog, not the `protocols`/`gateways` halves the chip rows take: the card
             // only reads it to recognise a pasted key as some other row's, and a key pasted from a
             // gateway into a protocol field is exactly the mistake worth naming.

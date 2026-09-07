@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { AGENT_ELEMENT_ATTRIBUTE } from '@jini-ai/agentic';
 import { I18nProvider } from '../../../../i18n/index.js';
 import { createFakeExecutionPort } from '../../../dependencies.js';
 import type { ExecutionConfig, ProviderPreset } from '../../../types.js';
@@ -474,5 +475,32 @@ describe('ExecutionTab — model provenance', () => {
     expect(
       screen.queryByText('Showing built-in defaults. Click Rescan to pull live models from the CLI.'),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('ExecutionTab — agentHandle', () => {
+  it('publishes no data-agent-* markup when omitted — additive by default', () => {
+    const { container } = render(
+      <ExecutionTab config={config()} onConfigChange={() => {}} port={createFakeExecutionPort()} presets={PRESETS} />,
+    );
+    expect(container.querySelectorAll(`[${AGENT_ELEMENT_ATTRIBUTE}]`)).toHaveLength(0);
+  });
+
+  it('derives the mode switch, provider chips, and the nested BYOK card all from the one base', () => {
+    render(
+      <ExecutionTab
+        config={config()}
+        onConfigChange={() => {}}
+        port={createFakeExecutionPort()}
+        presets={PRESETS}
+        agentHandle="settings-execution"
+      />,
+    );
+    expect(screen.getByRole('tab', { name: /Local CLI/ })).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'settings-execution-mode-local-cli');
+    expect(screen.getByRole('tab', { name: /BYOK/ })).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'settings-execution-mode-byok');
+    expect(screen.getByRole('tab', { name: /Anthropic/ })).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'settings-execution-protocol-anthropic');
+    // The BYOK card is a distinct nested component with its own sub-handle namespace
+    // (`settings-execution-byok-*`) — proving the chain wires through, not just the top level.
+    expect(screen.getByDisplayValue(SYNTHETIC_API_KEY)).toHaveAttribute(AGENT_ELEMENT_ATTRIBUTE, 'settings-execution-byok-api-key');
   });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { agentHandleProps, agentSubHandle } from '@jini-ai/agentic';
 import { useT } from '../../../i18n/index.js';
 import { CUSTOM_MODEL_SENTINEL, DEFAULT_PROVIDER_PRESETS } from '../../constants.js';
 import {
@@ -107,6 +108,8 @@ export interface ByokProviderFormProps {
    * write-only backend wants.
    */
   apiKeyPlaceholder?: string;
+  /** This card's own agent handle — see `ExecutionTab`'s `agentHandle` doc for the split. */
+  agentHandle?: string;
 }
 
 /**
@@ -128,6 +131,7 @@ export function ByokProviderForm({
   formFooter,
   apiKeyStoredExternally = false,
   apiKeyPlaceholder,
+  agentHandle,
 }: ByokProviderFormProps) {
   const t = useT();
   const [revealKey, setRevealKey] = useState(false);
@@ -238,12 +242,14 @@ export function ByokProviderForm({
               placeholder={apiKeyPlaceholder}
               value={config.apiKey}
               onChange={(event) => patch({ apiKey: event.target.value })}
+              {...agentHandleProps(agentHandle, { action: 'api-key', role: 'field', label: t('API key') })}
             />
             <button
               type="button"
               className="jini-input-affix-btn"
               aria-pressed={revealKey}
               onClick={() => setRevealKey((shown) => !shown)}
+              {...agentHandleProps(agentHandle, { action: 'reveal-key', role: 'button', label: t('Reveal API key') })}
             >
               {revealKey ? t('Hide') : t('Show')}
             </button>
@@ -292,6 +298,7 @@ export function ByokProviderForm({
               spellCheck={false}
               value={config.baseUrl}
               onChange={(event) => patch({ baseUrl: event.target.value })}
+              {...agentHandleProps(agentHandle, { action: 'base-url', role: 'field', label: t('Base URL') })}
             />
             <span className={'jini-field-hint' + (baseUrlInvalid ? ' is-error' : '')}>
               {baseUrlInvalid
@@ -310,6 +317,7 @@ export function ByokProviderForm({
             step={1}
             value={config.maxTokens ?? ''}
             onChange={(event) => patch({ maxTokens: parseMaxTokens(event.target.value) })}
+            {...agentHandleProps(agentHandle, { action: 'max-tokens', role: 'field', label: t('Max tokens (optional)') })}
           />
           <span className="jini-field-hint">
             {t('Cap on the response length. Leave blank to use the model default.')}
@@ -346,6 +354,7 @@ export function ByokProviderForm({
               searchPlaceholder={t('Search models')}
               testId="jini-byok-model-select"
               searchInputTestId="jini-byok-model-search"
+              {...(agentHandle ? { agentHandle: agentSubHandle(agentHandle, 'model') } : {})}
               value={customModelActive ? CUSTOM_MODEL_SENTINEL : config.model}
               models={liveModels.map((model) => ({ id: model, label: model }))}
               additionalOptions={[{ value: CUSTOM_MODEL_SENTINEL, label: t('Custom…') }]}
@@ -371,6 +380,7 @@ export function ByokProviderForm({
               spellCheck={false}
               value={config.model}
               onChange={(event) => patch({ model: event.target.value })}
+              {...agentHandleProps(agentHandle, { action: 'model', role: 'field', label: t('Model') })}
             />
           ) : null}
           {!showModelPicker && suggestions.length > 0 ? (
@@ -388,6 +398,7 @@ export function ByokProviderForm({
             className="jini-btn jini-byok-test-btn"
             disabled={connectionTest.status === 'testing' || missing.size > 0}
             onClick={onTestConnection}
+            {...agentHandleProps(agentHandle, { action: 'test-connection', role: 'button', label: t('Test connection') })}
           >
             {connectionTest.status === 'testing' ? t('Testing…') : t('Test connection')}
           </button>
