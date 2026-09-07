@@ -38,6 +38,7 @@ import {
   AttachmentRejectedError,
   createDiskAttachmentStore,
   detectAttachmentKind,
+  hasAvifSignature,
   hasGifSignature,
   hasJpegSignature,
   hasPngSignature,
@@ -187,6 +188,34 @@ async function upload(
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+/**
+ * The real leading `ftyp` box of a genuine AVIF file — the same bytes `@jini-ai/cms`'s
+ * `content-type-sniffer.test.ts` pins for its own "a real AVIF ftyp box is image/avif, NOT
+ * video/mp4" regression test, reused here rather than re-captured so both sniffers are proven
+ * against one identical real-world fixture.
+ */
+const AVIF_FTYP_BOX = new Uint8Array([
+  0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00,
+  0x6d, 0x69, 0x66, 0x31, 0x6d, 0x69, 0x61, 0x66, 0x00, 0x00, 0x01, 0x68, 0x6d, 0x65, 0x74, 0x61,
+]);
+
+/**
+ * Builds an ISO-BMFF `ftyp` box with a chosen major brand and compatible-brand list, mirroring
+ * `content-type-sniffer.test.ts`'s own `ftypBytes` helper byte-for-byte: a 4-byte big-endian box
+ * size, the literal `ftyp` tag, a 4-byte major brand, a 4-byte minor version, then one 4-byte entry
+ * per compatible brand. The declared size is computed from the actual content so the box is
+ * self-consistent — `hasAvifSignature` bounds its compatible-brand scan by that field.
+ */
+function ftypBytes(majorBrand: string, compatibleBrands: readonly string[]): Uint8Array {
+  const boxLength = 16 + compatibleBrands.length * 4;
+  const bytes = new Uint8Array(boxLength + 8); // + trailing non-ftyp payload, as a real file has
+  bytes.set([(boxLength >> 24) & 0xff, (boxLength >> 16) & 0xff, (boxLength >> 8) & 0xff, boxLength & 0xff], 0);
+  bytes.set(new TextEncoder().encode('ftyp'), 4);
+  bytes.set(new TextEncoder().encode(majorBrand), 8);
+  compatibleBrands.forEach((brand, index) => bytes.set(new TextEncoder().encode(brand), 16 + index * 4));
+  return bytes;
+}
+
 // ---------------------------------------------------------------------------
 // sanitizeAttachmentName
 // ---------------------------------------------------------------------------
@@ -213,11 +242,27 @@ describe('detectAttachmentKind', () => {
     expect(detectAttachmentKind(new TextEncoder().encode('GIF87a'))).toBe('image');
     expect(detectAttachmentKind(new TextEncoder().encode('GIF89a'))).toBe('image');
     expect(detectAttachmentKind(new TextEncoder().encode('RIFF0000WEBP'))).toBe('image');
+    expect(detectAttachmentKind(AVIF_FTYP_BOX)).toBe('image');
   });
 
   it('treats anything whose signature does not match as a plain file', () => {
     expect(detectAttachmentKind(new TextEncoder().encode('plain text'))).toBe('file');
     expect(detectAttachmentKind(new Uint8Array())).toBe('file');
+  });
+
+  /**
+   * Regression: a real `.avif` upload used to come back `kind: 'file'` because
+   * `detectAttachmentKind` only sniffed PNG/JPEG/GIF/WEBP — the exact defect Leona reported
+   * (`ai-caps.avif` fell back to the modal's "preview not available" view). Also proves the fix does
+   * NOT repeat the 2026-09-06 media-sniffer regression: a plain MP4, which shares AVIF's `ftyp` tag,
+   * must stay `'file'` rather than being misclassified as an image.
+   */
+  it('recognizes AVIF by its ISO-BMFF brand, without misclassifying a plain MP4 as an image', () => {
+    expect(detectAttachmentKind(AVIF_FTYP_BOX)).toBe('image');
+    expect(detectAttachmentKind(ftypBytes('mif1', ['mif1', 'avif']))).toBe('image');
+    expect(detectAttachmentKind(ftypBytes('avis', ['avis', 'avif']))).toBe('image');
+    expect(detectAttachmentKind(ftypBytes('isom', ['isom', 'mp41']))).toBe('file');
+    expect(detectAttachmentKind(ftypBytes('mp42', []))).toBe('file');
   });
 
   it('rejects a signature that matches an image prefix but then diverges', () => {
@@ -271,6 +316,42 @@ describe('hasWebpSignature', () => {
     expect(hasWebpSignature(new TextEncoder().encode('RIFF0000XXXX'))).toBe(false);
     expect(hasWebpSignature(new TextEncoder().encode('XXXX0000WEBP'))).toBe(false);
     expect(hasWebpSignature(new TextEncoder().encode('RIFF0000WEB'))).toBe(false); // too short
+  });
+});
+
+describe('hasAvifSignature', () => {
+  it('matches a real AVIF ftyp box', () => {
+    expect(hasAvifSignature(AVIF_FTYP_BOX)).toBe(true);
+  });
+
+  it('matches via the major brand directly', () => {
+    expect(hasAvifSignature(ftypBytes('avif', []))).toBe(true);
+  });
+
+  it('matches an AVIF whose major brand is the generic mif1, via its compatible brands', () => {
+    expect(hasAvifSignature(ftypBytes('mif1', ['mif1', 'avif']))).toBe(true);
+  });
+
+  it('matches an AVIF image sequence (avis brand)', () => {
+    expect(hasAvifSignature(ftypBytes('avis', ['avis', 'avif']))).toBe(true);
+  });
+
+  it('does not match a plain MP4 — same ftyp tag, no AVIF brand anywhere', () => {
+    expect(hasAvifSignature(ftypBytes('isom', ['isom', 'mp41']))).toBe(false);
+    expect(hasAvifSignature(ftypBytes('mp42', []))).toBe(false);
+  });
+
+  it('does not match HEIC, which is ISO-BMFF but declares no AVIF brand', () => {
+    expect(hasAvifSignature(ftypBytes('heic', ['mif1', 'heic']))).toBe(false);
+  });
+
+  it('does not match a non-ftyp file at all', () => {
+    expect(hasAvifSignature(new TextEncoder().encode('plain text'))).toBe(false);
+    expect(hasAvifSignature(new Uint8Array())).toBe(false);
+  });
+
+  it('never throws on an ftyp box truncated mid-brand', () => {
+    expect(hasAvifSignature(Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76]))).toBe(false);
   });
 });
 
@@ -508,20 +589,25 @@ describe('writeBoundedAttachmentBody', () => {
     expect((await stat(filePath)).mode & 0o777).toBe(0o600);
   });
 
-  it('stops collecting signature bytes once twelve are buffered', async () => {
+  it('stops collecting signature bytes once the cap is buffered', async () => {
+    // The cap (`SIGNATURE_BYTES` in attachments.ts) is 80 as of the AVIF fix — wide enough for
+    // `hasAvifSignature`'s full compatible-brand scan, up from the 12 bytes WEBP alone needed.
+    // Built rather than hardcoded so this test does not need updating again if that bound moves.
     const directory = await tempDirectory();
     const filePath = resolve(directory, 'long.bin');
+    const leading = 'RIFF0000WEBP'.repeat(7).slice(0, 80);
+    const trailing = 'trailing payload that must not be buffered';
     async function* body(): AsyncGenerator<unknown> {
-      // Deliberately more than twelve bytes across several chunks: the signature must be the first
-      // twelve and nothing more, however the stream happens to be framed.
-      yield Buffer.from('RIFF0000');
-      yield Buffer.from('WEBP');
-      yield Buffer.from('trailing payload that must not be buffered');
+      // Deliberately split across several chunks, and longer than the cap: the signature must be
+      // exactly the first `leading.length` bytes and nothing more, however the stream is framed.
+      yield Buffer.from(leading.slice(0, 8));
+      yield Buffer.from(leading.slice(8));
+      yield Buffer.from(trailing);
     }
 
     const result = await writeBoundedAttachmentBody({ request: body(), filePath, maxBytes: 1024 });
-    expect(Buffer.from(result.signature).toString()).toBe('RIFF0000WEBP');
-    expect(result.size).toBe(54);
+    expect(Buffer.from(result.signature).toString()).toBe(leading);
+    expect(result.size).toBe(leading.length + trailing.length);
   });
 
   it('removes the partial file when the byte cap trips mid-stream', async () => {

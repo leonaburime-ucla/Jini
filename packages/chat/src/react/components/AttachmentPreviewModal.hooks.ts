@@ -21,13 +21,20 @@
  * to the honest "unsupported" status rather than a broken image or an empty text pane.
  *
  * **Why image-ness is not decided by `attachment.kind` alone.** `@jini-ai/http-kit`'s
- * `detectAttachmentKind` sniffs PNG/JPEG/GIF/WEBP signatures only (`attachments.ts`); AVIF - the
- * format that motivated this task - is not among them, so an uploaded `.avif` attachment carries
- * `kind: 'file'` from the server today. Gating strictly on `kind` would make exactly the reported
- * attachment fall back to the unsupported view. Instead, `looksLikeImageAttachment` also recognizes
- * common image extensions, and the `<img>`'s own `onError` (wired by the component) is the real
- * arbiter: if the browser cannot actually decode what got attempted, `imageFailed` flips this back
- * to a text/unsupported status rather than showing a broken-image icon.
+ * `detectAttachmentKind` (`attachments.ts`) now sniffs PNG/JPEG/GIF/WEBP/AVIF signatures - AVIF was
+ * added specifically for the bug that motivated this task, brand-checked against the same ISO-BMFF
+ * `ftyp` box `@jini-ai/cms`'s media sniffer uses, so a real `.avif` upload now carries `kind:
+ * 'image'` from the server. This module's extension fallback stays anyway, for two reasons that are
+ * still true even with AVIF fixed: BMP/ICO/SVG are in `IMAGE_PREVIEW_EXTENSIONS` but are not sniffed
+ * server-side at all (no `hasBmpSignature`/etc. exists), so `kind` alone would still misclassify
+ * those as `'file'`; and gating on `kind` would make ANY future sniffer gap fail the same way this
+ * one did, whereas the extension guess plus the `<img>`'s own `onError` (wired by the component) is
+ * self-correcting - if the browser cannot actually decode what got attempted, `imageFailed` flips
+ * this back to a text/unsupported status rather than showing a broken-image icon or trusting a wrong
+ * guess. The two checks cannot disagree in a way that matters: `looksLikeImageAttachment` is an OR,
+ * so a server `kind: 'image'` is decisive on its own, and the extension guess is only ever a
+ * fallback that `onError` can retract - never a second, competing source of truth for a format the
+ * server already classified.
  */
 import { useEffect, useRef, useState, type MouseEvent, type RefObject, type SyntheticEvent } from 'react';
 import type { ChatAttachment } from '../../core/index.js';
