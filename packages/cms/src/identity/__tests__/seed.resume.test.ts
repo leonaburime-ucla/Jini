@@ -267,3 +267,32 @@ test("a resumed seed refuses to adopt a pre-existing NON-built-in role of the sa
   assert.equal(squatter?.id, "operator-made", "the operator's own role must be left exactly as it was");
   assert.equal(squatter?.isBuiltin, false, "and must not have been flipped to built-in");
 });
+
+test("a resumed seed refuses to adopt a pre-existing NON-built-in policy of the same name", async () => {
+  // The policy-side twin of the guard above. Reachable the same way: nothing stops an operator
+  // naming a policy of their own 'editor-builtin-policy', and adopting it would bind the built-in
+  // editor role to a permission set nobody vetted.
+  const repos = buildRepos({ enforceUniqueNames: true });
+  await repos.policies.save({
+    id: "operator-made-policy",
+    workspaceId: WORKSPACE,
+    name: "editor-builtin-policy",
+    isBuiltin: false,
+    isFrozen: false,
+  });
+
+  await assert.rejects(
+    seedIdentity({ deps: depsOver(repos, "fresh"), input: seedInput }),
+    /seedIdentity: a non-built-in policy named 'editor-builtin-policy' already exists/,
+    "seeding must fail loudly on a non-built-in policy squatting a built-in policy name"
+  );
+
+  const squatter = await repos.policies.findByName({ workspaceId: WORKSPACE, name: "editor-builtin-policy" });
+  assert.equal(squatter?.id, "operator-made-policy", "the operator's own policy must be untouched");
+  assert.equal(squatter?.isBuiltin, false, "and must not have been flipped to built-in");
+  assert.deepEqual(
+    await repos.policyPermissions.listByPolicyId({ workspaceId: WORKSPACE, policyId: "operator-made-policy" }),
+    [],
+    "and must not have been granted the built-in editor permission set"
+  );
+});
