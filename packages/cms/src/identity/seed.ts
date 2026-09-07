@@ -174,30 +174,97 @@ export interface SeedIdentityResult {
   systemPrincipalId: UUID;
 }
 
-/** Builds one built-in role + its 1:1 policy + policy_permissions rows, and saves all three. */
-async function seedBuiltinRoleWithPolicy(required: {
+/**
+ * Why every step below is "find, then save only what is missing" rather than a straight insert.
+ *
+ * This function's writes are NOT transactional and its caller is not awaited by its hosts (Tovu
+ * hands `seedIdentity`'s promise back as `RouteDeps.identityReady` and returns synchronously), so
+ * a process that exits before the seed finishes — a fast-failing CLI command, a Ctrl-C, a crash —
+ * leaves the workspace half-seeded. `seedIdentity`'s own early-return guard keys on the OWNER USER,
+ * which is written last, so the next boot correctly decides the seed is unfinished and replays it.
+ * A replay that blindly re-inserted would hit `UNIQUE(workspace_id, name)` on `roles`/`policies`
+ * (crashing every subsequent boot, permanently), and would silently duplicate `role_policies` /
+ * `policy_permissions` rows, which carry no unique index at all. So the replay must converge onto
+ * the rows already there instead of re-creating them.
+ *
+ * What this deliberately does NOT do: adopt a role or policy an operator created themselves. A
+ * same-named non-built-in row is a genuine conflict, not a partial seed, and silently promoting it
+ * would hand its holders the built-in policy's permissions. Those cases throw.
+ */
+
+/** The built-in role for `name`, reusing a prior (possibly interrupted) seed's row if present. */
+async function ensureBuiltinRole(required: {
   deps: SeedIdentityDeps;
   workspaceId: UUID;
   name: string;
-  permissions: readonly string[];
-  nowIso: string;
-}): Promise<{ roleId: UUID; policyId: UUID }> {
-  const { deps, workspaceId, name, permissions, nowIso } = required;
-  const roleId = deps.idGen.newId();
-  const policyId = deps.idGen.newId();
+}): Promise<UUID> {
+  const { deps, workspaceId, name } = required;
+  const existing = await deps.repos.roles.findByName({ workspaceId, name });
+  if (!existing) {
+    const roleId = deps.idGen.newId();
+    await deps.repos.roles.save({ id: roleId, workspaceId, name, isBuiltin: true });
+    return roleId;
+  }
+  if (!existing.isBuiltin) {
+    throw new Error(
+      `seedIdentity: a non-built-in role named '${name}' already exists in workspace ${workspaceId}. ` +
+        `Refusing to adopt it as the built-in '${name}' role — rename or remove it first.`
+    );
+  }
+  return existing.id;
+}
 
-  await deps.repos.roles.save({ id: roleId, workspaceId, name, isBuiltin: true });
-  await deps.repos.policies.save({
-    id: policyId,
-    workspaceId,
-    name: `${name}-builtin-policy`,
-    description: `Built-in policy for the seeded '${name}' role.`,
-    isBuiltin: true,
-    isFrozen: false,
-  });
-  await deps.repos.rolePolicies.save({ id: deps.idGen.newId(), workspaceId, roleId, policyId });
+/** The built-in policy for `name`, reusing a prior (possibly interrupted) seed's row if present. */
+async function ensureBuiltinPolicy(required: {
+  deps: SeedIdentityDeps;
+  workspaceId: UUID;
+  name: string;
+}): Promise<UUID> {
+  const { deps, workspaceId, name } = required;
+  const policyName = `${name}-builtin-policy`;
+  const existing = await deps.repos.policies.findByName({ workspaceId, name: policyName });
+  if (!existing) {
+    const policyId = deps.idGen.newId();
+    await deps.repos.policies.save({
+      id: policyId,
+      workspaceId,
+      name: policyName,
+      description: `Built-in policy for the seeded '${name}' role.`,
+      isBuiltin: true,
+      isFrozen: false,
+    });
+    return policyId;
+  }
+  if (!existing.isBuiltin) {
+    throw new Error(
+      `seedIdentity: a non-built-in policy named '${policyName}' already exists in workspace ${workspaceId}. ` +
+        `Refusing to adopt it as the built-in '${name}' policy — rename or remove it first.`
+    );
+  }
+  return existing.id;
+}
+
+/**
+ * Grant `permissions` to `policyId`, skipping any the policy already holds.
+ *
+ * Additive by design, and the reason a resumed seed still CONVERGES rather than merely staying
+ * quiet: a built-in policy whose permission rows never landed (the interrupt fell between the
+ * policy insert and this loop) gains them on the next boot. Compares only unscoped rows because
+ * that is the only shape this seed writes — a `resourceType`-scoped row of the same name is a
+ * different grant and must not satisfy an unscoped one.
+ */
+async function ensurePolicyPermissions(required: {
+  deps: SeedIdentityDeps;
+  workspaceId: UUID;
+  policyId: UUID;
+  permissions: readonly string[];
+}): Promise<void> {
+  const { deps, workspaceId, policyId, permissions } = required;
+  const existing = await deps.repos.policyPermissions.listByPolicyId({ workspaceId, policyId });
+  const held = new Set(existing.filter((row) => row.resourceType === null).map((row) => row.permission));
 
   for (const permission of permissions) {
+    if (held.has(permission)) continue;
     await deps.repos.policyPermissions.save({
       id: deps.idGen.newId(),
       workspaceId,
@@ -207,14 +274,44 @@ async function seedBuiltinRoleWithPolicy(required: {
       constraintJson: null,
     });
   }
+}
+
+/** Builds one built-in role + its 1:1 policy + policy_permissions rows, converging on what exists. */
+async function seedBuiltinRoleWithPolicy(required: {
+  deps: SeedIdentityDeps;
+  workspaceId: UUID;
+  name: string;
+  permissions: readonly string[];
+  nowIso: string;
+}): Promise<{ roleId: UUID; policyId: UUID }> {
+  const { deps, workspaceId, name, permissions, nowIso } = required;
+
+  const roleId = await ensureBuiltinRole({ deps, workspaceId, name });
+  const policyId = await ensureBuiltinPolicy({ deps, workspaceId, name });
+
+  // `role_policies` has no unique index, so a replay would otherwise stack a second identical link.
+  const links = await deps.repos.rolePolicies.listByRoleId({ workspaceId, roleId });
+  if (!links.some((link) => link.policyId === policyId)) {
+    await deps.repos.rolePolicies.save({ id: deps.idGen.newId(), workspaceId, roleId, policyId });
+  }
+
+  await ensurePolicyPermissions({ deps, workspaceId, policyId, permissions });
 
   void nowIso; // reserved for a future createdAt column on roles/policies
   return { roleId, policyId };
 }
 
 /**
- * Seed first-boot identity data (idempotent — a no-op if the owner username
- * already exists in the workspace).
+ * Seed first-boot identity data.
+ *
+ * Idempotent in two distinct senses, and both are load-bearing:
+ * - A seed that RAN TO COMPLETION is a no-op — the owner-username lookup below early-returns
+ *   before any write. (This path does not reconcile a built-in policy whose permission list has
+ *   since grown; that is the host's job — see Tovu's `applyBuiltinRoleGrants` /
+ *   `migrateDeprecatedPermissionGrants`, chained onto `identityReady`.)
+ * - A seed that was INTERRUPTED is resumed, not replayed: every step converges onto the rows a
+ *   previous attempt already wrote and fills in only what is missing. See the block comment above
+ *   `ensureBuiltinRole` for why this function must survive being killed halfway.
  *
  * @complexity O(1) — fixed small number of inserts (4 roles/policies, ~2
  * dozen policy_permissions, 3 principals, 1 user, 1 role assignment).
@@ -244,15 +341,23 @@ export async function seedIdentity(required: {
     };
   }
 
-  const systemPrincipalId = deps.idGen.newId();
-  await deps.repos.principals.save({
-    id: systemPrincipalId,
-    workspaceId,
-    kind: "system",
-    displayName: "System",
-    status: "active",
-    createdAt: nowIso,
-  });
+  // Reuse the system principal a prior interrupted seed may already have written: `principals` has
+  // no unique index on kind, so a blind re-insert would leave TWO non-legacy system principals and
+  // the early-return branch above picking between them by list order.
+  const existingSystem = (await deps.repos.principals.list({ workspaceId })).find(
+    (row) => row.kind === "system" && row.id !== LEGACY_USER_LOCAL_PRINCIPAL_ID
+  );
+  const systemPrincipalId = existingSystem?.id ?? deps.idGen.newId();
+  if (!existingSystem) {
+    await deps.repos.principals.save({
+      id: systemPrincipalId,
+      workspaceId,
+      kind: "system",
+      displayName: "System",
+      status: "active",
+      createdAt: nowIso,
+    });
+  }
 
   // REQ-09/EC-09: disabled legacy actor so historical `actorId='user-local'`
   // change-sets resolve without rewriting history.
@@ -266,26 +371,14 @@ export async function seedIdentity(required: {
     createdAt: nowIso,
   });
 
+  // REQ-04/REQ-09: the owner policy holds the wildcard `*`, not an enumerated
+  // list, so it automatically covers permissions features register later.
   const { roleId: ownerRoleId } = await seedBuiltinRoleWithPolicy({
     deps,
     workspaceId,
     name: "owner",
-    permissions: [],
+    permissions: ["*"],
     nowIso,
-  });
-  // REQ-04/REQ-09: the owner policy holds the wildcard `*`, not an enumerated
-  // list, so it automatically covers permissions features register later.
-  const ownerPolicy = (await deps.repos.policies.list({ workspaceId })).find(
-    (row) => row.name === "owner-builtin-policy"
-  );
-  if (!ownerPolicy) throw new Error("seedIdentity: owner policy was not created");
-  await deps.repos.policyPermissions.save({
-    id: deps.idGen.newId(),
-    workspaceId,
-    policyId: ownerPolicy.id,
-    permission: "*",
-    resourceType: null,
-    constraintJson: null,
   });
 
   await seedBuiltinRoleWithPolicy({
@@ -310,6 +403,13 @@ export async function seedIdentity(required: {
     nowIso,
   });
 
+  // Hashed BEFORE the owner principal row is written, not inline in the `users.save` below.
+  // argon2id is deliberately slow, which made it by far the widest window in this un-awaited,
+  // non-transactional sequence for a process to exit between the principal insert and the user
+  // insert that gives it meaning — leaving an orphan `kind: "user"` principal behind on every
+  // interrupted boot. Hashing first shrinks that window to a single adjacent await.
+  const ownerPasswordHash = await deps.hasher.hash(ownerPassword);
+
   const ownerPrincipalId = deps.idGen.newId();
   await deps.repos.principals.save({
     id: ownerPrincipalId,
@@ -324,14 +424,22 @@ export async function seedIdentity(required: {
     workspaceId,
     username: ownerUsername,
     email: input.ownerEmail,
-    passwordHash: await deps.hasher.hash(ownerPassword),
+    passwordHash: ownerPasswordHash,
   });
-  await deps.repos.principalRoles.save({
-    id: deps.idGen.newId(),
+  // `principal_roles` carries no unique index either — same converge-don't-duplicate rule as the
+  // `role_policies` link in `seedBuiltinRoleWithPolicy`.
+  const ownerRoleLinks = await deps.repos.principalRoles.listByPrincipalId({
     workspaceId,
     principalId: ownerPrincipalId,
-    roleId: ownerRoleId,
   });
+  if (!ownerRoleLinks.some((link) => link.roleId === ownerRoleId)) {
+    await deps.repos.principalRoles.save({
+      id: deps.idGen.newId(),
+      workspaceId,
+      principalId: ownerPrincipalId,
+      roleId: ownerRoleId,
+    });
+  }
 
   return { ownerPrincipalId, systemPrincipalId };
 }
