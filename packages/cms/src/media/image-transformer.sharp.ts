@@ -30,6 +30,7 @@
 import { createRequire } from "node:module";
 
 import type { ImageTransformerPort, TransformImageInput, TransformImageOutput } from "./image-transformer.js";
+import type { TransformFormat } from "./transform-types.js";
 import { mimeForTransformFormat } from "./transform-types.js";
 
 const require = createRequire(import.meta.url);
@@ -63,7 +64,15 @@ interface SharpInstance {
   toFormat(format: string): SharpInstance;
   toBuffer(): Promise<Buffer>;
 }
-type SharpFactory = (input: Buffer) => SharpInstance;
+type SharpFactory = (input: Buffer, options?: { animated?: boolean }) => SharpInstance;
+
+/**
+ * {@link TransformFormat} values that can actually carry multiple frames on output. GIF and WebP
+ * both support animated re-encoding; JPEG and PNG do not (this build's plain libvips PNG writer
+ * does not emit APNG). Gates the `{ animated: true }` load option below — see that call site's
+ * comment for why loading animated but encoding to a non-animated format must NOT happen.
+ */
+const ANIMATION_CAPABLE_FORMATS: ReadonlySet<TransformFormat> = new Set(["webp", "gif"]);
 
 /**
  * Lazily resolves the `sharp` module. See file header for why this is a
@@ -93,8 +102,42 @@ function loadSharpFactory(): SharpFactory {
  * `params.format` (via `sharp().toFormat(...)`, always — re-encode is
  * unconditional).
  *
+ * Animated sources (multi-frame GIF/WebP/APNG): loaded with `{ animated: true }` whenever the
+ * target format can carry animation (`ANIMATION_CAPABLE_FORMATS`), so `.resize()` and `.toFormat()`
+ * operate on every frame instead of silently decoding only frame 0. This is safe to request
+ * unconditionally for a genuinely single-frame source too — verified empirically against this
+ * package's pinned `sharp@0.35.3`: a static image loaded with `{ animated: true }` produces
+ * byte-identical dimensions/output to loading it without the option (sharp resolves `nPages` to 1
+ * from the format's own page count, there is no multi-page metadata to read all of).
+ *
+ * When the target format CANNOT carry animation (jpeg/png), `{ animated: true }` is deliberately
+ * NOT passed — verified empirically that doing so anyway is worse than a plain flatten: sharp
+ * writes the whole multi-frame "toilet roll" (all frames stacked vertically) out as one tall,
+ * visibly-corrupted static image rather than either a clean single frame or a real animated
+ * output. Loading without the option keeps sharp's default single-page decode, which already
+ * yields a normal frame-0 still — a deliberate, now-documented flatten instead of an accident.
+ *
+ * Multi-frame resize correctness: `sharp`'s native pipeline is already page-height-aware — the
+ * `width`/`height` passed to `.resize()` are resolved against the PER-FRAME `pageHeight`, not the
+ * full multi-frame canvas, and the crop/scale math is applied identically per frame (verified with
+ * a 4-frame fixture and an aggressive mismatched-aspect crop — each frame's content stayed inside
+ * its own frame boundary). No special-cased width-only or manual `pageHeight` recomputation is
+ * needed here; adding one would be redundant with (and could conflict with) sharp's own handling.
+ *
+ * Resource bounds: sharp's default `limitInputPixels` (~268M px, unconditional, not raised by
+ * `{ animated: true }`) is checked against the FULL decoded canvas — for a multi-page load that
+ * means `width * (pageHeight * pages)`, i.e. total pixels across all frames combined, not per
+ * frame. Turning on `{ animated: true }` therefore does not remove or widen that ceiling. It does
+ * mean legitimate large animated files now do proportionally more decode/re-encode work than the
+ * previous (buggy) frame-0-only path — expected, since fully processing an animated file is the
+ * point of this fix — bounded on the input side by `DEFAULT_MAX_UPLOAD_BYTES` (10 MiB compressed)
+ * before any of these bytes ever reach this transformer.
+ *
  * @complexity O(pixels) — dominated by `sharp`'s native resize/encode work,
- * outside this function's control. Runs IN-PROCESS in this build (the
+ * outside this function's control. For an animated source this now scales with total pixels across
+ * ALL frames combined (previously just frame 0) — see "Resource bounds" above for why this widened
+ * cost is bounded by the same pre-existing `limitInputPixels`/upload-size caps rather than being an
+ * unbounded new surface. Runs IN-PROCESS in this build (the
  * out-of-process worker the original design calls for to protect the host from
  * `sharp` OOMing is explicitly out of scope for this task — see
  * `rendition-service.ts`'s file header).
@@ -108,6 +151,7 @@ function loadSharpFactory(): SharpFactory {
 export class SharpImageTransformer implements ImageTransformerPort {
   async transform(input: TransformImageInput): Promise<TransformImageOutput> {
     const sharpFactory = loadSharpFactory();
+    const preserveAnimation = ANIMATION_CAPABLE_FORMATS.has(input.params.format);
 
     // Pipeline construction through `toBuffer()` all live in one try/catch: any of these steps can
     // reject on bad SOURCE bytes (`sharp`'s decode is lazy — a malformed file often only surfaces
@@ -116,7 +160,10 @@ export class SharpImageTransformer implements ImageTransformerPort {
     // call in the chain actually threw. See {@link ImageSourceCorruptError}'s own doc for why this is
     // named/rethrown rather than left as an undifferentiated `sharp` error.
     try {
-      let pipeline = sharpFactory(Buffer.from(input.bytes));
+      let pipeline = sharpFactory(
+        Buffer.from(input.bytes),
+        preserveAnimation ? { animated: true } : undefined
+      );
 
       if (input.params.width !== undefined || input.params.height !== undefined) {
         pipeline = pipeline.resize(input.params.width, input.params.height, {
