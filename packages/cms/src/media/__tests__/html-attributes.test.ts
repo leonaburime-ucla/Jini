@@ -163,3 +163,27 @@ test("describeMediaHtmlAttributeError: names the rejected attribute in the disal
 test("describeMediaHtmlAttributeError: names the unparsable fragment in the malformed message", () => {
   assert.match(describeMediaHtmlAttributeError({ reason: "malformed", attribute: "stray-quote" }), /stray-quote/);
 });
+
+// ---------------------------------------------------------------------------
+// Attribute-NAME shape (2026-09-07 stored-XSS fix). The `data-`/`aria-` prefix families accepted
+// ANY suffix, and the tokenizer's name class excludes only whitespace/`=`/quotes — so `<`, `>` and
+// `/` were legal in a name a renderer then interpolates RAW into ` name="value"`.
+// ---------------------------------------------------------------------------
+
+test("isAllowedMediaHtmlAttributeName: rejects a data-/aria- name carrying tag-breaking characters", () => {
+  for (const name of ["data-x><svg/onload", "data-a/onerror", "aria-x<img", "data-x`y", "data-x>", "aria-]"]) {
+    assert.equal(isAllowedMediaHtmlAttributeName(name), false, `${name} must not be allowed`);
+  }
+});
+
+test("isAllowedMediaHtmlAttributeName: still accepts every well-formed name the field exists for", () => {
+  for (const name of ["data-motion", "aria-label", "DATA-FOO", "loading", "decoding", "poster", "data-x-1"]) {
+    assert.equal(isAllowedMediaHtmlAttributeName(name), true, `${name} must stay allowed`);
+  }
+});
+
+test("parseMediaHtmlAttributes: an attribute name that would close the tag is rejected, not parsed into the map", () => {
+  const result = parseMediaHtmlAttributes("data-x><svg/onload=alert(1)");
+  assert.deepEqual(result.attributes, {});
+  assert.deepEqual(result.error, { reason: "disallowed-name", attribute: "data-x><svg/onload" });
+});
