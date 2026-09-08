@@ -729,3 +729,47 @@ test("uploadMedia still rejects types outside the allowlist, with the exact oper
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Slug/id collision (2026-09-07). A lowercase UUID matches the slug format pattern character for
+// character, and this resolver used to try the slug FIRST — so one asset's slug could take over
+// another asset's id and every `/m/{id}/…` URL already authored against it.
+// ---------------------------------------------------------------------------
+
+const UUID_SHAPED = "550e8400-e29b-41d4-a716-446655440000";
+
+test("updateMediaMetadata rejects a UUID-shaped slug — it can only ever shadow an id", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "clip.mp4");
+
+  await assert.rejects(
+    () => updateMediaMetadata({ deps, input: { workspaceId: WORKSPACE_ID, id: media.id, slug: UUID_SHAPED } }),
+    MediaValidationError
+  );
+});
+
+test("updateMediaMetadata still accepts ordinary hex-and-dash slugs — only the exact UUID grouping is refused", async () => {
+  const { deps } = makeDeps();
+  const { media } = await uploadWithTitle(deps, "clip.mp4");
+
+  for (const slug of ["abc-123-def", "2026-09-07-launch-clip", "deadbeef", "550e8400-e29b-41d4-a716-44665544000"]) {
+    const { media: updated } = await updateMediaMetadata({
+      deps,
+      input: { workspaceId: WORKSPACE_ID, id: media.id, slug },
+    });
+    assert.equal(updated.slug, slug);
+  }
+});
+
+test("findMediaByIdOrSlug resolves the ID first — a row claiming another asset's id as its slug cannot hijack it", async () => {
+  const { deps } = makeDeps();
+  const { media: victim } = await uploadWithTitle(deps, "victim.png");
+  const { media: attacker } = await uploadWithTitle(deps, "attacker.png");
+
+  // Written straight through the repo, bypassing the write-path rule above: this is the row an
+  // older code path or a direct DB edit could already have left behind.
+  await deps.mediaRepo.save({ ...attacker, slug: victim.id, version: attacker.version + 1 });
+
+  const resolved = await findMediaByIdOrSlug({ deps, input: { workspaceId: WORKSPACE_ID, idOrSlug: victim.id } });
+  assert.equal(resolved?.id, victim.id, "an id must always resolve to the asset that owns it");
+});

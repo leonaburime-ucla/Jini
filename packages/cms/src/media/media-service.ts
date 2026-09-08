@@ -153,6 +153,24 @@ function deriveTitleFromFilename(filename: string): string {
  *  on; a media slug is only ever a lookup key, never a route itself, so that hazard doesn't apply). */
 const MEDIA_SLUG_FORMAT_PATTERN = /^[a-z0-9-]+$/;
 
+/**
+ * Slugs that spell a UUID are refused outright (2026-09-07 fix).
+ *
+ * A lowercase UUID is `[a-z0-9-]+` character for character, so {@link MEDIA_SLUG_FORMAT_PATTERN}
+ * happily accepted one — and {@link findMediaByIdOrSlug} used to resolve SLUG FIRST, so pointing one
+ * asset's slug at another asset's `id` silently took over every reference already authored against
+ * that id (every `/m/{id}/…` URL a host's renderer has ever emitted for the victim). That resolution
+ * order is now id-first, which closes the hijack for rows that already carry such a slug; this rule
+ * is the write-path half — a slug that can only ever shadow an id is not a slug anyone wants, so it
+ * is refused where a human can still see why rather than silently shadowed at read time.
+ *
+ * Shape-based, not a lookup: it rejects EVERY UUID-shaped value, not only ones that currently
+ * collide, so a slug cannot become a hijack later when some future upload happens to mint that id.
+ * Ordinary hex-and-dash slugs (`abc-123-def`, `2026-09-07-launch-clip`) are unaffected — nothing but
+ * the exact 8-4-4-4-12 hex grouping matches.
+ */
+const MEDIA_SLUG_UUID_SHAPE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** Shared slug max-length rule (2026-09-07) — same bound as `post.ts`'s `MAX_SLUG_LENGTH`, reused
  *  rather than inventing a second number. `post.ts` only enforces this on its EXPLICIT/caller-
  *  supplied slug path (`resolveExplicitSlug`, reject-with-error); its own title-derived path is
@@ -165,7 +183,7 @@ const MEDIA_SLUG_FORMAT_PATTERN = /^[a-z0-9-]+$/;
 const MEDIA_MAX_SLUG_LENGTH = 120;
 
 function isValidMediaSlugFormat(slug: string): boolean {
-  return MEDIA_SLUG_FORMAT_PATTERN.test(slug);
+  return MEDIA_SLUG_FORMAT_PATTERN.test(slug) && !MEDIA_SLUG_UUID_SHAPE_PATTERN.test(slug);
 }
 
 /** Truncates a slug candidate to `maxLength`, stripping a trailing dash the cut can introduce (so a
@@ -434,15 +452,20 @@ export interface FindMediaByIdOrSlugRequired {
 }
 
 /**
- * Resolves a media asset by either its slug or its id — slug first, id second, the identical
- * ordering `post.ts`'s `getAdminPostByIdOrSlug` already establishes in this codebase for the same
- * id-vs-slug duality (see that function's own doc for the full rationale: the slug is the handle a
- * human typed into an embed marker or a hand-authored `<img>`/`<video>` tag, the id is the opaque
- * UUID every existing reference already uses, and trying slug first is what lets a fresh human-typed
- * reference resolve without weakening the existing id path — an id never collides with a slug in
- * practice since slugs pass through {@link isValidMediaSlugFormat} and ids are `idGen.newId()`
- * UUIDs, but slug-first costs nothing on the id path either since a real id will simply miss the
- * slug lookup and fall through).
+ * Resolves a media asset by either its id or its slug — ID FIRST, slug second. The slug is the
+ * handle a human typed into an embed marker or a hand-authored `<img>`/`<video>` tag; the id is the
+ * opaque UUID every existing reference already uses, and every URL a host's renderer emits.
+ *
+ * THE ORDER IS A SECURITY PROPERTY, not a preference (2026-09-07). This resolved slug-first, on the
+ * documented assumption that "an id never collides with a slug in practice since slugs pass through
+ * {@link isValidMediaSlugFormat}". That assumption was false: a lowercase UUID matched the old slug
+ * pattern `[a-z0-9-]+` exactly, so setting asset B's slug to asset A's id made every `/m/{A.id}/…`
+ * URL — the ones a renderer emitted for A, already live in published pages — resolve to B instead.
+ * An id is minted by the system and is never a value a human chooses, so it must always win; the
+ * write path additionally refuses UUID-shaped slugs now (see
+ * {@link MEDIA_SLUG_UUID_SHAPE_PATTERN}), but ordering is what protects rows written before that
+ * rule existed. Id-first costs nothing on the slug path: a real slug simply misses the id lookup and
+ * falls through.
  *
  * Never throws (unlike {@link getMediaById}): every call site that needs this (an embed resolver, a
  * public rendition route) already has its own REQ-27-style non-throwing-miss contract, so this
@@ -456,9 +479,9 @@ export async function findMediaByIdOrSlug(
   _optional: Record<string, never> = {}
 ): Promise<MediaRecord | null> {
   const { deps, input } = required;
-  const bySlug = await deps.mediaRepo.findBySlug({ workspaceId: input.workspaceId, slug: input.idOrSlug });
-  if (bySlug) return bySlug;
-  return deps.mediaRepo.findById({ workspaceId: input.workspaceId, id: input.idOrSlug });
+  const byId = await deps.mediaRepo.findById({ workspaceId: input.workspaceId, id: input.idOrSlug });
+  if (byId) return byId;
+  return deps.mediaRepo.findBySlug({ workspaceId: input.workspaceId, slug: input.idOrSlug });
 }
 
 // ---------------------------------------------------------------------------
@@ -549,7 +572,9 @@ function assertPositiveIntegerOrThrow(value: number, field: "width" | "height"):
 async function resolveSlugForUpdate(mediaRepo: MediaRepoPort, workspaceId: UUID, id: UUID, rawSlug: string): Promise<string> {
   const slug = rawSlug.trim().toLowerCase();
   if (!slug || !isValidMediaSlugFormat(slug)) {
-    throw new MediaValidationError("slug must use lowercase letters, numbers, and dashes");
+    throw new MediaValidationError(
+      "slug must use lowercase letters, numbers, and dashes, and must not be shaped like a UUID"
+    );
   }
   // Same bound and rejection style as `post.ts`'s `resolveExplicitSlug` — a human typed this value,
   // so it is refused with a clear reason rather than silently truncated (unlike the derived-on-
