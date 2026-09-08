@@ -220,6 +220,43 @@ describe('claudeAgentDef.buildArgs', () => {
     const args = claudeAgentDef.buildArgs('hi', [], [], {}, { mcpJsonPath: '' });
     expect(args).not.toContain('--mcp-config');
   });
+
+  // Finding 2 (SEC-assistant-env-isolation-2026-09-07): `--allowedTools`/`--disallowedTools` were
+  // never wired, which is why `BASH_PROHIBITION_BLOCK` was prompt-only. Verified against installed
+  // Claude Code 2.1.263's own `-p --help`: `--disallowedTools, --disallowed-tools <tools...>` /
+  // `--allowedTools, --allowed-tools <tools...>`, both "Comma or space-separated list of tool
+  // names" — and confirmed live that `--disallowedTools Bash` actually refuses a Bash tool call
+  // even under `--permission-mode bypassPermissions` (a prompt-only prohibition would not).
+  it('omits --disallowedTools/--allowedTools entirely when neither option is set (default, unchanged behavior)', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], {});
+    expect(args).not.toContain('--disallowedTools');
+    expect(args).not.toContain('--allowedTools');
+  });
+
+  it('emits --disallowedTools with every name when RuntimeBuildOptions.disallowedTools is a non-empty list', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], { disallowedTools: ['Bash', 'Edit', 'Write'] });
+    const idx = args.indexOf('--disallowedTools');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args.slice(idx + 1, idx + 4)).toEqual(['Bash', 'Edit', 'Write']);
+  });
+
+  it('emits --allowedTools with every name when RuntimeBuildOptions.allowedTools is a non-empty list', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], { allowedTools: ['Read', 'ToolSearch'] });
+    const idx = args.indexOf('--allowedTools');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args.slice(idx + 1, idx + 3)).toEqual(['Read', 'ToolSearch']);
+  });
+
+  it('omits --disallowedTools for an empty array (explicit no-op, not an accidental deny-everything)', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], { disallowedTools: [] });
+    expect(args).not.toContain('--disallowedTools');
+  });
+
+  it('can emit both --disallowedTools and --allowedTools in the same call', () => {
+    const args = claudeAgentDef.buildArgs('hi', [], [], { disallowedTools: ['Bash'], allowedTools: ['Read'] });
+    expect(args).toContain('--disallowedTools');
+    expect(args).toContain('--allowedTools');
+  });
 });
 
 describe('claudeAgentDef.fetchModels', () => {

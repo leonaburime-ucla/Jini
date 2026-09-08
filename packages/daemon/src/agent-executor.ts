@@ -620,6 +620,15 @@ export interface AgentExecutorRunInput {
    * CLI session. Ignored by defs that don't declare `resumesSessionViaCli`.
    */
   readonly newSessionId?: string;
+  /**
+   * Forwarded verbatim to `RuntimeBuildOptions.disallowedTools` (see `@jini-ai/agent-runtime`'s
+   * `types.ts`) — Finding 2 of SEC-assistant-env-isolation-2026-09-07. A mechanism only: this
+   * package bakes in no opinion about which tools to name; the host decides. `undefined`/empty
+   * means no restriction, byte-identical to today's behavior.
+   */
+  readonly disallowedTools?: readonly string[];
+  /** Same mechanism as {@link disallowedTools}, forwarded to `RuntimeBuildOptions.allowedTools`. */
+  readonly allowedTools?: readonly string[];
 }
 
 export interface AgentExecutor {
@@ -1692,6 +1701,166 @@ async function prepareCodexHomeForRun(
 }
 
 /**
+ * Finding 1 of SEC-assistant-env-isolation-2026-09-07 — a staged, run-scoped `claude` CLI config
+ * directory, the `CLAUDE_CONFIG_DIR`-isolation analogue of {@link PreparedCodexHome} above.
+ *
+ * **The bug this closes:** `BASELINE_AGENT_ENV_KEYS` forwards `HOME` verbatim and neither this
+ * package nor `@jini-ai/agent-runtime` ever set `CLAUDE_CONFIG_DIR`, so a spawned `claude` child
+ * resolved its config (skills, plugins, agents, memory-path index, settings) from the OPERATOR's
+ * own real `$HOME/.claude` — a personal grant (including `Task`/`Edit`/`Write`/`Cron*`/worktree
+ * tools on this host) the host process never intended to hand the model.
+ */
+export type PreparedClaudeConfigDir = {
+  /** Absolute path to hand to the spawned child as its `CLAUDE_CONFIG_DIR` env var. */
+  readonly path: string;
+  /** Recursively removes the staged directory — it may hold a copied login credential (see {@link prepareClaudeConfigDirForRun}'s doc), the same confidentiality-cleanup duty as {@link PreparedCodexHome.cleanup}. Safe to call more than once. */
+  readonly cleanup: () => Promise<void>;
+};
+
+function defaultMkdtempClaudeConfigDir(prefix: string): Promise<string> {
+  return fsPromises.mkdtemp(join(tmpdir(), prefix));
+}
+
+function defaultRemoveClaudeConfigDir(path: string): Promise<void> {
+  return fsPromises.rm(path, { recursive: true, force: true });
+}
+
+/** The Claude-config-dir mechanism's injectable filesystem seams, real by default — the directory-staging analogue of {@link CodexHomeSeams}, kept as its own small options bag (see {@link CreateAgentExecutorOptions.claudeConfigDirIsolation}) rather than folded into {@link McpJsonInjectionOptions}: isolating the operator's personal config is an env-hygiene concern independent of whether this host configured MCP federation at all, and must not be gated on that unrelated flag. */
+export interface ClaudeConfigDirSeams {
+  readonly mkdtemp: (prefix: string) => Promise<string>;
+  readonly readFile: (path: string) => Promise<string>;
+  readonly writeFile: (path: string, content: string) => Promise<void>;
+  readonly removeDir: (path: string) => Promise<void>;
+}
+
+/**
+ * `CreateAgentExecutorOptions.claudeConfigDirIsolation` — every field optional and real-filesystem
+ * by default, matching this file's standing "no real disk I/O by default in tests" convention (see
+ * `preparePromptFileForAgent`/`prepareAgentLogFile`'s identical shape). Unlike
+ * {@link McpJsonInjectionOptions}, this bag is never itself a gate: {@link
+ * prepareClaudeConfigDirIfNeeded} stages a scratch directory for every `claude`-def run regardless
+ * of whether a host supplies overrides here — this options bag only lets a test observe/replace the
+ * filesystem calls, the same way `preparePromptFileForAgent`'s own default does.
+ */
+export interface ClaudeConfigDirIsolationOptions {
+  /** @default the real `fs.promises.mkdtemp(path.join(os.tmpdir(), prefix))` */
+  readonly mkdtemp?: (prefix: string) => Promise<string>;
+  /** Reads the operator's real `.credentials.json`, if any — see {@link prepareClaudeConfigDirForRun}'s own doc. @default the real `fs.promises.readFile` (utf8) */
+  readonly readFile?: (path: string) => Promise<string>;
+  /** Writes the copied `.credentials.json` into the scratch directory. @default the real `fs.promises.writeFile` (utf8) */
+  readonly writeFile?: (path: string, content: string) => Promise<void>;
+  /** @default `fs.promises.rm(path, { recursive: true, force: true })` — already-gone is success, not an error. */
+  readonly removeDir?: (path: string) => Promise<void>;
+}
+
+function resolveClaudeConfigDirSeams(options: ClaudeConfigDirIsolationOptions | undefined): ClaudeConfigDirSeams {
+  return {
+    mkdtemp: options?.mkdtemp ?? defaultMkdtempClaudeConfigDir,
+    readFile: options?.readFile ?? defaultReadMcpJsonFile,
+    writeFile: options?.writeFile ?? defaultWriteMcpJsonFile,
+    removeDir: options?.removeDir ?? defaultRemoveClaudeConfigDir,
+  };
+}
+
+/**
+ * Where `claude`'s own config resolution reads the operator's REAL config from, to seed a run's
+ * scratch copy — never where it writes. Mirrors {@link resolveSourceCodexHomeDir}'s exact reasoning
+ * and resolution order: `CLAUDE_CONFIG_DIR` is not in `BASELINE_AGENT_ENV_KEYS`, so a spawned child
+ * never inherits it anyway — the whole point is finding wherever the *operator's actual* Claude Code
+ * install lives, a host-machine fact resolved against the daemon HOST process's own environment.
+ * @param hostEnv - The daemon process's own environment.
+ * @returns `hostEnv.CLAUDE_CONFIG_DIR` when set to a non-blank value (matching Claude Code's own
+ * resolution order, confirmed against installed Claude Code 2.1.263), else the CLI's documented
+ * default, `~/.claude`.
+ * @complexity O(1).
+ */
+export function resolveSourceClaudeConfigDir(hostEnv: NodeJS.ProcessEnv): string {
+  const override = hostEnv.CLAUDE_CONFIG_DIR;
+  return override !== undefined && override.trim().length > 0 ? override : join(homedir(), '.claude');
+}
+
+/**
+ * Stages a fresh, randomly-named `CLAUDE_CONFIG_DIR` directory (same non-determinism requirement as
+ * {@link McpJsonInjectionOptions.mkdtemp}'s own doc — `os.tmpdir()` is a shared location on a
+ * multi-user host, so a guessable name is a real pre-plant/symlink target).
+ *
+ * **Deliberately empty by default** — unlike {@link prepareCodexHomeForRun}, which copies the real
+ * `config.toml` wholesale (Codex has no personal-data problem in that file), this directory gets
+ * NOTHING written into it beyond a best-effort copy of `.credentials.json` (see below). That is the
+ * fix: the operator's real `skills`/`plugins`/`agents`/`memory-path index`/`settings.json` must NOT
+ * carry over implicitly. `claude` runs correctly against a config directory holding nothing at all —
+ * it falls back to its own built-in defaults, not an error.
+ *
+ * **Login preservation, verified rather than assumed** (per this task's own instruction — "prove
+ * login still resolves; do not assume"): confirmed live (2026-09-07, installed Claude Code 2.1.263,
+ * macOS) that `claude auth status` reports `loggedIn: false` against ANY `CLAUDE_CONFIG_DIR` other
+ * than the operator's real one — including the real `HOME` with only `CLAUDE_CONFIG_DIR` swapped —
+ * and confirmed against Claude Code's own docs (code.claude.com/docs/en/authentication) why: "If
+ * you've set the CLAUDE_CONFIG_DIR environment variable, Claude Code keeps the .credentials.json
+ * file under that directory instead, including the file the macOS fallback writes, and keys the
+ * macOS Keychain entry to that directory too, so a session with a different CLAUDE_CONFIG_DIR reads
+ * a different entry." So a scratch directory is never logged in by default on ANY platform, not just
+ * the ones with no Keychain at all. This function only closes the *portable* case: when the source
+ * directory holds a file-based `.credentials.json` (Linux, Windows, or a Keychain-locked macOS
+ * fallback — none of which this function can distinguish, and does not need to), it is copied
+ * best-effort into the scratch directory, exactly `prepareCodexHomeForRun`'s `auth.json` copy. When
+ * it does not (a normal macOS Keychain-only install, confirmed the common case on this codebase's
+ * own dev machine), this function does NOT attempt to read the macOS Keychain itself — that would
+ * mean this daemon process extracting a live OAuth secret out of an OS-managed credential store into
+ * a plaintext file, a materially different and larger security surface than forwarding an
+ * already-resolved credential the host handed it (which `credentialEnv`/`ANTHROPIC_API_KEY` already
+ * does, safely, today — see `AgentExecutorRunInput.credentialEnv`'s own doc). In that case this
+ * mirrors `prepareCodexHomeForRun`'s own accepted outcome for a missing credential file verbatim:
+ * "the spawned CLI runs unauthenticated" is documented, existing, precedented behavior in this file,
+ * not a new failure mode invented here. A host that needs the isolated child to stay logged in on
+ * such an install must supply a credential explicitly via `AgentExecutorRunInput.credentialEnv`
+ * (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` — both outrank Keychain-based subscription login
+ * in Claude Code's own auth precedence, so the isolated child authenticates without ever needing the
+ * operator's personal Keychain entry at all) — see this fix's own handoff report for the operational
+ * consequence on a host with no such credential configured yet.
+ *
+ * **Never touches the real config directory.** `sourceConfigDir` is read-only throughout.
+ * @param runId - Embedded in the temp-dir prefix for traceability, same sanitization discipline as {@link prepareCodexHomeForRun}'s `safeRunId`.
+ * @param sourceConfigDir - Where to read a possible real `.credentials.json` from — see {@link resolveSourceClaudeConfigDir}.
+ * @param seams - Injectable mkdtemp/readFile/writeFile/removeDir, real filesystem by default.
+ * @throws Whatever `mkdtemp` rejects with — the caller ({@link prepareClaudeConfigDirIfNeeded}) turns that into a pre-spawn `AGENT_SPAWN_FAILED` failure, matching {@link prepareCodexHomeForRun}'s own contract.
+ * @complexity O(1) plus one directory creation and up to one best-effort file read/write round trip.
+ */
+async function prepareClaudeConfigDirForRun(
+  runId: string,
+  sourceConfigDir: string,
+  seams: ClaudeConfigDirSeams,
+): Promise<PreparedClaudeConfigDir> {
+  const safeRunId = runId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80) || 'run';
+  const dir = await seams.mkdtemp(`jini-claude-config-${safeRunId}-`);
+  try {
+    const credentialsPath = join(sourceConfigDir, '.credentials.json');
+    let credentialsRaw: string | undefined;
+    try {
+      credentialsRaw = await seams.readFile(credentialsPath);
+    } catch {
+      // No file-based credential to copy (the common macOS-Keychain-only case) — see this
+      // function's own doc for why that is an accepted, documented outcome, not a failure here.
+      credentialsRaw = undefined;
+    }
+    if (credentialsRaw !== undefined) {
+      await seams.writeFile(join(dir, '.credentials.json'), credentialsRaw);
+    }
+  } catch (err) {
+    await seams.removeDir(dir).catch(() => {
+      // Best-effort only — the original error below is what the caller must see either way.
+    });
+    throw err;
+  }
+  return {
+    path: dir,
+    cleanup: async () => {
+      await seams.removeDir(dir);
+    },
+  };
+}
+
+/**
  * Gap 4 of the run/chat orchestration Final Recommendation: what
  * `classifyFailure` (see `CreateAgentExecutorOptions.classifyFailure`) is
  * given to decide whether a `'failed'` run is `resumable`. `code`/`signal`
@@ -2592,6 +2761,15 @@ export interface CreateAgentExecutorOptions {
    */
   readonly mcpJsonInjection?: McpJsonInjectionOptions;
   /**
+   * Finding 1 of SEC-assistant-env-isolation-2026-09-07's injectable filesystem seams — see
+   * {@link ClaudeConfigDirIsolationOptions}'s own doc. Unlike `mcpJsonInjection`, this is NOT a gate:
+   * every `claude`-def run stages an isolated `CLAUDE_CONFIG_DIR` regardless of whether this field
+   * is supplied; supplying it only lets a test observe/replace the real filesystem calls.
+   * @default the real `fs.promises.mkdtemp`/`readFile`/`rm` — no real disk I/O for every def other
+   * than `claude`, matching this factory's "no real filesystem by default in tests" convention.
+   */
+  readonly claudeConfigDirIsolation?: ClaudeConfigDirIsolationOptions;
+  /**
    * Ceiling on how many bytes of a `'until-close'` def's stdout this driver will hold in memory
    * before it stops accumulating and reports the shortfall — see
    * {@link DEFAULT_BUFFERED_STDOUT_MAX_BYTES} for the threat this closes and why 8 MiB.
@@ -2874,6 +3052,7 @@ export function computeChildEnv(
   codexHomeDir?: string,
   systemPromptEnvOverrides?: Readonly<Record<string, string>>,
   stagedInstructionsFile?: { readonly varName: string; readonly path: string },
+  claudeConfigDir?: string,
 ): NodeJS.ProcessEnv {
   const envContentApplied =
     mcpBridge?.kind === 'env-content'
@@ -2900,7 +3079,13 @@ export function computeChildEnv(
           ),
         };
   const codexHomeApplied = codexHomeDir === undefined ? instructionsApplied : { ...instructionsApplied, CODEX_HOME: codexHomeDir };
-  return systemPromptEnvOverrides === undefined ? codexHomeApplied : { ...codexHomeApplied, ...systemPromptEnvOverrides };
+  // Finding 1 of SEC-assistant-env-isolation-2026-09-07: same "only set when staged" shape as
+  // codexHomeApplied above — mutually exclusive with it in practice (codexHomeDir is only ever set
+  // for a 'codex-toml' bridge, claudeConfigDir only ever for a `claude`-id run), so both existing
+  // side by side here is a documentation convenience, not a real collision risk.
+  const claudeConfigDirApplied =
+    claudeConfigDir === undefined ? codexHomeApplied : { ...codexHomeApplied, CLAUDE_CONFIG_DIR: claudeConfigDir };
+  return systemPromptEnvOverrides === undefined ? claudeConfigDirApplied : { ...claudeConfigDirApplied, ...systemPromptEnvOverrides };
 }
 
 /**
@@ -2970,19 +3155,28 @@ function computeSystemPromptOverlay(
   });
 }
 
-/** Phase 9a: the def's `buildArgs` 4th argument — `undefined` when the run selects no model/reasoning/permissionMode/overlay at all (byte-identical to omitting the argument). Pure. */
+/** Phase 9a: the def's `buildArgs` 4th argument — `undefined` when the run selects no model/reasoning/permissionMode/overlay/tool-restriction at all (byte-identical to omitting the argument). Pure. */
 export function buildAgentBuildArgsOptions(
-  input: Pick<AgentExecutorRunInput, 'model' | 'reasoning' | 'permissionMode'>,
+  input: Pick<AgentExecutorRunInput, 'model' | 'reasoning' | 'permissionMode' | 'disallowedTools' | 'allowedTools'>,
   systemPromptOverlay: string | null | undefined,
 ): RuntimeBuildOptions | undefined {
   const hasOverlay = systemPromptOverlay !== undefined && systemPromptOverlay !== null;
-  if (input.model === undefined && input.reasoning === undefined && input.permissionMode === undefined && !hasOverlay) {
+  if (
+    input.model === undefined
+    && input.reasoning === undefined
+    && input.permissionMode === undefined
+    && input.disallowedTools === undefined
+    && input.allowedTools === undefined
+    && !hasOverlay
+  ) {
     return undefined;
   }
   return {
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
+    ...(input.disallowedTools !== undefined ? { disallowedTools: input.disallowedTools } : {}),
+    ...(input.allowedTools !== undefined ? { allowedTools: input.allowedTools } : {}),
     ...(hasOverlay ? { systemPromptOverlay } : {}),
   };
 }
@@ -3314,6 +3508,50 @@ export async function prepareCodexHomeIfNeeded(
   }
 }
 
+/**
+ * Finding 1 of SEC-assistant-env-isolation-2026-09-07's one effect — stages this run's scratch
+ * `CLAUDE_CONFIG_DIR` directory, returning the prepared handle `cleanupStagedFiles` should later
+ * release (`null` for every def other than `claude` — see {@link prepareClaudeConfigDirForRun}'s
+ * own doc for why this is unconditional for `claude` runs, unlike {@link prepareCodexHomeIfNeeded}'s
+ * gate on a host-configured MCP bridge strategy).
+ *
+ * Gated on `def.id === 'claude'` directly rather than on `externalMcpInjection === 'claude-mcp-json'`
+ * (which `codebuddy` also declares): isolating the operator's personal `~/.claude` is specific to
+ * the real `claude` CLI's own config resolution, not to every def that happens to share its `.mcp.
+ * json` delivery shape. Matches the existing `USER`-for-claude-login special case already singled
+ * out by id in `BASELINE_AGENT_ENV_KEYS`'s own doc, a few hundred lines above.
+ * @param input.def - Used for both the `id` gate and the failure message.
+ * @param deps.hostEnv - The daemon's own environment, threaded through to {@link resolveSourceClaudeConfigDir} rather than read from a module-level `process.env`, matching {@link prepareCodexHomeIfNeeded}'s identical testability reasoning.
+ * @complexity O(1) plus {@link prepareClaudeConfigDirForRun}'s own cost.
+ */
+export async function prepareClaudeConfigDirIfNeeded(
+  input: { readonly runId: string; readonly def: RuntimeAgentDef },
+  deps: {
+    readonly claudeConfigDirIsolation: ClaudeConfigDirIsolationOptions | undefined;
+    readonly hostEnv: NodeJS.ProcessEnv;
+    readonly releaseStagedResources: () => Promise<void>;
+    readonly failBeforeSpawn: FailBeforeSpawn;
+  },
+): Promise<PreparedClaudeConfigDir | null> {
+  if (input.def.id !== 'claude') {
+    return null;
+  }
+  try {
+    return await prepareClaudeConfigDirForRun(
+      input.runId,
+      resolveSourceClaudeConfigDir(deps.hostEnv),
+      resolveClaudeConfigDirSeams(deps.claudeConfigDirIsolation),
+    );
+  } catch (err) {
+    await deps.releaseStagedResources();
+    return deps.failBeforeSpawn(
+      input.runId,
+      'AGENT_SPAWN_FAILED',
+      `AgentExecutor: could not stage a CLAUDE_CONFIG_DIR for agent "${input.def.id}": ${errorMessage(err)}`,
+    );
+  }
+}
+
 /** Phase 11: post-`buildArgs` guard for argv-bound defs whose resolved binary is a Windows shim/.exe — a no-op off-Windows and for non-argv-bound defs. */
 export async function guardWindowsCommandLineBudget(
   input: { readonly runId: string; readonly def: RuntimeAgentDef; readonly launchPath: string; readonly args: readonly string[] },
@@ -3563,6 +3801,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const continuation = options.continuation;
   const classifyFailure = options.classifyFailure;
   const mcpJsonInjection = options.mcpJsonInjection;
+  const claudeConfigDirIsolation = options.claudeConfigDirIsolation;
   const promptAugmenter = options.promptAugmenter;
 
   /**
@@ -3695,6 +3934,13 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
      */
     let preparedCodexHome: PreparedCodexHome | null = null;
     /**
+     * Set once `prepareClaudeConfigDirIfNeeded` has actually staged this run's scratch
+     * `CLAUDE_CONFIG_DIR`, so `cleanupStagedFiles` knows there is a directory (possibly holding a
+     * copied login credential) to remove. Cleared as it is consumed, matching `preparedCodexHome`'s
+     * identical single-removal discipline. Only a `claude`-id run stages a directory this way.
+     */
+    let preparedClaudeConfigDir: PreparedClaudeConfigDir | null = null;
+    /**
      * Set once `prepareSystemPromptOverlayFileIfNeeded` has actually staged this run's overlay file
      * for a `'config-instructions-file'` def, so `cleanupStagedFiles` knows there is a temp
      * directory to remove. Cleared as it is consumed, matching `preparedCodexHome`'s identical
@@ -3714,6 +3960,11 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
         const codexHomeToRemove = preparedCodexHome;
         preparedCodexHome = null;
         await codexHomeToRemove.cleanup();
+      }
+      if (preparedClaudeConfigDir) {
+        const claudeConfigDirToRemove = preparedClaudeConfigDir;
+        preparedClaudeConfigDir = null;
+        await claudeConfigDirToRemove.cleanup();
       }
       if (preparedSystemPromptOverlayFile) {
         const overlayFileToRemove = preparedSystemPromptOverlayFile;
@@ -3794,6 +4045,16 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       { runId: input.runId, def, mcpBridge },
       { mcpJsonInjection, hostEnv: process.env, releaseStagedResources, failBeforeSpawn },
     );
+    // Finding 1 of SEC-assistant-env-isolation-2026-09-07's one effect — stage this run's scratch
+    // `CLAUDE_CONFIG_DIR` directory. Unconditional for a `claude`-id run (unlike CODEX_HOME above,
+    // this does not depend on `mcpJsonInjection` being configured at all — see
+    // `prepareClaudeConfigDirIfNeeded`'s own doc for why). Placed here only to stay adjacent to the
+    // other pre-`computeChildEnv` staging steps; `claude.ts`'s `buildArgs` needs no argv change for
+    // this (CLAUDE_CONFIG_DIR is an env var, not a flag), same as CODEX_HOME.
+    preparedClaudeConfigDir = await prepareClaudeConfigDirIfNeeded(
+      { runId: input.runId, def },
+      { claudeConfigDirIsolation, hostEnv: process.env, releaseStagedResources, failBeforeSpawn },
+    );
     // `'config-instructions-file'`'s one effect — stage the overlay to a temp file so
     // `computeChildEnv` below has a real path to merge into that def's `instructions` array. A
     // no-op (`null`) for every other def/strategy or a run with no overlay at all. Independent of
@@ -3817,6 +4078,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
       preparedSystemPromptOverlayFile && def.systemPromptDelivery?.strategy === 'config-instructions-file'
         ? { varName: def.systemPromptDelivery.varName, path: preparedSystemPromptOverlayFile.path }
         : undefined,
+      preparedClaudeConfigDir?.path,
     );
 
     // Post-buildArgs guard for argv-bound defs whose resolved binary is a

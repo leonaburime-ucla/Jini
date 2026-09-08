@@ -101,6 +101,25 @@ export type RuntimeBuildOptions = {
   // field itself to receive the overlay. `null`/`undefined`/empty means no overlay for this run —
   // identical to today's behavior.
   systemPromptOverlay?: string | null;
+  /**
+   * Tool names this run's CLI should refuse to execute, forwarded to whichever def-native flag
+   * expresses a deny-list — today, `claude`'s own `--disallowedTools` (verified against installed
+   * Claude Code 2.1.263: `--disallowedTools, --disallowed-tools <tools...>`, "Comma or
+   * space-separated list of tool names to deny"). This is a `@jini-ai/agent-runtime`-level
+   * *mechanism* only: no product's tool policy is baked in here (not Tovu's Bash-forbid opinion,
+   * not anyone else's) — the caller decides which names to pass. A def whose CLI has no equivalent
+   * flag simply ignores this field, same as `systemPromptOverlay` on a def with no overlay
+   * delivery. `undefined`/empty means no restriction — byte-identical to today's behavior (every
+   * tool the CLI's own grant already allows stays allowed).
+   */
+  disallowedTools?: readonly string[];
+  /**
+   * Same mechanism as {@link disallowedTools}, for a def-native explicit allow-list flag — today,
+   * `claude`'s own `--allowedTools`. Rarely set alongside `disallowedTools` at once; the underlying
+   * CLI decides how an allow-list and a deny-list interact when both are present.
+   * `undefined`/empty means no restriction, same as today.
+   */
+  allowedTools?: readonly string[];
 };
 
 export type RuntimeContext = {

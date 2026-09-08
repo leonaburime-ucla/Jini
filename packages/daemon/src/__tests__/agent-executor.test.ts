@@ -45,12 +45,14 @@ import {
   mergeEnvContentMcpConfig,
   mergeMcpJsonContent,
   prepareSystemPromptOverlayFileIfNeeded,
+  resolveSourceClaudeConfigDir,
   resolveSourceCodexHomeDir,
   resolveSystemPromptOverlayDelivery,
   translateAgentRuntimeEvent,
   type AgentExecutor,
   type AgentExecutorErrorCode,
   type ClassifyFailure,
+  type ClaudeConfigDirIsolationOptions,
   type ContinuationOptions,
   type McpBridgeDelivery,
   type McpJsonInjectionOptions,
@@ -206,6 +208,8 @@ interface HarnessOptions {
   classifyFailure?: ClassifyFailure;
   /** Gap 3 part 2's spawn-time `.mcp.json` injection — omitted by default, matching `CreateAgentExecutorOptions.mcpJsonInjection`'s own opt-in default. */
   mcpJsonInjection?: McpJsonInjectionOptions;
+  /** Finding 1's `CLAUDE_CONFIG_DIR` staging seams — omitted by default, matching `CreateAgentExecutorOptions.claudeConfigDirIsolation`'s own real-filesystem default (still exercised for every `claude`-id def even when omitted here — this only lets a test observe/replace the filesystem calls). */
+  claudeConfigDirIsolation?: ClaudeConfigDirIsolationOptions;
   /** Ceiling on the `'until-close'` stdout accumulator — omitted by default so the real `DEFAULT_BUFFERED_STDOUT_MAX_BYTES` applies. */
   bufferedStdoutMaxBytes?: number;
 }
@@ -285,6 +289,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     ...(options.continuation !== undefined ? { continuation: options.continuation } : {}),
     ...(options.classifyFailure !== undefined ? { classifyFailure: options.classifyFailure } : {}),
     ...(options.mcpJsonInjection !== undefined ? { mcpJsonInjection: options.mcpJsonInjection } : {}),
+    ...(options.claudeConfigDirIsolation !== undefined
+      ? { claudeConfigDirIsolation: options.claudeConfigDirIsolation }
+      : {}),
     ...(options.bufferedStdoutMaxBytes !== undefined
       ? { bufferedStdoutMaxBytes: options.bufferedStdoutMaxBytes }
       : {}),
@@ -4979,6 +4986,20 @@ describe('resolveSourceCodexHomeDir', () => {
   });
 });
 
+describe('resolveSourceClaudeConfigDir', () => {
+  it('uses hostEnv.CLAUDE_CONFIG_DIR when set to a non-blank value', () => {
+    expect(resolveSourceClaudeConfigDir({ CLAUDE_CONFIG_DIR: '/custom/claude-config' })).toBe('/custom/claude-config');
+  });
+
+  it('falls back to ~/.claude when CLAUDE_CONFIG_DIR is unset', () => {
+    expect(resolveSourceClaudeConfigDir({})).toBe(path.join(os.homedir(), '.claude'));
+  });
+
+  it('treats a blank/whitespace-only CLAUDE_CONFIG_DIR the same as unset', () => {
+    expect(resolveSourceClaudeConfigDir({ CLAUDE_CONFIG_DIR: '   ' })).toBe(path.join(os.homedir(), '.claude'));
+  });
+});
+
 describe('buildMcpBridgeDelivery', () => {
   const options: McpJsonInjectionOptions = {
     command: '/usr/bin/jini-mcp',
@@ -5924,6 +5945,166 @@ describe("AgentExecutor — 'codex-toml' MCP bridge delivery (Codex CODEX_HOME r
     const { lifecycle, executor } = createHarness({ def, mcpJsonInjection });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1', runId: '../../etc/evil' });
     await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls[0]).not.toContain('..');
+    expect(mkdtempCalls[0]).not.toContain('/');
+  });
+});
+
+describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): claude CLAUDE_CONFIG_DIR isolation", () => {
+  /** Fakes the Claude-config-dir-only seams (`mkdtemp`/`readFile`/`writeFile`/`removeDir`) — the directory analogue of `createCodexHomeFsSpies` above. `readFile` serves `.credentials.json` content and ENOENTs everything else; `mkdtemp` returns a fully deterministic `/fake/tmp/<prefix>` directory. */
+  function createClaudeConfigDirFsSpies(seed: { existingCredentialsJson?: string } = {}): {
+    claudeConfigDirIsolation: ClaudeConfigDirIsolationOptions;
+    mkdtempCalls: string[];
+    readCalls: string[];
+    writeCalls: Array<{ path: string; content: string }>;
+    removeDirCalls: string[];
+  } {
+    const mkdtempCalls: string[] = [];
+    const readCalls: string[] = [];
+    const writeCalls: Array<{ path: string; content: string }> = [];
+    const removeDirCalls: string[] = [];
+    const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const claudeConfigDirIsolation: ClaudeConfigDirIsolationOptions = {
+      mkdtemp: async (prefix: string) => {
+        mkdtempCalls.push(prefix);
+        return `/fake/tmp/${prefix}`;
+      },
+      readFile: async (p: string) => {
+        readCalls.push(p);
+        if (p.endsWith('.credentials.json')) {
+          if (seed.existingCredentialsJson === undefined) throw enoent();
+          return seed.existingCredentialsJson;
+        }
+        throw enoent();
+      },
+      writeFile: async (p: string, content: string) => {
+        writeCalls.push({ path: p, content });
+      },
+      removeDir: async (p: string) => {
+        removeDirCalls.push(p);
+      },
+    };
+    return { claudeConfigDirIsolation, mkdtempCalls, readCalls, writeCalls, removeDirCalls };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('does not stage CLAUDE_CONFIG_DIR for a def whose id is not "claude", even when the seams are configured', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'fake-agent' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls).toEqual([]);
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('stages a scratch, empty-by-default CLAUDE_CONFIG_DIR and sets it on the spawned env for a "claude"-id def, unconditionally (no mcpJsonInjection required)', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls, writeCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls).toHaveLength(1);
+    expect(mkdtempCalls[0]).toContain(run.id);
+    const stagedDir = `/fake/tmp/${mkdtempCalls[0]}`;
+
+    // Deliberately empty by default — no config.json/settings.json written, unlike Codex's
+    // config.toml copy. See prepareClaudeConfigDirForRun's own doc for why this is the fix, not a
+    // gap: the operator's real skills/plugins/agents/memory index must not carry over implicitly.
+    expect(writeCalls).toEqual([]);
+
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CLAUDE_CONFIG_DIR).toBe(stagedDir);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it("does NOT leak the operator's real HOME-derived config dir — HOME itself is untouched, but CLAUDE_CONFIG_DIR overrides where claude actually resolves its config", async () => {
+    const { claudeConfigDirIsolation } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CLAUDE_CONFIG_DIR).not.toBe(path.join(os.homedir(), '.claude'));
+    expect(env.CLAUDE_CONFIG_DIR).toMatch(/^\/fake\/tmp\//);
+  });
+
+  it('copies the real .credentials.json into the scratch dir so a file-based login (Linux/Windows/Keychain-locked-macOS-fallback) is preserved', async () => {
+    const { claudeConfigDirIsolation, writeCalls } = createClaudeConfigDirFsSpies({
+      existingCredentialsJson: '{"claudeAiOauth":{"accessToken":"real-login"}}',
+    });
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+
+    const credentialsWrite = writeCalls.find((c) => c.path.endsWith('.credentials.json'));
+    expect(credentialsWrite?.content).toBe('{"claudeAiOauth":{"accessToken":"real-login"}}');
+  });
+
+  // Verified live (2026-09-07, installed Claude Code 2.1.263, macOS): a scratch CLAUDE_CONFIG_DIR
+  // with nothing staged reports `loggedIn: false` via `claude auth status` — this is a real,
+  // accepted, documented trade-off (see prepareClaudeConfigDirForRun's own doc), not a bug this test
+  // is missing. Mirrors Codex's identical accepted outcome for a missing auth.json.
+  it('spawns normally with no .credentials.json staged when the real config dir has no file-based login (the common macOS-Keychain-only case)', async () => {
+    const { claudeConfigDirIsolation, writeCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+
+    expect(writeCalls.some((c) => c.path.endsWith('.credentials.json'))).toBe(false);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('fails the run before spawn (never a bare throw) when mkdtemp rejects', async () => {
+    const def = createFakeDef({ id: 'claude' });
+    const claudeConfigDirIsolation: ClaudeConfigDirIsolationOptions = {
+      mkdtemp: async () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    };
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    await expect(
+      executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' }),
+    ).rejects.toMatchObject({ code: 'AGENT_SPAWN_FAILED' });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('removes the scratch CLAUDE_CONFIG_DIR once the child closes, so a copied credential is not left on disk', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls, removeDirCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude', streamFormat: 'plain' });
+    const { lifecycle, executor, child } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+
+    const runPromise = executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+    await flushAsync();
+    await runPromise;
+    expect(removeDirCalls).toEqual([]);
+
+    child.emit('close', 0, null);
+    await lifecycle.waitForTerminal(run.id);
+
+    const stagedDir = `/fake/tmp/${mkdtempCalls[0]}`;
+    expect(removeDirCalls).toEqual([stagedDir]);
+  });
+
+  it('sanitizes a path-like run id out of the mkdtemp prefix', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1', runId: '../../etc/evil' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
     expect(mkdtempCalls[0]).not.toContain('..');
     expect(mkdtempCalls[0]).not.toContain('/');

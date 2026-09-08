@@ -218,6 +218,19 @@ export const claudeAgentDef = {
       // implementation rather than a copy per def. A no-op (`[]`) whenever the caller staged no
       // file, so a host that never configured MCP injection sees no argv change.
       args.push(...buildClaudeMcpConfigArgs(runtimeContext));
+      // Finding 2 (SEC-assistant-env-isolation-2026-09-07): `RuntimeBuildOptions.disallowedTools`/
+      // `allowedTools` are a `@jini-ai/agent-runtime`-level *mechanism* only — no product policy is
+      // baked in here (see `types.ts`'s own doc on those fields). Verified against installed Claude
+      // Code 2.1.263's own `-p --help`: `--disallowedTools, --disallowed-tools <tools...>` /
+      // `--allowedTools, --allowed-tools <tools...>`. Placed last, after every other flag, so an
+      // omitted (default) value is a true no-op — every existing call site that never passes these
+      // options sees byte-identical argv to before this change.
+      if (options.disallowedTools && options.disallowedTools.length > 0) {
+        args.push('--disallowedTools', ...options.disallowedTools);
+      }
+      if (options.allowedTools && options.allowedTools.length > 0) {
+        args.push('--allowedTools', ...options.allowedTools);
+      }
       return args;
     },
     promptViaStdin: true,

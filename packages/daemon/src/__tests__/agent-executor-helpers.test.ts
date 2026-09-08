@@ -294,6 +294,32 @@ describe('buildAgentBuildArgsOptions', () => {
       systemPromptOverlay: 'overlay text',
     });
   });
+
+  // Finding 2 (SEC-assistant-env-isolation-2026-09-07): disallowedTools/allowedTools are the new
+  // tool-restriction mechanism — see AgentExecutorRunInput's own doc on both fields.
+  it('includes only disallowedTools when only it is selected', () => {
+    expect(buildAgentBuildArgsOptions({ disallowedTools: ['Bash'] }, undefined)).toEqual({ disallowedTools: ['Bash'] });
+  });
+
+  it('includes only allowedTools when only it is selected', () => {
+    expect(buildAgentBuildArgsOptions({ allowedTools: ['Read'] }, undefined)).toEqual({ allowedTools: ['Read'] });
+  });
+
+  it('combines disallowedTools/allowedTools with the other four fields when all six are present', () => {
+    expect(
+      buildAgentBuildArgsOptions(
+        { model: 'gpt-5', reasoning: 'high', permissionMode: 'bypass', disallowedTools: ['Bash'], allowedTools: ['Read'] },
+        'overlay text',
+      ),
+    ).toEqual({
+      model: 'gpt-5',
+      reasoning: 'high',
+      permissionMode: 'bypass',
+      disallowedTools: ['Bash'],
+      allowedTools: ['Read'],
+      systemPromptOverlay: 'overlay text',
+    });
+  });
 });
 
 describe('isStdinDrivenFormat', () => {
