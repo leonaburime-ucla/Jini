@@ -2762,13 +2762,37 @@ export interface CreateAgentExecutorOptions {
   readonly mcpJsonInjection?: McpJsonInjectionOptions;
   /**
    * Finding 1 of SEC-assistant-env-isolation-2026-09-07's injectable filesystem seams — see
-   * {@link ClaudeConfigDirIsolationOptions}'s own doc. Unlike `mcpJsonInjection`, this is NOT a gate:
-   * every `claude`-def run stages an isolated `CLAUDE_CONFIG_DIR` regardless of whether this field
-   * is supplied; supplying it only lets a test observe/replace the real filesystem calls.
+   * {@link ClaudeConfigDirIsolationOptions}'s own doc. This bag itself is still NOT a gate (supplying
+   * it only lets a test observe/replace the real filesystem calls); whether staging happens AT ALL is
+   * now {@link claudeConfigDirIsolationEnabled}'s job — see that field's doc for why the two were
+   * split apart instead of overloading this one's presence as the switch.
    * @default the real `fs.promises.mkdtemp`/`readFile`/`rm` — no real disk I/O for every def other
    * than `claude`, matching this factory's "no real filesystem by default in tests" convention.
    */
   readonly claudeConfigDirIsolation?: ClaudeConfigDirIsolationOptions;
+  /**
+   * The actual on/off switch for Finding 1's `CLAUDE_CONFIG_DIR` isolation (see
+   * {@link prepareClaudeConfigDirIfNeeded}'s doc for the staging behavior this gates). Split out as
+   * its own boolean rather than reusing {@link claudeConfigDirIsolation}'s presence, because that bag
+   * is a test-seam-injection convention shared with every other `*IsolationOptions`/`*Seams` field in
+   * this file (see `mcpJsonInjection`'s own "NOT a gate" precedent) — overloading it here would mean a
+   * host that only wants to override `mkdtemp` for a test silently also flips production behavior.
+   *
+   * @default `false`. This DEFAULTS OFF, which reopens the leak Finding 1 closed (the spawned
+   * `claude` child again reads the operator's real `~/.claude` — skills, plugins, memory index, and
+   * whatever tool grant that directory carries) — **not a regression discovered later, a deliberate
+   * rollback landed the same day as the isolation fix itself.** Reason: on macOS the Keychain login
+   * `claude auth status` reports is keyed to `CLAUDE_CONFIG_DIR` (see {@link
+   * prepareClaudeConfigDirForRun}'s doc), and no caller of this factory was passing a credential of
+   * its own (`AgentExecutorRunInput.credentialEnv`) when Finding 1 landed unconditionally — so every
+   * isolated child ran unauthenticated and the assistant reported "Not logged in" on its default
+   * runtime. A host that provisions a real `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` via
+   * `credentialEnv` (both outrank Keychain login in Claude Code's own auth precedence, so an isolated,
+   * still-logged-in child needs no access to the operator's personal Keychain entry at all) should
+   * flip this back on — the mechanism itself is unchanged and was already proven live
+   * (2026-09-07); only the default changed.
+   */
+  readonly claudeConfigDirIsolationEnabled?: boolean;
   /**
    * Ceiling on how many bytes of a `'until-close'` def's stdout this driver will hold in memory
    * before it stops accumulating and reports the shortfall — see
@@ -3520,20 +3544,28 @@ export async function prepareCodexHomeIfNeeded(
  * the real `claude` CLI's own config resolution, not to every def that happens to share its `.mcp.
  * json` delivery shape. Matches the existing `USER`-for-claude-login special case already singled
  * out by id in `BASELINE_AGENT_ENV_KEYS`'s own doc, a few hundred lines above.
+ *
+ * ALSO gated on `deps.enabled` (`CreateAgentExecutorOptions.claudeConfigDirIsolationEnabled`, default
+ * `false`) since this task's own fix — see that field's doc for why it defaults off (Keychain login
+ * is `CLAUDE_CONFIG_DIR`-keyed and no caller was supplying a credential when this was unconditional).
+ * `def.id === 'claude'` is still checked first and independently: a host that flips this flag on
+ * should not suddenly stage a directory for `codebuddy` or any other def.
  * @param input.def - Used for both the `id` gate and the failure message.
+ * @param deps.enabled - The isolation on/off switch — see this function's own doc above.
  * @param deps.hostEnv - The daemon's own environment, threaded through to {@link resolveSourceClaudeConfigDir} rather than read from a module-level `process.env`, matching {@link prepareCodexHomeIfNeeded}'s identical testability reasoning.
  * @complexity O(1) plus {@link prepareClaudeConfigDirForRun}'s own cost.
  */
 export async function prepareClaudeConfigDirIfNeeded(
   input: { readonly runId: string; readonly def: RuntimeAgentDef },
   deps: {
+    readonly enabled: boolean;
     readonly claudeConfigDirIsolation: ClaudeConfigDirIsolationOptions | undefined;
     readonly hostEnv: NodeJS.ProcessEnv;
     readonly releaseStagedResources: () => Promise<void>;
     readonly failBeforeSpawn: FailBeforeSpawn;
   },
 ): Promise<PreparedClaudeConfigDir | null> {
-  if (input.def.id !== 'claude') {
+  if (input.def.id !== 'claude' || !deps.enabled) {
     return null;
   }
   try {
@@ -3802,6 +3834,7 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
   const classifyFailure = options.classifyFailure;
   const mcpJsonInjection = options.mcpJsonInjection;
   const claudeConfigDirIsolation = options.claudeConfigDirIsolation;
+  const claudeConfigDirIsolationEnabled = options.claudeConfigDirIsolationEnabled ?? false;
   const promptAugmenter = options.promptAugmenter;
 
   /**
@@ -4053,7 +4086,13 @@ export function createAgentExecutor(options: CreateAgentExecutorOptions): AgentE
     // this (CLAUDE_CONFIG_DIR is an env var, not a flag), same as CODEX_HOME.
     preparedClaudeConfigDir = await prepareClaudeConfigDirIfNeeded(
       { runId: input.runId, def },
-      { claudeConfigDirIsolation, hostEnv: process.env, releaseStagedResources, failBeforeSpawn },
+      {
+        enabled: claudeConfigDirIsolationEnabled,
+        claudeConfigDirIsolation,
+        hostEnv: process.env,
+        releaseStagedResources,
+        failBeforeSpawn,
+      },
     );
     // `'config-instructions-file'`'s one effect — stage the overlay to a temp file so
     // `computeChildEnv` below has a real path to merge into that def's `instructions` array. A

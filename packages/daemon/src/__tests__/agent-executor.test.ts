@@ -18,6 +18,7 @@ import {
   type PiRpcSession,
   type PromptAugmenter,
   type RuntimeAgentDef,
+  type RuntimeBuildOptions,
   type RuntimeLock,
   type RuntimeLockAcquireContext,
   type RuntimeLockHandoffContext,
@@ -208,8 +209,10 @@ interface HarnessOptions {
   classifyFailure?: ClassifyFailure;
   /** Gap 3 part 2's spawn-time `.mcp.json` injection — omitted by default, matching `CreateAgentExecutorOptions.mcpJsonInjection`'s own opt-in default. */
   mcpJsonInjection?: McpJsonInjectionOptions;
-  /** Finding 1's `CLAUDE_CONFIG_DIR` staging seams — omitted by default, matching `CreateAgentExecutorOptions.claudeConfigDirIsolation`'s own real-filesystem default (still exercised for every `claude`-id def even when omitted here — this only lets a test observe/replace the filesystem calls). */
+  /** Finding 1's `CLAUDE_CONFIG_DIR` staging seams — omitted by default, matching `CreateAgentExecutorOptions.claudeConfigDirIsolation`'s own real-filesystem default. Supplying this alone does NOT stage anything; see `claudeConfigDirIsolationEnabled` below, the actual on/off switch. */
   claudeConfigDirIsolation?: ClaudeConfigDirIsolationOptions;
+  /** The on/off switch for Finding 1's isolation — omitted by default, matching `CreateAgentExecutorOptions.claudeConfigDirIsolationEnabled`'s own default-`false` (the 2026-09-08 rollback: isolation now requires an explicit opt-in). */
+  claudeConfigDirIsolationEnabled?: boolean;
   /** Ceiling on the `'until-close'` stdout accumulator — omitted by default so the real `DEFAULT_BUFFERED_STDOUT_MAX_BYTES` applies. */
   bufferedStdoutMaxBytes?: number;
 }
@@ -291,6 +294,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     ...(options.mcpJsonInjection !== undefined ? { mcpJsonInjection: options.mcpJsonInjection } : {}),
     ...(options.claudeConfigDirIsolation !== undefined
       ? { claudeConfigDirIsolation: options.claudeConfigDirIsolation }
+      : {}),
+    ...(options.claudeConfigDirIsolationEnabled !== undefined
+      ? { claudeConfigDirIsolationEnabled: options.claudeConfigDirIsolationEnabled }
       : {}),
     ...(options.bufferedStdoutMaxBytes !== undefined
       ? { bufferedStdoutMaxBytes: options.bufferedStdoutMaxBytes }
@@ -5992,10 +5998,14 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
     vi.unstubAllEnvs();
   });
 
-  it('does not stage CLAUDE_CONFIG_DIR for a def whose id is not "claude", even when the seams are configured', async () => {
+  it('does not stage CLAUDE_CONFIG_DIR for a def whose id is not "claude", even when the seams are configured and isolation is enabled', async () => {
     const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'fake-agent' });
-    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
     await executor.run({ runId: run.id, agentId: 'fake-agent', prompt: 'hi', cwd: '/work' });
 
@@ -6004,10 +6014,30 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 
-  it('stages a scratch, empty-by-default CLAUDE_CONFIG_DIR and sets it on the spawned env for a "claude"-id def, unconditionally (no mcpJsonInjection required)', async () => {
-    const { claudeConfigDirIsolation, mkdtempCalls, writeCalls } = createClaudeConfigDirFsSpies();
+  // 2026-09-08 rollback (see CreateAgentExecutorOptions.claudeConfigDirIsolationEnabled's own doc):
+  // isolation now requires an explicit opt-in. Without it, a "claude"-id def with seams configured
+  // must NOT stage anything — this is the default the assistant's own Local CLI runtime ships with,
+  // specifically so the operator's real Keychain login is visible to the spawned CLI.
+  it('does not stage CLAUDE_CONFIG_DIR for a "claude"-id def by default (claudeConfigDirIsolationEnabled omitted), even when the seams are configured', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'claude' });
     const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
+
+    expect(mkdtempCalls).toEqual([]);
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('stages a scratch, empty-by-default CLAUDE_CONFIG_DIR and sets it on the spawned env for a "claude"-id def once isolation is explicitly enabled (no mcpJsonInjection required)', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls, writeCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({ id: 'claude' });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
     await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
@@ -6028,7 +6058,11 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
   it("does NOT leak the operator's real HOME-derived config dir — HOME itself is untouched, but CLAUDE_CONFIG_DIR overrides where claude actually resolves its config", async () => {
     const { claudeConfigDirIsolation } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'claude' });
-    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
     await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
@@ -6042,7 +6076,11 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
       existingCredentialsJson: '{"claudeAiOauth":{"accessToken":"real-login"}}',
     });
     const def = createFakeDef({ id: 'claude' });
-    const { lifecycle, executor } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
     await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
@@ -6057,7 +6095,11 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
   it('spawns normally with no .credentials.json staged when the real config dir has no file-based login (the common macOS-Keychain-only case)', async () => {
     const { claudeConfigDirIsolation, writeCalls } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'claude' });
-    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
     await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
@@ -6072,7 +6114,11 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
         throw new Error('ENOSPC: no space left on device');
       },
     };
-    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor, spawnCalls } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
 
     await expect(
@@ -6084,7 +6130,11 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
   it('removes the scratch CLAUDE_CONFIG_DIR once the child closes, so a copied credential is not left on disk', async () => {
     const { claudeConfigDirIsolation, mkdtempCalls, removeDirCalls } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'claude', streamFormat: 'plain' });
-    const { lifecycle, executor, child } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor, child } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
 
     const runPromise = executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
@@ -6102,12 +6152,55 @@ describe("AgentExecutor — Finding 1 (SEC-assistant-env-isolation-2026-09-07): 
   it('sanitizes a path-like run id out of the mkdtemp prefix', async () => {
     const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
     const def = createFakeDef({ id: 'claude' });
-    const { lifecycle, executor } = createHarness({ def, claudeConfigDirIsolation });
+    const { lifecycle, executor } = createHarness({
+      def,
+      claudeConfigDirIsolation,
+      claudeConfigDirIsolationEnabled: true,
+    });
     const { run } = await lifecycle.start({ contextRef: 'ctx-1', runId: '../../etc/evil' });
     await executor.run({ runId: run.id, agentId: 'claude', prompt: 'hi', cwd: '/work' });
 
     expect(mkdtempCalls[0]).not.toContain('..');
     expect(mkdtempCalls[0]).not.toContain('/');
+  });
+
+  // Independence proof for the assistant's default Local CLI runtime (2026-09-08): the tool
+  // restriction (AgentExecutorRunInput.disallowedTools, Finding 2) and CLAUDE_CONFIG_DIR isolation
+  // (Finding 1, gated by claudeConfigDirIsolationEnabled above) are two unrelated mechanisms —
+  // disallowedTools flows through buildAgentBuildArgsOptions into the def's own buildArgs/argv,
+  // while isolation flows through prepareClaudeConfigDirIfNeeded into the spawned env. Nothing in
+  // either path reads the other's flag. This run exercises both in one real `.run()` call, with
+  // isolation left at its default (disabled), to prove Tovu's own tool restriction is not
+  // collateral damage of the 2026-09-08 default-off rollback.
+  it('still applies disallowedTools to a "claude"-id def\'s argv when CLAUDE_CONFIG_DIR isolation is left at its default (disabled)', async () => {
+    const { claudeConfigDirIsolation, mkdtempCalls } = createClaudeConfigDirFsSpies();
+    const def = createFakeDef({
+      id: 'claude',
+      // Mirrors @jini-ai/agent-runtime's real claude.ts buildArgs handling of
+      // RuntimeBuildOptions.disallowedTools (see that file's own '--disallowedTools' push) closely
+      // enough to prove this driver forwards the value through to argv — createFakeDef's own
+      // default buildArgs ignores its options entirely, which would prove nothing here.
+      buildArgs: (_prompt, _imagePaths, _extraAllowedDirs, options?: RuntimeBuildOptions) =>
+        options?.disallowedTools && options.disallowedTools.length > 0
+          ? ['--disallowedTools', ...options.disallowedTools]
+          : ['--flag'],
+    });
+    const { lifecycle, executor, spawnCalls } = createHarness({ def, claudeConfigDirIsolation });
+    const { run } = await lifecycle.start({ contextRef: 'ctx-1' });
+    await executor.run({
+      runId: run.id,
+      agentId: 'claude',
+      prompt: 'hi',
+      cwd: '/work',
+      disallowedTools: ['Bash', 'Edit', 'Write'],
+    });
+
+    // Isolation stayed off (the default) ...
+    expect(mkdtempCalls).toEqual([]);
+    const env = spawnCalls[0]!.options.env as Record<string, string>;
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    // ... yet the tool restriction still reached the spawned CLI's own argv.
+    expect(spawnCalls[0]!.args).toEqual(['--disallowedTools', 'Bash', 'Edit', 'Write']);
   });
 });
 
