@@ -46,7 +46,7 @@ export {
 } from './origin-validation.js';
 
 export type { AdapterContext } from './adapter.js';
-export { defineJsonRoute, mountJsonRoute } from './adapter.js';
+export { ClientFacingError, defineJsonRoute, mountJsonRoute } from './adapter.js';
 
 export type { InstallRouteRegistrationGuardOptions, RouteRegistration } from './route-registration-guard.js';
 export {
