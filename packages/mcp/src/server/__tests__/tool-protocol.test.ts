@@ -49,9 +49,44 @@ describe('okResult', () => {
     expect(okResult(payload)).toEqual({ content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] });
   });
 
-  it('still JSON-stringifies a `content` array holding an unrecognized block type', () => {
+  it('still JSON-stringifies a `content` array holding a malformed resource block (missing required text/blob)', () => {
+    // `resource` IS a recognized ContentBlock type (see the passthrough tests below) — this block is
+    // rejected for being malformed, not for its `type` being unrecognized. A resource block missing
+    // both `text` and `blob` cannot be carrying withheld payload data in the first place, so falling
+    // back to stringify here is safe: there is nothing sensitive in this shape to leak.
     const payload = { content: [{ type: 'resource', resource: { uri: 'ui://x' } }] };
     expect(okResult(payload)).toEqual({ content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] });
+  });
+
+  it('passes a well-formed `resource` content block through verbatim (ADR-053 Decision 5 regression)', () => {
+    // This is the exact shape that leaked in the traced incident: a confirmation token embedded in a
+    // resource block's `text`, alongside an ordinary text acknowledgment. Before this fix, `resource`
+    // was not in okResult()'s hand-rolled allowlist (only `text`/`image`), so the whole envelope fell
+    // to JSON.stringify and the token reached the model as plain text. It must now reach the client as
+    // a real `resource` block instead of being flattened.
+    const payload = {
+      content: [
+        { type: 'text', text: 'Delete queued — confirm in the UI.' },
+        {
+          type: 'resource',
+          resource: { uri: 'ui://confirm-delete', mimeType: 'text/html', text: '<confirm-token>SECRET</confirm-token>' },
+        },
+      ],
+    };
+    expect(okResult(payload)).toEqual({ content: payload.content });
+  });
+
+  it('passes a well-formed `resource_link` content block through verbatim', () => {
+    // Proves the fix recognizes content blocks via the pinned MCP SDK's own `ContentBlockSchema`
+    // rather than a hand-maintained per-type list — `resource_link` was never named in the incident,
+    // but a schema-driven check picks it up for free the same way `resource` is.
+    const payload = { content: [{ type: 'resource_link', uri: 'ui://x', name: 'widget' }] };
+    expect(okResult(payload)).toEqual({ content: payload.content });
+  });
+
+  it('passes a well-formed `audio` content block through verbatim', () => {
+    const payload = { content: [{ type: 'audio', data: 'AAAA', mimeType: 'audio/wav' }] };
+    expect(okResult(payload)).toEqual({ content: payload.content });
   });
 
   it('JSON-stringifies a plain object whose `content` field is not an array', () => {

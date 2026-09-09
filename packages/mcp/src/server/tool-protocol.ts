@@ -21,16 +21,32 @@
  * `execute_delegated_tool` (`../tools/delegated-tool.js`) hit: `@jini-ai/daemon`'s
  * `delegated-tool-bridge.ts` already keeps an image block in its returned `ToolExecutionResult.output`
  * (it is model-safe per that package's `tool-result-surfaces.ts`), but this module still turned it
- * back into text on the way out. {@link okResult} now recognizes that one shape — a `content` array
- * whose every entry is a known, well-formed block (`text` or `image`) — and passes it through
- * verbatim instead. Whitelist, not blacklist, mirroring `tool-result-surfaces.ts`'s own posture: a
- * `content` array holding even one entry this module cannot verify falls back to the stringify path,
- * so an unrecognized or malformed block is never silently forwarded as if it were valid protocol
- * output.
+ * back into text on the way out. It is also how a **human-confirmation token reached model-visible
+ * text** in a separate, traced incident (`ADR-053` Decision 5): a `resource` block carrying the token
+ * fell to the same stringify path because an earlier version of this fix only recognized `text` and
+ * `image`, and `resource` was not yet in that hand-rolled allowlist.
+ *
+ * {@link okResult} now recognizes a `content` array whose every entry validates against the pinned
+ * `@modelcontextprotocol/sdk`'s own `ContentBlockSchema` — the same union the SDK itself defines
+ * `CallToolResultSchema.content` against — and passes such an envelope through verbatim instead of
+ * stringifying it. Deferring to the SDK's schema rather than re-implementing a per-type shape check
+ * here means every block type the pinned protocol version defines (`text`, `image`, `audio`,
+ * `resource`, `resource_link` as of `@modelcontextprotocol/sdk@^1.29.0`) is recognized automatically,
+ * and a future SDK upgrade that adds another block type is picked up the same way, without another
+ * hand-edit to this module. Whitelist, not blacklist: a `content` array holding even one entry that
+ * does not validate falls back to the stringify path, so a malformed block is never forwarded as if it
+ * were valid protocol output. What this does **not** guarantee: a block type the pinned SDK does not
+ * yet know about (a real future MCP protocol addition ahead of this dependency) still falls back to
+ * stringify until the SDK dependency itself is upgraded — this fix converts "remember to update this
+ * allowlist" into "remember to bump the SDK", not into an unconditional guarantee. It also does not
+ * (and cannot) judge intent: a handler that puts a secret inside an otherwise well-formed `text` block
+ * will still have it pass through as designed — withholding a value from the model is the handler's
+ * responsibility (`ADR-053` Decision 4), not this generic wrapper's.
  */
 import { sanitizeUntrustedText } from '@jini-ai/cli';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import type { JsonSchemaType, JsonSchemaValidator } from '@modelcontextprotocol/sdk/validation';
+import { ContentBlockSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 
 /** What every tool handler receives alongside its parsed arguments. */
@@ -91,17 +107,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * One MCP content-block `type` this module will pass through verbatim rather than JSON-stringify.
- * Deliberately narrow — see this module's own doc for why widening it is a considered whitelist
- * addition, not a default. Each entry is checked structurally (not just by `type`), so a block that
- * merely claims a recognized `type` but is missing/mistyping its required field(s) still falls back
- * to the stringify path rather than being forwarded malformed.
+ * True when `block` is a well-formed MCP content block this module will pass through verbatim rather
+ * than JSON-stringify. Delegates to the pinned `@modelcontextprotocol/sdk`'s own `ContentBlockSchema`
+ * (the same union `CallToolResultSchema.content` is defined against) instead of a hand-maintained list
+ * of per-type shape checks — see this module's own doc for why that matters: a manually maintained
+ * allowlist only ever covers the block types someone remembered to add, so the *next* protocol content
+ * type (this SDK version already knows five: `text`, `image`, `audio`, `resource`, `resource_link`)
+ * would silently fall back to the stringify path exactly like `resource` did before this fix. A block
+ * that merely claims a recognized `type` but is missing/mistyping its required field(s) still fails
+ * `safeParse` and falls back to the stringify path rather than being forwarded malformed.
  */
 function isPassthroughContentBlock(block: unknown): boolean {
-  if (!isRecord(block)) return false;
-  if (block['type'] === 'text') return typeof block['text'] === 'string';
-  if (block['type'] === 'image') return typeof block['data'] === 'string' && typeof block['mimeType'] === 'string';
-  return false;
+  return ContentBlockSchema.safeParse(block).success;
 }
 
 /**
@@ -123,10 +140,11 @@ function isMcpContentEnvelope(payload: unknown): payload is { content: readonly 
  * Wraps a successful tool result as an MCP `CallToolResult`.
  *
  * A payload that is already a well-formed MCP content envelope (see {@link isMcpContentEnvelope}) is
- * returned with its `content` array verbatim, so a typed block inside it — an `image`, today — reaches
- * the client as a real content block rather than flattened text (see this module's own doc for the
- * bug this closes). Every other payload keeps the original behavior: a string passes through as one
- * text block; anything else is JSON-stringified into one.
+ * returned with its `content` array verbatim, so a typed block inside it — `image`, `resource`, or any
+ * other block the pinned SDK's `ContentBlockSchema` recognizes — reaches the client as a real content
+ * block rather than flattened text (see this module's own doc for the bug this closes). Every other
+ * payload keeps the original behavior: a string passes through as one text block; anything else is
+ * JSON-stringified into one.
  *
  * @complexity O(n) in the number of content-array entries, only when `payload` already looks like an
  * envelope; O(1) otherwise.
